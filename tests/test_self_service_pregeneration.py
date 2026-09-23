@@ -527,7 +527,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             plan = replace(
                 plan,
                 groups=tuple(
-                    replace(group, character="Aderyn")
+                    replace(group, character="Aderyn", routing_role="Aderyn")
                     if group.character == "Rhiannon"
                     else group
                     for group in plan.groups
@@ -743,9 +743,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             )
             for index in range(dialog.voice_routes.count()):
                 item = dialog.voice_routes.item(index)
-                self.assertEqual(
-                    not item.icon().isNull(), item.text().startswith("Rhiannon ->")
-                )
+                self.assertTrue(item.icon().isNull())
             (portraits / "10.png").unlink()
             dialog._render_voice_routes(dialog._voice_plan)
             self.assertTrue(

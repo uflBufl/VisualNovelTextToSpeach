@@ -57,6 +57,43 @@ from vntts.voice_library import VoiceLibrary  # noqa: E402
 
 
 class GameNarratorTest(unittest.TestCase):
+    def test_linked_name_impact_uses_the_same_variant_as_save(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            library = VoiceLibrary(root / "library")
+            library.link_person("Rhiannon", "Aderyn")
+            dialog = GameNarratorDialog(
+                AppSettings(),
+                importer=Mock(),
+                preview_service=Mock(),
+                player=Mock(),
+                voice_library=library,
+            )
+            try:
+                dialog._saving_role = "Aderyn"
+                dialog._impact_context = (Mock(), Mock(), Mock())
+
+                def inspect(*_args, proposed_voice_library, **_kwargs):
+                    self.assertIsNone(proposed_voice_library.binding("Aderyn"))
+                    self.assertEqual(
+                        proposed_voice_library.binding(
+                            "Aderyn", variant_key="story-name:aderyn"
+                        ).route,
+                        "narrator",
+                    )
+                    return ()
+
+                with patch(
+                    "vntts.game_narrator_ui.inspect_voice_default_impact",
+                    side_effect=inspect,
+                ):
+                    self.assertEqual(
+                        dialog._perform_impact(AppSettings(), "narrator", None, None),
+                        (),
+                    )
+            finally:
+                dialog.reject()
+
     def test_voice_picker_saves_one_library_binding_without_a_manifest_snapshot(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -425,6 +462,18 @@ class GameNarratorTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             manifest, originals = self.player_candidate_manifest(root)
+            document = json.loads(manifest.read_text())
+            player_evidence = document["vntts.player.voice_candidates"]
+            player_evidence["schema_version"] = 3
+            for index, variant in enumerate(player_evidence["variants"], 1):
+                variant["source_excerpts"] = [
+                    {
+                        "line_id": variant["source_line_ids"][0],
+                        "title": "Greeting",
+                        "text": f"Original spoken line {index}.",
+                    }
+                ]
+            manifest.write_text(json.dumps(document))
             importer = Mock()
             importer.narrator_characters.return_value = ("Mrs. Owen",)
             importer.prepare_voice_roles.return_value = manifest
@@ -470,9 +519,9 @@ class GameNarratorTest(unittest.TestCase):
                     (preserved_source, replacement_source),
                 )
                 self.assertIn("3.170 s", dialog.references.itemText(0))
-                self.assertIn("exact bank media", dialog.references.itemText(0))
+                self.assertIn("Original spoken line 1", dialog.references.itemText(0))
                 self.assertIn("1.950 s", dialog.references.itemText(1))
-                self.assertIn("story line", dialog.references.itemText(1))
+                self.assertIn("Original spoken line 2", dialog.references.itemText(1))
                 self.assertNotIn(
                     "raw-short-narrator-reference",
                     tuple(

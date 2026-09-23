@@ -936,7 +936,10 @@ class VoiceAssignmentComponent:
 
     def assignment_for(self, character: str) -> str | None:
         controller = self.controller
-        binding = controller.voice_library.binding(character)
+        binding = controller.voice_library.binding(
+            character,
+            variant_key=controller.voice_library.linked_variant_key(character),
+        )
         return str(voice_binding_source_id(binding)) if binding is not None else None
 
     def preview_choice(self, source_id: str, text: str) -> object:
@@ -1007,6 +1010,7 @@ class VoiceAssignmentComponent:
             voice_router.registry,
             character,
             source_id,
+            variant_key=controller.voice_library.linked_variant_key(character),
             method="manual",
             evidence={"selected_in": "live-voice-controls"},
             algorithm="live-voice-controls-v1",
@@ -1048,7 +1052,10 @@ class VoiceAssignmentComponent:
             updated_settings = controller.settings
         if commit_settings is not None:
             commit_settings(updated_settings)
-        controller.voice_library.clear(character)
+        controller.voice_library.clear(
+            character,
+            variant_key=controller.voice_library.linked_variant_key(character),
+        )
         voice_router.registry.assignments.pop(character_key, None)
         controller.settings = updated_settings
         if character_key == "narrator":

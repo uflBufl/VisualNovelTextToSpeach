@@ -77,7 +77,11 @@ from vntts.settings import AppSettings
 from vntts.speech_backend import SpeechBackendCapabilities
 from vntts.support import GenerationTimelineLog
 from vntts.voice_library import VoiceLibrary
-from vntts.voices import CharacterVoice, CharacterVoiceRegistry
+from vntts.voices import (
+    CharacterVoice,
+    CharacterVoiceRegistry,
+    registry_with_voice_library,
+)
 
 
 class StubTypedPlaybackBackend:
@@ -1701,6 +1705,28 @@ class MainTest(unittest.TestCase):
             "alba",
         )
         self.assertFalse(controller._offer_unknown_speaker_mapping("Selone"))
+
+    def test_live_voice_choice_for_linked_name_survives_registry_reload(self):
+        voice_root = TemporaryDirectory()
+        self.addCleanup(voice_root.cleanup)
+        library = VoiceLibrary(Path(voice_root.name) / "voices")
+        library.link_person("Rhiannon", "Aderyn")
+        controller = AppController(
+            AppSettings(speech_backend="pocket-tts"),
+            tts_factory=Mock(),
+            voice_library=library,
+        )
+        controller.live_reader = Mock(is_running=False)
+        controller.voice_router = Mock(registry=CharacterVoiceRegistry())
+
+        controller.assign_voice("Aderyn", "preset:alba")
+
+        self.assertIsNone(library.binding("Aderyn"))
+        self.assertEqual(controller.voice_assignment_for("Aderyn"), "preset:alba")
+        rebuilt = registry_with_voice_library(CharacterVoiceRegistry(), library)
+        self.assertEqual(rebuilt.resolve("Aderyn").speaker, "alba")
+        controller.clear_voice_assignment("Aderyn")
+        self.assertIsNone(library.binding("Aderyn", variant_key="story-name:aderyn"))
 
     def test_narrator_fallback_voice_and_force_live_are_independent(self):
         voice_root = TemporaryDirectory()

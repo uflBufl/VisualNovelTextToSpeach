@@ -462,6 +462,19 @@ def registry_with_voice_library(
             projected.assignment_names[key] = binding.role
             continue
         projected.set_assignment(binding.role, source_id)
+    for alias, canonical in library.person_aliases().items():
+        variant_key = library.linked_variant_key(alias)
+        binding = library.binding(alias, variant_key=variant_key)
+        if binding is None:
+            continue
+        source_id = sources.get((normalize_character_name(canonical), variant_key))
+        if binding.route == "narrator":
+            source_id = narrator_source
+        if binding.route == "live-fallback" or source_id is None:
+            projected.assignments[alias] = None
+            projected.assignment_names[alias] = alias
+        else:
+            projected.set_assignment(alias, source_id)
     return projected
 
 

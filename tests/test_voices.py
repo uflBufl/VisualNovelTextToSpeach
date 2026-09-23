@@ -55,6 +55,32 @@ class CharacterVoiceRegistryTest(unittest.TestCase):
                 (reference.read_bytes(),),
             )
 
+    def test_linked_child_name_keeps_its_runtime_voice(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            adult, child = root / "adult.wav", root / "child.wav"
+            for path in (adult, child):
+                with wave.open(str(path), "wb") as audio:
+                    audio.setparams((1, 2, 24_000, 0, "NONE", "not compressed"))
+                    audio.writeframes(
+                        (b"\x00\x00" if path == adult else b"\x01\x00") * 24_000
+                    )
+            registry = CharacterVoiceRegistry(
+                [
+                    CharacterVoice("Rhiannon", "adult", references=(adult,)),
+                    CharacterVoice("ChildVoice", "child", references=(child,)),
+                ]
+            )
+            library = VoiceLibrary(root / "library")
+            remember_voice_binding(library, registry, "Rhiannon", "character:rhiannon")
+            remember_voice_binding(library, registry, "Aderyn", "character:childvoice")
+            library.link_person("Rhiannon", "Aderyn")
+
+            projected = registry_with_voice_library(registry, library)
+
+            self.assertEqual(projected.resolve("Rhiannon").speaker, "adult")
+            self.assertEqual(projected.resolve("Aderyn").speaker, "child")
+
     def test_reference_snapshot_preserves_windows_control_bytes(self):
         with TemporaryDirectory() as directory:
             root = Path(directory).resolve()

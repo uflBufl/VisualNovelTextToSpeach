@@ -197,6 +197,82 @@ class VoiceLibraryTest(unittest.TestCase):
             self.assertIsNone(library.binding("Unknown"))
             self.assertFalse(library.clear("Unknown"))
 
+    def test_linked_person_shares_bindings_without_merging_variants(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            adult, child = root / "adult.wav", root / "child.wav"
+            write_wav(adult, b"\x00\x00")
+            write_wav(child, b"\x01\x00")
+            library = VoiceLibrary(root / "library")
+            adult_choice = library.discover("Rhiannon", adult, variant_key="adult")
+            child_choice = library.discover("Rhiannon", child, variant_key="child")
+            library.select(
+                "Rhiannon",
+                variant_key="adult",
+                route="voice",
+                source_sha256=adult_choice.sha256,
+            )
+            library.select(
+                "Rhiannon",
+                variant_key="child",
+                route="voice",
+                source_sha256=child_choice.sha256,
+            )
+
+            library.link_person("Rhiannon", "Aderyn")
+
+            self.assertEqual(library.canonical_role("Aderyn"), "Rhiannon")
+            self.assertIsNone(library.binding("Aderyn", variant_key="adult"))
+            self.assertIsNone(library.binding("Aderyn", variant_key="child"))
+            self.assertEqual(
+                library.binding("Rhiannon", variant_key="child").source_sha256,
+                child_choice.sha256,
+            )
+            self.assertTrue(library.unlink_person("Aderyn"))
+            self.assertIsNone(library.binding("Aderyn", variant_key="adult"))
+            self.assertEqual(
+                library.binding("Rhiannon", variant_key="adult").source_sha256,
+                adult_choice.sha256,
+            )
+
+    def test_linked_person_keeps_unqualified_story_name_bindings_separate(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            adult, child = root / "adult.wav", root / "child.wav"
+            write_wav(adult, b"\x00\x00")
+            write_wav(child, b"\x01\x00")
+            library = VoiceLibrary(root / "library")
+            adult_choice = library.discover("Rhiannon", adult, bind_if_missing=True)
+            child_choice = library.discover("Aderyn", child, bind_if_missing=True)
+            child_variant = library.discover("Aderyn", child, variant_key="child")
+            library.select(
+                "Aderyn",
+                variant_key="child",
+                route="voice",
+                source_sha256=child_variant.sha256,
+            )
+            library.link_person("Rhiannon", "Aderyn")
+
+            self.assertEqual(
+                library.binding("Rhiannon").source_sha256, adult_choice.sha256
+            )
+            self.assertEqual(library.linked_variant_key("Aderyn"), "story-name:aderyn")
+            self.assertIsNone(library.binding("Aderyn"))
+            self.assertEqual(
+                library.binding(
+                    "Aderyn", variant_key="story-name:aderyn"
+                ).source_sha256,
+                child_choice.sha256,
+            )
+            self.assertEqual(
+                library.binding("Aderyn", variant_key="child").source_sha256,
+                child_variant.sha256,
+            )
+            self.assertTrue(library.unlink_person("Aderyn"))
+            self.assertEqual(
+                library.binding("Aderyn").source_sha256, child_choice.sha256
+            )
+
     def test_composite_selection_keeps_all_selected_references_in_order(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)

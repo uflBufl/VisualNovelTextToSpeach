@@ -72,6 +72,12 @@ Planned implementation order after approval:
       generate a preview, save the 3.17-second candidate, reopen, and prepare a
       story. Gate: the saved choice remains selected and offline generation uses
       that exact reference; no automatic choice silently replaces it.
+- [ ] **Validate Rhiannon's playable references on Windows:** with extractor
+      commit `fbc38c2` installed, run a fresh voice import. Confirm her main-bank
+      Greeting (15.3 s) and Chitchat I (14.9 s) appear in Voices and Stories,
+      play the correct original, and can produce a preview and survive save/reopen.
+      The previous report cache must not hide them; reject clips with other
+      technical defects. Keep the 45.8-second Chitchat II optional, not a default.
 - [ ] **Validate the Windows preview startup repair:** Python 3.14 `Popen` does not
       retain a `_thread` handle, so the suspended owned MOSS process failed before
       model loading. The launcher now finds and resumes the process thread through
@@ -87,6 +93,10 @@ Planned implementation order after approval:
       `Keep automatic choice`, and `Change selected voice...` are clear;
       and an explicit choice survives reopening while an untouched recommendation
       remains automatic.
+- [ ] **Validate the no-choice voice route on Windows:** in a real story, return
+      from Inspect selected voice before playback, during a preview and after a
+      failed save. Confirm Back becomes enabled, no reference is silently saved,
+      and the player can pick narrator fallback or return later.
 
 ## P0 - Stabilize Windows audio and the OpenMOSS runtime
 
@@ -110,6 +120,21 @@ Planned implementation order after approval:
       native RSS, about 2.1 GB host RSS and about 5.8 GB minimum free RAM; fix GPU
       telemetry and measure the real game-plus-render headroom rather than inferring
       acceleration from configuration.
+
+## P1 - Link character identities across story names
+
+- [ ] **Validate manual person links on Windows:** link Aderyn to Rhiannon in
+      the Voice plan, inspect the affected-story preview, keep their adult/child
+      voices distinct in preparation and live reading, then unlink and verify
+      both prior choices survive. Test after save/reopen and a restarted import.
+- [ ] **Suggest cross-name links from game evidence:** evaluate stable game IDs,
+      portrait similarity across expressions, bank/source relationships and story
+      context; do not infer identity from a similar portrait or voice alone.
+      Auto-link only when independent, high-confidence evidence is unambiguous;
+      otherwise offer a suggestion the player can confirm or dismiss. Do not
+      auto-link Rhiannon/Aderyn merely because this one player knows the story;
+      current story rows lack a stable shared character ID and imported portrait
+      coverage is sparse.
 
 ## P1 - Reduce preparation and post-generation saving latency
 

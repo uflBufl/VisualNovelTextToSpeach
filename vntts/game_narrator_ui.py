@@ -102,18 +102,6 @@ def _display_role_name(role: str) -> str:
     return value
 
 
-def _candidate_origin_label(variant: dict[str, object]) -> str:
-    origin = variant.get("candidate_origin")
-    if origin == "exact_bank_unrouted_media":
-        return "exact bank media"
-    if origin == "story_line_route":
-        return "story line"
-    source_voice_ids = variant.get("source_voice_ids")
-    if isinstance(source_voice_ids, list):
-        return "exact bank media" if not source_voice_ids else "story line"
-    return "prepared reference"
-
-
 class GameNarratorDialog(QDialog):
     impactContextRequested = Signal()
     decoderProgress = Signal(str)
@@ -637,7 +625,11 @@ class GameNarratorDialog(QDialog):
                 for voice in self._catalog_registry.unique_voices()
                 if not voice.character.startswith(("Game narrator ", "Game voice "))
             ),
-            *((group.character for group in plan.groups) if plan is not None else ()),
+            *(
+                (group.routing_role or group.character for group in plan.groups)
+                if plan is not None
+                else ()
+            ),
             selected,
         }
         display_roles: dict[str, str] = {}
@@ -695,7 +687,13 @@ class GameNarratorDialog(QDialog):
         self.cancel_button.setText("Back to recovery choices")
         self.save_button.adjustSize()
         self.cancel_button.adjustSize()
-        if self.voice_library.binding(display_role) is None:
+        if (
+            self.voice_library.binding(
+                display_role,
+                variant_key=self.voice_library.linked_variant_key(display_role),
+            )
+            is None
+        ):
             with QSignalBlocker(self.source):
                 self.source.setCurrentIndex(self.source.findData("game"))
             self._source_changed()
@@ -740,7 +738,9 @@ class GameNarratorDialog(QDialog):
     def _saved_role_voice(
         self, role: str, narrator: bool
     ) -> tuple[VoiceBinding | None, str | None]:
-        saved_binding = self.voice_library.binding(role)
+        saved_binding = self.voice_library.binding(
+            role, variant_key=self.voice_library.linked_variant_key(role)
+        )
         saved_evidence = (
             saved_binding.provenance.get("evidence")
             if saved_binding is not None
@@ -803,7 +803,7 @@ class GameNarratorDialog(QDialog):
             (
                 group
                 for group in self._voice_context.groups
-                if normalize_character_name(group.character)
+                if normalize_character_name(group.routing_role or group.character)
                 == normalize_character_name(role)
             ),
             None,
@@ -814,7 +814,14 @@ class GameNarratorDialog(QDialog):
             self.role_summary.text()
             + f"\nPlanned: {self._source_label(group.source_id)}\nLines: {len(group.line_ids)}"
         )
-        self._show_verified_portrait(group.portrait_image, group.portrait_image_sha256)
+        if all(
+            value.portrait_image and value.portrait_image_sha256
+            for value in self._voice_context.groups
+            if normalize_character_name(value.character) != "narrator"
+        ):
+            self._show_verified_portrait(
+                group.portrait_image, group.portrait_image_sha256
+            )
 
     def _show_verified_portrait(
         self, portrait_image: str | None, portrait_image_sha256: str | None
@@ -996,7 +1003,9 @@ class GameNarratorDialog(QDialog):
         )
         role = self.role.currentText().strip()
         narrator = normalize_character_name(role) == "narrator"
-        binding = self.voice_library.binding(role)
+        binding = self.voice_library.binding(
+            role, variant_key=self.voice_library.linked_variant_key(role)
+        )
         evidence = binding.provenance.get("evidence") if binding is not None else None
         saved = (
             binding.source_id
@@ -1220,11 +1229,13 @@ class GameNarratorDialog(QDialog):
             proposed_library = self.voice_library.copy_to(
                 Path(temporary) / "proposed-voices"
             )
+            variant_key = proposed_library.linked_variant_key(self._saving_role)
             if mode == "automatic":
-                proposed_library.clear(self._saving_role)
+                proposed_library.clear(self._saving_role, variant_key=variant_key)
             elif mode == "narrator":
                 proposed_library.select(
                     self._saving_role,
+                    variant_key=variant_key,
                     route=(
                         "live-fallback"
                         if is_narrator(self._saving_role)
@@ -1255,6 +1266,7 @@ class GameNarratorDialog(QDialog):
                     registry,
                     self._saving_role,
                     source_id,
+                    variant_key=variant_key,
                     method="manual",
                     evidence={"selected_in": "voice-impact-preview"},
                     algorithm="voice-picker-v1",
@@ -1432,7 +1444,8 @@ class GameNarratorDialog(QDialog):
             (
                 group
                 for group in plan.groups
-                if normalize_character_name(group.character) == role
+                if normalize_character_name(group.routing_role or group.character)
+                == role
             ),
             None,
         )
@@ -1456,6 +1469,7 @@ class GameNarratorDialog(QDialog):
                         "voice_character": candidate.source_character,
                         "duration_seconds": candidate.reference_duration_seconds,
                         "source_voice_ids": list(candidate.source_voice_ids),
+                        "source_excerpts": list(candidate.source_excerpts),
                     },
                 )
             )
@@ -1497,20 +1511,29 @@ class GameNarratorDialog(QDialog):
                 if isinstance(duration, (int, float)) and not isinstance(duration, bool)
                 else "duration unavailable"
             )
-            origin = _candidate_origin_label(variant)
+            excerpts = variant.get("source_excerpts")
+            spoken_text = (
+                [
+                    (
+                        f"{value['title']}: {value.get('text') or ''}"
+                        if value.get("title")
+                        else str(value.get("text") or "").strip()
+                    )
+                    if isinstance(value, dict)
+                    else str(value).strip()
+                    for value in excerpts
+                ]
+                if isinstance(excerpts, list)
+                else []
+            )
+            transcript = "\n".join(value for value in spoken_text if value)
+            excerpt = transcript.replace("\n", " ")[:65] or "text unavailable"
             self.references.addItem(
-                f"Candidate {index} - {duration_label} - {origin}", source_id
+                f"Reference {index} - {duration_label} - {excerpt}", source_id
             )
             self.references.setItemData(
                 index - 1,
-                "\n".join(
-                    (
-                        f"Source: {variant.get('voice_character', source_id)}",
-                        f"Duration: {duration_label}",
-                        f"Origin: {origin}",
-                        f"Source ID: {source_id}",
-                    )
-                ),
+                transcript or "Transcript unavailable.",
                 Qt.ItemDataRole.ToolTipRole,
             )
             self._candidate_source_ids.add(source_id)
@@ -1759,13 +1782,16 @@ class GameNarratorDialog(QDialog):
         narrator = normalize_character_name(role) == "narrator"
         policy = self.source.currentData()
         if policy == "automatic":
-            self.voice_library.clear(role)
+            self.voice_library.clear(
+                role, variant_key=self.voice_library.linked_variant_key(role)
+            )
         else:
             remember_voice_binding(
                 self.voice_library,
                 self._catalog_registry,
                 role,
                 ("default" if policy == "narrator" else self.presets.currentData()),
+                variant_key=self.voice_library.linked_variant_key(role),
                 method="manual",
                 evidence={"selected_in": "voice-picker"},
                 algorithm="voice-picker-v1",

@@ -644,6 +644,65 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertNotIn("line:original", rhiannon.line_ids)
             self.assertTrue(VoicePlanStore(jobs).path_for(job).is_file())
 
+    def test_explicit_person_link_groups_story_names_without_portrait_inference(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            path = write_content(root / "content")
+            rows = [json.loads(line) for line in path.read_text().splitlines()]
+            next(row for row in rows if row.get("line_id") == "line:rhiannon:1")[
+                "voice_character"
+            ] = "Aderyn"
+            path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+            content = inspect_story_index(path)
+            jobs = PregenerationJobStore(root / "jobs")
+            job = jobs.create_or_resume(content, ("story",))
+            library = VoiceLibrary(root / "library")
+            manifest = write_manifest(root / "voices")
+            registry = CharacterVoiceRegistry.from_file(manifest)
+            remember_voice_binding(library, registry, "Rhiannon", "character:rhiannon")
+            library.discover(
+                "Aderyn",
+                manifest.parent / "references" / "centurion.wav",
+                bind_if_missing=True,
+            )
+            library.link_person("Rhiannon", "Aderyn")
+
+            plan = VoicePlanStore(jobs, voice_library=library).create(
+                job,
+                AppSettings(pocket_gated_model_accepted=True),
+                manifest_path=manifest,
+            )
+
+            groups = [value for value in plan.groups if value.character == "Rhiannon"]
+            self.assertEqual(
+                {group.routing_role for group in groups}, {"Aderyn", "Rhiannon"}
+            )
+            self.assertEqual(
+                next(
+                    group.source_id
+                    for group in groups
+                    if group.routing_role == "Aderyn"
+                ),
+                voice_binding_source_id(
+                    library.binding("Aderyn", variant_key="story-name:aderyn")
+                ),
+            )
+            self.assertEqual(
+                next(
+                    group.source_id
+                    for group in groups
+                    if group.routing_role == "Rhiannon"
+                ),
+                voice_binding_source_id(library.binding("Rhiannon")),
+            )
+            self.assertNotEqual(
+                *(
+                    group.source_id
+                    for group in groups
+                    if group.routing_role in {"Aderyn", "Rhiannon"}
+                ),
+            )
+
     def test_missing_named_role_and_unattributed_role_use_narrator_without_review(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1032,6 +1091,68 @@ class VoicePlanStoreTest(unittest.TestCase):
                 ],
                 ["Player candidate Rhiannon 1"],
             )
+
+    def test_player_import_preserves_original_spoken_text(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            manifest = write_player_candidate_manifest(
+                root / "player-voices", job.story_index_sha256
+            )
+            document = json.loads(manifest.read_text(encoding="utf-8"))
+            player = document[PLAYER_VOICE_CANDIDATES_FIELD]
+            player["schema_version"] = 3
+            for index, variant in enumerate(player["variants"], 1):
+                variant["source_excerpts"] = [
+                    {
+                        "line_id": f"line:source:{index}",
+                        "title": "Chitchat",
+                        "text": f"Original line {index}.",
+                    }
+                ]
+            manifest.write_text(json.dumps(document), encoding="utf-8")
+
+            plan = VoicePlanStore(jobs).create(
+                job,
+                AppSettings(pocket_gated_model_accepted=True),
+                manifest_path=manifest,
+            )
+
+            group = next(
+                value for value in plan.groups if value.character == "Rhiannon"
+            )
+            self.assertEqual(
+                group.candidate_inventory[0].source_excerpts,
+                ("Chitchat: Original line 1.",),
+            )
+
+    def test_player_import_skips_unbound_original_spoken_text(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            manifest = write_player_candidate_manifest(
+                root / "player-voices", job.story_index_sha256
+            )
+            document = json.loads(manifest.read_text(encoding="utf-8"))
+            player = document[PLAYER_VOICE_CANDIDATES_FIELD]
+            player["schema_version"] = 3
+            player["variants"][0]["source_excerpts"] = [
+                {"line_id": "wrong-line", "title": None, "text": "Wrong speech."}
+            ]
+            player["variants"][1]["source_excerpts"] = []
+            manifest.write_text(json.dumps(document), encoding="utf-8")
+
+            plan = VoicePlanStore(jobs).create(
+                job,
+                AppSettings(pocket_gated_model_accepted=True),
+                manifest_path=manifest,
+            )
+
+            group = next(
+                value for value in plan.groups if value.character == "Rhiannon"
+            )
+            self.assertEqual(len(group.candidate_inventory), 1)
+            self.assertEqual(group.candidate_inventory[0].source_excerpts, ())
 
     def test_player_import_still_rejects_changed_candidate_report(self):
         with TemporaryDirectory() as temporary_directory:

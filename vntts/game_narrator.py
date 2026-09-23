@@ -178,6 +178,7 @@ def bind_voice_library_selection(
         registry,
         target_character,
         source_id,
+        variant_key=library.linked_variant_key(target_character),
         method="manual",
         evidence={"selected_character": character},
         algorithm="voice-picker-v1",

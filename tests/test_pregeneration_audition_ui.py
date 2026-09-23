@@ -8,7 +8,8 @@ from unittest.mock import ANY, Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtGui import QPixmap  # noqa: E402
+from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 from vntts_artifacts.file_integrity import sha256_file  # noqa: E402
 
 from tests.test_pregeneration_audition import (  # noqa: E402
@@ -86,6 +87,66 @@ class VoiceAuditionPanelTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
+    def test_sparse_portraits_are_hidden_consistently(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            portrait = root / "portrait.png"
+            self.assertTrue(QPixmap(2, 2).save(str(portrait)))
+            group = replace(
+                group,
+                portrait_image=str(portrait),
+                portrait_image_sha256=sha256_file(portrait),
+            )
+            plan = replace(plan, groups=(group,))
+            panel = VoiceAuditionPanel(
+                VoiceDecisionStore(root / "decisions.json"),
+                preview_service=Mock(),
+            )
+            self.addCleanup(panel.deleteLater)
+            panel.start(plan, group_id=group.group_id)
+            self.assertTrue(panel.portrait_image.isVisible())
+            panel.cancel()
+
+            sparse, other = with_second_group(plan, group)
+            sparse = replace(
+                sparse,
+                groups=(
+                    group,
+                    replace(other, portrait_image=None, portrait_image_sha256=None),
+                ),
+            )
+            panel.start(sparse, group_id=group.group_id)
+            self.assertFalse(panel.portrait_image.isVisible())
+            panel.cancel()
+
+    def test_original_reference_transcript_is_visible_without_source_id(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            candidate = replace(
+                group.candidates[0],
+                source_character="Player candidate Rhiannon abcdef123456",
+                source_excerpts=("Greeting: Good morning, traveller.",),
+            )
+            group = replace(
+                group,
+                candidates=(candidate,),
+                candidate_inventory=(candidate,),
+            )
+            plan = replace(plan, groups=(group,))
+            panel = VoiceAuditionPanel(
+                VoiceDecisionStore(root / "decisions.json"),
+                preview_service=Mock(),
+            )
+            self.addCleanup(panel.deleteLater)
+            panel.start(plan, group_id=group.group_id)
+
+            self.assertIn("Good morning", panel.voice_reference.currentText())
+            self.assertNotIn("abcdef123456", panel.voice_reference.currentText())
+            self.assertIn("Greeting: Good morning", panel.a_reason.text())
+            panel.cancel()
+
     def test_retry_after_shutdown_gets_a_usable_preview_service(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -162,14 +223,10 @@ class VoiceAuditionPanelTest(unittest.TestCase):
 
             self.assertTrue(panel.choose_all_button.isHidden())
             self.assertEqual(panel.a_play.text(), "Generate preview")
-            self.assertEqual(panel.a_use.text(), f"Use {candidate.source_character}")
+            self.assertEqual(panel.a_use.text(), "Use this voice")
             self.assertEqual(panel.voice_reference.count(), 2)
-            self.assertEqual(
-                panel.voice_reference.currentText(), candidate.source_character
-            )
-            self.assertEqual(
-                panel.voice_reference.toolTip(), candidate.source_character
-            )
+            self.assertIn("Reference 1 - 1.2 s", panel.voice_reference.currentText())
+            self.assertIn("text unavailable", panel.voice_reference.toolTip())
             self.assertTrue(panel.auto_button.isHidden())
             self.assertIn("1 original reference · 1.2 s total", panel.a_reason.text())
             self.assertIn("future speech and preparation", panel.scope.text())
@@ -179,10 +236,8 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             )
             alternative = unresolved.candidate_inventory[1]
             panel.voice_reference.setCurrentIndex(1)
-            self.assertEqual(
-                panel.voice_reference.currentText(), alternative.source_character
-            )
-            self.assertIn(alternative.source_character, panel.a_box.title())
+            self.assertIn("Reference 2", panel.voice_reference.currentText())
+            self.assertEqual(panel.a_box.title(), "Original game reference")
             panel.a_original.click()
             preview_service.reference_audio.assert_called_once_with(
                 plan, group, alternative.source_id
@@ -231,10 +286,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.application.processEvents()
 
             self.assertTrue(panel.a_use.isEnabled())
-            self.assertEqual(
-                panel.voice_reference.currentText(),
-                group.candidates[0].source_character,
-            )
+            self.assertIn("Reference 1", panel.voice_reference.currentText())
             self.assertEqual(preview_service.generate.call_count, 1)
             self.assertEqual(len(panel._displayed), 1)
             panel.a_play.click()
@@ -901,7 +953,9 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             pool.tasks.pop().run()
             self.application.processEvents()
 
-            self.assertEqual(panel.voice_reference.currentText(), "Narrator fallback")
+            self.assertTrue(
+                panel.voice_reference.currentText().startswith("Narrator fallback")
+            )
             self.assertEqual(panel.a_box.title(), "Original reference for narrator")
             self.assertTrue(panel.a_use.isEnabled())
             self.assertFalse(panel.a_original.isEnabled())
@@ -1095,6 +1149,147 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             self.assertIsNone(dialog._prepared_voice_manifest)
             self.assertIsNone(dialog._prepared_voice_job)
             self.assertIsNone(dialog.generation_input())
+
+    def test_inspector_back_without_voice_choice_remains_enabled(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            dialog, _pool, plan, group, decisions, _store = (
+                self._inspected_voice_dialog(root)
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog._voice_plan = plan
+            dialog._show_voice_confirmation(plan)
+            for row in range(dialog.voice_routes.count()):
+                if (
+                    dialog.voice_routes.item(row).data(Qt.ItemDataRole.UserRole)
+                    == group.character
+                ):
+                    dialog.voice_routes.setCurrentRow(row)
+                    break
+            dialog._inspect_character_voice()
+            self.assertTrue(dialog.inspecting_voice_plan)
+
+            dialog.cancel_button.click()
+
+            self.assertFalse(dialog.inspecting_voice_plan)
+            self.assertFalse(dialog.auditioning_voices)
+            self.assertTrue(dialog.cancel_button.isEnabled())
+            self.assertFalse(dialog.voice_confirmation.isHidden())
+            self.assertEqual(dialog.voice_plan(), plan)
+            self.assertIsNone(
+                decisions.choice_for(group.group_id, group.decision_context_sha256)
+            )
+
+    def test_inspector_back_during_preview_returns_after_worker_stops(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            dialog, pool, plan, group, decisions, _store = self._inspected_voice_dialog(
+                root
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog._voice_plan = plan
+            dialog._show_voice_confirmation(plan)
+            for row in range(dialog.voice_routes.count()):
+                if (
+                    dialog.voice_routes.item(row).data(Qt.ItemDataRole.UserRole)
+                    == group.character
+                ):
+                    dialog.voice_routes.setCurrentRow(row)
+                    break
+            dialog._inspect_character_voice()
+            dialog.voice_panel.a_play.click()
+            self.assertTrue(pool.tasks)
+
+            dialog.cancel_button.click()
+            self.assertFalse(dialog.cancel_button.isEnabled())
+            pool.tasks.pop().run()
+            self.application.processEvents()
+
+            self.assertTrue(dialog.cancel_button.isEnabled())
+            self.assertFalse(dialog.inspecting_voice_plan)
+            self.assertIsNone(
+                decisions.choice_for(group.group_id, group.decision_context_sha256)
+            )
+
+    def test_voice_plan_can_link_character_names_without_choosing_a_voice(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            dialog, pool, plan, group, _decisions, _store = (
+                self._inspected_voice_dialog(root)
+            )
+            self.addCleanup(dialog.deleteLater)
+            aderyn = replace(
+                group,
+                group_id="a" * 64,
+                character="Aderyn",
+                routing_role="Aderyn",
+                line_ids=("line:aderyn",),
+            )
+            plan = replace(plan, groups=(*plan.groups, aderyn))
+            dialog._voice_plan = plan
+            dialog._job = Mock(job_id="job", selected_story_ids=("story",))
+            dialog._show_voice_confirmation(plan)
+            first_item = dialog.voice_routes.item(0)
+            original_role = first_item.data(Qt.ItemDataRole.UserRole)
+            first_item.setData(Qt.ItemDataRole.UserRole, "Narrator")
+            dialog.voice_routes.setCurrentRow(0)
+            dialog._update_identity_actions()
+            self.assertFalse(dialog.link_identity.isEnabled())
+            first_item.setData(Qt.ItemDataRole.UserRole, original_role)
+            for row in range(dialog.voice_routes.count()):
+                item = dialog.voice_routes.item(row)
+                if item.data(Qt.ItemDataRole.UserRole) == "Aderyn":
+                    dialog.voice_routes.setCurrentRow(row)
+                    break
+            with (
+                patch(
+                    "vntts.pregeneration_ui.QInputDialog.getItem",
+                    return_value=("Rhiannon", True),
+                ),
+                patch(
+                    "vntts.pregeneration_ui.QMessageBox.question",
+                    return_value=QMessageBox.StandardButton.Yes,
+                ),
+            ):
+                dialog.link_identity.click()
+
+            self.assertEqual(dialog.voice_library.canonical_role("Aderyn"), "Rhiannon")
+            self.assertTrue(dialog.planning_voices)
+            self.assertEqual(len(pool.tasks), 1)
+
+    def test_voice_plan_hides_icons_when_portrait_coverage_is_sparse(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            dialog, _pool, plan, group, _decisions, _store = (
+                self._inspected_voice_dialog(root)
+            )
+            self.addCleanup(dialog.deleteLater)
+            portrait = root / "portrait.png"
+            self.assertTrue(QPixmap(2, 2).save(str(portrait)))
+            group = replace(
+                group,
+                portrait_image=str(portrait),
+                portrait_image_sha256=sha256_file(portrait),
+            )
+            plan = replace(plan, groups=(group,))
+            dialog._show_voice_confirmation(plan)
+            self.assertFalse(dialog.voice_routes.item(0).icon().isNull())
+
+            other = replace(
+                group,
+                group_id="b" * 64,
+                character="Other character",
+                routing_role="Other character",
+                portrait_image=None,
+                portrait_image_sha256=None,
+            )
+            dialog._show_voice_confirmation(replace(plan, groups=(group, other)))
+            self.assertTrue(
+                all(
+                    dialog.voice_routes.item(row).icon().isNull()
+                    for row in range(dialog.voice_routes.count())
+                )
+            )
 
     def test_inspected_automatic_voice_can_be_saved_and_replanned(self):
         with TemporaryDirectory() as temporary_directory:

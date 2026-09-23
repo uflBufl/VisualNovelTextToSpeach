@@ -75,6 +75,7 @@ GroupValue: TypeAlias = tuple[
     StoryIndexRecord,
     str,
     VariantEvidence,
+    str,
     str | None,
     str | None,
     str | None,
@@ -103,12 +104,12 @@ class Cancellation(Protocol):
     def is_set(self) -> bool: ...
 
 
-voice_plan_schema_version = 4
+voice_plan_schema_version = 5
 voice_decisions_schema_version = 1
 PLAYER_VOICE_CANDIDATES_FIELD = "vntts.player.voice_candidates"
 PLAYER_VOICE_CANDIDATES_SCHEMA = "vntts.player-voice-candidates"
-PLAYER_VOICE_CANDIDATES_VERSION = 2
-PLAYER_VOICE_CANDIDATES_VERSIONS = frozenset({1, PLAYER_VOICE_CANDIDATES_VERSION})
+PLAYER_VOICE_CANDIDATES_VERSION = 3
+PLAYER_VOICE_CANDIDATES_VERSIONS = frozenset({1, 2, PLAYER_VOICE_CANDIDATES_VERSION})
 _CLEAR_WINNER_SCORE = 80
 _CLEAR_WINNER_MARGIN = 20
 _MAX_AUDITION_CANDIDATES = 3
@@ -177,10 +178,16 @@ class VoiceCandidate:
     source_voice_ids: tuple[str, ...] = ()
     source_line_ids: tuple[str, ...] = ()
     reference_duration_seconds: float | None = None
+    source_excerpts: tuple[str, ...] = ()
 
     def to_document(self) -> JsonObject:
         value = asdict(self)
-        for field in ("reference_sha256s", "source_voice_ids", "source_line_ids"):
+        for field in (
+            "reference_sha256s",
+            "source_voice_ids",
+            "source_line_ids",
+            "source_excerpts",
+        ):
             value[field] = list(value[field])
         return value
 
@@ -210,6 +217,8 @@ class VoiceGroup:
     anchor_source_id: str | None = None
     portrait_image: str | None = None
     portrait_image_sha256: str | None = None
+    routing_role: str | None = None
+    variant_key: str | None = None
 
     def to_document(self) -> JsonObject:
         value = asdict(self)
@@ -438,6 +447,7 @@ def _voice_library_selection(
     references = selected.reference_sha256s if selected is not None else ()
     return VoiceSelection(
         role=group.character,
+        variant_key=group.variant_key,
         route="narrator" if source_id == default_voice_choice_id else "voice",
         source_sha256s=references,
         source_id=None
@@ -567,25 +577,35 @@ class VoicePlanStore:
         controls_sha256 = _digest(controls)
         portrait_snapshots: dict[str, PortraitSnapshot] = {}
         grouped: dict[str, list[GroupValue]] = {}
-        assignment_cache: dict[str, str | None] = {}
+        role_cache: dict[str, tuple[str, str | None, str | None]] = {}
         for line_id in job.selected_line_ids:
             record = records[line_id]
             if not record.speakable or _has_authoritative_source_audio(
                 record, source_completion, authoritative_source_lines
             ):
                 continue
-            character = synthesis_character_for_line(
+            routing_role = synthesis_character_for_line(
                 record.speaker, record.voice_character
             )
+            role_values = role_cache.get(routing_role)
+            if role_values is None:
+                character = routing_role
+                variant_key = None
+                if self.voice_library is not None:
+                    character = self.voice_library.canonical_role(routing_role)
+                    variant_key = self.voice_library.linked_variant_key(routing_role)
+                assignment_source = _effective_assignment_source(
+                    settings,
+                    routing_role,
+                    library=self.voice_library,
+                    variant_key=variant_key,
+                )
+                role_values = character, variant_key, assignment_source
+                role_cache[routing_role] = role_values
+            character, variant_key, assignment_source = role_values
             evidence = _variant_evidence(record)
             line_source = _bound_source_for_record(record, queue_bindings)
-            if character not in assignment_cache:
-                assignment_cache[character] = _effective_assignment_source(
-                    settings,
-                    character,
-                    library=self.voice_library,
-                )
-            bound_source = assignment_cache[character] or line_source
+            bound_source = assignment_source or line_source
             portrait_image, portrait_image_sha256 = _portrait_snapshot(
                 Path(job.story_index).expanduser().resolve().parent,
                 evidence[0],
@@ -593,6 +613,7 @@ class VoicePlanStore:
             )
             identity = [
                 normalize_character_name(character),
+                normalize_character_name(routing_role),
                 line_source,
             ]
             group_id = _digest(identity)
@@ -601,7 +622,8 @@ class VoicePlanStore:
                     record,
                     character,
                     evidence,
-                    None,
+                    routing_role,
+                    variant_key,
                     bound_source,
                     portrait_image,
                     portrait_image_sha256,
@@ -677,7 +699,11 @@ class VoicePlanStore:
         if ignore_decisions:
             reset_roles = {
                 normalize_character_name(
-                    synthesis_character_for_line(record.speaker, record.voice_character)
+                    self.voice_library.canonical_role(
+                        synthesis_character_for_line(
+                            record.speaker, record.voice_character
+                        )
+                    )
                 )
                 for record in records
                 if record.speakable
@@ -752,24 +778,25 @@ class VoicePlanStore:
         records = tuple(value[0] for value in values)
         character = values[0][1]
         portrait, source_bank, source_voice_id = values[0][2]
-        variant_key = values[0][3]
+        routing_role = values[0][3]
+        variant_key = values[0][4]
         if any(value[2][1] != source_bank for value in values):
             source_bank = None
         if any(value[2][2] != source_voice_id for value in values):
             source_voice_id = None
-        bound_source = values[0][4]
-        portrait_value = next((value for value in values if value[5]), values[0])
+        bound_source = values[0][5]
+        portrait_value = next((value for value in values if value[6]), values[0])
         portrait = portrait_value[2][0]
-        portrait_image, portrait_image_sha256 = portrait_value[5:7]
+        portrait_image, portrait_image_sha256 = portrait_value[6:8]
         speakers = tuple(dict.fromkeys(record.speaker for record in records))
         assignment_source = _effective_assignment_source(
             settings,
-            character,
+            routing_role,
             library=self.voice_library,
             variant_key=variant_key,
         )
         candidate_inventory = _candidate_inventory(
-            character,
+            routing_role,
             bound_source,
             settings,
             registry,
@@ -999,6 +1026,8 @@ class VoicePlanStore:
             anchor_source_id=anchor_source_id,
             portrait_image=portrait_image,
             portrait_image_sha256=portrait_image_sha256,
+            routing_role=routing_role,
+            variant_key=variant_key,
         )
 
 
@@ -1355,6 +1384,10 @@ def _ranked_candidate(
         source_voice_ids=_text_values(variant.get("source_voice_ids")),
         source_line_ids=_text_values(variant.get("source_line_ids")),
         reference_duration_seconds=_reference_duration_seconds(voice.references),
+        source_excerpts=tuple(
+            f"{value['title']}: {value['text']}" if value["title"] else value["text"]
+            for value in variant.get("source_excerpts", ())
+        ),
     )
 
 
@@ -1476,6 +1509,8 @@ def _validate_player_voice_variant(variant: object, index: int, version: int) ->
     }
     if version >= 2:
         fields.add("portrait_image_sha256")
+    if version >= 3:
+        fields.add("source_excerpts")
     if (
         not isinstance(variant, dict)
         or not fields <= set(variant)
@@ -1537,6 +1572,22 @@ def _validate_player_voice_variant(variant: object, index: int, version: int) ->
             "candidate_origin",
             variant.get("candidate_origin")
             in {None, "exact_bank_unrouted_media", "story_line_route"},
+        ),
+        (
+            "source_excerpts",
+            version < 3
+            or isinstance(variant.get("source_excerpts"), list)
+            and isinstance(variant.get("source_line_ids"), list)
+            and all(
+                isinstance(value, dict)
+                and set(value) == {"line_id", "title", "text"}
+                and isinstance(value["line_id"], str)
+                and value["line_id"] in variant["source_line_ids"]
+                and (value["title"] is None or isinstance(value["title"], str))
+                and isinstance(value["text"], str)
+                and bool(value["text"].strip())
+                for value in variant["source_excerpts"]
+            ),
         ),
     )
     invalid = next((field for field, valid in checks if not valid), None)
