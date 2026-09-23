@@ -3,6 +3,7 @@ import os
 from collections import OrderedDict
 from hashlib import blake2b
 from pathlib import Path
+from stat import S_ISREG
 from time import time_ns
 from typing import Generic, TypeAlias, TypeVar
 
@@ -121,13 +122,7 @@ class PersistentAudioCache:
         return self.directory / f"{key}.npy"
 
     def _touch_newest(self, path: Path) -> None:
-        newest = max(
-            (
-                candidate.stat().st_mtime_ns
-                for candidate in self.directory.glob("*.npy")
-            ),
-            default=0,
-        )
+        newest = max((recency[0] for _, recency in self._regular_files()), default=0)
         timestamp = max(time_ns(), newest + 1_000_000)
         try:
             os.utime(path, ns=(timestamp, timestamp), follow_symlinks=False)
@@ -137,18 +132,22 @@ class PersistentAudioCache:
             pass
 
     def _prune(self) -> None:
-        files = sorted(
-            self.directory.glob("*.npy"),
-            key=_cache_entry_recency,
-            reverse=True,
-        )
-        for path in files[self.max_entries :]:
+        files = sorted(self._regular_files(), key=lambda item: item[1], reverse=True)
+        for path, _ in files[self.max_entries :]:
             try:
                 path.unlink()
             except OSError:
                 pass
 
-
-def _cache_entry_recency(path: Path) -> tuple[int, int, str]:
-    entry = path.stat(follow_symlinks=False)
-    return entry.st_mtime_ns, entry.st_ctime_ns, path.name
+    def _regular_files(self) -> list[tuple[Path, tuple[int, int, str]]]:
+        files: list[tuple[Path, tuple[int, int, str]]] = []
+        for path in self.directory.glob("*.npy"):
+            try:
+                metadata = path.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            if S_ISREG(metadata.st_mode):
+                files.append(
+                    (path, (metadata.st_mtime_ns, metadata.st_ctime_ns, path.name))
+                )
+        return files

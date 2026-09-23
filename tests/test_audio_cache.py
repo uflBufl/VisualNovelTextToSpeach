@@ -1,5 +1,6 @@
 import unittest
 from pathlib import Path
+from stat import S_IFREG
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -105,6 +106,7 @@ class PersistentAudioCacheTest(unittest.TestCase):
 
             def tied_modified_times(path, *, follow_symlinks=True):
                 return SimpleNamespace(
+                    st_mode=S_IFREG,
                     st_mtime_ns=0,
                     st_ctime_ns=creation_times[path.stem],
                 )
@@ -142,6 +144,22 @@ class PersistentAudioCacheTest(unittest.TestCase):
             (directory / "linked.npy").symlink_to(outside)
 
             self.assertIsNone(PersistentAudioCache(directory).get("linked"))
+
+    def test_stray_symlink_does_not_break_cache_or_count_toward_limit(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            cache = PersistentAudioCache(root, max_entries=2)
+            cache.put("one", np.array([0.1], dtype=np.float32))
+            (root / "broken.npy").symlink_to(root / "missing.npy")
+
+            np.testing.assert_allclose(cache.get("one"), [0.1])
+            self.assertIsNotNone(cache.put("two", np.array([0.2], dtype=np.float32)))
+            self.assertIsNotNone(cache.put("three", np.array([0.3], dtype=np.float32)))
+
+            self.assertEqual(
+                {path.stem for path in root.glob("*.npy") if not path.is_symlink()},
+                {"two", "three"},
+            )
 
 
 if __name__ == "__main__":
