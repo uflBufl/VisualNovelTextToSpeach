@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol, TypeAlias, TypedDict, TypeGuard
@@ -185,6 +186,7 @@ def _in_use(generation: Path) -> bool:
         return True
     if not users.exists():
         return False
+    max_pid = 0xFFFFFFFF if sys.platform == "win32" else 0x7FFFFFFF
     for path in users.iterdir():
         record = read_record(path)
         parent, children = record.get("parent_pid"), record.get("children")
@@ -193,7 +195,7 @@ def _in_use(generation: Path) -> bool:
         if record.get("launching") is not False or not isinstance(children, list):
             return True
         if any(
-            type(pid) is not int or not 0 < pid <= 0x7FFFFFFF
+            type(pid) is not int or not 0 < pid <= max_pid
             for pid in [parent, *children]
         ):
             return True

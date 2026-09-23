@@ -134,6 +134,24 @@ class RuntimeInstallationTest(unittest.TestCase):
             cleanup_managed_runtimes("pocket-tts", new[0])
         self.assertFalse(old[0].exists())
 
+    def test_dead_windows_dword_pid_does_not_hold_runtime(self):
+        old = self.prepared_runtime()
+        use = claim_runtime("pocket-tts", old[0])
+        use.document["parent_pid"] = 0x80000000
+        use._save()
+        self.next_recipe()
+        new = self.prepared_runtime()
+
+        with (
+            patch("sys.platform", "win32"),
+            patch(
+                "vntts.runtime_ownership.inspect_process_status", return_value="dead"
+            ),
+        ):
+            cleanup_managed_runtimes("pocket-tts", new[0])
+
+        self.assertFalse(old[0].exists())
+
     def test_failed_repair_keeps_previous_selection_and_removes_incomplete_copy(self):
         old = self.prepared_runtime()
         selected = old[0].parents[2] / "verified.json"
