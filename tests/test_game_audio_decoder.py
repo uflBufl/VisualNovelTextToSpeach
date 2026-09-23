@@ -122,6 +122,7 @@ class GameAudioDecoderTest(unittest.TestCase):
         finally:
             timer.cancel()
 
+    @unittest.skipIf(sys.platform == "win32", "POSIX process groups require POSIX")
     def test_posix_cleanup_stays_bounded_after_sigkill(self):
         process = Mock(pid=42)
         process.poll.return_value = None
@@ -131,7 +132,7 @@ class GameAudioDecoderTest(unittest.TestCase):
         )
         with (
             patch.object(decoder.os, "name", "posix"),
-            patch.object(decoder.os, "killpg", create=True) as killpg,
+            patch.object(decoder.os, "killpg") as killpg,
         ):
             decoder._stop_decoder_process(process)
 
