@@ -69,6 +69,21 @@ class MemoryOpener:
 
 
 class ModelAssetManagerTest(unittest.TestCase):
+    def test_checksum_manifest_rejects_model_url_without_filename(self):
+        asset = ModelAsset("empty", ("https://example.invalid/",))
+        with self.assertRaisesRegex(ModelIntegrityError, "no filename"):
+            ModelAssetManager._validate_checksum_manifest(
+                {"version": 1, "model": "empty", "files": {"": {}}},
+                "empty",
+                asset,
+            )
+
+        with TemporaryDirectory() as temporary_directory:
+            manager = ModelAssetManager(temporary_directory)
+            with patch.object(manager, "_content_length", side_effect=AssertionError):
+                with self.assertRaisesRegex(ModelIntegrityError, "no filename"):
+                    manager.download("empty", asset=asset)
+
     def test_configures_private_huggingface_model_cache(self):
         with TemporaryDirectory() as temporary_directory:
             manager = ModelAssetManager(storage_root=temporary_directory)

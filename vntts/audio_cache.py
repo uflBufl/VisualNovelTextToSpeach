@@ -16,6 +16,13 @@ CacheKey = TypeVar("CacheKey")
 CacheValue = TypeVar("CacheValue")
 
 
+def _prepared_audio(value: object) -> AudioArray | None:
+    audio: AudioArray = np.atleast_1d(np.asarray(value, dtype=np.float32).squeeze())
+    if audio.ndim not in {1, 2} or audio.size == 0 or not np.all(np.isfinite(audio)):
+        return None
+    return audio
+
+
 class BoundedCache(Generic[CacheKey, CacheValue]):
     """Small least-recently-used cache shared by speech backends."""
 
@@ -77,14 +84,8 @@ class PersistentAudioCache:
         try:
             with path.open("rb") as source:
                 loaded = np.load(source, allow_pickle=False)
-            audio: AudioArray = np.atleast_1d(
-                np.asarray(loaded, dtype=np.float32).squeeze()
-            )
-            if (
-                audio.ndim not in {1, 2}
-                or audio.size == 0
-                or not np.all(np.isfinite(audio))
-            ):
+            audio = _prepared_audio(loaded)
+            if audio is None:
                 return None
             self._touch_newest(path)
             return audio
@@ -94,14 +95,8 @@ class PersistentAudioCache:
     def put(self, key: object, audio: object) -> Path | None:
         if self.max_entries == 0:
             return None
-        prepared: AudioArray = np.atleast_1d(
-            np.asarray(audio, dtype=np.float32).squeeze()
-        )
-        if (
-            prepared.ndim not in {1, 2}
-            or prepared.size == 0
-            or not np.all(np.isfinite(prepared))
-        ):
+        prepared = _prepared_audio(audio)
+        if prepared is None:
             return None
         path = self._path_for_key(key)
         if path is None:

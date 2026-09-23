@@ -48,6 +48,7 @@ from vntts.generated_audio import (
     PlaybackStatus,
     PreparedGeneratedAudio,
     PreparedSourceAudioPassThrough,
+    RouteDecision,
     SourceAudioRoute,
 )
 from vntts.history import DialogueHistory
@@ -256,15 +257,7 @@ def _is_story_cursor(value: object) -> TypeGuard[_StoryCursor]:
 def _diagnostic_route_metrics(value: object) -> _DiagnosticRouteMetrics | None:
     if isinstance(
         value,
-        (
-            GeneratedAudioRoute,
-            PendingGeneratedAudioRoute,
-            LiveFallbackRoute,
-            SourceAudioRoute,
-            LiveTTSRoute,
-            AudioEventOmissionRoute,
-            PreparedPlayback,
-        ),
+        (RouteDecision, PreparedPlayback),
     ):
         trace = getattr(value, "trace", None)
         return _RouteDiagnosticMetrics(
@@ -3077,18 +3070,7 @@ class AppController:
                     audio,
                     playback_guard=lambda: reader.wait_until_playable(chunk),
                 )
-                if callable(play_route)
-                and isinstance(
-                    audio,
-                    (
-                        GeneratedAudioRoute,
-                        PendingGeneratedAudioRoute,
-                        LiveFallbackRoute,
-                        SourceAudioRoute,
-                        LiveTTSRoute,
-                        AudioEventOmissionRoute,
-                    ),
-                )
+                if callable(play_route) and isinstance(audio, RouteDecision)
                 else None
             )
             if (
@@ -3133,22 +3115,15 @@ class AppController:
                 reader.seal_generation(chunk.generation)
             underflowed = outcome.underflowed
             generation_limited = outcome.generation_limited
-            outcome_name = (
-                outcome.status.value
-                if outcome is not None
-                else "completed"
-                if result
-                else "interrupted"
-            )
             playback_telemetry = {
-                "outcome": outcome_name,
+                "outcome": outcome.status.value,
                 "underflowed": underflowed,
                 "generation_limited": generation_limited,
-                "synthesis_ms": outcome.synthesis_ms if outcome else None,
-                "playback_ms": outcome.playback_ms if outcome else None,
-                "first_audio_ms": outcome.first_audio_ms if outcome else None,
-                "cache_source": outcome.cache_source if outcome else None,
-                "effective_source": outcome.audio_source if outcome else None,
+                "synthesis_ms": outcome.synthesis_ms,
+                "playback_ms": outcome.playback_ms,
+                "first_audio_ms": outcome.first_audio_ms,
+                "cache_source": outcome.cache_source,
+                "effective_source": outcome.audio_source,
                 "source_audio_lead_ms": source_audio_lead_ms,
                 "chunk_id": chunk.chunk_id,
                 "chunk_ordinal": chunk.ordinal,
@@ -3160,16 +3135,10 @@ class AppController:
                     chunk.generation,
                     monotonic(),
                     **playback_telemetry,
-                    source_sample_rate=(
-                        outcome.source_sample_rate if outcome else None
-                    ),
-                    playback_sample_rate=(
-                        outcome.playback_sample_rate if outcome else None
-                    ),
-                    sample_count=(outcome.sample_count if outcome else None),
-                    expected_playback_ms=(
-                        outcome.expected_playback_ms if outcome else None
-                    ),
+                    source_sample_rate=outcome.source_sample_rate,
+                    playback_sample_rate=outcome.playback_sample_rate,
+                    sample_count=outcome.sample_count,
+                    expected_playback_ms=outcome.expected_playback_ms,
                 )
                 self.pipeline_event_handler(
                     "playback-outcome",
@@ -3179,7 +3148,7 @@ class AppController:
                 )
             except Exception as error:
                 self.error_handler(error)
-            if outcome is not None and outcome.status is PlaybackStatus.FAILED:
+            if outcome.status is PlaybackStatus.FAILED:
                 raise AudioPlaybackError(outcome.error or "Audio playback failed")
             if generation_limited:
                 self.status_handler(
@@ -3496,21 +3465,7 @@ class AppController:
     def _build_audio_route_trace(
         self, chunk: SpeechChunk, prepared: object
     ) -> AudioRouteTrace:
-        route = (
-            prepared.trace
-            if isinstance(
-                prepared,
-                (
-                    SourceAudioRoute,
-                    GeneratedAudioRoute,
-                    PendingGeneratedAudioRoute,
-                    LiveFallbackRoute,
-                    LiveTTSRoute,
-                    AudioEventOmissionRoute,
-                ),
-            )
-            else None
-        )
+        route = prepared.trace if isinstance(prepared, RouteDecision) else None
         if route is None:
             line, match_result = self._resolve_trace_line(chunk)
             if not isinstance(prepared, PreparedPlayback):
