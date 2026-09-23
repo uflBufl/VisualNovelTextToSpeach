@@ -720,6 +720,20 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                         target_story_index=job.story_index,
                     )
 
+                    cache = catalog.parent / "playable-voice-roles.json"
+                    saved_roles = json.loads(cache.read_text(encoding="utf-8"))
+                    saved_roles["roles"].append("")
+                    cache.write_text(json.dumps(saved_roles), encoding="utf-8")
+
+                    with patch(
+                        "vntts.game_content_importer.load_story_index_document",
+                        side_effect=AssertionError("reference index was reparsed"),
+                    ):
+                        self.assertEqual(
+                            importer.prepare_voice_candidates(job),
+                            root / "manifest.json",
+                        )
+
                     catalog.write_text("broken catalog", encoding="utf-8")
                     with self.assertRaises(GameContentImportError):
                         importer.prepare_voice_candidates(job)

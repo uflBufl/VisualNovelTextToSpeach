@@ -2969,6 +2969,7 @@ class OfflineAudioPreparationDialog(QDialog):
     def _create_voice_plan(
         self, job: PregenerationJob, ignore_decisions: bool = False
     ) -> VoicePlan:
+        started, cpu_started = monotonic(), process_time()
         if self._prepared_voice_job != job.job_id:
             self._prepared_voice_manifest = None
             self._prepared_voice_job = job.job_id
@@ -2990,13 +2991,27 @@ class OfflineAudioPreparationDialog(QDialog):
                 or find_default_voice_manifest()
             )
             self._prepared_voice_manifest = manifest
-        return self.voice_plan_store.create(
+        record_background_operation(
+            "pregeneration-voice-plan-candidate-preparation",
+            (monotonic() - started) * 1000,
+            "complete",
+            cpu_ms=(process_time() - cpu_started) * 1000,
+        )
+        started, cpu_started = monotonic(), process_time()
+        plan = self.voice_plan_store.create(
             job,
             resolve_pregeneration_settings(self.settings),
             manifest_path=manifest,
             cancellation=self.voice_cancel_event,
             ignore_decisions=ignore_decisions,
         )
+        record_background_operation(
+            "pregeneration-voice-plan-store",
+            (monotonic() - started) * 1000,
+            "complete",
+            cpu_ms=(process_time() - cpu_started) * 1000,
+        )
+        return plan
 
     def _decoder_progress(self, message: str) -> None:
         if self.planning_voices and not self._close_after_voice_cancel:

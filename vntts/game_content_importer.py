@@ -20,7 +20,11 @@ from typing import Protocol, TypeAlias
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
-from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
+from vntts_artifacts.story_index import (
+    StoryIndexDocument,
+    StoryIndexError,
+    load_story_index_document,
+)
 from vntts_artifacts.voice_manifest import normalize_character_name
 
 from vntts.application_directories import get_config_directory, get_local_data_directory
@@ -668,8 +672,6 @@ class Reverse1999GameImporter:
 def _candidate_roles(
     job: PregenerationJob, reference_index: Path | None = None
 ) -> tuple[str, ...]:
-    from r1999extractor.story_voice_candidates import is_playable_main_voice_reference
-
     story_index = Path(job.story_index).expanduser().resolve()
     try:
         if sha256_file(story_index) != job.story_index_sha256:
@@ -677,10 +679,10 @@ def _candidate_roles(
                 "Selected dialogue changed before character voices were prepared"
             )
         document = load_story_index_document(story_index)
-        references = (
-            load_story_index_document(reference_index)
+        available = (
+            _cached_playable_voice_roles(Path(reference_index))
             if reference_index is not None and Path(reference_index).exists()
-            else document
+            else _playable_voice_roles(document)
         )
     except GameContentImportError:
         raise
@@ -691,19 +693,6 @@ def _candidate_roles(
     selected = set(job.selected_line_ids)
     authoritative_source_lines = _validated_source_audio_line_ids(story_index, document)
     source_completion = document.metadata.get("source_audio_completion")
-    available = {
-        normalize_character_name(
-            synthesis_character_for_line(record.speaker, record.voice_character)
-        )
-        for record in references.records
-        if record.source_audio_status == "available"
-        and (
-            not record.line_id.startswith("playable-voice:")
-            or is_playable_main_voice_reference(
-                record.line_id, record.producer_fields.get("source_bank")
-            )
-        )
-    }
     requested: dict[str, str] = {}
     for record in document.records:
         character = synthesis_character_for_line(
@@ -731,6 +720,57 @@ def _candidate_roles(
             key=str.casefold,
         )
     )
+
+
+def _playable_voice_roles(document: StoryIndexDocument) -> set[str]:
+    from r1999extractor.story_voice_candidates import is_playable_main_voice_reference
+
+    return {
+        normalize_character_name(
+            synthesis_character_for_line(record.speaker, record.voice_character)
+        )
+        for record in document.records
+        if record.source_audio_status == "available"
+        and (
+            not record.line_id.startswith("playable-voice:")
+            or is_playable_main_voice_reference(
+                record.line_id, record.producer_fields.get("source_bank")
+            )
+        )
+    }
+
+
+def _cached_playable_voice_roles(index: Path) -> set[str]:
+    checksum = sha256_file(index)
+    cache = index.parent / "playable-voice-roles.json"
+    try:
+        saved = json.loads(cache.read_text(encoding="utf-8"))
+        if isinstance(saved, dict):
+            roles = saved.get("roles")
+            if (
+                saved.get("version") == 1
+                and saved.get("index_sha256") == checksum
+                and isinstance(roles, list)
+                and all(
+                    isinstance(role, str) and normalize_character_name(role) == role
+                    for role in roles
+                )
+                and len(roles) == len(set(roles))
+            ):
+                return set(roles)
+    except OSError, ValueError, TypeError:
+        pass
+    available = _playable_voice_roles(load_story_index_document(index))
+    if sha256_file(index) != checksum:
+        raise GameContentImportError("Voice reference index changed while being read")
+    try:
+        atomic_write_json(
+            cache,
+            {"version": 1, "index_sha256": checksum, "roles": sorted(available)},
+        )
+    except OSError:
+        pass
+    return available
 
 
 def resolve_reverse1999_installation(path: PathInput) -> InstallationRoots:

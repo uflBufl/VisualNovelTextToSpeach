@@ -135,15 +135,13 @@ Planned implementation order after approval:
 
 ## P1 - Measure remaining player latency
 
-- [ ] **Profile cold and repeated Voice plan creation:** the 2026-09-22 local log
-      recorded 10.77 seconds for `_create_voice_plan`, including 2.59 seconds in
-      `pregeneration-voice-plan-story`; the remaining 8.18 seconds are not
-      attributed. Time `prepare_voice_candidates`, manifest selection and each
-      `VoicePlanStore` phase separately. Count candidate references, WAV reads/
-      hashes, `VoiceLibrary.discover` writes and `bindings()` reads: `_resolve_group`
-      discovers every candidate and refreshes the registry after each group.
-      Gate: timings sum to the outer wait; remove only measured duplicate work,
-      preserving checksums, saved choices and identical plans on cold/repeat runs.
+- [ ] **Profile remaining Voice plan work:** on the local 253 MB reference index,
+      the new checksum-bound role cache reduced repeated `_candidate_roles` from
+      9.18 to 0.37 seconds. Collect the new candidate-preparation/store phase logs
+      in a real plan and count candidate WAV reads/hashes, `VoiceLibrary.discover`
+      writes and `bindings()` reads. Gate: phase timings sum to the outer wait;
+      remove only measured duplicate work while preserving checksums, saved choices
+      and identical plans on cold/repeat runs.
 - [ ] **Profile live capture on representative game frames:**
       `live.py:_run_capture` calls the dialogue and render fingerprints, presence
       and completion checks on each capture. On a synthetic 1280x320 frame their
