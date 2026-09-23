@@ -1,6 +1,7 @@
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -90,6 +91,32 @@ class PersistentAudioCacheTest(unittest.TestCase):
             self.assertIsNone(cache.get("three"))
             (root / "three.npy").write_bytes(b"")
             self.assertIsNone(cache.get("three"))
+
+        self.assertEqual(files, ["three", "two"])
+
+    def test_prunes_by_creation_time_when_modified_times_tie(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            cache = PersistentAudioCache(root, max_entries=2)
+            for index, key in enumerate(("one", "two", "three"), start=1):
+                with (root / f"{key}.npy").open("wb") as destination:
+                    np.save(destination, np.array([index], dtype=np.float32))
+            creation_times = {"one": 1, "two": 2, "three": 3}
+
+            def tied_modified_times(path, *, follow_symlinks=True):
+                return SimpleNamespace(
+                    st_mtime_ns=0,
+                    st_ctime_ns=creation_times[path.stem],
+                )
+
+            with patch(
+                "vntts.audio_cache.Path.stat",
+                autospec=True,
+                side_effect=tied_modified_times,
+            ):
+                cache._prune()
+
+            files = sorted(path.stem for path in root.glob("*.npy"))
 
         self.assertEqual(files, ["three", "two"])
 
