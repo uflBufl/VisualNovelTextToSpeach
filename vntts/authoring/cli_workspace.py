@@ -126,7 +126,6 @@ def print_workspace_result(result: WorkspaceCreationResult, **extra: object) -> 
                 "created": result.created,
                 **extra,
             },
-            ensure_ascii=False,
             indent=2,
             sort_keys=True,
         )
