@@ -160,20 +160,21 @@ Planned implementation order after approval:
 
 ## P1 - Measure remaining player latency
 
-- [ ] **Profile remaining Voice plan work:** on the local 253 MB reference index,
-      the new checksum-bound role cache reduced repeated `_candidate_roles` from
-      9.18 to 0.37 seconds. Collect the new candidate-preparation/store phase logs
-      in a real plan and count candidate WAV reads/hashes, `VoiceLibrary.discover`
-      writes and `bindings()` reads. Gate: phase timings sum to the outer wait;
-      remove only measured duplicate work while preserving checksums, saved choices
-      and identical plans on cold/repeat runs.
+- [ ] **Validate repeated Voice plan in the real UI:** on the local 253 MB reference
+      index, repeated role selection fell from 9.18 to 0.37 seconds. The plan-store
+      fixture now produces identical groups while reducing library reads from
+      3646 to 214; warm creation took about 0.25 seconds. On an installed game,
+      capture the candidate-preparation/store phase logs for first open and reopen;
+      require the warm phases to explain the whole wait and saved choices to remain
+      identical. Investigate any remaining phase above one second before changing it.
 - [ ] **Qualify fewer Tesseract launches with labeled game frames:** the archived
       11-image corpus measured 488 ms median and 997 ms p95; ordinary frames use
       three subprocesses, and one frame without dialogue used nine. Reconstructing
       text from TSV alone disagreed with the existing text pass on 2 of 11 frames,
-      including a spoken line. Compare a combined TXT/TSV pass or another bounded
-      path against manually verified speaker/text labels and uncertain-frame
-      decisions before removing a subprocess.
+      including a spoken line. The available combined TXT/TSV API also changed
+      output or confidence on 2 of 11 frames because it cannot keep the current
+      PSM 6 setting. Test another bounded path against manually verified
+      speaker/text labels and uncertain-frame decisions before removing a subprocess.
 
 ## P1 - Qualify remaining Python and speech runtimes
 
