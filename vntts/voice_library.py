@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock, RLock
-from typing import Literal, TypedDict, TypeGuard
+from typing import Literal, TypedDict, TypeGuard, TypeVar
 
 from vntts_artifacts.atomic_io import atomic_output_path, atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
@@ -44,15 +44,16 @@ class _AlternativeItemDocument(TypedDict):
     discovery: _ProvenanceDocument
 
 
-class _AlternativeGroupDocument(TypedDict):
+class _VoiceGroupDocument(TypedDict):
     role: str
     variant_key: str | None
+
+
+class _AlternativeGroupDocument(_VoiceGroupDocument):
     items: list[_AlternativeItemDocument]
 
 
-class _BindingDocument(TypedDict):
-    role: str
-    variant_key: str | None
+class _BindingDocument(_VoiceGroupDocument):
     route: VoiceRoute
     source_sha256s: list[str]
     source_id: str | None
@@ -65,6 +66,9 @@ class _VoiceLibraryDocument(TypedDict):
     bindings: dict[str, _BindingDocument]
     person_aliases: dict[str, str]
     person_link_migrations: dict[str, list[dict[str, object]]]
+
+
+_VoiceGroup = TypeVar("_VoiceGroup", bound=_VoiceGroupDocument)
 
 
 def _thread_lock(path: Path) -> RLock:
@@ -653,16 +657,23 @@ def _move_linked_voice_data(
             )
         else:
             moves.append((target_identity, source_identity, role, variant_key))
-    for groups in (document["alternatives"], document["bindings"]):
-        for source, target, role, variant_key in moves:
-            if source not in groups:
-                continue
-            if target in groups:
-                raise VoiceLibraryError("Person link would merge existing voice data")
-            value = groups.pop(source)
-            value["role"] = role
-            value["variant_key"] = variant_key
-            groups[target] = value
+    _move_voice_groups(document["alternatives"], moves)
+    _move_voice_groups(document["bindings"], moves)
+
+
+def _move_voice_groups(
+    groups: dict[str, _VoiceGroup],
+    moves: Iterable[tuple[str, str, str, str | None]],
+) -> None:
+    for source, target, role, variant_key in moves:
+        if source not in groups:
+            continue
+        if target in groups:
+            raise VoiceLibraryError("Person link would merge existing voice data")
+        value = groups.pop(source)
+        value["role"] = role
+        value["variant_key"] = variant_key
+        groups[target] = value
 
 
 def _read_wav(reference: str | Path) -> bytes:
@@ -829,6 +840,16 @@ def _validate_document(document: object) -> TypeGuard[_VoiceLibraryDocument]:
     bindings = document.get("bindings")
     if not isinstance(alternatives, dict) or not isinstance(bindings, dict):
         raise VoiceLibraryError("Voice library requires alternatives and bindings")
+    aliases = _validate_person_aliases(document)
+    _validate_person_link_migrations(document, aliases)
+    for identity, group in alternatives.items():
+        _validate_alternative_group(identity, group)
+    for identity, binding in bindings.items():
+        _validate_binding(identity, binding, alternatives)
+    return True
+
+
+def _validate_person_aliases(document: dict[object, object]) -> dict[object, object]:
     aliases = document.get("person_aliases", {})
     if (
         document["version"] == VOICE_LIBRARY_VERSION
@@ -844,6 +865,12 @@ def _validate_document(document: object) -> TypeGuard[_VoiceLibraryDocument]:
             or normalize_character_name(canonical) == alias
         ):
             raise VoiceLibraryError("Voice library person alias is invalid")
+    return aliases
+
+
+def _validate_person_link_migrations(
+    document: dict[object, object], aliases: dict[object, object]
+) -> None:
     if document["version"] == VOICE_LIBRARY_VERSION:
         migrations = document.get("person_link_migrations")
         if not isinstance(migrations, dict) or set(migrations) != set(aliases):
@@ -875,11 +902,6 @@ def _validate_document(document: object) -> TypeGuard[_VoiceLibraryDocument]:
                     raise VoiceLibraryError(
                         "Voice library person link migration is invalid"
                     )
-    for identity, group in alternatives.items():
-        _validate_alternative_group(identity, group)
-    for identity, binding in bindings.items():
-        _validate_binding(identity, binding, alternatives)
-    return True
 
 
 def _validate_alternative_group(identity: object, group: object) -> None:
