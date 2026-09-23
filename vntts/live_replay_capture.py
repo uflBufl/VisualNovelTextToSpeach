@@ -462,9 +462,13 @@ class LiveReplayCaptureSession:
             or observation_ledger.is_symlink()
         ):
             raise LiveReplayCaptureError("Replay capture result already exists")
-        _write_payload_no_replace(observation_ledger, ledger_payload)
-        _write_json_no_replace(report, report_document)
-        _write_json_no_replace(corpus, corpus_document)
+        _write_payloads_no_replace(
+            (
+                (observation_ledger, ledger_payload),
+                (report, _json_payload(report_document)),
+                (corpus, _json_payload(corpus_document)),
+            )
+        )
         self.finished = True
         return CapturedReplayResult(
             self.directory,
@@ -655,8 +659,9 @@ def _json_payload(document: object) -> bytes:
     ).encode("utf-8")
 
 
-def _write_payload_no_replace(path: Path, payload: bytes) -> None:
+def _write_payload_no_replace(path: Path, payload: bytes) -> tuple[int, int]:
     temporary: Path | None = None
+    identity: tuple[int, int]
     try:
         with tempfile.NamedTemporaryFile(
             prefix=f".{path.name}.",
@@ -668,6 +673,8 @@ def _write_payload_no_replace(path: Path, payload: bytes) -> None:
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
+            metadata = os.fstat(stream.fileno())
+            identity = metadata.st_dev, metadata.st_ino
         os.link(temporary, path)
     except FileExistsError as error:
         raise LiveReplayCaptureError(
@@ -683,10 +690,23 @@ def _write_payload_no_replace(path: Path, payload: bytes) -> None:
                 temporary.unlink(missing_ok=True)
             except OSError:
                 pass
+    return identity
 
 
-def _write_json_no_replace(path: Path, document: object) -> None:
-    _write_payload_no_replace(path, _json_payload(document))
+def _write_payloads_no_replace(payloads: Sequence[tuple[Path, bytes]]) -> None:
+    published: list[tuple[Path, tuple[int, int]]] = []
+    try:
+        for path, payload in payloads:
+            published.append((path, _write_payload_no_replace(path, payload)))
+    except LiveReplayCaptureError:
+        for path, identity in reversed(published):
+            try:
+                current = path.lstat()
+                if (current.st_dev, current.st_ino) == identity:
+                    path.unlink()
+            except OSError:
+                pass
+        raise
 
 
 def build_parser() -> argparse.ArgumentParser:

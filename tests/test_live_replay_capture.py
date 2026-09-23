@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from PIL import Image, ImageDraw
 
+import vntts.live_replay_capture as live_replay_capture
 from tests.symlink_support import symlink_or_skip
 from vntts.dialog_capture import (
     CapturedDialogFrame,
@@ -296,6 +297,71 @@ class LiveReplayCaptureTest(unittest.TestCase):
 
             self.assertEqual(session.frame_count, 1)
             self.assertTrue((root / "frames" / "frame-000001.png").is_file())
+
+    def test_capture_retries_after_partial_result_publication(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "capture"
+            session = LiveReplayCaptureSession(root)
+            session.observe(frame("red"), "Narrator", "A line.")
+            original_write = live_replay_capture._write_payload_no_replace
+            calls = 0
+
+            def fail_after_ledger(path, payload):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise LiveReplayCaptureError("injected result write failure")
+                return original_write(path, payload)
+
+            with patch(
+                "vntts.live_replay_capture._write_payload_no_replace",
+                side_effect=fail_after_ledger,
+            ):
+                with self.assertRaisesRegex(
+                    LiveReplayCaptureError, "injected result write failure"
+                ):
+                    session.finish()
+
+            self.assertFalse(session.finished)
+            for name in (
+                "observation-ledger.json",
+                "capture-report.json",
+                "corpus.json",
+            ):
+                self.assertFalse((root / name).exists())
+            result = session.finish()
+            self.assertTrue(result.observation_ledger.is_file())
+            self.assertTrue(result.report.is_file())
+            self.assertTrue(result.corpus.is_file())
+
+    def test_capture_rollback_keeps_replaced_result(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "capture"
+            session = LiveReplayCaptureSession(root)
+            session.observe(frame("red"), "Narrator", "A line.")
+            replacement = root / "replacement.json"
+            replacement.write_bytes(b"other writer")
+            original_write = live_replay_capture._write_payload_no_replace
+            calls = 0
+
+            def replace_then_fail(path, payload):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    replacement.replace(root / "observation-ledger.json")
+                    raise LiveReplayCaptureError("injected later failure")
+                return original_write(path, payload)
+
+            with patch(
+                "vntts.live_replay_capture._write_payload_no_replace",
+                side_effect=replace_then_fail,
+            ):
+                with self.assertRaisesRegex(LiveReplayCaptureError, "later failure"):
+                    session.finish()
+
+            self.assertEqual(
+                (root / "observation-ledger.json").read_bytes(), b"other writer"
+            )
 
     def test_capture_rejects_a_story_index_symlink(self):
         with TemporaryDirectory() as directory:
