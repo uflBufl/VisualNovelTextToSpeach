@@ -1007,7 +1007,7 @@ def _read_regular_file(value: PathInput, label: str) -> tuple[Path, bytes]:
 
 def _read_contained(root: PathInput, value: object, label: str) -> tuple[str, bytes]:
     try:
-        _path, relative, payload = _read_contained_file(root, value, label)
+        _path, relative, payload = _read_contained_file(Path(root), value, label)
     except (OSError, ValueError) as error:
         raise SequenceReplaySealError(str(error)) from error
     return relative, payload
