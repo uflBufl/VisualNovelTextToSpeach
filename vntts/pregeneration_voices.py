@@ -575,6 +575,65 @@ class VoicePlanStore:
             self._saved_independent_groups(controls) if not ignore_decisions else ()
         )
         controls_sha256 = _digest(controls)
+        grouped = self._group_selected_lines(
+            job,
+            records,
+            settings,
+            source_completion,
+            authoritative_source_lines,
+            queue_bindings,
+        )
+
+        phase_started, cpu_started = perf_counter(), process_time()
+        groups: list[VoiceGroup] = []
+        for group_id, values in grouped.items():
+            groups.append(
+                self._resolve_group(
+                    group_id,
+                    values,
+                    settings,
+                    registry,
+                    candidate_variants,
+                    controls,
+                    ignore_decisions,
+                    saved_groups,
+                )
+            )
+            if self.voice_library is not None:
+                registry = registry_with_voice_library(registry, self.voice_library)
+        _record_plan_phase(
+            "routing",
+            phase_started,
+            cpu_started,
+            files_examined=reference_files,
+            bytes_examined=reference_bytes,
+        )
+        _raise_if_cancelled(cancellation)
+        plan = VoicePlan(
+            job_id=job.job_id,
+            created_at=self.clock().astimezone(timezone.utc).isoformat(),
+            story_index_sha256=job.story_index_sha256,
+            voice_manifest=str(manifest_path) if manifest_path else None,
+            voice_manifest_sha256=manifest_sha256,
+            synthesis_backend=settings.speech_backend,
+            synthesis_model=settings.tts_model,
+            synthesis_language=settings.tts_language,
+            synthesis_profile=controls["profile"],
+            pocket_voice_cloning=bool(controls["pocket_voice_cloning"]),
+            synthesis_controls_sha256=controls_sha256,
+            groups=tuple(groups),
+        )
+        return self._persist_plan(job, plan)
+
+    def _group_selected_lines(
+        self,
+        job: PregenerationJob,
+        records: dict[str, StoryIndexRecord],
+        settings: AppSettings,
+        source_completion: str | None,
+        authoritative_source_lines: frozenset[str],
+        queue_bindings: Mapping[str, str],
+    ) -> dict[str, list[GroupValue]]:
         portrait_snapshots: dict[str, PortraitSnapshot] = {}
         grouped: dict[str, list[GroupValue]] = {}
         role_cache: dict[str, tuple[str, str | None, str | None]] = {}
@@ -630,46 +689,7 @@ class VoicePlanStore:
                 )
             )
 
-        phase_started, cpu_started = perf_counter(), process_time()
-        groups: list[VoiceGroup] = []
-        for group_id, values in grouped.items():
-            groups.append(
-                self._resolve_group(
-                    group_id,
-                    values,
-                    settings,
-                    registry,
-                    candidate_variants,
-                    controls,
-                    ignore_decisions,
-                    saved_groups,
-                )
-            )
-            if self.voice_library is not None:
-                registry = registry_with_voice_library(registry, self.voice_library)
-        _record_plan_phase(
-            "routing",
-            phase_started,
-            cpu_started,
-            files_examined=reference_files,
-            bytes_examined=reference_bytes,
-        )
-        _raise_if_cancelled(cancellation)
-        plan = VoicePlan(
-            job_id=job.job_id,
-            created_at=self.clock().astimezone(timezone.utc).isoformat(),
-            story_index_sha256=job.story_index_sha256,
-            voice_manifest=str(manifest_path) if manifest_path else None,
-            voice_manifest_sha256=manifest_sha256,
-            synthesis_backend=settings.speech_backend,
-            synthesis_model=settings.tts_model,
-            synthesis_language=settings.tts_language,
-            synthesis_profile=controls["profile"],
-            pocket_voice_cloning=bool(controls["pocket_voice_cloning"]),
-            synthesis_controls_sha256=controls_sha256,
-            groups=tuple(groups),
-        )
-        return self._persist_plan(job, plan)
+        return grouped
 
     def _persist_plan(self, job: PregenerationJob, plan: VoicePlan) -> VoicePlan:
         phase_started, cpu_started = perf_counter(), process_time()
@@ -1363,6 +1383,24 @@ def _text_values(value: object) -> tuple[str, ...]:
     return tuple(value)
 
 
+def _source_excerpt_labels(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise PregenerationVoiceError("Voice candidate source excerpts are invalid")
+    labels = []
+    for excerpt in value:
+        if not isinstance(excerpt, dict):
+            raise PregenerationVoiceError("Voice candidate source excerpts are invalid")
+        title, text = excerpt.get("title"), excerpt.get("text")
+        if (
+            title is not None
+            and not isinstance(title, str)
+            or not isinstance(text, str)
+        ):
+            raise PregenerationVoiceError("Voice candidate source excerpts are invalid")
+        labels.append(f"{title}: {text}" if title else text)
+    return tuple(labels)
+
+
 def _ranked_candidate(
     source_id: str,
     voice: CharacterVoice,
@@ -1384,10 +1422,7 @@ def _ranked_candidate(
         source_voice_ids=_text_values(variant.get("source_voice_ids")),
         source_line_ids=_text_values(variant.get("source_line_ids")),
         reference_duration_seconds=_reference_duration_seconds(voice.references),
-        source_excerpts=tuple(
-            f"{value['title']}: {value['text']}" if value["title"] else value["text"]
-            for value in variant.get("source_excerpts", ())
-        ),
+        source_excerpts=_source_excerpt_labels(variant.get("source_excerpts", ())),
     )
 
 

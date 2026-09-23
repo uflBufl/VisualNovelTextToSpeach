@@ -415,6 +415,37 @@ def registry_with_voice_library(
     """Project authoritative bindings into the in-memory routing registry."""
     bindings = library.bindings()
     voices = list(registry.unique_voices())
+    sources = _project_library_voices(library, bindings, voices)
+    projected = CharacterVoiceRegistry(voices)
+    narrator_source = sources.get(("narrator", None))
+    for binding in bindings:
+        if binding.variant_key is None:
+            _project_binding(
+                projected,
+                binding,
+                sources.get((normalize_character_name(binding.role), None)),
+                narrator_source,
+                binding.role,
+            )
+    for alias, canonical in library.person_aliases().items():
+        variant_key = library.linked_variant_key(alias)
+        alias_binding = library.binding(alias, variant_key=variant_key)
+        if alias_binding is not None:
+            _project_binding(
+                projected,
+                alias_binding,
+                sources.get((normalize_character_name(canonical), variant_key)),
+                narrator_source,
+                alias,
+            )
+    return projected
+
+
+def _project_library_voices(
+    library: VoiceLibrary,
+    bindings: tuple[VoiceBinding, ...],
+    voices: list[CharacterVoice],
+) -> dict[tuple[str, str | None], str]:
     sources: dict[tuple[str, str | None], str] = {}
     for binding in bindings:
         key = (normalize_character_name(binding.role), binding.variant_key)
@@ -433,7 +464,7 @@ def registry_with_voice_library(
         evidence = binding.provenance.get("evidence")
         metadata = evidence if isinstance(evidence, dict) else {}
         normalized_name = normalize_character_name(name)
-        voices = [
+        voices[:] = [
             voice
             for voice in voices
             if normalize_character_name(voice.character) != normalized_name
@@ -448,34 +479,24 @@ def registry_with_voice_library(
             )
         )
         sources[key] = source_id
-    projected = CharacterVoiceRegistry(voices)
-    narrator_source = sources.get(("narrator", None))
-    for binding in bindings:
-        if binding.variant_key is not None:
-            continue
-        key = normalize_character_name(binding.role)
-        source_id = sources.get((key, None))
-        if binding.route == "narrator":
-            source_id = narrator_source
-        if binding.route == "live-fallback" or source_id is None:
-            projected.assignments[key] = None
-            projected.assignment_names[key] = binding.role
-            continue
-        projected.set_assignment(binding.role, source_id)
-    for alias, canonical in library.person_aliases().items():
-        variant_key = library.linked_variant_key(alias)
-        binding = library.binding(alias, variant_key=variant_key)
-        if binding is None:
-            continue
-        source_id = sources.get((normalize_character_name(canonical), variant_key))
-        if binding.route == "narrator":
-            source_id = narrator_source
-        if binding.route == "live-fallback" or source_id is None:
-            projected.assignments[alias] = None
-            projected.assignment_names[alias] = alias
-        else:
-            projected.set_assignment(alias, source_id)
-    return projected
+    return sources
+
+
+def _project_binding(
+    projected: CharacterVoiceRegistry,
+    binding: VoiceBinding,
+    source_id: str | None,
+    narrator_source: str | None,
+    role: str,
+) -> None:
+    if binding.route == "narrator":
+        source_id = narrator_source
+    key = normalize_character_name(role)
+    if binding.route == "live-fallback" or source_id is None:
+        projected.assignments[key] = None
+        projected.assignment_names[key] = role
+        return
+    projected.set_assignment(role, source_id)
 
 
 def _contained_manifest_reference(
