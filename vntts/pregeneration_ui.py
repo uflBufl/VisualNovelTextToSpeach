@@ -7,7 +7,7 @@ from time import monotonic, process_time
 from typing import TypeAlias, TypeGuard, cast
 
 from PySide6.QtCore import QSignalBlocker, QSize, Qt, QThreadPool, QTimer, Signal
-from PySide6.QtGui import QCloseEvent, QIcon, QPixmap
+from PySide6.QtGui import QCloseEvent, QIcon, QPixmap, QStandardItemModel
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -84,6 +84,7 @@ from vntts.pregeneration_voices import (
     PregenerationVoiceCancelled,
     PregenerationVoiceError,
     VoiceDecisionStore,
+    VoiceGroup,
     VoicePlan,
     VoicePlanStore,
     pregeneration_narrator_source_id,
@@ -325,9 +326,9 @@ class OfflineAudioPreparationDialog(QDialog):
                 label += " (not supported for story preparation)"
                 available = False
             self.engine_choice.addItem(label, backend)
-            self.engine_choice.model().item(self.engine_choice.count() - 1).setEnabled(
-                available
-            )
+            model = self.engine_choice.model()
+            if isinstance(model, QStandardItemModel):
+                model.item(self.engine_choice.count() - 1).setEnabled(available)
         self.engine_choice.setCurrentIndex(
             max(0, self.engine_choice.findData(self.settings.speech_backend))
         )
@@ -1358,73 +1359,79 @@ class OfflineAudioPreparationDialog(QDialog):
                 value.group_id,
             ),
         ):
-            routing_role = group.routing_role or group.character
-            display_role = (
-                f"{routing_role} (same person as {group.character})"
-                if normalize_character_name(routing_role)
-                != normalize_character_name(group.character)
-                else group.character
-            )
-            lines = len(group.line_ids)
-            if group.route == "narrator":
-                source = self.narrator_choice.currentText()
-                route = (
-                    source
-                    if group.character == "Narrator"
-                    else f"Narrator voice ({source})"
-                )
-            else:
-                route = group.source_character or group.source_speaker or "No voice"
-            candidate = next(
-                (
-                    value
-                    for value in (*group.candidate_inventory, group.narrator_candidate)
-                    if value is not None and value.source_id == group.source_id
-                ),
-                None,
-            )
-            duration = (
-                f", {candidate.reference_duration_seconds:.1f} s"
-                if candidate is not None
-                and candidate.reference_duration_seconds is not None
-                else ""
-            )
-            if route.startswith("Player candidate "):
-                route = "Game voice"
-                if candidate is not None and candidate.source_excerpts:
-                    route += f" ({candidate.source_excerpts[0][:55]})"
-            references = len(group.reference_sha256s)
-            status = (
-                "review suggested"
-                if group.route == "needs-audition"
-                else "approved"
-                if group.resolution == "saved-player-decision"
-                else "narrator"
-                if group.route == "narrator"
-                else "automatic"
-            )
-            item = QListWidgetItem(
-                f"{display_role} -> {route} | {status} | {lines} "
-                f"line{'s' if lines != 1 else ''} | {references} reference"
-                f"{'s' if references != 1 else ''}{duration}\n"
-                f"{_voice_resolution_label(group.resolution)}"
-            )
-            item.setData(Qt.ItemDataRole.UserRole, routing_role)
-            item.setData(int(Qt.ItemDataRole.UserRole) + 1, group.group_id)
-            if show_portraits and group.portrait_image and group.portrait_image_sha256:
-                try:
-                    if sha256_file(group.portrait_image) == group.portrait_image_sha256:
-                        pixmap = QPixmap(group.portrait_image)
-                        if not pixmap.isNull():
-                            item.setIcon(QIcon(pixmap))
-                except OSError:
-                    pass
+            item = self._voice_route_item(group, show_portraits=show_portraits)
             self.voice_routes.addItem(item)
-            if routing_role == selected_character:
+            if item.data(Qt.ItemDataRole.UserRole) == selected_character:
                 self.voice_routes.setCurrentItem(item)
         if self.voice_routes.currentItem() is None and self.voice_routes.count():
             self.voice_routes.setCurrentRow(0)
         self._update_identity_actions()
+
+    def _voice_route_item(
+        self, group: VoiceGroup, *, show_portraits: bool
+    ) -> QListWidgetItem:
+        routing_role = group.routing_role or group.character
+        display_role = (
+            f"{routing_role} (same person as {group.character})"
+            if normalize_character_name(routing_role)
+            != normalize_character_name(group.character)
+            else group.character
+        )
+        lines = len(group.line_ids)
+        if group.route == "narrator":
+            source = self.narrator_choice.currentText()
+            route = (
+                source
+                if group.character == "Narrator"
+                else f"Narrator voice ({source})"
+            )
+        else:
+            route = group.source_character or group.source_speaker or "No voice"
+        candidate = next(
+            (
+                value
+                for value in (*group.candidate_inventory, group.narrator_candidate)
+                if value is not None and value.source_id == group.source_id
+            ),
+            None,
+        )
+        duration = (
+            f", {candidate.reference_duration_seconds:.1f} s"
+            if candidate is not None
+            and candidate.reference_duration_seconds is not None
+            else ""
+        )
+        if route.startswith("Player candidate "):
+            route = "Game voice"
+            if candidate is not None and candidate.source_excerpts:
+                route += f" ({candidate.source_excerpts[0][:55]})"
+        references = len(group.reference_sha256s)
+        status = (
+            "review suggested"
+            if group.route == "needs-audition"
+            else "approved"
+            if group.resolution == "saved-player-decision"
+            else "narrator"
+            if group.route == "narrator"
+            else "automatic"
+        )
+        item = QListWidgetItem(
+            f"{display_role} -> {route} | {status} | {lines} "
+            f"line{'s' if lines != 1 else ''} | {references} reference"
+            f"{'s' if references != 1 else ''}{duration}\n"
+            f"{_voice_resolution_label(group.resolution)}"
+        )
+        item.setData(Qt.ItemDataRole.UserRole, routing_role)
+        item.setData(int(Qt.ItemDataRole.UserRole) + 1, group.group_id)
+        if show_portraits and group.portrait_image and group.portrait_image_sha256:
+            try:
+                if sha256_file(group.portrait_image) == group.portrait_image_sha256:
+                    pixmap = QPixmap(group.portrait_image)
+                    if not pixmap.isNull():
+                        item.setIcon(QIcon(pixmap))
+            except OSError:
+                pass
+        return item
 
     def _narrator_choice_changed(self, _index: int | None = None) -> None:
         source_id = self.narrator_choice.currentData()
