@@ -653,6 +653,7 @@ class MainTest(unittest.TestCase):
             voice_resolver=None,
             ocr_language="eng",
             correction_dictionary=None,
+            region=None,
         )
 
     def test_scheduler_rejects_one_time_read_while_live_mode_is_active(self):
@@ -1084,6 +1085,7 @@ class MainTest(unittest.TestCase):
             voice_resolver=controller._resolve_voice_label,
             ocr_language="eng",
             correction_dictionary=controller.correction_dictionary,
+            region_provider=controller._capture_region,
         )
 
     def test_controller_can_skip_startup_voice_warmup(self):

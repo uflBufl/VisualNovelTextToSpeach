@@ -27,7 +27,9 @@ from vntts.dialog_capture import (
     is_standalone_ellipsis_text,
     recognize_screenshot_result,
 )
+from vntts.ocr import get_dialog_region
 from vntts.ocr_corrections import OCRCorrectionStore
+from vntts.profiles import GameProfileStore
 from vntts.settings import load_app_settings
 from vntts.window_capture import WindowCaptureTarget
 
@@ -706,6 +708,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.max_accepted_frames is not None and arguments.max_accepted_frames < 1:
         return int(cli_error("max-accepted-frames must be positive"))
     settings = load_app_settings()
+    profile = GameProfileStore.load().get(settings.active_profile_id)
+    region = get_dialog_region(profile.dialog_region if profile is not None else None)
     story_index = arguments.story_index or settings.story_index
     resolver: StoryResolver | None = None
     story_path: Path | None = None
@@ -769,7 +773,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = capture_replay_session(
                 session,
                 capture_frame=lambda: capture_live_frame(
-                    get_screenshot_directory(settings), capture_target
+                    get_screenshot_directory(settings), capture_target, region=region
                 ),
                 recognize_frame=recognize,
                 interval_seconds=(arguments.interval_ms or settings.live_interval_ms)

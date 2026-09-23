@@ -89,6 +89,7 @@ from vntts.macos import (
 )
 from vntts.macos_ui import MacOSPermissionsDialog
 from vntts.moss_runtime import RetainedMossRuntime
+from vntts.ocr import get_dialog_region_file, save_dialog_region
 from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.ocr_corrections_ui import OCRCorrectionsDialog
 from vntts.ocr_review_ui import OCRReviewDialog
@@ -1497,6 +1498,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             controller_factory,
             moss_runtime,
             pocket_runtime,
+            profile_store,
         )
         self._initialize_runners(pregeneration_activator)
         self._initialize_session_state(profile_store, correction_store)
@@ -1515,6 +1517,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         controller_factory,
         moss_runtime,
         pocket_runtime,
+        profile_store,
     ):
         self.application = application
         uses_saved_settings = settings is None
@@ -1530,6 +1533,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.settings = settings or load_app_settings(
             on_game_pack_error=self._startup_game_pack_errors.append
         )
+        self.profile_store = profile_store or GameProfileStore.load()
         if uses_saved_settings:
             record_background_operation(
                 "application-settings-and-pack-load",
@@ -1578,6 +1582,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.pocket_runtime = pocket_runtime or RetainedWorkerRuntime("pocket-tts")
         self.controller = controller_factory(
             self.settings,
+            profile_store=self.profile_store,
             status_handler=self.signals.status_changed.emit,
             dialog_handler=self.signals.dialog_changed.emit,
             diagnostic_handler=self.signals.diagnostics_changed.emit,
@@ -1634,7 +1639,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._reported_live = False
         self._reported_speech_paused = False
         self._onboarding_test_active = False
-        self.profile_store = profile_store or GameProfileStore.load()
         self.correction_store = correction_store or OCRCorrectionStore.load()
         self.hotkey_listener = self.calibration_overlay = None
         self.onboarding_wizard = self.diagnostics_dialog = None
@@ -2572,14 +2576,23 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def _open_calibration_overlay(self, geometry):
         try:
-            self.calibration_overlay = show_calibration_overlay(geometry)
+            self.calibration_overlay = show_calibration_overlay(
+                geometry, save_region=self._save_calibration_region
+            )
         except Exception as error:
             self.restore_control_window()
             self.show_error(f"Unable to capture a calibration preview: {error}")
             return
         self.calibration_overlay.closed.connect(self.restore_control_window)
-        if self.settings.active_profile_id:
-            self.calibration_overlay.selected.connect(self.update_profile_region)
+        self.calibration_overlay.save_failed.connect(self.set_status)
+
+    def _save_calibration_region(self, region):
+        profile_id = self.settings.active_profile_id
+        profile = self.profile_store.get(profile_id) if profile_id else None
+        if profile is not None:
+            self.profile_store.update_region(profile.id, region)
+        else:
+            save_dialog_region(region, get_dialog_region_file())
 
     def restore_control_window(self):
         if self.restore_compact_after_calibration:

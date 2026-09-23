@@ -17,6 +17,7 @@ def read_live_snapshot(
     voice_resolver: Callable[[str], Any] | None = None,
     ocr_language: str = "eng",
     correction_dictionary: Any = None,
+    region: Any = None,
 ) -> tuple[str | None, str]:
     image, _, result = analyze_dialog_snapshot(
         screenshot_directory,
@@ -27,6 +28,7 @@ def read_live_snapshot(
         voice_resolver=voice_resolver,
         ocr_language=ocr_language,
         correction_dictionary=correction_dictionary,
+        region=region,
     )
     if result.text and not result.is_confident(minimum_confidence):
         if uncertain_frame_recorder is not None:
