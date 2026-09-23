@@ -37,8 +37,10 @@ def workflow_failure_details(value):
     if len(value) <= 4_000:
         return value
     prefix = value[:2_500]
-    tail_size = 3_950 - len(prefix)
-    return prefix + "\n... output truncated ...\n" + value[-tail_size:]
+    tests = re.findall(r"^test_[^\r\n]*", value, flags=re.MULTILINE)
+    last_test = f"\nLast test: {tests[-1][:300]}" if tests else ""
+    tail_size = 3_950 - len(prefix) - len(last_test)
+    return prefix + last_test + "\n... output truncated ...\n" + value[-tail_size:]
 
 
 def workflow_failure_sections(value):

@@ -47,12 +47,14 @@ class CiUnitTestRunnerTest(unittest.TestCase):
         value = (
             "FAIL: test_windows\nTraceback\nAssertionError: exact failure\n"
             + "x" * 12_000
+            + "\ntest_last (tests.test_example.Case.test_last) ... "
             + "finish"
         )
         details = workflow_failure_details(value)
 
         self.assertTrue(details.startswith("FAIL: test_windows"))
         self.assertIn("AssertionError: exact failure", details)
+        self.assertIn("Last test: test_last", details)
         self.assertTrue(details.endswith("finish"))
         self.assertLessEqual(len(details), 4_000)
 
