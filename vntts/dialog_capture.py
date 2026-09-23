@@ -12,7 +12,9 @@ from typing import Protocol, TypeAlias
 from uuid import uuid4
 
 import mss
+import numpy as np
 from PIL import Image, ImageFilter
+from scipy.ndimage import maximum_filter
 
 from vntts.diagnostics import DiagnosticSnapshot
 from vntts.dialog import is_empty, speak_dialog
@@ -215,7 +217,9 @@ def fingerprint_dialog_frame(frame: object) -> bytes:
         mask = band.point(
             tuple(255 if value >= glyph_threshold else 0 for value in range(256))
         )
-        mask = mask.filter(ImageFilter.MaxFilter(5)).resize(
+        mask = Image.fromarray(
+            maximum_filter(np.asarray(mask), size=5, mode="nearest")
+        ).resize(
             (256, output_height),
             Image.Resampling.LANCZOS,
         )
