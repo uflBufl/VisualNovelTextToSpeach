@@ -142,14 +142,6 @@ Planned implementation order after approval:
       writes and `bindings()` reads. Gate: phase timings sum to the outer wait;
       remove only measured duplicate work while preserving checksums, saved choices
       and identical plans on cold/repeat runs.
-- [ ] **Profile live capture on representative game frames:**
-      `live.py:_run_capture` calls the dialogue and render fingerprints, presence
-      and completion checks on each capture. On a synthetic 1280x320 frame their
-      medians totaled about 30 ms, with 21.6 ms in
-      `fingerprint_dialog_frame`. Measure per-stage p50/p95 and CPU on animated,
-      static and typewriter frames at the actual capture interval. Optimize the
-      dominant image pass only if material; gate on unchanged frame routing,
-      ellipsis detection, auto-advance and no duplicate speech in replay.
 - [ ] **Benchmark OCR subprocess work on captured dialogue:**
       `ocr.py:recognize_dialog_image_result` tries up to three profiles, each
       invoking Tesseract multiple times for speaker and dialogue. Record p50/p95,
