@@ -160,14 +160,12 @@ Planned implementation order after approval:
       capture the candidate-preparation/store phase logs for first open and reopen;
       require the warm phases to explain the whole wait and saved choices to remain
       identical. Investigate any remaining phase above one second before changing it.
-- [ ] **Qualify fewer Tesseract launches with labeled game frames:** the archived
-      11-image corpus measured 488 ms median and 997 ms p95; ordinary frames use
-      three subprocesses, and one frame without dialogue used nine. Reconstructing
-      text from TSV alone disagreed with the existing text pass on 2 of 11 frames,
-      including a spoken line. The available combined TXT/TSV API also changed
-      output or confidence on 2 of 11 frames because it cannot keep the current
-      PSM 6 setting. Test another bounded path against manually verified
-      speaker/text labels and uncertain-frame decisions before removing a subprocess.
+- [ ] **Validate combined PSM 6 OCR on Windows:** with an installed or bundled
+      Tesseract, run the two sample-image parity/process-count tests and one live
+      story. Require unchanged speaker/text/confidence/profile/attempts, working
+      output-file cleanup and OMP limit, fewer process launches and lower median
+      latency than the separate TXT/TSV path. The macOS 11-frame check passed
+      with 48 to 33 launches and 1392 to 941 ms median latency.
 
 ## P1 - Qualify remaining Python and speech runtimes
 

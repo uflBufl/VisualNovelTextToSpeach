@@ -613,6 +613,32 @@ class RecognizedDialogTest(unittest.TestCase):
             self.assertEqual(list(directory.iterdir()), [])
 
     @unittest.skipUnless(shutil.which("tesseract"), "Tesseract is not installed")
+    def test_combined_psm6_keeps_real_dialog_result_with_fewer_processes(self):
+        samples = Path(__file__).resolve().parents[1] / "samples"
+        original = pytesseract_runtime.run_tesseract
+        for filename in ("01.jpeg", "02.png"):
+            with (
+                self.subTest(filename=filename),
+                Image.open(samples / filename) as source,
+            ):
+                image = default_dialog_region.crop(source)
+                with patch.object(
+                    pytesseract_runtime, "run_tesseract", wraps=original
+                ) as run:
+                    baseline = recognize_dialog_image_result(
+                        image,
+                        self.registry,
+                        recognize_text=pytesseract_runtime.image_to_string,
+                        recognize_data=pytesseract_runtime.image_to_data,
+                    )
+                    baseline_launches = run.call_count
+                    run.reset_mock()
+                    combined = recognize_dialog_image_result(image, self.registry)
+
+                self.assertEqual(combined, baseline)
+                self.assertLess(run.call_count, baseline_launches)
+
+    @unittest.skipUnless(shutil.which("tesseract"), "Tesseract is not installed")
     def test_real_sample_screenshots_resolve_speaker_and_dialog(self):
         samples = Path(__file__).resolve().parents[1] / "samples"
         expected = {

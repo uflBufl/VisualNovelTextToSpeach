@@ -301,6 +301,7 @@ def recognize_dialog_image_result(
     profiles: Sequence[OCRPreprocessingProfile] = default_ocr_profiles,
     language: str = "eng",
 ) -> OCRResult:
+    combine_outputs = recognize_text is None and recognize_data is None
     if recognize_text is None:
         recognize_text = pytesseract.image_to_string
     if recognize_data is None:
@@ -317,6 +318,7 @@ def recognize_dialog_image_result(
             profile.name,
             attempt,
             language,
+            combine_outputs,
         )
         if best_result is None or _result_rank(result) > _result_rank(best_result):
             best_result = result
@@ -336,13 +338,18 @@ def _recognize_preprocessed_dialog(
     profile_name: str,
     attempt: int,
     language: str,
+    combine_outputs: bool,
 ) -> OCRResult:
-    data = recognize_data(
-        image,
-        config="--psm 6",
-        output_type=pytesseract.Output.DICT,
-        lang=language,
-    )
+    if combine_outputs:
+        recognized_text, data = _recognize_psm6_text_data(image, language)
+    else:
+        recognized_text = None
+        data = recognize_data(
+            image,
+            config="--psm 6",
+            output_type=pytesseract.Output.DICT,
+            lang=language,
+        )
 
     speaker = recognize_speaker_from_data(
         data,
@@ -369,19 +376,24 @@ def _recognize_preprocessed_dialog(
     if speaker is not None:
         character, speaker_line = speaker
         dialog_image = crop_dialog_text(image, speaker_line)
-        dialog_text = recognize_text(
-            dialog_image,
-            config="--psm 6",
-            lang=language,
-        )
-        dialog_lines = clean_dialog_lines(dialog_text)
-        if dialog_lines:
-            dialog_data = recognize_data(
+        if combine_outputs:
+            dialog_text, dialog_data = _recognize_psm6_text_data(dialog_image, language)
+        else:
+            dialog_text = recognize_text(
                 dialog_image,
                 config="--psm 6",
-                output_type=pytesseract.Output.DICT,
                 lang=language,
             )
+            dialog_data = None
+        dialog_lines = clean_dialog_lines(dialog_text)
+        if dialog_lines:
+            if dialog_data is None:
+                dialog_data = recognize_data(
+                    dialog_image,
+                    config="--psm 6",
+                    output_type=pytesseract.Output.DICT,
+                    lang=language,
+                )
             dialog_lines = clean_dialog_lines_from_data(dialog_data, dialog_lines)
             return OCRResult(
                 character,
@@ -391,11 +403,12 @@ def _recognize_preprocessed_dialog(
                 attempt,
             )
 
-    recognized_text = recognize_text(
-        image,
-        config="--psm 6",
-        lang=language,
-    )
+    if recognized_text is None:
+        recognized_text = recognize_text(
+            image,
+            config="--psm 6",
+            lang=language,
+        )
     character, text = parse_recognized_dialog(recognized_text, voice_registry)
     return OCRResult(
         character,
@@ -404,6 +417,23 @@ def _recognize_preprocessed_dialog(
         profile_name,
         attempt,
     )
+
+
+def _recognize_psm6_text_data(image: Image.Image, language: str) -> tuple[str, OcrData]:
+    """Read the same PSM 6 text and TSV from one Tesseract process."""
+    with pytesseract_runtime.save(image) as (base, input_filename):
+        pytesseract_runtime.run_tesseract(
+            input_filename=input_filename,
+            output_filename_base=base,
+            extension="txt tsv",
+            lang=language,
+            config="-c tessedit_create_tsv=1 --psm 6",
+        )
+        text = pytesseract_runtime._read_output(f"{base}.txt")
+        data = pytesseract_runtime.file_to_dict(
+            pytesseract_runtime._read_output(f"{base}.tsv"), "\t", -1
+        )
+    return text, data
 
 
 def recognize_speaker(
