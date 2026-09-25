@@ -252,7 +252,10 @@ def stage_pocket_runtime(
     run: Callable[..., object] = subprocess.run,
 ) -> Path:
     project_root = Path(project_root).resolve()
-    destination = Path(destination).resolve()
+    destination = Path(destination)
+    if destination.is_symlink() or destination.is_junction():
+        raise RuntimeError("Pocket runtime staging destination must not be an alias")
+    destination = destination.resolve()
     backend_project = project_root / "backends" / BACKEND
     lockfile = backend_project / "uv.lock"
     if not lockfile.is_file():

@@ -21,6 +21,28 @@ from vntts.release_runtime import (
 
 
 class ReleaseRuntimeTest(unittest.TestCase):
+    def test_staging_rejects_aliased_destination_before_removing_files(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            backend = project / "backends" / "pocket-tts"
+            backend.mkdir(parents=True)
+            (backend / "uv.lock").write_text("locked", encoding="utf-8")
+            outside = root / "outside"
+            outside.mkdir()
+            sentinel = outside / "keep.txt"
+            sentinel.write_text("keep", encoding="utf-8")
+            destination = root / "build" / "speech-runtimes"
+            destination.parent.mkdir()
+            symlink_or_skip(destination, outside, target_is_directory=True)
+            run = Mock()
+
+            with self.assertRaisesRegex(RuntimeError, "alias"):
+                stage_pocket_runtime(project, destination, run=run)
+
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep")
+            run.assert_not_called()
+
     def test_stages_locked_runtime_and_requires_relocation_probe(self):
         with TemporaryDirectory() as directory:
             project = Path(directory) / "project"
