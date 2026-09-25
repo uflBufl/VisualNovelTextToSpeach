@@ -1265,12 +1265,12 @@ class SettingsDialog(QDialog):
         if selected:
             self._use_narrator_file(selected)
 
-    def update_ocr_diagnostics_controls(self):
+    def update_ocr_diagnostics_controls(self) -> None:
         enabled = self.retain_uncertain_frames.isChecked()
         self.ocr_diagnostics_directory.setEnabled(enabled)
         self.diagnostics_browse_button.setEnabled(enabled)
 
-    def update_auto_advance_controls(self):
+    def update_auto_advance_controls(self) -> None:
         allowed, enabled, tooltip = auto_advance_control_state(
             self.capture_mode.currentData(),
             self.live_sequence_mode.currentData(),
@@ -1287,7 +1287,7 @@ class SettingsDialog(QDialog):
         self.auto_advance_key.setEnabled(enabled)
         self.auto_advance_delay.setEnabled(enabled)
 
-    def refresh_windows(self):
+    def refresh_windows(self) -> None:
         selected_title = self.game_window.currentText().strip()
         try:
             windows = list_windows()
@@ -1299,12 +1299,12 @@ class SettingsDialog(QDialog):
         if selected_title:
             self.game_window.setCurrentText(selected_title)
 
-    def update_capture_controls(self):
+    def update_capture_controls(self) -> None:
         window_capture = self.capture_mode.currentData() == "window"
         self.game_window.setEnabled(window_capture)
         self.update_auto_advance_controls()
 
-    def update_terms_control(self):
+    def update_terms_control(self) -> None:
         backend = self.speech_backend.currentData()
         uses_xtts = backend == "coqui-xtts"
         uses_pocket = backend == "pocket-tts"
@@ -1317,7 +1317,7 @@ class SettingsDialog(QDialog):
         self.pocket_gated_model.setVisible(uses_pocket)
         self.pocket_terms_label.setVisible(uses_pocket)
 
-    def update_speech_backend_controls(self):
+    def update_speech_backend_controls(self) -> None:
         backend = self.speech_backend.currentData()
         uses_xtts = backend == "coqui-xtts"
         uses_moss = backend == "moss-tts"
@@ -1345,7 +1345,7 @@ class SettingsDialog(QDialog):
         self.speech_rate.setEnabled(uses_xtts)
         self.update_terms_control()
 
-    def validate_and_accept(self):
+    def validate_and_accept(self) -> None:
         errors = self.update_validation_summary()
         if errors:
             section, widget, _message = errors[0]
