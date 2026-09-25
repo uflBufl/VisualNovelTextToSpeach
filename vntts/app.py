@@ -3884,7 +3884,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         MacOSPermissionsDialog().exec()
 
     def open_settings_folder(self) -> Path:
-        path = get_settings_path().parent
+        path = self._settings_path.parent
         path.mkdir(parents=True, exist_ok=True)
         if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
             raise OSError("the operating system refused the folder-open request")

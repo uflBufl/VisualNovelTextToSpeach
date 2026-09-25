@@ -2793,6 +2793,30 @@ class TrayApplicationTest(unittest.TestCase):
         )
         tray_application.shutdown()
 
+    def test_settings_folder_uses_path_selected_at_startup(self):
+        with TemporaryDirectory() as directory:
+            settings_path = Path(directory) / "initial" / "settings.json"
+            with patch.dict(os.environ, {"VNTTS_SETTINGS_FILE": str(settings_path)}):
+                tray = TrayApplication(
+                    self.application,
+                    AppSettings(),
+                    controller_factory=Mock(return_value=Mock()),
+                )
+            with (
+                patch.dict(
+                    os.environ,
+                    {"VNTTS_SETTINGS_FILE": str(Path(directory) / "other.json")},
+                ),
+                patch(
+                    "vntts.app.QDesktopServices.openUrl", return_value=True
+                ) as open_url,
+            ):
+                self.assertEqual(tray.open_settings_folder(), settings_path.parent)
+            self.assertEqual(
+                open_url.call_args.args[0].toLocalFile(), str(settings_path.parent)
+            )
+            tray.shutdown()
+
     def test_settings_reject_duplicate_recorded_hotkeys(self):
         dialog = SettingsDialog(AppSettings())
         dialog.live_hotkey.set_hotkey(dialog.read_hotkey.hotkey())
