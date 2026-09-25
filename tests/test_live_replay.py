@@ -988,6 +988,64 @@ class LiveReplayTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "no sequence event_id"):
                 load_live_replay_corpus(path)
 
+    def test_sequence_contract_rejects_out_of_order_dialogue(self):
+        with TemporaryDirectory() as temporary_directory:
+            story_lines = [
+                {
+                    "line_id": "story:ordered:1",
+                    "chapter": "1",
+                    "sequence": 1,
+                    "speaker": "Ada",
+                    "text": "First.",
+                },
+                {
+                    "line_id": "story:ordered:2",
+                    "chapter": "1",
+                    "sequence": 2,
+                    "speaker": "Bea",
+                    "text": "Second.",
+                },
+            ]
+            events = [
+                {
+                    "event_id": "ordered-1",
+                    "sequence": 1,
+                    "kind": "speech",
+                    "control": "automatic",
+                    "successors": ["ordered-2"],
+                    "line_id": "story:ordered:1",
+                },
+                {
+                    "event_id": "ordered-2",
+                    "sequence": 2,
+                    "kind": "speech",
+                    "control": "terminal",
+                    "successors": [],
+                    "line_id": "story:ordered:2",
+                },
+            ]
+            path = self.create_sequence_corpus(
+                temporary_directory,
+                mode="shadow",
+                story_lines=story_lines,
+                events=events,
+                dialogue_line_ids=("story:ordered:1", "story:ordered:2"),
+                expected_counts={
+                    "ocr_calls": 2,
+                    "bounded_recoveries": 0,
+                    "key_dispatch_attempts": 0,
+                    "confirmed_key_dispatches": 0,
+                },
+            )
+            document = json.loads(path.read_text(encoding="utf-8"))
+            document["dialogue"].reverse()
+            document["live_sequence"]["expected"]["event_ids"].reverse()
+            document["live_sequence"]["expected"]["line_ids"].reverse()
+            path.write_text(json.dumps(document), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "bounded visible sequence path"):
+                load_live_replay_corpus(path)
+
     def test_sequence_story_and_plan_remain_bound_after_corpus_load(self):
         with TemporaryDirectory() as temporary_directory:
             story_lines = [

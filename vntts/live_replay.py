@@ -52,7 +52,7 @@ from vntts.live import (
     SpeechChunk,
     StableFrameRoute,
 )
-from vntts.live_sequence import LiveSequencePlan
+from vntts.live_sequence import LiveSequenceEvent, LiveSequencePlan, StoryCursor
 from vntts.ocr import DialogRegion
 from vntts.playback import PlaybackOutcome, PreparedPlayback, outcome_for_prepared
 from vntts.settings import AppSettings
@@ -1765,7 +1765,7 @@ def _live_sequence_binding(
         raise ValueError(
             "Live replay expected line_ids must exactly match dialogue line_id order"
         )
-    mapped_event_ids: list[str] = []
+    mapped_events: list[LiveSequenceEvent] = []
     for index, item in enumerate(dialogue, start=1):
         event = plan.events.get(item.event_id)
         if event is None:
@@ -1785,10 +1785,10 @@ def _live_sequence_binding(
                 )
         else:
             line = resolver.line_for_id(item.line_id)
-            if line is None or event.line_id != item.line_id:
+            if not event.is_speech or line is None or event.line_id != item.line_id:
                 raise ValueError(
                     f"Live replay dialogue {index} line_id is not bound by its exact "
-                    "story index and sequence event"
+                    "story index and speech sequence event"
                 )
             if (line.speaker, line.text) != (item.character, item.text):
                 raise ValueError(
@@ -1800,11 +1800,20 @@ def _live_sequence_binding(
                 f"Live replay dialogue {index} silent event cannot expect an audio "
                 "source"
             )
-        mapped_event_ids.append(event.event_id)
-    if expectation.event_ids != tuple(mapped_event_ids):
+        mapped_events.append(event)
+    if expectation.event_ids != tuple(event.event_id for event in mapped_events):
         raise ValueError(
             "Live replay expected event_ids do not match the sequence-plan bindings"
         )
+    for current, following in zip(mapped_events, mapped_events[1:], strict=False):
+        cursor = StoryCursor(plan)
+        cursor.anchor_event(current.event_id)
+        if following.event_id not in {
+            event.event_id for event in cursor.bounded_visible_successors()
+        }:
+            raise ValueError(
+                "Live replay dialogue must follow a bounded visible sequence path"
+            )
     return LiveReplaySequenceBinding(
         mode,
         story_index,
