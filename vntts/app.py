@@ -171,6 +171,7 @@ from vntts.window_capture import (
 
 application_name = "Visual Novel Text to Speech"
 default_xtts_model = "tts_models/multilingual/multi-dataset/xtts_v2"
+ValidationError = tuple[int, QWidget, str]
 
 
 def _onboarding_preview(text: str) -> str:
@@ -932,13 +933,13 @@ class SettingsDialog(QDialog):
 
     def _path_selector(
         self,
-        field,
-        name,
-        description,
+        field: QLineEdit,
+        name: str,
+        description: str,
         *,
-        directory=False,
-        file_filter="All files (*)",
-    ):
+        directory: bool = False,
+        file_filter: str = "All files (*)",
+    ) -> tuple[QHBoxLayout, QPushButton]:
         field.setAccessibleName(name)
         field.setAccessibleDescription(description)
         button = QPushButton("Browse...")
@@ -959,12 +960,12 @@ class SettingsDialog(QDialog):
 
     def _browse_path(
         self,
-        field,
-        name,
+        field: QLineEdit,
+        name: str,
         *,
-        directory=False,
-        file_filter="All files (*)",
-    ):
+        directory: bool = False,
+        file_filter: str = "All files (*)",
+    ) -> str:
         if directory:
             selected = QFileDialog.getExistingDirectory(
                 self,
@@ -982,13 +983,13 @@ class SettingsDialog(QDialog):
             field.setText(selected)
         return selected
 
-    def show_settings_section(self, index):
+    def show_settings_section(self, index: int) -> None:
         if 0 <= index < len(self.settings_regions):
             for position, region in enumerate(self.settings_regions):
                 region.setVisible(position == index)
             self.settings_scroll.verticalScrollBar().setValue(0)
 
-    def _connect_validation_updates(self):
+    def _connect_validation_updates(self) -> None:
         self.narrator_reference.textEdited.connect(self._use_narrator_file)
         for recorder in self.hotkey_recorders:
             recorder.keySequenceChanged.connect(self.update_validation_summary)
@@ -1022,7 +1023,7 @@ class SettingsDialog(QDialog):
             field.toggled.connect(self.update_validation_summary)
 
     @staticmethod
-    def _directory_validation_error(label, value):
+    def _directory_validation_error(label: str, value: str) -> str | None:
         text = value.strip()
         if not text:
             return f"{label}: choose a directory."
@@ -1032,7 +1033,7 @@ class SettingsDialog(QDialog):
         return None
 
     @staticmethod
-    def _file_validation_error(label, value):
+    def _file_validation_error(label: str, value: str) -> str | None:
         text = value.strip()
         if not text:
             return None
@@ -1040,10 +1041,10 @@ class SettingsDialog(QDialog):
             return f"{label}: the selected file does not exist."
         return None
 
-    def validation_errors(self):
-        errors = []
+    def validation_errors(self) -> tuple[ValidationError, ...]:
+        errors: list[ValidationError] = []
 
-        def add(section, widget, message):
+        def add(section: int, widget: QWidget, message: str | None) -> None:
             if message:
                 errors.append((section, widget, message))
 
@@ -1099,7 +1100,7 @@ class SettingsDialog(QDialog):
                 "You can listen before choosing.",
             )
         game_pack = self.game_pack.text().strip()
-        effective_settings = None
+        effective_settings: AppSettings | None = None
         if game_pack:
             try:
                 effective_settings = self._settings_with_game_pack(self._raw_settings())
@@ -1181,7 +1182,7 @@ class SettingsDialog(QDialog):
                 )
         return tuple(errors)
 
-    def update_validation_summary(self, *_args):
+    def update_validation_summary(self, *_args: object) -> tuple[ValidationError, ...]:
         from vntts.speech_presentation import narrator_voice_label
 
         self.narrator_voice.setText(
@@ -1199,7 +1200,7 @@ class SettingsDialog(QDialog):
             self.validation_summary.setStyleSheet("")
         return errors
 
-    def _resize_for_available_screen(self):
+    def _resize_for_available_screen(self) -> None:
         available = self.screen().availableGeometry()
         horizontal_margin = 64
         vertical_margin = 64
@@ -1210,27 +1211,29 @@ class SettingsDialog(QDialog):
             min(800, available_height),
         )
 
-    def browse_screenshot_directory(self):
+    def browse_screenshot_directory(self) -> None:
         self._browse_path(
             self.screenshot_directory,
             "Screenshot directory",
             directory=True,
         )
 
-    def browse_ocr_diagnostics_directory(self):
+    def browse_ocr_diagnostics_directory(self) -> None:
         self._browse_path(
             self.ocr_diagnostics_directory,
             "OCR diagnostics directory",
             directory=True,
         )
 
-    def choose_narrator(self):
+    def choose_narrator(self) -> None:
         dialog = GameNarratorDialog(
             self._raw_settings(), self, voice_library=self.voice_library
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         candidate = dialog.result_settings
+        if candidate is None:
+            return
         self.speech_backend.setCurrentIndex(
             self.speech_backend.findData(candidate.speech_backend)
         )
@@ -1249,11 +1252,11 @@ class SettingsDialog(QDialog):
             self.advanced_narrator.setChecked(False)
         self.update_validation_summary()
 
-    def _use_narrator_file(self, path):
+    def _use_narrator_file(self, path: str) -> None:
         if path.strip():
             self.update_validation_summary()
 
-    def browse_narrator_reference(self):
+    def browse_narrator_reference(self) -> None:
         selected = self._browse_path(
             self.narrator_reference,
             "Narrator reference",
