@@ -2813,7 +2813,7 @@ class TrayApplicationTest(unittest.TestCase):
             ):
                 self.assertEqual(tray.open_settings_folder(), settings_path.parent)
             self.assertEqual(
-                open_url.call_args.args[0].toLocalFile(), str(settings_path.parent)
+                Path(open_url.call_args.args[0].toLocalFile()), settings_path.parent
             )
             tray.shutdown()
 
