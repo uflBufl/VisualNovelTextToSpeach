@@ -2927,7 +2927,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         pack_result = dialog.pack_result()
         if not isinstance(pack_result, OfflinePackResult):
             pack_result = None
-        self.pregeneration_dialog = None
         if pack_result is None:
             self.show_error(
                 "Offline preparation finished without a validated game pack"
