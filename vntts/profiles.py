@@ -191,7 +191,7 @@ class GameProfileStore:
             ]
             if len(store.profiles) != len(profile_documents):
                 raise ValueError("profiles must contain objects")
-            store._ensure_unique_profiles()
+            store._ensure_unique_profiles(store.profiles)
             return store
 
         def fallback() -> GameProfileStore:
@@ -212,6 +212,8 @@ class GameProfileStore:
         return self._save_profiles(self.profiles)
 
     def _save_profiles(self, profiles: Iterable[GameProfile]) -> Path:
+        profiles = list(profiles)
+        self._ensure_unique_profiles(profiles)
         write_versioned_json(
             self.path,
             profiles_schema_version,
@@ -294,13 +296,15 @@ class GameProfileStore:
             raise KeyError(f"Unknown game profile: {profile_id}")
         return profile
 
-    def _ensure_unique_profiles(self) -> None:
-        ids = [profile.id for profile in self.profiles]
+    @staticmethod
+    def _ensure_unique_profiles(profiles: Iterable[GameProfile]) -> None:
+        profiles = list(profiles)
+        ids = [profile.id for profile in profiles]
         if any(not profile_id.strip() for profile_id in ids):
             raise ValueError("profile IDs must not be empty")
         if len(ids) != len(set(ids)):
             raise ValueError("profile IDs must be unique")
-        names = [profile.name.casefold() for profile in self.profiles]
+        names = [profile.name.casefold() for profile in profiles]
         if len(names) != len(set(names)):
             raise ValueError("profile names must be unique")
 
