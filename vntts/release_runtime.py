@@ -260,6 +260,10 @@ def stage_pocket_runtime(
     lockfile = backend_project / "uv.lock"
     if not lockfile.is_file():
         raise FileNotFoundError(f"Pocket runtime lockfile is missing: {lockfile}")
+    if backend_project.is_relative_to(destination):
+        raise RuntimeError(
+            "Pocket runtime staging destination contains the source project"
+        )
     if destination.exists():
         shutil.rmtree(destination)
     destination.mkdir(parents=True)

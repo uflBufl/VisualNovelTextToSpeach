@@ -43,6 +43,22 @@ class ReleaseRuntimeTest(unittest.TestCase):
             self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep")
             run.assert_not_called()
 
+    def test_staging_rejects_destination_containing_source_project(self):
+        with TemporaryDirectory() as directory:
+            project = Path(directory) / "project"
+            backend = project / "backends" / "pocket-tts"
+            backend.mkdir(parents=True)
+            (backend / "uv.lock").write_text("locked", encoding="utf-8")
+            sentinel = project / "source.txt"
+            sentinel.write_text("keep", encoding="utf-8")
+            run = Mock()
+
+            with self.assertRaisesRegex(RuntimeError, "contains the source project"):
+                stage_pocket_runtime(project, project, run=run)
+
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep")
+            run.assert_not_called()
+
     def test_stages_locked_runtime_and_requires_relocation_probe(self):
         with TemporaryDirectory() as directory:
             project = Path(directory) / "project"
