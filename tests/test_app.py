@@ -1191,7 +1191,6 @@ class TrayApplicationTest(unittest.TestCase):
 
         self.assertTrue(tray_application.toggle_live())
 
-        self.assertIsNone(tray_application.live_voice_preflight_prompt)
         controller.approve_live_narrator_fallbacks.assert_not_called()
         controller.unresolved_live_speakers.assert_called_once_with()
         controller.toggle_live.assert_called_once_with()
@@ -1213,7 +1212,6 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertFalse(tray_application.toggle_live())
 
         runner.start.assert_called_once_with(controller.identify_live_scope)
-        self.assertIsNone(tray_application.live_voice_preflight_prompt)
         controller.toggle_live.assert_not_called()
 
         tray_application._live_scope_finished(True, None)
@@ -1360,7 +1358,6 @@ class TrayApplicationTest(unittest.TestCase):
         tray_application._live_scope_finished(True, None)
 
         controller.toggle_live.assert_called_once_with()
-        self.assertIsNone(tray_application.live_voice_preflight_prompt)
         tray_application.shutdown()
 
     def test_repeated_live_start_coalesces_scope_identification(self):

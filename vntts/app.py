@@ -1692,12 +1692,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.unknown_speaker_mapping_in_progress = None
         self.resume_live_after_unknown_mapping = False
         self.onboarding_cancel_event = Event()
-        self.live_voice_preflight_prompt = None
-        self.live_voice_preflight_assign_button = None
-        self.live_voice_preflight_narrator_button = None
-        self.live_voice_preflight_cancel_button = None
-        self.live_voice_preflight_action_prompt = None
-        self.pending_live_voice_preflight_speakers = ()
         self.restore_compact_after_calibration = False
         self._notification_recovery: str | None = None
         self._background_notification_shown = False
@@ -2227,7 +2221,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self.narrator_dialog is not None:
             return False
         if not self.controller.is_live_running:
-            return self._start_live_with_preflight()
+            return self._start_live_with_available_scope()
         return self._toggle_controller_live()
 
     def choose_sequence_position(self) -> bool:
@@ -2322,17 +2316,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.signals.live_changed.emit(running)
         return running
 
-    def _start_live_with_preflight(
-        self,
-        *,
-        narrator_approval: tuple[str, ...] | None = None,
-        allow_scope_bootstrap: bool = True,
+    def _start_live_with_available_scope(
+        self, *, allow_scope_bootstrap: bool = True
     ) -> bool:
-        del narrator_approval
         unresolved = getattr(self.controller, "unresolved_live_speakers", None)
         result = unresolved() if callable(unresolved) else ()
         if result is None:
-            self.pending_live_voice_preflight_speakers = ()
             self.signals.live_changed.emit(False)
             if allow_scope_bootstrap:
                 self._identify_live_scope_then_start()
@@ -2342,7 +2331,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                     "not identified"
                 )
             return False
-        self.pending_live_voice_preflight_speakers = ()
         return self._toggle_controller_live()
 
     def _identify_live_scope_then_start(self) -> bool:
@@ -2418,7 +2406,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.set_status(message)
             self.signals.live_changed.emit(False)
             return
-        self._start_live_with_preflight(allow_scope_bootstrap=False)
+        self._start_live_with_available_scope(allow_scope_bootstrap=False)
 
     def _offer_story_match_recovery(self, message):
         self.show_dashboard()
@@ -2466,117 +2454,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.set_status("Live reading cancelled: story position was not found.")
         self.signals.live_changed.emit(False)
         return False
-
-    def _show_live_voice_preflight(self, speakers):
-        if self.live_voice_preflight_prompt is not None:
-            self.live_voice_preflight_prompt.setProperty(
-                "vntts_live_voice_preflight_handled",
-                True,
-            )
-            self.live_voice_preflight_prompt.close()
-        prompt = QMessageBox()
-        prompt.setWindowModality(Qt.WindowModality.NonModal)
-        prompt.setWindowFlag(Qt.WindowType.Tool, True)
-        prompt.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-        if sys.platform == "darwin":
-            prompt.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
-        prompt.setIcon(QMessageBox.Icon.Warning)
-        prompt.setWindowTitle("Choose voices before live reading")
-        prompt.setText(f"{len(speakers)} named story speaker(s) need a voice decision.")
-        preview = ", ".join(speakers[:8])
-        if len(speakers) > 8:
-            preview = f"{preview}, and {len(speakers) - 8} more"
-        prompt.setInformativeText(
-            f"{preview}\n\nThese upcoming named speakers have at least one line "
-            "with no assigned voice and no eligible original game-audio, "
-            "verified generated, omission, or compatible live-fallback route. "
-            "A speaker may be "
-            "listed even when some of their other lines are already covered.\n\n"
-            "Assign distinct voices, explicitly approve the narrator for this "
-            "live session, or cancel. Live reading will not start until you "
-            "decide."
-        )
-        assign = prompt.addButton(
-            "Assign voices...",
-            QMessageBox.ButtonRole.ActionRole,
-        )
-        narrator = prompt.addButton(
-            "Use narrator for all",
-            QMessageBox.ButtonRole.AcceptRole,
-        )
-        cancel = prompt.addButton(
-            "Cancel live reading",
-            QMessageBox.ButtonRole.RejectRole,
-        )
-        prompt.setEscapeButton(cancel)
-        self.live_voice_preflight_prompt = prompt
-        self.live_voice_preflight_assign_button = assign
-        self.live_voice_preflight_narrator_button = narrator
-        self.live_voice_preflight_cancel_button = cancel
-        prompt.buttonClicked.connect(self._live_voice_preflight_clicked)
-        prompt.finished.connect(self._live_voice_preflight_finished)
-        prompt.open()
-        QTimer.singleShot(0, lambda: configure_floating_window(prompt))
-
-    def _live_voice_preflight_clicked(self, button):
-        prompt = self.sender()
-        if not isinstance(prompt, QMessageBox):
-            return
-        prompt.setProperty("vntts_live_voice_preflight_handled", True)
-        speakers = self.pending_live_voice_preflight_speakers
-        prompt.setEnabled(False)
-        self.live_voice_preflight_action_prompt = prompt
-        if button is self.live_voice_preflight_assign_button:
-            action = "assign"
-        elif button is self.live_voice_preflight_narrator_button:
-            action = "narrator"
-        else:
-            action = "cancel"
-        # QDialogButtonBox continues native mouse-release handling after
-        # emitting clicked(). On macOS, synchronously destroying the last-owned
-        # non-modal dialog here can leave standardButton() with a stale pointer.
-        QTimer.singleShot(
-            0,
-            lambda active_prompt=prompt, selected_action=action, scope=speakers: (
-                self._complete_live_voice_preflight_action(
-                    active_prompt,
-                    selected_action,
-                    scope,
-                )
-            ),
-        )
-
-    def _complete_live_voice_preflight_action(self, prompt, action, speakers):
-        if self._shutting_down or prompt is not self.live_voice_preflight_action_prompt:
-            return
-        self.live_voice_preflight_action_prompt = None
-        if prompt.isVisible():
-            prompt.close()
-        if action == "assign":
-            self._review_live_voice_preflight()
-        elif action == "narrator":
-            self._start_live_with_preflight(narrator_approval=speakers)
-        else:
-            self.set_status("Live reading cancelled: character voices need a decision")
-
-    def _review_live_voice_preflight(self):
-        speakers = self.pending_live_voice_preflight_speakers
-        if not speakers:
-            return
-        self.resume_live_after_unknown_mapping = True
-        self._open_pending_speaker_mapping(speakers[0])
-
-    def _live_voice_preflight_finished(self, _result):
-        prompt = self.sender()
-        if isinstance(prompt, QMessageBox) and not prompt.property(
-            "vntts_live_voice_preflight_handled"
-        ):
-            self.set_status("Live reading cancelled: character voices need a decision")
-        if prompt is self.live_voice_preflight_prompt:
-            self.live_voice_preflight_prompt = None
-            self.live_voice_preflight_assign_button = None
-            self.live_voice_preflight_narrator_button = None
-            self.live_voice_preflight_cancel_button = None
 
     def toggle_speech_pause(self):
         if self.narrator_dialog is not None:
@@ -4231,17 +4108,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._apply_controller_action_state()
         self.resume_live_after_unknown_mapping = False
         self._queued_unknown_speakers.clear()
-        self.live_voice_preflight_action_prompt = None
-        if self.live_voice_preflight_prompt is not None:
-            self.live_voice_preflight_prompt.setProperty(
-                "vntts_live_voice_preflight_handled",
-                True,
-            )
-            self.live_voice_preflight_prompt.close()
-            self.live_voice_preflight_prompt = None
-            self.live_voice_preflight_assign_button = None
-            self.live_voice_preflight_narrator_button = None
-            self.live_voice_preflight_cancel_button = None
         if self.unknown_speaker_prompt is not None:
             self.unknown_speaker_prompt.close()
             self.unknown_speaker_prompt = None

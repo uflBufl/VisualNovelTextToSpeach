@@ -27,7 +27,7 @@ Planned implementation order after approval:
 
 ## P1 - Type the desktop application shell
 
-- [ ] Reduce the 80 `no-untyped-def` findings in `vntts/app.py` by coherent
+- [ ] Reduce the 75 `no-untyped-def` findings in `vntts/app.py` by coherent
       feature area. Use existing domain types and narrow protocols for Qt,
       controller and worker callbacks rather than replacing missing types with
       `Any` or unverified casts.
@@ -35,15 +35,6 @@ Planned implementation order after approval:
       `vntts/app.py`, lower `tests/fixtures/mypy-inventory-v1.json` to the
       measured remaining count, and commit that area separately. When the count
       reaches zero, add `vntts/app.py` to the normal mypy scope.
-
-## Ready - Remove unreachable blocking live-voice preflight UI
-
-- [ ] The nonblocking live-start path no longer calls `_show_live_voice_preflight`,
-      but its dialog handlers, state, shutdown branch and unused
-      `narrator_approval` argument remain. Remove that dead path after checking
-      reflective references and preserve the tests that prove unresolved
-      speakers do not block live reading. Gate: full GUI tests, mypy inventory
-      and Ruff complexity checks pass.
 
 ## P0 - Play while offline audio is still preparing
 
