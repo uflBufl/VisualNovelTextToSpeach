@@ -68,6 +68,7 @@ from vntts.dashboard_ui import (
     configure_floating_window,
 )
 from vntts.diagnostics import (
+    DiagnosticSnapshot,
     diagnostic_error_guidance,
     diagnostic_remediation,
     macos_permission_warnings,
@@ -1481,6 +1482,11 @@ class SettingsDialog(QDialog):
 
 
 class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
+    controller: AppController
+    dashboard: ControlDashboard
+    diagnostics_dialog: DiagnosticsDialog | None
+    signals: AppSignals
+
     def __init__(
         self,
         application,
@@ -2602,7 +2608,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.show_dashboard()
         self.restore_compact_after_calibration = False
 
-    def open_diagnostics(self):
+    def open_diagnostics(self) -> None:
         if self.diagnostics_dialog is None:
             self.diagnostics_dialog = DiagnosticsDialog()
             self.diagnostics_dialog.refresh_requested.connect(self.refresh_diagnostics)
@@ -2628,7 +2634,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.diagnostics_dialog.raise_()
         self.diagnostics_dialog.activateWindow()
 
-    def refresh_diagnostics(self):
+    def refresh_diagnostics(self) -> None:
         permission_status = get_macos_permission_status()
         if permission_status["screen_capture"] is False:
             self.signals.diagnostics_failed.emit(
@@ -2648,7 +2654,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             lambda: self._capture_diagnostic_snapshot(generation),
         )
 
-    def _capture_diagnostic_snapshot(self, generation):
+    def _capture_diagnostic_snapshot(self, generation: int) -> None:
         if generation != self.diagnostics_refresh_generation:
             return
         self.diagnostics_refresh_runner.start(
@@ -2656,7 +2662,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             notify=False,
         )
 
-    def _diagnostics_closed(self, dialog):
+    def _diagnostics_closed(self, dialog: DiagnosticsDialog) -> None:
         if self.diagnostics_dialog is dialog:
             self._cancel_diagnostics_refresh()
 
@@ -2664,30 +2670,34 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.diagnostics_refresh_generation += 1
         self.diagnostics_refresh_runner.cancel()
 
-    def _diagnostics_refresh_is_current(self, generation):
+    def _diagnostics_refresh_is_current(self, generation: int) -> bool:
         return bool(
             generation == self.diagnostics_refresh_generation
             and self.diagnostics_dialog is not None
             and self.diagnostics_dialog.refresh_in_flight
         )
 
-    def _diagnostics_refresh_finished(self, snapshot, error):
+    def _diagnostics_refresh_finished(
+        self, snapshot: DiagnosticSnapshot | None, error: Exception | None
+    ) -> None:
         if not self._diagnostics_refresh_is_current(
             self.diagnostics_refresh_generation
         ):
             return
         if error is not None:
             self.set_diagnostics_error(diagnostic_error_guidance(error))
+        elif snapshot is None:
+            self.set_diagnostics_error("Diagnostic capture returned no result")
         else:
             self.update_diagnostics_snapshot(snapshot)
 
-    def update_diagnostics_snapshot(self, snapshot):
+    def update_diagnostics_snapshot(self, snapshot: DiagnosticSnapshot) -> None:
         self.dashboard.set_diagnostic(snapshot)
         if self.diagnostics_dialog is not None:
             self.diagnostics_dialog.set_snapshot(snapshot)
             self.diagnostics_dialog.restore_after_capture()
 
-    def set_diagnostics_error(self, message):
+    def set_diagnostics_error(self, message: str) -> None:
         if self.diagnostics_dialog is not None:
             self.diagnostics_dialog.set_warning(
                 message,
@@ -2695,7 +2705,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             )
             self.diagnostics_dialog.restore_after_capture()
 
-    def _run_diagnostics_remediation(self, remediation):
+    def _run_diagnostics_remediation(self, remediation: str) -> None:
         if remediation == "macos-permissions":
             self.open_macos_permissions()
         elif remediation == "settings":

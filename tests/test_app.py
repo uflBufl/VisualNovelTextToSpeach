@@ -3215,6 +3215,21 @@ class TrayApplicationTest(unittest.TestCase):
         runner.start.assert_not_called()
         tray_application.shutdown()
 
+    def test_empty_diagnostics_result_is_reported(self) -> None:
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        dialog = Mock(refresh_in_flight=True)
+        tray_application.diagnostics_dialog = dialog
+
+        tray_application._diagnostics_refresh_finished(None, None)
+
+        dialog.set_warning.assert_called_once()
+        self.assertIn("no result", dialog.set_warning.call_args.args[0])
+        tray_application.shutdown()
+
     def test_diagnostic_result_restores_concealed_window(self):
         tray_application = TrayApplication(
             self.application,
