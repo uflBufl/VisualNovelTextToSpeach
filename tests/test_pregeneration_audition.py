@@ -3,6 +3,7 @@ import json
 import os
 import unittest
 import wave
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -488,6 +489,45 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
                     service.generate(plan, group, group.candidates[0].source_id)
 
             self.assertFalse(tuple((root / "auditions").glob("*.wav")))
+
+    def test_competing_service_cannot_publish_the_same_preview(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            source_id = group.candidates[0].source_id
+            first_rendering = Event()
+            release_first = Event()
+
+            def wait_during_render():
+                first_rendering.set()
+                self.assertTrue(release_first.wait(5))
+
+            first_backend = FakeBackend("moss-tts", on_render=wait_during_render)
+            second_backend = FakeBackend("moss-tts")
+            first = VoiceAuditionPreviewService(
+                root / "auditions", backend_factory=lambda *_args, **_kw: first_backend
+            )
+            second = VoiceAuditionPreviewService(
+                root / "auditions", backend_factory=lambda *_args, **_kw: second_backend
+            )
+            self.addCleanup(first.close)
+            self.addCleanup(second.close)
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                first_result = executor.submit(first.generate, plan, group, source_id)
+                self.assertTrue(first_rendering.wait(5))
+                second_result = executor.submit(second.generate, plan, group, source_id)
+                try:
+                    with self.assertRaisesRegex(
+                        VoiceAuditionError, "already being generated"
+                    ):
+                        second_result.result(timeout=5)
+                finally:
+                    release_first.set()
+                preview = first_result.result(timeout=5)
+
+            self.assertTrue(preview.path.is_file())
+            self.assertEqual(second_backend.requests, [])
+            self.assertTrue(second.generate(plan, group, source_id).reused)
 
     @patch("vntts.moss_cpp_backend.moss_cpp_requested", return_value=True)
     def test_native_quality_failure_refreshes_the_backend_cache(self, _native):

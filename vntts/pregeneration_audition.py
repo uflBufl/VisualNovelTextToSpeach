@@ -24,6 +24,10 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_manifest import VoiceManifestError
 
 from vntts.application_directories import get_local_data_directory
+from vntts.authoring.advisory_lock import (
+    AdvisoryLockBusyError,
+    exclusive_advisory_lock,
+)
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_manifest import AudioQuality, inspect_generated_wav
 from vntts.authoring.speech_quality import (
@@ -172,12 +176,13 @@ class VoiceAuditionPreviewService:
             identity = _preview_identity(plan, group, candidate, preview_text)
             target = self.root / f"{identity}.wav"
             native_context = self._native_preview_context(plan, identity)
-            if native_context is not None:
-                from vntts.support import native_speech_context
+            from vntts.support import native_speech_context
 
-                context_token = native_speech_context.set(native_context)
-            else:
-                context_token = None
+            context_token = (
+                native_speech_context.set(native_context)
+                if native_context is not None
+                else None
+            )
             started = monotonic()
             telemetry = _PreviewTelemetry()
             try:
@@ -191,54 +196,53 @@ class VoiceAuditionPreviewService:
                         "reference-preflight-failed",
                     )
                     raise
-                if target.exists():
-                    try:
-                        preview, telemetry.seed = _cached_preview_for_request(
-                            target,
-                            identity,
-                            plan,
-                            group,
-                            candidate,
-                            preview_text,
-                            notify,
+                with exclusive_advisory_lock(self.root / f"{identity}.lock"):
+                    if target.exists():
+                        try:
+                            preview, telemetry.seed = _cached_preview_for_request(
+                                target,
+                                identity,
+                                plan,
+                                group,
+                                candidate,
+                                preview_text,
+                                notify,
+                            )
+                        except VoiceAuditionError:
+                            telemetry.outcome, telemetry.reason = (
+                                "cache_validation_failed",
+                                "cache-validation-failed",
+                            )
+                            raise
+                        (
+                            telemetry.outcome,
+                            telemetry.reason,
+                            telemetry.stage,
+                            telemetry.cache_source,
+                        ) = (
+                            "success",
+                            "accepted",
+                            "cache",
+                            "preview-file",
                         )
-                    except VoiceAuditionError:
-                        telemetry.outcome, telemetry.reason = (
-                            "cache_validation_failed",
-                            "cache-validation-failed",
-                        )
-                        raise
-                    (
-                        telemetry.outcome,
-                        telemetry.reason,
-                        telemetry.stage,
-                        telemetry.cache_source,
-                    ) = (
-                        "success",
-                        "accepted",
-                        "cache",
-                        "preview-file",
+                        return preview
+                    return self._generate_new_preview(
+                        plan,
+                        group,
+                        candidate,
+                        preview_text,
+                        target,
+                        identity,
+                        registry,
+                        cancellation,
+                        progress,
+                        notify,
+                        telemetry,
                     )
-                    return preview
-                preview = self._generate_new_preview(
-                    plan,
-                    group,
-                    candidate,
-                    preview_text,
-                    target,
-                    identity,
-                    registry,
-                    cancellation,
-                    progress,
-                    notify,
-                    telemetry,
-                )
-                telemetry.outcome, telemetry.reason, telemetry.cache_source = (
-                    "success",
-                    "accepted",
-                    telemetry.cache_source,
-                )
-                return preview
+            except AdvisoryLockBusyError as error:
+                raise VoiceAuditionError(
+                    "This voice preview is already being generated; retry shortly"
+                ) from error
             except VoiceAuditionCancelled:
                 telemetry.outcome, telemetry.reason = "cancelled", "cancelled"
                 raise
@@ -308,7 +312,7 @@ class VoiceAuditionPreviewService:
             telemetry,
             notify,
         )
-        return _cached_preview(
+        preview = _cached_preview(
             target,
             identity,
             plan,
@@ -318,6 +322,8 @@ class VoiceAuditionPreviewService:
             reused=False,
             seed=telemetry.seed,
         )
+        telemetry.outcome, telemetry.reason = "success", "accepted"
+        return preview
 
     def _ensure_preview_backend(
         self,
