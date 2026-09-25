@@ -240,6 +240,26 @@ class LiveReplayCaptureTest(unittest.TestCase):
             with self.assertRaisesRegex(LiveReplayCaptureError, "already exists"):
                 session.finish()
 
+    def test_capture_retries_after_frames_directory_creation_failure(self):
+        with TemporaryDirectory() as directory:
+            requested = Path(directory) / "capture"
+            root = requested.parent.resolve() / requested.name
+            original_mkdir = Path.mkdir
+
+            def fail_frames_directory(path, *arguments, **keywords):
+                if path == root / "frames":
+                    raise OSError("injected frames directory failure")
+                return original_mkdir(path, *arguments, **keywords)
+
+            with patch.object(Path, "mkdir", fail_frames_directory):
+                with self.assertRaisesRegex(
+                    LiveReplayCaptureError, "frames directory failure"
+                ):
+                    LiveReplayCaptureSession(requested)
+
+            self.assertFalse(root.exists())
+            LiveReplayCaptureSession(requested)
+
     def test_capture_retries_after_partial_frame_write(self):
         with TemporaryDirectory() as directory:
             root = Path(directory) / "capture"

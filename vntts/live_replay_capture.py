@@ -164,11 +164,18 @@ class LiveReplayCaptureSession:
             )
         parent = selected.parent.resolve()
         self.directory = parent / selected.name
+        created_directory = False
         try:
             self.directory.mkdir(mode=0o700)
+            created_directory = True
             self.frames_directory = self.directory / "frames"
             self.frames_directory.mkdir(mode=0o700)
         except OSError as error:
+            if created_directory:
+                try:
+                    self.directory.rmdir()
+                except OSError:
+                    pass
             raise LiveReplayCaptureError(
                 f"Unable to create replay capture output: {error}"
             ) from error
