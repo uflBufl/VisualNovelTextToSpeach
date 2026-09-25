@@ -533,7 +533,9 @@ class MossCppBackendTest(unittest.TestCase):
                 len(json.loads((self.root / "encoded.json").read_text())), 2
             )
             backend._stop_server()
-            self.assertFalse(directory.exists())
+            self.assertIsNone(backend.server_directory)
+            if sys.platform != "win32":
+                self.assertFalse(directory.exists())
             backend.render(SynthesisRequest("Narrator", "After restart.")).collect()
             self.assertEqual(normalize.call_count, 3)
             self.assertEqual(
@@ -680,7 +682,9 @@ class MossCppBackendTest(unittest.TestCase):
                 directory = Path(backend.server_directory.name)
                 backend._stop_server()
                 self.assertIsNone(backend.runtime_status)
-                self.assertFalse(directory.exists())
+                self.assertIsNone(backend.server_directory)
+                if sys.platform != "win32":
+                    self.assertFalse(directory.exists())
                 (self.root / "startup.log").write_text("")
                 backend._start_server(lambda: False)
                 if layers != "0":
@@ -880,7 +884,9 @@ class MossCppBackendTest(unittest.TestCase):
         )
         directory = Path(backend.server_directory.name)
         backend.shutdown()
-        self.assertFalse(directory.exists())
+        self.assertIsNone(backend.server_directory)
+        if sys.platform != "win32":
+            self.assertFalse(directory.exists())
         output = SupportBundleBuilder(
             AppSettings(),
             RuntimeSupportLog(),

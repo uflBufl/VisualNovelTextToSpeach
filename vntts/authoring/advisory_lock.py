@@ -20,7 +20,6 @@ if sys.platform == "win32":
     def _acquire(descriptor: int, blocking: bool, path: Path) -> None:
         if os.fstat(descriptor).st_size < 1:
             os.write(descriptor, b"\0")
-            os.fsync(descriptor)
         os.lseek(descriptor, 0, os.SEEK_SET)
         try:
             mode = msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK
