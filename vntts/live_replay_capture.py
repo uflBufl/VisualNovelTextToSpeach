@@ -199,11 +199,13 @@ class LiveReplayCaptureSession:
         self.finished: bool = False
 
     def note_duplicate_fingerprint(self) -> None:
+        self._ensure_open()
         self.duplicate_fingerprints += 1
 
     def note_uncertain_observation(
         self, frame: Image.Image | CapturedImageFrame | None = None
     ) -> None:
+        self._ensure_open()
         if frame is not None:
             frame_spec = self._write_frame(frame)
             self.uncertain_observations += 1
@@ -225,8 +227,7 @@ class LiveReplayCaptureSession:
         text: object,
     ) -> bool:
         """Record one accepted OCR observation and its exact cropped pixels."""
-        if self.finished:
-            raise LiveReplayCaptureError("Replay capture is already finished")
+        self._ensure_open()
         character = str(character or "Narrator").strip() or "Narrator"
         text = " ".join(str(text or "").split())
         frame_spec = self._write_frame(frame)
@@ -495,6 +496,10 @@ class LiveReplayCaptureSession:
             "observed_text": text,
             "frames": [frame_spec],
         }
+
+    def _ensure_open(self) -> None:
+        if self.finished:
+            raise LiveReplayCaptureError("Replay capture is already finished")
 
     def _finalize_active(self, reason: str) -> None:
         if self.active is None:

@@ -404,6 +404,25 @@ class LiveReplayCaptureTest(unittest.TestCase):
             with self.assertRaisesRegex(LiveReplayCaptureError, "no accepted"):
                 session.finish()
 
+    def test_capture_rejects_mutation_after_finish(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "capture"
+            session = LiveReplayCaptureSession(root)
+            session.observe(frame("red"), "Narrator", "A line.")
+            result = session.finish()
+            frames = sorted((root / "frames").iterdir())
+
+            with self.assertRaisesRegex(LiveReplayCaptureError, "already finished"):
+                session.note_uncertain_observation(frame("blue"))
+
+            self.assertEqual(sorted((root / "frames").iterdir()), frames)
+            self.assertEqual(
+                json.loads(result.observation_ledger.read_text(encoding="utf-8"))[
+                    "observation_count"
+                ],
+                1,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
