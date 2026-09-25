@@ -270,7 +270,9 @@ class GenerationLease:
         _error: BaseException | None,
         _traceback: TracebackType | None,
     ) -> None:
-        ownership_error: BulkGenerationError | AdvisoryLockBusyError | None = None
+        ownership_error: (
+            BulkGenerationError | AdvisoryLockBusyError | OSError | None
+        ) = None
         try:
             with exclusive_advisory_lock(
                 self.path.with_suffix(".guard"), blocking=True
@@ -282,7 +284,7 @@ class GenerationLease:
                     ownership_error = BulkGenerationError(
                         "Generation lease ownership changed during the run"
                     )
-        except (BulkGenerationError, AdvisoryLockBusyError) as error:
+        except (BulkGenerationError, AdvisoryLockBusyError, OSError) as error:
             ownership_error = error
         if ownership_error is not None and error_type is None and not self.committed:
             raise BulkGenerationError(str(ownership_error)) from ownership_error

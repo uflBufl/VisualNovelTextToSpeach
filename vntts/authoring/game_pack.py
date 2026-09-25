@@ -933,7 +933,7 @@ class _PublicationLease:
                         self.path.unlink()
                     else:
                         ownership_lost = True
-        except AdvisoryLockBusyError:
+        except AdvisoryLockBusyError, OSError:
             ownership_lost = True
         if ownership_lost and exc_type is None and not self.committed:
             raise FinalGamePackError(

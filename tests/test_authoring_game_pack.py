@@ -1854,6 +1854,31 @@ class AuthoringGamePackTest(unittest.TestCase):
             self.assertTrue(result.manifest.is_file())
             self.assertEqual(load_game_pack(result.manifest).game_id, "synthetic-game")
 
+    def test_post_commit_lease_unlink_failure_does_not_report_failure(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = prepare_authoring_fixture(root, names=("one",))
+            review_generation_item(
+                fixture["state"], fixture["items"][0]["queue_id"], "rejected"
+            )
+            real_unlink = Path.unlink
+
+            def fail_lease_cleanup(path, *args, **kwargs):
+                if path.name in {
+                    ".generation-lease.json",
+                    ".final-pack.publication.json",
+                }:
+                    raise PermissionError("injected lease cleanup failure")
+                return real_unlink(path, *args, **kwargs)
+
+            with patch.object(Path, "unlink", fail_lease_cleanup):
+                result = publish(fixture, root / "final-pack")
+
+            self.assertTrue(result.manifest.is_file())
+            self.assertEqual(load_game_pack(result.manifest).game_id, "synthetic-game")
+            self.assertTrue((fixture["output"] / ".generation-lease.json").exists())
+            self.assertTrue((root / ".final-pack.publication.json").exists())
+
     def test_rejects_voice_reference_symlink_escape(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
