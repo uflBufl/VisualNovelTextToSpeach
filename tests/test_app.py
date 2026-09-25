@@ -3185,6 +3185,36 @@ class TrayApplicationTest(unittest.TestCase):
         set_snapshot.assert_not_called()
         tray_application.shutdown()
 
+    def test_closed_diagnostics_dialog_cancels_deferred_capture(self) -> None:
+        controller = Mock()
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        dialog = Mock(refresh_in_flight=True)
+        tray_application.diagnostics_dialog = dialog
+        runner = Mock(active=False)
+        tray_application.diagnostics_refresh_runner = runner
+        callbacks = []
+
+        with (
+            patch(
+                "vntts.app.get_macos_permission_status",
+                return_value={"screen_capture": True, "accessibility": True},
+            ),
+            patch(
+                "vntts.app.QTimer.singleShot",
+                side_effect=lambda _delay, callback: callbacks.append(callback),
+            ),
+        ):
+            tray_application.refresh_diagnostics()
+            tray_application._diagnostics_closed(dialog)
+            callbacks.pop()()
+
+        runner.start.assert_not_called()
+        tray_application.shutdown()
+
     def test_diagnostic_result_restores_concealed_window(self):
         tray_application = TrayApplication(
             self.application,

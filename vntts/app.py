@@ -2658,7 +2658,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def _diagnostics_closed(self, dialog):
         if self.diagnostics_dialog is dialog:
-            self.diagnostics_refresh_runner.cancel()
+            self._cancel_diagnostics_refresh()
+
+    def _cancel_diagnostics_refresh(self) -> None:
+        self.diagnostics_refresh_generation += 1
+        self.diagnostics_refresh_runner.cancel()
 
     def _diagnostics_refresh_is_current(self, generation):
         return bool(
@@ -4074,7 +4078,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def _begin_controller_lifecycle(self, cancellation=None):
         self._live_scope_generation = None
         self.live_scope_runner.cancel()
-        self.diagnostics_refresh_runner.cancel()
+        self._cancel_diagnostics_refresh()
         self._pregeneration_activation_restore_runtime.clear()
         self._lifecycle_generation = self.session_owner.begin(cancellation)
         self._controller_busy = True
@@ -4152,7 +4156,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.live_stop_runner.cancel()
         self._live_scope_generation = None
         self.live_scope_runner.cancel()
-        self.diagnostics_refresh_runner.cancel()
+        self._cancel_diagnostics_refresh()
         self.initial_start_runner.cancel()
         self.profile_restart_runner.cancel()
         self.configuration_runner.cancel()
