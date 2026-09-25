@@ -78,6 +78,7 @@ from vntts.dialog_capture import format_runtime_error
 from vntts.durable_settings import DurableSettingsMixin
 from vntts.game_narrator_ui import GameNarratorDialog
 from vntts.game_pack import GamePackError, apply_game_pack
+from vntts.generated_audio import AudioRouteTrace
 from vntts.history_ui import DialogueHistoryDialog
 from vntts.hotkey_ui import HotkeyRecorder
 from vntts.hotkeys import (
@@ -3751,7 +3752,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         else:
             self.open_voice_previews()
 
-    def open_support_center(self):
+    def open_support_center(self) -> None:
         if self.support_dialog is None:
             self.support_dialog = SupportCenterDialog(self.support_log, self.dashboard)
             self.support_dialog.diagnostics_requested.connect(
@@ -3765,7 +3766,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.support_dialog.raise_()
         self.support_dialog.activateWindow()
 
-    def open_support_diagnostics(self):
+    def open_support_diagnostics(self) -> None:
         try:
             self.open_diagnostics()
         except Exception as error:
@@ -3779,7 +3780,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 "diagnostics", True, "Live diagnostics opened in a separate window."
             )
 
-    def open_support_settings_folder(self):
+    def open_support_settings_folder(self) -> None:
         try:
             path = self.open_settings_folder()
         except Exception as error:
@@ -3826,7 +3827,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             ):
                 self.toggle_live()
 
-    def export_support_bundle(self):
+    def export_support_bundle(self) -> None:
         path, _selected_filter = QFileDialog.getSaveFileName(
             None,
             "Export support bundle",
@@ -3844,7 +3845,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         diagnostic = self.controller.get_latest_diagnostic()
         self.support_export_runner.start(self._build_support_bundle, path, diagnostic)
 
-    def _build_support_bundle(self, path, diagnostic):
+    def _build_support_bundle(
+        self, path: str, diagnostic: DiagnosticSnapshot | None
+    ) -> str:
         return str(
             SupportBundleBuilder(
                 self.settings,
@@ -3857,14 +3860,19 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             ).build(path)
         )
 
-    def _support_export_finished(self, output, error):
+    def _support_export_finished(
+        self, output: str | None, error: Exception | None
+    ) -> None:
         if self._shutting_down:
             return
-        self.support_export_finished(
-            error is None, output if error is None else str(error)
-        )
+        if error is None and output is not None:
+            self.support_export_finished(True, output)
+        else:
+            self.support_export_finished(
+                False, str(error or "No support bundle returned")
+            )
 
-    def support_export_finished(self, successful, message):
+    def support_export_finished(self, successful: bool, message: str) -> None:
         if self.support_dialog is not None:
             self.support_dialog.set_export_result(successful, message)
         if successful:
@@ -3872,17 +3880,18 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         else:
             self.show_error(f"Support bundle export failed: {message}")
 
-    def open_macos_permissions(self):
+    def open_macos_permissions(self) -> None:
         MacOSPermissionsDialog().exec()
 
-    def open_settings_folder(self):
+    def open_settings_folder(self) -> Path:
         path = get_settings_path().parent
         path.mkdir(parents=True, exist_ok=True)
         if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
             raise OSError("the operating system refused the folder-open request")
         return path
 
-    def set_status(self, message):
+    def set_status(self, message: str | None) -> None:
+        message = message or ""
         self.support_log.add("status", message)
         bounded = self._bounded_menu_text(message)
         self.status_action.setText(bounded)
@@ -3900,14 +3909,14 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             )
         )
 
-    def record_audio_route(self, trace):
+    def record_audio_route(self, trace: AudioRouteTrace) -> None:
         self.support_log.add(
             "audio-route",
             trace.message(),
             **trace.support_fields(),
         )
 
-    def set_dialog(self, character, text):
+    def set_dialog(self, character: str, text: str) -> None:
         if not text:
             self.dialog_action.setText("No dialogue detected")
             self.dialog_action.setToolTip("")
@@ -3922,13 +3931,20 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._apply_runtime_control_state(self._runtime_control_state())
 
     @staticmethod
-    def _bounded_menu_text(message, *, limit=96):
-        text = " ".join(str(message).split())
+    def _bounded_menu_text(message: str, *, limit: int = 96) -> str:
+        text = " ".join(message.split())
         if len(text) <= limit:
             return text
         return f"{text[: limit - 3].rstrip()}..."
 
-    def _show_tray_notification(self, title, message, icon, *, recovery):
+    def _show_tray_notification(
+        self,
+        title: str,
+        message: str,
+        icon: QSystemTrayIcon.MessageIcon,
+        *,
+        recovery: str,
+    ) -> None:
         self._notification_recovery = recovery
         self.tray.showMessage(
             self._bounded_menu_text(title, limit=64),
@@ -3936,7 +3952,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             icon,
         )
 
-    def _activate_notification_recovery(self):
+    def _activate_notification_recovery(self) -> None:
         recovery = self._notification_recovery
         self._notification_recovery = None
         if recovery == "full-controls":

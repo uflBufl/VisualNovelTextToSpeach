@@ -373,6 +373,8 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertLessEqual(len(tray_application.dialog_action.text()), 96)
         self.assertEqual(tray_application.status_action.toolTip(), long_status)
         self.assertIn(long_dialogue, tray_application.dialog_action.toolTip())
+        tray_application.set_status(None)
+        self.assertEqual(tray_application.status_action.text(), "")
         tray_application.shutdown()
 
     def test_notifications_are_bounded_private_and_open_recovery_surface(self):
