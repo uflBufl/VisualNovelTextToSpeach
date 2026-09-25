@@ -154,6 +154,7 @@ class GeneratedAudioRoute:
 class PendingGeneratedAudioRoute:
     line_id: str
     text_sha256: str
+    text: str
     trace: AudioRouteTrace
     synthesis_ms: float = 0.0
     first_audio_ms: float | None = None
@@ -954,6 +955,7 @@ class GeneratedAudioFallbackBackend:
             return PendingGeneratedAudioRoute(
                 line.line_id,
                 line.text_sha256,
+                text,
                 AudioRouteTrace(
                     None,
                     "waiting-for-generation",
@@ -964,25 +966,28 @@ class GeneratedAudioFallbackBackend:
                     "generation-in-progress",
                 ),
             )
+        line_id = line.line_id if line is not None else None
         if live_fallback is not None:
-            _validate_live_fallback_backend(self.live_backend, live_fallback)
-        live_text = text
-        if live_fallback is not None and live_fallback.schema_version == 6:
-            evidence = live_fallback.evidence
-            spoken_text = evidence.get("spoken_text") if evidence is not None else None
-            if not isinstance(spoken_text, str):
-                raise ValueError("Generated-audio event projection text is missing")
-            live_text = spoken_text
+            return self._live_fallback_route(
+                live_fallback,
+                text=text,
+                trace=AudioRouteTrace(
+                    None,
+                    "live-fallback",
+                    match_result,
+                    ";".join(dict.fromkeys(fallback_reasons)) or None,
+                    None,
+                    line_id,
+                    artifact_preflight_state,
+                ),
+                source_audio_lead_seconds=(
+                    source_audio_wait or 0.0 if source_audio_partial else 0.0
+                ),
+            )
         live_prepared = self.live_backend.prepare_playback(
-            (
-                live_fallback.requested_voice_character
-                if live_fallback is not None
-                else synthesis_character(character)
-            ),
-            live_text,
+            synthesis_character(character), text
         )
         effective_source = live_prepared.audio_source
-        line_id = line.line_id if line is not None else None
         trace = AudioRouteTrace(
             None,
             effective_source,
@@ -992,36 +997,6 @@ class GeneratedAudioFallbackBackend:
             line_id,
             artifact_preflight_state,
         )
-        if live_fallback is not None:
-            trace = AudioRouteTrace(
-                None,
-                "live-fallback",
-                match_result,
-                ";".join(
-                    dict.fromkeys(
-                        [*fallback_reasons, f"authorized:{live_fallback.reason}"]
-                    )
-                ),
-                None,
-                line_id,
-                "live-fallback-authorized",
-            )
-            fallback_route = LiveFallbackRoute(
-                live_prepared,
-                live_fallback,
-                trace,
-                live_prepared.synthesis_ms,
-                live_prepared.first_audio_ms,
-                live_prepared.cache_source,
-            )
-            return (
-                replace(
-                    fallback_route,
-                    source_audio_lead_seconds=source_audio_wait or 0.0,
-                )
-                if source_audio_partial
-                else fallback_route
-            )
         live_route = LiveTTSRoute(
             live_prepared,
             trace,
@@ -1033,6 +1008,43 @@ class GeneratedAudioFallbackBackend:
             replace(live_route, source_audio_lead_seconds=source_audio_wait or 0.0)
             if source_audio_partial
             else live_route
+        )
+
+    def _live_fallback_route(
+        self,
+        decision: LiveFallbackDecision,
+        *,
+        text: str,
+        trace: AudioRouteTrace,
+        source_audio_lead_seconds: float = 0.0,
+    ) -> LiveFallbackRoute:
+        _validate_live_fallback_backend(self.live_backend, decision)
+        if decision.schema_version == 6:
+            evidence = decision.evidence
+            spoken_text = evidence.get("spoken_text") if evidence is not None else None
+            if not isinstance(spoken_text, str):
+                raise ValueError("Generated-audio event projection text is missing")
+            text = spoken_text
+        prepared = self.live_backend.prepare_playback(
+            decision.requested_voice_character, text
+        )
+        return LiveFallbackRoute(
+            prepared,
+            decision,
+            replace(
+                trace,
+                effective_source="live-fallback",
+                fallback_reason=";".join(
+                    part
+                    for part in (trace.fallback_reason, f"authorized:{decision.reason}")
+                    if part
+                ),
+                artifact_preflight_state="live-fallback-authorized",
+            ),
+            prepared.synthesis_ms,
+            prepared.first_audio_ms,
+            prepared.cache_source,
+            source_audio_lead_seconds,
         )
 
     def _resolve_line(
@@ -1067,21 +1079,28 @@ class GeneratedAudioFallbackBackend:
 
     def resolved_pending_route(
         self, route: PendingGeneratedAudioRoute
-    ) -> GeneratedAudioRoute | None:
+    ) -> GeneratedAudioRoute | LiveFallbackRoute | None:
         if self.library is None:
             return None
         prepared, _state = self.library.find_with_preflight(
             route.line_id, route.text_sha256
         )
-        if prepared is None:
+        if prepared is not None:
+            return GeneratedAudioRoute(
+                prepared,
+                replace(
+                    route.trace,
+                    effective_source="generated",
+                    artifact_preflight_state="generated-audio-entry-verified",
+                ),
+            )
+        live_fallback = self.library.find_live_fallback(
+            route.line_id, route.text_sha256
+        )
+        if live_fallback is None:
             return None
-        return GeneratedAudioRoute(
-            prepared,
-            replace(
-                route.trace,
-                effective_source="generated",
-                artifact_preflight_state="generated-audio-entry-verified",
-            ),
+        return self._live_fallback_route(
+            live_fallback, text=route.text, trace=route.trace
         )
 
     def prime(self, character: str) -> object:
@@ -1175,9 +1194,13 @@ class AudioRoutePlaybackOwner:
                 resolved = self.router.resolved_pending_route(route)
                 if resolved is not None:
                     self.router.progress_wait_status(
-                        "Prepared audio is ready; continuing reading."
+                        (
+                            "Prepared audio is ready; continuing reading."
+                            if isinstance(resolved, GeneratedAudioRoute)
+                            else "Live fallback is ready; continuing reading."
+                        )
                     )
-                    return self._play_generated_route(resolved, playback_guard)
+                    return self._dispatch_route(resolved, playback_guard=playback_guard)
                 status = self.router.library.progress_description(
                     route.line_id, route.text_sha256
                 )
