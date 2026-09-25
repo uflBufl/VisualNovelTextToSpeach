@@ -6,7 +6,11 @@ from typing import Self, TypeAlias
 
 from vntts.ocr import OCRResult
 from vntts.settings import get_config_directory
-from vntts.versioned_json import load_versioned_json, write_versioned_json
+from vntts.versioned_json import (
+    file_revision,
+    load_versioned_json,
+    write_versioned_json_if_unchanged,
+)
 
 corrections_schema_version = 1
 PathInput: TypeAlias = str | Path
@@ -68,6 +72,10 @@ class OCRCorrectionStore:
             str(profile_id): normalize_correction_entries(entries)
             for profile_id, entries in (profile_entries or {}).items()
         }
+        try:
+            self._revision = file_revision(self.path)
+        except OSError:
+            self._revision = None
 
     @classmethod
     def load(
@@ -116,13 +124,15 @@ class OCRCorrectionStore:
         global_entries: dict[str, str],
         profile_entries: dict[str, dict[str, str]],
     ) -> None:
-        write_versioned_json(
+        self._revision = write_versioned_json_if_unchanged(
             self.path,
             corrections_schema_version,
             {
                 "global": global_entries,
                 "profiles": profile_entries,
             },
+            revision=self._revision,
+            document_name="OCR corrections",
         )
 
     def dictionary_for(self, profile_id: str | None = None) -> OCRCorrectionDictionary:

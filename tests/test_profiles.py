@@ -96,7 +96,7 @@ class GameProfileStoreTest(unittest.TestCase):
                 before = list(store.profiles)
                 with (
                     patch(
-                        "vntts.profiles.write_versioned_json",
+                        "vntts.versioned_json.write_versioned_json",
                         side_effect=OSError("disk full"),
                     ),
                     self.assertRaisesRegex(OSError, "disk full"),

@@ -123,29 +123,49 @@ class OCRCorrectionStoreTest(unittest.TestCase):
         )
 
     def test_failed_save_preserves_in_memory_entries(self):
-        store = OCRCorrectionStore(
-            global_entries={"Mareus": "Marcus"},
-            profile_entries={"game": {"Vertln": "Vertin"}},
-        )
+        with TemporaryDirectory() as directory:
+            store = OCRCorrectionStore(
+                Path(directory) / "ocr-corrections.json",
+                global_entries={"Mareus": "Marcus"},
+                profile_entries={"game": {"Vertln": "Vertin"}},
+            )
+            with (
+                patch(
+                    "vntts.versioned_json.write_versioned_json",
+                    side_effect=OSError("disk full"),
+                ),
+                self.assertRaisesRegex(OSError, "disk full"),
+            ):
+                store.replace_entries(
+                    {"New": "Global"},
+                    "game",
+                    {"New": "Profile"},
+                )
 
-        with (
-            patch(
-                "vntts.ocr_corrections.write_versioned_json",
-                side_effect=OSError("disk full"),
-            ),
-            self.assertRaisesRegex(OSError, "disk full"),
-        ):
-            store.replace_entries(
-                {"New": "Global"},
-                "game",
-                {"New": "Profile"},
+            self.assertEqual(store.global_entries, {"Mareus": "Marcus"})
+            self.assertEqual(
+                store.profile_entries,
+                {"game": {"Vertln": "Vertin"}},
             )
 
-        self.assertEqual(store.global_entries, {"Mareus": "Marcus"})
-        self.assertEqual(
-            store.profile_entries,
-            {"game": {"Vertln": "Vertin"}},
-        )
+    def test_stale_store_cannot_overwrite_another_store(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "ocr-corrections.json"
+            first = OCRCorrectionStore(path)
+            first.upsert_entries({"Mareus": "Marcus"})
+            stale = OCRCorrectionStore.load(path)
+            first.upsert_entries({"Vertln": "Vertin"})
+
+            with self.assertRaisesRegex(OSError, "changed on disk"):
+                stale.upsert_entries({"Poaeher": "Poacher"})
+            with self.assertRaisesRegex(OSError, "changed on disk"):
+                stale.save()
+
+            self.assertEqual(stale.global_entries, {"Mareus": "Marcus"})
+            self.assertEqual(
+                OCRCorrectionStore.load(path).global_entries,
+                {"Mareus": "Marcus", "Vertln": "Vertin"},
+            )
 
     def test_invalid_file_falls_back_to_empty_dictionary(self):
         with TemporaryDirectory() as temporary_directory:

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping
+from hashlib import sha256
 from pathlib import Path
 from typing import TypeVar
 
 from vntts_artifacts.atomic_io import atomic_write_json
+
+from vntts.authoring.advisory_lock import exclusive_advisory_lock
 
 Document = TypeVar("Document")
 _DOCUMENT_READ_LIMIT = 64 * 1024 * 1024
@@ -97,3 +100,34 @@ def write_versioned_json(
     payload = dict(fields)
     payload["schema_version"] = schema_version
     return atomic_write_json(path, payload)
+
+
+def file_revision(path: Path) -> bytes | None:
+    try:
+        with path.open("rb") as source:
+            raw = source.read(_DOCUMENT_READ_LIMIT + 1)
+    except FileNotFoundError:
+        return None
+    if len(raw) > _DOCUMENT_READ_LIMIT:
+        raise OSError(f"{path} exceeds the document size limit")
+    return sha256(raw).digest()
+
+
+def write_versioned_json_if_unchanged(
+    path: Path,
+    schema_version: int,
+    fields: Mapping[str, object],
+    *,
+    revision: bytes | None,
+    document_name: str,
+) -> bytes:
+    """Reject stale whole-document writes while keeping atomic publication."""
+    lock_path = path.with_name(f"{path.name}.lock")
+    with exclusive_advisory_lock(lock_path, blocking=True):
+        if file_revision(path) != revision:
+            raise OSError(f"{document_name} changed on disk; reopen before saving")
+        write_versioned_json(path, schema_version, fields)
+        updated = file_revision(path)
+        if updated is None:
+            raise OSError(f"{document_name} disappeared after saving")
+        return updated

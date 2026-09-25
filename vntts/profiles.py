@@ -1,11 +1,9 @@
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass, replace
-from hashlib import file_digest
 from pathlib import Path
 from typing import Self, TypeAlias
 from uuid import uuid4
 
-from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.ocr import DialogRegion, get_dialog_region
 from vntts.settings import (
     AppSettings,
@@ -15,7 +13,11 @@ from vntts.settings import (
     legacy_narrator_assignment_forces_live_tts,
     live_sequence_modes,
 )
-from vntts.versioned_json import load_versioned_json, write_versioned_json
+from vntts.versioned_json import (
+    file_revision,
+    load_versioned_json,
+    write_versioned_json_if_unchanged,
+)
 
 profiles_schema_version = 8
 
@@ -25,14 +27,6 @@ WarningHandler: TypeAlias = Callable[[str], None]
 
 def get_profiles_path() -> Path:
     return get_config_directory() / "profiles.json"
-
-
-def _file_revision(path: Path) -> bytes | None:
-    try:
-        with path.open("rb") as source:
-            return file_digest(source, "sha256").digest()
-    except FileNotFoundError:
-        return None
 
 
 @dataclass(frozen=True)
@@ -173,7 +167,10 @@ class GameProfileStore:
     ) -> None:
         self.path = get_profiles_path() if path is None else Path(path).expanduser()
         self.profiles = list(profiles)
-        self._revision = _file_revision(self.path)
+        try:
+            self._revision = file_revision(self.path)
+        except OSError:
+            self._revision = None
 
     @classmethod
     def load(
@@ -225,20 +222,13 @@ class GameProfileStore:
     def _save_profiles(self, profiles: Iterable[GameProfile]) -> Path:
         profiles = list(profiles)
         self._ensure_unique_profiles(profiles)
-        lock_path = self.path.with_name(f"{self.path.name}.lock")
-        with exclusive_advisory_lock(lock_path, blocking=True):
-            if _file_revision(self.path) != self._revision:
-                raise OSError(
-                    "Game profiles changed on disk; reopen the profile manager"
-                )
-            write_versioned_json(
-                self.path,
-                profiles_schema_version,
-                {
-                    "profiles": [profile.to_mapping() for profile in profiles],
-                },
-            )
-            self._revision = _file_revision(self.path)
+        self._revision = write_versioned_json_if_unchanged(
+            self.path,
+            profiles_schema_version,
+            {"profiles": [profile.to_mapping() for profile in profiles]},
+            revision=self._revision,
+            document_name="Game profiles",
+        )
         return self.path
 
     def _commit_profiles(self, profiles: Iterable[GameProfile]) -> None:
