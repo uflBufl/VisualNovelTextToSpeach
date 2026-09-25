@@ -1,6 +1,7 @@
 """Background application of already-persisted desktop configuration."""
 
 from collections.abc import Callable
+from pathlib import Path
 from threading import Event
 from typing import TYPE_CHECKING, Protocol
 
@@ -156,6 +157,8 @@ class ConfigurationApplyMixin:
 
         def _sync_active_profile(self, settings: AppSettings | None = None) -> bool: ...
 
+        def _save_settings_candidate(self, candidate: AppSettings) -> Path: ...
+
     def _refresh_preparation_settings(self) -> None:
         preparation = getattr(self, "pregeneration_dialog", None)
         if preparation is not None and not preparation.has_pending_work():
@@ -305,7 +308,7 @@ class ConfigurationApplyMixin:
                 self.show_error(f"Unable to configure launch at login: {error}")
                 return
         try:
-            path = updated_settings.save()
+            path = self._save_settings_candidate(updated_settings)
         except OSError as error:
             rollback_error = None
             if launch_changed:
@@ -363,7 +366,7 @@ class ConfigurationApplyMixin:
             return
         candidate = dialog.settings()
         try:
-            path = candidate.save()
+            path = self._save_settings_candidate(candidate)
         except OSError as error:
             self.show_error(f"Unable to save model and voice settings: {error}")
             return

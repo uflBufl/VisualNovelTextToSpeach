@@ -50,6 +50,20 @@ class TrayApplicationTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
+    def setUp(self):
+        settings_directory = TemporaryDirectory()
+        self.addCleanup(settings_directory.cleanup)
+        environment = patch.dict(
+            os.environ,
+            {
+                "VNTTS_SETTINGS_FILE": str(
+                    Path(settings_directory.name) / "settings.json"
+                )
+            },
+        )
+        environment.start()
+        self.addCleanup(environment.stop)
+
     def wait_until(self, predicate, *, timeout_ms=2000):
         for _ in range(max(1, timeout_ms // 5)):
             self.application.processEvents()
@@ -132,7 +146,7 @@ class TrayApplicationTest(unittest.TestCase):
             saved.save(path)
             controller = Mock(is_ready=False)
             with (
-                patch("vntts.settings.get_settings_path", return_value=path),
+                patch.dict(os.environ, {"VNTTS_SETTINGS_FILE": str(path)}),
                 patch("vntts.app.get_local_data_directory", return_value=root),
                 patch(
                     "vntts.app.QSystemTrayIcon.isSystemTrayAvailable",
@@ -654,7 +668,7 @@ class TrayApplicationTest(unittest.TestCase):
             tray.open_speaker_mapping()
         voices.assert_called_once()
         with (
-            patch.object(AppSettings, "save"),
+            patch.object(tray, "_save_settings_candidate"),
             patch.object(tray, "prepare_reading") as prepare,
             patch.object(tray, "toggle_live") as start_reading,
         ):
@@ -725,7 +739,7 @@ class TrayApplicationTest(unittest.TestCase):
         tray.pregeneration_dialog = preparation
         tray.dashboard.show()
         tray._preparation_activity_changed(True)
-        with patch.object(AppSettings, "save"):
+        with patch.object(tray, "_save_settings_candidate"):
             tray.dashboard.show_voices()
             tray.dashboard.show_reading()
         preparation._cancel_or_reject.assert_not_called()
@@ -764,9 +778,8 @@ class TrayApplicationTest(unittest.TestCase):
                             patch.object(tray.dashboard, "embed_narrator"),
                             patch.object(tray.dashboard, "remove_narrator"),
                             patch.object(
-                                AppSettings,
-                                "save",
-                                autospec=True,
+                                tray,
+                                "_save_settings_candidate",
                                 side_effect=lambda settings: (
                                     saved_settings.append(settings)
                                     or Path("settings.json")
@@ -835,7 +848,7 @@ class TrayApplicationTest(unittest.TestCase):
         tray.narrator_dialog = Mock(result_settings=candidate)
         with (
             patch.object(tray.dashboard, "remove_narrator"),
-            patch("vntts.app.AppSettings.save"),
+            patch("vntts.app.TrayApplication._save_settings_candidate"),
             patch.object(tray.profile_store, "get", return_value=Mock()),
             patch.object(
                 tray.profile_store,
@@ -970,22 +983,22 @@ class TrayApplicationTest(unittest.TestCase):
             controller_factory=Mock(return_value=controller),
         )
 
-        with patch("vntts.app.AppSettings.save") as save:
+        with patch("vntts.app.TrayApplication._save_settings_candidate") as save:
             tray_application.show_compact_controls()
             self.application.processEvents()
 
         self.assertFalse(tray_application.dashboard.isVisible())
         self.assertTrue(tray_application.compact_controller.isVisible())
         self.assertTrue(tray_application.settings.compact_controls)
-        save.assert_called_once_with()
+        save.assert_called_once_with(tray_application.settings)
 
-        with patch("vntts.app.AppSettings.save") as save:
+        with patch("vntts.app.TrayApplication._save_settings_candidate") as save:
             tray_application.show_dashboard()
 
         self.assertTrue(tray_application.dashboard.isVisible())
         self.assertFalse(tray_application.compact_controller.isVisible())
         self.assertFalse(tray_application.settings.compact_controls)
-        save.assert_called_once_with()
+        save.assert_called_once_with(tray_application.settings)
         tray_application.shutdown()
 
     def test_live_status_is_mirrored_from_tray_to_compact_window(self):
@@ -1425,7 +1438,7 @@ class TrayApplicationTest(unittest.TestCase):
             patch("vntts.app.GameNarratorDialog", return_value=dialog),
             patch.object(tray_application.dashboard, "embed_narrator"),
             patch.object(tray_application.dashboard, "remove_narrator"),
-            patch.object(AppSettings, "save"),
+            patch.object(tray_application, "_save_settings_candidate"),
             patch.object(tray_application, "_sync_active_profile", return_value=True),
             patch.object(tray_application, "_reload_game_narrator"),
         ):
@@ -1484,7 +1497,7 @@ class TrayApplicationTest(unittest.TestCase):
             patch("vntts.app.GameNarratorDialog", return_value=dialog),
             patch.object(tray_application.dashboard, "embed_narrator"),
             patch.object(tray_application.dashboard, "remove_narrator"),
-            patch.object(AppSettings, "save"),
+            patch.object(tray_application, "_save_settings_candidate"),
             patch.object(tray_application, "_sync_active_profile", return_value=True),
             patch.object(tray_application, "_reload_game_narrator"),
             patch.object(tray_application, "_show_unknown_speaker_prompt") as prompt,
@@ -2411,7 +2424,10 @@ class TrayApplicationTest(unittest.TestCase):
             patch("vntts.app.SettingsDialog", return_value=dialog),
             patch("vntts.app.configure_macos_launch_at_login") as configure,
             patch.object(tray_application, "start_hotkeys"),
-            patch("vntts.app.AppSettings.save", return_value=Path("settings.json")),
+            patch(
+                "vntts.app.TrayApplication._save_settings_candidate",
+                return_value=Path("settings.json"),
+            ),
         ):
             tray_application.open_settings()
             self.wait_until(lambda: not tray_application.configuration_runner.active)
@@ -2437,7 +2453,7 @@ class TrayApplicationTest(unittest.TestCase):
             patch("vntts.app.SettingsDialog", return_value=dialog),
             patch("vntts.app.configure_macos_launch_at_login") as configure,
             patch(
-                "vntts.app.AppSettings.save",
+                "vntts.app.TrayApplication._save_settings_candidate",
                 side_effect=OSError("disk full"),
             ),
         ):
@@ -2466,7 +2482,10 @@ class TrayApplicationTest(unittest.TestCase):
         with (
             patch("vntts.app.SettingsDialog", return_value=dialog),
             patch.object(tray_application, "start_hotkeys"),
-            patch("vntts.app.AppSettings.save", return_value=Path("settings.json")),
+            patch(
+                "vntts.app.TrayApplication._save_settings_candidate",
+                return_value=Path("settings.json"),
+            ),
         ):
             tray_application.open_settings()
             self.wait_until(lambda: not tray_application.configuration_runner.active)
@@ -2833,12 +2852,12 @@ class TrayApplicationTest(unittest.TestCase):
             controller_factory=Mock(return_value=controller),
         )
 
-        with patch("vntts.app.AppSettings.save") as save:
+        with patch("vntts.app.TrayApplication._save_settings_candidate") as save:
             tray_application.auto_advance_action.setChecked(True)
 
         controller.set_auto_advance_enabled.assert_called_once_with(True)
         self.assertTrue(tray_application.settings.auto_advance_enabled)
-        save.assert_called_once_with()
+        save.assert_called_once_with(tray_application.settings)
         tray_application.shutdown()
 
     def test_failed_auto_advance_write_restores_action_without_runtime_change(self):
@@ -2854,7 +2873,7 @@ class TrayApplicationTest(unittest.TestCase):
         )
 
         with patch(
-            "vntts.app.AppSettings.save",
+            "vntts.app.TrayApplication._save_settings_candidate",
             side_effect=OSError("read-only directory"),
         ):
             tray_application.auto_advance_action.setChecked(True)
@@ -2892,7 +2911,9 @@ class TrayApplicationTest(unittest.TestCase):
                     expected_reason,
                     tray_application.auto_advance_reason_action.text(),
                 )
-                with patch("vntts.app.AppSettings.save") as save:
+                with patch(
+                    "vntts.app.TrayApplication._save_settings_candidate"
+                ) as save:
                     tray_application.toggle_auto_advance(True)
                 save.assert_not_called()
                 controller.set_auto_advance_enabled.assert_not_called()
@@ -2920,7 +2941,7 @@ class TrayApplicationTest(unittest.TestCase):
                 with (
                     patch(f"vntts.app.{dialog_name}", return_value=dialog),
                     patch(
-                        "vntts.app.AppSettings.save",
+                        "vntts.app.TrayApplication._save_settings_candidate",
                         side_effect=OSError("disk full"),
                     ),
                 ):
@@ -2938,7 +2959,7 @@ class TrayApplicationTest(unittest.TestCase):
             controller_factory=Mock(return_value=Mock(settings=original)),
         )
         with patch(
-            "vntts.app.AppSettings.save",
+            "vntts.app.TrayApplication._save_settings_candidate",
             side_effect=OSError("disk full"),
         ):
             tray_application._save_compact_preference(True)
@@ -2961,7 +2982,7 @@ class TrayApplicationTest(unittest.TestCase):
             original,
             controller_factory=Mock(return_value=controller),
         )
-        with patch.object(AppSettings, "save", autospec=True) as save:
+        with patch.object(tray, "_save_settings_candidate") as save:
             tray.assign_voice("Selone", "preset:alba")
         expected = stale.updated(last_main_section="reading")
         save.assert_called_once_with(expected)
@@ -3004,7 +3025,7 @@ class TrayApplicationTest(unittest.TestCase):
                 )
                 with (
                     patch(
-                        "vntts.app.AppSettings.save",
+                        "vntts.app.TrayApplication._save_settings_candidate",
                         side_effect=OSError("read-only directory"),
                     ),
                     self.assertRaisesRegex(OSError, "read-only directory"),
@@ -3498,7 +3519,10 @@ class TrayApplicationTest(unittest.TestCase):
             with (
                 patch("vntts.app.GameProfilesDialog", return_value=dialog),
                 patch.object(tray_application, "start_hotkeys"),
-                patch("vntts.app.AppSettings.save", return_value=Path("settings.json")),
+                patch(
+                    "vntts.app.TrayApplication._save_settings_candidate",
+                    return_value=Path("settings.json"),
+                ),
                 patch("vntts.app.save_dialog_region") as save_region,
             ):
                 tray_application.open_profiles()
@@ -3530,7 +3554,10 @@ class TrayApplicationTest(unittest.TestCase):
             dialog.settings.return_value = selected
             with (
                 patch("vntts.app.GameProfilesDialog", return_value=dialog),
-                patch("vntts.app.AppSettings.save", side_effect=OSError("disk full")),
+                patch(
+                    "vntts.app.TrayApplication._save_settings_candidate",
+                    side_effect=OSError("disk full"),
+                ),
             ):
                 tray_application.open_profiles()
 
@@ -3556,18 +3583,16 @@ class TrayApplicationTest(unittest.TestCase):
                 environment={"VNTTS_GAME_WINDOW_TITLE": "Temporary"},
             )
             restored_store = GameProfileStore.load(store_path)
-            tray = TrayApplication(
-                self.application,
-                runtime,
-                controller_factory=Mock(return_value=Mock()),
-                profile_store=restored_store,
-            )
-            with (
-                patch.dict(os.environ, {"VNTTS_SETTINGS_FILE": str(settings_path)}),
-                patch("vntts.app.GameProfilesDialog") as dialog,
-            ):
-                dialog.return_value.exec.return_value = QDialog.DialogCode.Rejected
-                tray.open_profiles()
+            with patch.dict(os.environ, {"VNTTS_SETTINGS_FILE": str(settings_path)}):
+                tray = TrayApplication(
+                    self.application,
+                    runtime,
+                    controller_factory=Mock(return_value=Mock()),
+                    profile_store=restored_store,
+                )
+                with patch("vntts.app.GameProfilesDialog") as dialog:
+                    dialog.return_value.exec.return_value = QDialog.DialogCode.Rejected
+                    tray.open_profiles()
 
             self.assertEqual(tray.settings.game_window_title, "Temporary")
             self.assertEqual(
@@ -3585,22 +3610,22 @@ class TrayApplicationTest(unittest.TestCase):
             profile = store.create("Game", AppSettings(game_window_title="Old"))
             saved = profile.apply(AppSettings()).updated(game_window_title="Saved")
             saved.save(settings_path)
-            tray = TrayApplication(
-                self.application,
-                load_app_settings(settings_path, environment={}),
-                controller_factory=Mock(return_value=Mock()),
-                profile_store=GameProfileStore.load(store_path),
-            )
-            with (
-                patch.dict(os.environ, {"VNTTS_SETTINGS_FILE": str(settings_path)}),
-                patch.object(
-                    tray.profile_store,
-                    "update_from_settings",
-                    side_effect=OSError("disk full"),
-                ),
-                patch("vntts.app.GameProfilesDialog") as dialog,
-            ):
-                tray.open_profiles()
+            with patch.dict(os.environ, {"VNTTS_SETTINGS_FILE": str(settings_path)}):
+                tray = TrayApplication(
+                    self.application,
+                    load_app_settings(settings_path, environment={}),
+                    controller_factory=Mock(return_value=Mock()),
+                    profile_store=GameProfileStore.load(store_path),
+                )
+                with (
+                    patch.object(
+                        tray.profile_store,
+                        "update_from_settings",
+                        side_effect=OSError("disk full"),
+                    ),
+                    patch("vntts.app.GameProfilesDialog") as dialog,
+                ):
+                    tray.open_profiles()
 
             dialog.assert_not_called()
             self.assertEqual(tray.settings.game_window_title, "Saved")
@@ -3623,17 +3648,15 @@ class TrayApplicationTest(unittest.TestCase):
             )
             stale = GameProfileStore.load(store_path)
             GameProfileStore.load(store_path).rename(profile.id, "Externally renamed")
-            tray = TrayApplication(
-                self.application,
-                load_app_settings(settings_path, environment={}),
-                controller_factory=Mock(return_value=Mock()),
-                profile_store=stale,
-            )
-            with (
-                patch.dict(os.environ, {"VNTTS_SETTINGS_FILE": str(settings_path)}),
-                patch("vntts.app.GameProfilesDialog") as dialog,
-            ):
-                tray.open_profiles()
+            with patch.dict(os.environ, {"VNTTS_SETTINGS_FILE": str(settings_path)}):
+                tray = TrayApplication(
+                    self.application,
+                    load_app_settings(settings_path, environment={}),
+                    controller_factory=Mock(return_value=Mock()),
+                    profile_store=stale,
+                )
+                with patch("vntts.app.GameProfilesDialog") as dialog:
+                    tray.open_profiles()
 
             dialog.assert_not_called()
             self.assertEqual(
@@ -3733,7 +3756,10 @@ class TrayApplicationTest(unittest.TestCase):
 
             with (
                 patch("vntts.app.GameProfilesDialog", return_value=dialog),
-                patch("vntts.app.AppSettings.save", return_value=Path("settings.json")),
+                patch(
+                    "vntts.app.TrayApplication._save_settings_candidate",
+                    return_value=Path("settings.json"),
+                ),
             ):
                 tray_application.open_profiles()
                 QTimer.singleShot(0, lambda: heartbeat.append(True))
@@ -3778,7 +3804,7 @@ class TrayApplicationTest(unittest.TestCase):
                 with (
                     patch(f"vntts.app.{dialog_name}", return_value=dialog),
                     patch(
-                        "vntts.app.AppSettings.save",
+                        "vntts.app.TrayApplication._save_settings_candidate",
                         return_value=Path("settings.json"),
                     ),
                 ):
@@ -3827,7 +3853,10 @@ class TrayApplicationTest(unittest.TestCase):
         dialog.settings.return_value = candidate
         with (
             patch("vntts.app.SettingsDialog", return_value=dialog),
-            patch("vntts.app.AppSettings.save", return_value=Path("settings.json")),
+            patch(
+                "vntts.app.TrayApplication._save_settings_candidate",
+                return_value=Path("settings.json"),
+            ),
         ):
             tray_application.open_settings()
             self.wait_until(started.is_set)
@@ -3871,7 +3900,10 @@ class TrayApplicationTest(unittest.TestCase):
 
             with (
                 patch("vntts.app.GameProfilesDialog", return_value=dialog),
-                patch("vntts.app.AppSettings.save", return_value=Path("settings.json")),
+                patch(
+                    "vntts.app.TrayApplication._save_settings_candidate",
+                    return_value=Path("settings.json"),
+                ),
             ):
                 tray_application.open_profiles()
                 self.assertTrue(entered.wait(1))
@@ -3917,7 +3949,10 @@ class TrayApplicationTest(unittest.TestCase):
 
             with (
                 patch("vntts.app.GameProfilesDialog", return_value=dialog),
-                patch("vntts.app.AppSettings.save", return_value=Path("settings.json")),
+                patch(
+                    "vntts.app.TrayApplication._save_settings_candidate",
+                    return_value=Path("settings.json"),
+                ),
             ):
                 tray_application.open_profiles()
                 self.assertTrue(entered.wait(1))
@@ -3969,7 +4004,7 @@ class TrayApplicationTest(unittest.TestCase):
                 controller = Mock(is_live_running=False)
                 settings = AppSettings(last_main_section=section)
                 settings.save(path)
-                with patch("vntts.settings.get_settings_path", return_value=path):
+                with patch.dict(os.environ, {"VNTTS_SETTINGS_FILE": str(path)}):
                     tray = TrayApplication(
                         self.application,
                         settings,
@@ -3978,7 +4013,7 @@ class TrayApplicationTest(unittest.TestCase):
                     with (
                         patch.object(tray.tray, "show"),
                         patch("vntts.app.QTimer.singleShot"),
-                        patch.object(AppSettings, "save") as save,
+                        patch.object(tray, "_save_settings_candidate") as save,
                     ):
                         tray.start()
                         self.assertEqual(tray.dashboard.sections.currentIndex(), index)
@@ -4000,7 +4035,7 @@ class TrayApplicationTest(unittest.TestCase):
     def test_main_section_navigation_saves_and_reports_write_failure(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"
-            with patch("vntts.settings.get_settings_path", return_value=path):
+            with patch.dict(os.environ, {"VNTTS_SETTINGS_FILE": str(path)}):
                 tray = TrayApplication(
                     self.application,
                     AppSettings(),
@@ -4011,7 +4046,11 @@ class TrayApplicationTest(unittest.TestCase):
                 self.assertEqual(tray.settings.last_main_section, "voices")
                 self.assertIn('"last_main_section": "voices"', path.read_text())
                 with (
-                    patch.object(AppSettings, "save", side_effect=OSError("disk full")),
+                    patch.object(
+                        tray,
+                        "_save_settings_candidate",
+                        side_effect=OSError("disk full"),
+                    ),
                     patch.object(tray, "show_error") as error,
                 ):
                     QTest.keyClick(tray.dashboard.sections.tabBar(), Qt.Key.Key_Right)
@@ -4020,10 +4059,61 @@ class TrayApplicationTest(unittest.TestCase):
                 self.assertIn("disk full", error.call_args.args[0])
                 tray.shutdown()
 
+    def test_second_application_cannot_replace_newer_settings(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            original = AppSettings()
+            original.save(path)
+            with patch.dict(os.environ, {"VNTTS_SETTINGS_FILE": str(path)}):
+                first = TrayApplication(
+                    self.application,
+                    load_app_settings(path, environment={}),
+                    controller_factory=Mock(return_value=Mock()),
+                )
+                second = TrayApplication(
+                    self.application,
+                    load_app_settings(path, environment={}),
+                    controller_factory=Mock(return_value=Mock()),
+                )
+                first._save_compact_preference(True)
+                first._save_main_section("reading")
+                second._save_main_section("voices")
+
+            saved = load_app_settings(path, environment={})
+            self.assertTrue(saved.compact_controls)
+            self.assertEqual(saved.last_main_section, "reading")
+            self.assertEqual(first.settings, saved)
+            self.assertEqual(second.settings, original)
+            self.assertIn("changed on disk", second.status_action.toolTip())
+            first.shutdown()
+            second.shutdown()
+
+    def test_offline_pack_activator_uses_settings_revision_guard(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            original = AppSettings()
+            original.save(path)
+            with patch.dict(os.environ, {"VNTTS_SETTINGS_FILE": str(path)}):
+                tray = TrayApplication(
+                    self.application,
+                    load_app_settings(path, environment={}),
+                    controller_factory=Mock(return_value=Mock()),
+                )
+                external = original.updated(output_volume_percent=42)
+                external.save(path)
+                with self.assertRaisesRegex(OSError, "changed on disk"):
+                    tray.pregeneration_activator.save_settings(
+                        original.updated(audio_source_policy="prefer-generated")
+                    )
+
+            self.assertEqual(load_app_settings(path, environment={}), external)
+            self.assertEqual(tray.settings, original)
+            tray.shutdown()
+
     def test_pack_activation_keeps_reading_section_when_worker_saved_an_old_tab(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"
-            with patch("vntts.settings.get_settings_path", return_value=path):
+            with patch.dict(os.environ, {"VNTTS_SETTINGS_FILE": str(path)}):
                 original = AppSettings()
                 controller = Mock(is_ready=False, is_live_running=False)
                 tray = TrayApplication(
@@ -4036,7 +4126,7 @@ class TrayApplicationTest(unittest.TestCase):
                 )
                 tray.dashboard.show_reading()
                 candidate = original.updated(audio_source_policy="prefer-generated")
-                candidate.save(path)
+                tray._save_settings_candidate(candidate)
 
                 tray._pregeneration_activation_finished(
                     OfflinePackActivationResult(candidate, path, False), None
@@ -4055,7 +4145,7 @@ class TrayApplicationTest(unittest.TestCase):
     def test_pack_activation_focuses_start_reading_when_controller_is_ready(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"
-            with patch("vntts.settings.get_settings_path", return_value=path):
+            with patch.dict(os.environ, {"VNTTS_SETTINGS_FILE": str(path)}):
                 original = AppSettings()
                 controller = Mock(is_ready=True, is_live_running=False)
                 tray = TrayApplication(
@@ -4067,7 +4157,7 @@ class TrayApplicationTest(unittest.TestCase):
                     tray._begin_controller_lifecycle()
                 )
                 candidate = original.updated(audio_source_policy="prefer-generated")
-                candidate.save(path)
+                tray._save_settings_candidate(candidate)
 
                 tray._pregeneration_activation_finished(
                     OfflinePackActivationResult(candidate, path, False), None
@@ -4165,7 +4255,7 @@ class TrayApplicationTest(unittest.TestCase):
         wizard.test_page.set_result(True, "Success. Recognized Rhiannon: Hello.")
 
         with patch(
-            "vntts.settings.AppSettings.save",
+            "vntts.app.TrayApplication._save_settings_candidate",
             return_value=Path("settings.json"),
         ):
             wizard.accept()

@@ -1,8 +1,9 @@
 """Failure-atomic settings mutations shared by the desktop application shell."""
 
 from collections.abc import Callable
+from dataclasses import asdict
 from pathlib import Path
-from threading import Event
+from threading import Event, Lock
 from typing import TYPE_CHECKING, Protocol, TypeAlias
 
 from PySide6.QtWidgets import QDialog
@@ -19,7 +20,12 @@ from vntts.configuration_apply import (
 )
 from vntts.ocr import DialogRegion
 from vntts.profiles import GameProfile
-from vntts.settings import AppSettings, get_settings_path, load_app_settings
+from vntts.settings import (
+    AppSettings,
+    load_app_settings,
+    settings_schema_version,
+)
+from vntts.versioned_json import write_versioned_json_if_unchanged
 
 VoiceChange: TypeAlias = Callable[[SettingsCommit], AppSettings]
 
@@ -59,6 +65,9 @@ class DurableSettingsMixin:
         signals: _Signals
         onboarding_wizard: _OnboardingWizard | None
         onboarding_cancel_event: Event
+        _settings_path: Path
+        _settings_revision: bytes | None
+        _settings_commit_lock: Lock
 
         def _update_auto_advance_action(self) -> None: ...
 
@@ -74,6 +83,17 @@ class DurableSettingsMixin:
 
         def show_dashboard(self) -> None: ...
 
+    def _save_settings_candidate(self, candidate: AppSettings) -> Path:
+        with self._settings_commit_lock:
+            self._settings_revision = write_versioned_json_if_unchanged(
+                self._settings_path,
+                settings_schema_version,
+                asdict(candidate),
+                revision=self._settings_revision,
+                document_name="Settings",
+            )
+            return self._settings_path
+
     def toggle_auto_advance(self, enabled: bool) -> None:
         allowed, effective, reason = auto_advance_control_state(
             self.settings.capture_mode,
@@ -88,7 +108,7 @@ class DurableSettingsMixin:
             self.settings.updated(auto_advance_enabled=effective)
         )
         try:
-            candidate.save()
+            self._save_settings_candidate(candidate)
         except OSError as error:
             self._update_auto_advance_action()
             self.show_error(f"Unable to save auto-advance setting: {error}")
@@ -125,7 +145,7 @@ class DurableSettingsMixin:
             last_main_section=self.settings.last_main_section
         )
         try:
-            path = candidate.save()
+            path = self._save_settings_candidate(candidate)
         except OSError as error:
             self.set_status("Setup required")
             self.show_error(f"Unable to save setup settings: {error}")
@@ -154,7 +174,7 @@ class DurableSettingsMixin:
             return
         candidate = self.settings.updated(compact_controls=enabled)
         try:
-            candidate.save()
+            self._save_settings_candidate(candidate)
         except OSError as error:
             self.show_error(f"Unable to save compact-controls preference: {error}")
             return
@@ -165,7 +185,7 @@ class DurableSettingsMixin:
             return
         candidate = self.settings.updated(last_main_section=section)
         try:
-            candidate.save()
+            self._save_settings_candidate(candidate)
         except OSError as error:
             self.show_error(f"Unable to save the selected main section: {error}")
             return
@@ -214,7 +234,9 @@ class DurableSettingsMixin:
         section = self.settings.last_main_section
 
         def commit(candidate: AppSettings) -> Path:
-            path: Path = candidate.updated(last_main_section=section).save()
+            path = self._save_settings_candidate(
+                candidate.updated(last_main_section=section)
+            )
             saved_path.append(path)
             return path
 
@@ -250,7 +272,7 @@ class DurableSettingsMixin:
         profile = self.profile_store.get(profile_id) if profile_id else None
         if profile is None:
             return True
-        path = get_settings_path()
+        path = self._settings_path
         if not path.is_file():
             return True
         # The saved settings, not transient environment overrides, own the active snapshot.

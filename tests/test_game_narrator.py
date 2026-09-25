@@ -199,11 +199,13 @@ class GameNarratorTest(unittest.TestCase):
                 thread_pool=pool,
             )
             controller = Mock(is_live_running=False)
-            tray = TrayApplication(
-                self.application,
-                settings,
-                controller_factory=Mock(return_value=controller),
-            )
+            settings_path = Path(directory) / "settings.json"
+            with patch.dict(os.environ, {"VNTTS_SETTINGS_FILE": str(settings_path)}):
+                tray = TrayApplication(
+                    self.application,
+                    settings,
+                    controller_factory=Mock(return_value=controller),
+                )
             dialog = GameNarratorDialog(
                 settings,
                 thread_pool=pool,
@@ -213,10 +215,6 @@ class GameNarratorTest(unittest.TestCase):
             )
             try:
                 with (
-                    patch(
-                        "vntts.settings.get_settings_path",
-                        return_value=Path(directory) / "settings.json",
-                    ),
                     patch("vntts.app.GameNarratorDialog", return_value=dialog),
                     patch(
                         "vntts.app.OfflineAudioPreparationDialog",
@@ -254,7 +252,7 @@ class GameNarratorTest(unittest.TestCase):
                         library.binding("Rhiannon").source_id,
                         "preset:marius",
                     )
-                    load_app_settings(Path(directory) / "settings.json")
+                    load_app_settings(settings_path)
                     self.assertIsNone(preparation._generation_input)
                     self.assertEqual(tray.dashboard.sections.currentIndex(), 0)
                     self.assertEqual(
@@ -1778,9 +1776,8 @@ class GameNarratorTest(unittest.TestCase):
                 with (
                     patch("vntts.app.GameNarratorDialog", return_value=picker),
                     patch.object(
-                        AppSettings,
-                        "save",
-                        autospec=True,
+                        tray,
+                        "_save_settings_candidate",
                         side_effect=save_settings,
                     ),
                     patch.object(tray, "_reload_game_narrator") as reload,

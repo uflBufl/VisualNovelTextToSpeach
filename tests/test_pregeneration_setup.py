@@ -1471,11 +1471,14 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             preparation._selection_changed()
             self.assertTrue(preparation._can_start_reading())
             controller = Mock(settings=original, is_ready=False, is_live_running=False)
-            tray = TrayApplication(
-                self.application,
-                original,
-                controller_factory=Mock(return_value=controller),
-            )
+            with patch.dict(
+                os.environ, {"VNTTS_SETTINGS_FILE": str(root / "settings.json")}
+            ):
+                tray = TrayApplication(
+                    self.application,
+                    original,
+                    controller_factory=Mock(return_value=controller),
+                )
             tray.pregeneration_dialog = preparation
             pool = ManualThreadPool()
             tray.configuration_runner.thread_pool = pool
@@ -1484,9 +1487,6 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             settings_dialog.exec.return_value = QDialog.DialogCode.Accepted
             settings_dialog.settings.return_value = candidate
             with (
-                patch.dict(
-                    os.environ, {"VNTTS_SETTINGS_FILE": str(root / "settings.json")}
-                ),
                 patch("vntts.app.SettingsDialog", return_value=settings_dialog),
                 patch.object(tray, "start_hotkeys"),
             ):

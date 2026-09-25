@@ -34,7 +34,6 @@ from vntts.authoring.missing_voice_policy import (  # noqa: E402
 )
 from vntts.game_content_importer import GameContentImportError  # noqa: E402
 from vntts.game_narrator_ui import GameNarratorDialog  # noqa: E402
-from vntts.pregeneration_activation import OfflinePackActivator  # noqa: E402
 from vntts.pregeneration_generation import (  # noqa: E402
     OfflineGenerationCancelled,
     OfflineGenerationWorker,
@@ -1015,9 +1014,13 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
     def test_zero_ambiguity_story_reaches_an_active_portable_pack(self):
         with (
             TemporaryDirectory() as temporary_directory,
-            patch(
-                "vntts.settings.get_settings_path",
-                return_value=Path(temporary_directory) / "settings.json",
+            patch.dict(
+                os.environ,
+                {
+                    "VNTTS_SETTINGS_FILE": str(
+                        Path(temporary_directory) / "settings.json"
+                    )
+                },
             ),
         ):
             root = Path(temporary_directory)
@@ -1059,9 +1062,6 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 self.application,
                 AppSettings(),
                 controller_factory=Mock(return_value=controller),
-                pregeneration_activator=OfflinePackActivator(
-                    save_settings=lambda settings: settings.save(saved_settings)
-                ),
             )
             with patch(
                 "vntts.app.OfflineAudioPreparationDialog",

@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import asdict
 from multiprocessing import freeze_support
 from pathlib import Path
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from time import perf_counter
 
 from pynput import keyboard
@@ -156,6 +156,7 @@ from vntts.support import (
 from vntts.support_ui import SupportCenterDialog
 from vntts.ui_text import add_composite_form_row as _add_composite_form_row
 from vntts.ui_text import make_text_copyable
+from vntts.versioned_json import file_revision
 from vntts.voice_library import VoiceLibrary
 from vntts.voices import (
     application_voice_library,
@@ -1538,6 +1539,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         profile_store,
     ):
         self.application = application
+        self._settings_path = get_settings_path().expanduser().absolute()
+        self._settings_commit_lock = Lock()
+        try:
+            self._settings_revision = file_revision(self._settings_path)
+        except OSError:
+            self._settings_revision = None
         uses_saved_settings = settings is None
         self.previous_session = (
             preserve_previous_session(get_local_data_directory())
@@ -1549,7 +1556,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._startup_game_pack_errors = []
         settings_started = perf_counter()
         self.settings = settings or load_app_settings(
-            on_game_pack_error=self._startup_game_pack_errors.append
+            self._settings_path,
+            on_game_pack_error=self._startup_game_pack_errors.append,
         )
         self.profile_store = profile_store or GameProfileStore.load()
         if uses_saved_settings:
@@ -1634,7 +1642,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         self.moss_runtime_runner = LatestTaskRunner(self)
         self.moss_runtime_runner.finished.connect(self._moss_runtime_finished)
-        self.pregeneration_activator = pregeneration_activator or OfflinePackActivator()
+        self.pregeneration_activator = pregeneration_activator or OfflinePackActivator(
+            save_settings=self._save_settings_candidate
+        )
         self.pregeneration_activation_runner = LatestTaskRunner(self)
         self.pregeneration_activation_runner.finished.connect(
             self._pregeneration_activation_finished
@@ -3182,7 +3192,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return
         candidate = dialog.settings()
         try:
-            path = candidate.save()
+            path = self._save_settings_candidate(candidate)
         except OSError as error:
             self.show_error(f"Unable to save the selected profile: {error}")
             return
@@ -3450,7 +3460,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             last_main_section=self.settings.last_main_section
         )
         try:
-            candidate.save()
+            self._save_settings_candidate(candidate)
         except OSError as error:
             try:
                 dialog.restore_initial_voice_bindings()
