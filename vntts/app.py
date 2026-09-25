@@ -3110,13 +3110,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             f"settings saved to {path}"
         )
         self.profile_restart_runner.start(
-            self._restart_controller_for_profile,
-            self.settings,
+            self.session_owner.restart,
             generation,
+            self.settings,
         )
-
-    def _restart_controller_for_profile(self, settings, generation):
-        return self.session_owner.restart(generation, settings)
 
     def _profile_restart_finished(self, ready, error):
         generation = self._profile_restart_generation
