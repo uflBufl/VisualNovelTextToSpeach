@@ -3695,6 +3695,9 @@ class TrayApplicationTest(unittest.TestCase):
             AppSettings(),
             controller_factory=Mock(return_value=controller),
         )
+        tray_application.live_stop_runner.thread_pool = Mock(
+            start=lambda task: task.run()
+        )
         tray_application.set_ready(True)
 
         with patch.object(tray_application, "_open_history_dialog") as opened:
