@@ -5,6 +5,7 @@ import wave
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event, Thread, current_thread
 from unittest.mock import patch
 
 from PIL import Image
@@ -37,6 +38,7 @@ from vntts.source_audio_semantics import (
     SEMANTIC_EVIDENCE_METHOD,
     semantic_text_sha256,
 )
+from vntts.versioned_json import write_versioned_json
 from vntts.voice_library import VoiceLibrary
 from vntts.voices import (
     CharacterVoiceRegistry,
@@ -1667,6 +1669,77 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             self.assertEqual(library.bindings(), original)
             self.assertFalse(decisions.path.exists())
+
+    def test_simultaneous_decisions_preserve_both_voice_groups(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            plan = VoicePlanStore(jobs).create(
+                job,
+                AppSettings(pocket_gated_model_accepted=True),
+                manifest_path=write_manifest(root / "voices"),
+            )
+            first, second = plan.groups[:2]
+            path = root / "decisions.json"
+            first_at_write = Event()
+            second_loaded = Event()
+            release_first = Event()
+            errors = []
+            original_load = VoiceDecisionStore._load
+
+            def observed_load(store):
+                decisions = original_load(store)
+                if current_thread().name == "second decision":
+                    second_loaded.set()
+                return decisions
+
+            def observed_write(*args, **kwargs):
+                if current_thread().name == "first decision":
+                    first_at_write.set()
+                    if not release_first.wait(5):
+                        raise TimeoutError("First decision was not released")
+                return write_versioned_json(*args, **kwargs)
+
+            def remember(group):
+                try:
+                    VoiceDecisionStore(path).remember(group, "default")
+                except Exception as error:
+                    errors.append(error)
+
+            first_thread = Thread(target=remember, args=(first,), name="first decision")
+            second_thread = Thread(
+                target=remember, args=(second,), name="second decision"
+            )
+            with (
+                patch.object(VoiceDecisionStore, "_load", observed_load),
+                patch(
+                    "vntts.pregeneration_voices.write_versioned_json",
+                    side_effect=observed_write,
+                ),
+            ):
+                first_thread.start()
+                try:
+                    self.assertTrue(first_at_write.wait(5))
+                    second_thread.start()
+                    second_loaded.wait(0.2)
+                finally:
+                    release_first.set()
+                    first_thread.join(5)
+                    if second_thread.ident is not None:
+                        second_thread.join(5)
+
+            self.assertFalse(first_thread.is_alive())
+            self.assertFalse(second_thread.is_alive())
+            self.assertEqual(errors, [])
+            saved = VoiceDecisionStore(path)
+            self.assertEqual(
+                saved.choice_for(first.group_id, first.decision_context_sha256),
+                "default",
+            )
+            self.assertEqual(
+                saved.choice_for(second.group_id, second.decision_context_sha256),
+                "default",
+            )
 
 
 if __name__ == "__main__":

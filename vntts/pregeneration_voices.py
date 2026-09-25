@@ -29,6 +29,7 @@ from vntts_artifacts.voice_manifest import (
     write_voice_manifest,
 )
 
+from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.authoring.publication import (
     AtomicPublicationError,
     rename_directory_no_replace,
@@ -320,39 +321,44 @@ class VoiceDecisionStore:
         selections = tuple(selections)
         if not selections:
             raise PregenerationVoiceError("At least one voice choice is required")
-        decisions = self._load()
         decided_at = self.clock().astimezone(timezone.utc).isoformat()
         validated_selections = _validated_decision_selections(selections)
         library_selections = self._library_selections(validated_selections, decided_at)
-        for group, source_id in validated_selections:
-            decisions[_decision_key(group.group_id, group.decision_context_sha256)] = {
-                "group_id": group.group_id,
-                "decision_context_sha256": group.decision_context_sha256,
-                "source_id": source_id,
-                "decided_at": decided_at,
-            }
-        previous_bindings = (
-            self.voice_library.bindings() if self.voice_library is not None else None
-        )
-        if self.voice_library is not None:
-            self.voice_library.select_many(library_selections)
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            write_versioned_json(
-                self.path,
-                voice_decisions_schema_version,
-                {"decisions": decisions},
+        lock_path = self.path.with_name(f"{self.path.name}.lock")
+        with exclusive_advisory_lock(lock_path, blocking=True):
+            decisions = self._load()
+            for group, source_id in validated_selections:
+                decisions[
+                    _decision_key(group.group_id, group.decision_context_sha256)
+                ] = {
+                    "group_id": group.group_id,
+                    "decision_context_sha256": group.decision_context_sha256,
+                    "source_id": source_id,
+                    "decided_at": decided_at,
+                }
+            previous_bindings = (
+                self.voice_library.bindings()
+                if self.voice_library is not None
+                else None
             )
-        except Exception as error:
-            if self.voice_library is not None and previous_bindings is not None:
-                try:
-                    self.voice_library.replace_bindings(previous_bindings)
-                except Exception as rollback_error:
-                    error.add_note(
-                        "Unable to restore the previous voice bindings: "
-                        f"{rollback_error}"
-                    )
-            raise
+            if self.voice_library is not None:
+                self.voice_library.select_many(library_selections)
+            try:
+                write_versioned_json(
+                    self.path,
+                    voice_decisions_schema_version,
+                    {"decisions": decisions},
+                )
+            except Exception as error:
+                if self.voice_library is not None and previous_bindings is not None:
+                    try:
+                        self.voice_library.replace_bindings(previous_bindings)
+                    except Exception as rollback_error:
+                        error.add_note(
+                            "Unable to restore the previous voice bindings: "
+                            f"{rollback_error}"
+                        )
+                raise
 
     def _library_selections(
         self,
