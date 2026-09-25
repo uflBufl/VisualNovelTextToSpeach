@@ -84,7 +84,7 @@ class UiCatalogTest(unittest.TestCase):
                     "--output",
                     str(output),
                     "--surface",
-                    "source-voice-mapping",
+                    "character-story-review",
                 ],
                 cwd=root,
                 env=environment,

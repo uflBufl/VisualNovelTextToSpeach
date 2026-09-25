@@ -46,13 +46,12 @@ part of the journey.
 | Authoring | `vntts-listen` | Blind A/B model listening |
 | Authoring | `vntts-conflict-review` | Terminal-authority conflict resolution |
 | Authoring | `vntts-pregenerate missing-voice-reuse-review-ui` | Missing-voice and failed-line fallback review |
-| Source extraction | `r1999-audition` | Source clip review and speaker mapping |
 | Source extraction | `r1999-story-voice-review-ui` | Character Story reference review |
 | Distribution | Windows portable bundle | Extract and launch |
 
 ### Surface groups
 
-The initial source inventory contains 31 application-designed
+The source inventory contains 30 application-designed
 surfaces/components and three tray notification states. Runtime inspection may
 split stateful surfaces into more ledger rows.
 
@@ -63,7 +62,7 @@ split stateful surfaces into more ledger rows.
 | Content and voice preparation | Offline audio preparation; embedded voice audition; narrator/character voice preview and assignment | `vntts/pregeneration_ui.py`, `vntts/pregeneration_audition_ui.py`, `vntts/game_narrator_ui.py` |
 | Evidence, history and support | Uncertain OCR review; OCR correction editor; dialogue history; live diagnostics; support/log center | `vntts/ocr_review_ui.py`, `vntts/ocr_corrections_ui.py`, `vntts/history_ui.py`, `vntts/diagnostics_ui.py`, `vntts/support_ui.py` |
 | Authoring and evidence decisions | Authoring workbench; cohort review; missing-voice/failed-line review; failed-reference audit; source-reference quality review; blind A/B listening; terminal conflict review | `vntts/authoring/*_ui.py` |
-| Source extraction | Reverse: 1999 voice mapping manager; Character Story voice reference review | `reverse1999-extractor/r1999extractor/reverse1999_audition_ui.py`, `reverse1999-extractor/r1999extractor/story_voice_review_ui.py` |
+| Source extraction | Character Story voice reference review | `reverse1999-extractor/r1999extractor/story_voice_review_ui.py` |
 | Distribution and notifications | Windows portable extraction/launch; background-mode, unmapped-speaker and critical-error notifications | `packaging/windows/README.md`, `vntts/app.py` |
 | Shared/transient | Review decision-context disclosure; workbench disclosures; sequence selectors; profile-name prompts; file/folder/export choosers; confirmations; validation warnings and fatal-open errors | All UI modules above |
 

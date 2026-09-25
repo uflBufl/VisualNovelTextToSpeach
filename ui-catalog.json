@@ -331,23 +331,13 @@
       "contracts": ["review-authority", "playback-evidence"]
     },
     {
-      "id": "source-voice-mapping",
-      "title": "Source voice mapping",
-      "family": "Source extraction",
-      "audience": "Source curator",
-      "mission": "Review extracted source clips and assign stable speaker identities.",
-      "canonical_owner": "source-voice-mapping",
-      "related": ["character-story-review", "voice-import"],
-      "contracts": ["review-authority", "playback-evidence"]
-    },
-    {
       "id": "character-story-review",
       "title": "Character Story reference review",
       "family": "Source extraction",
       "audience": "Source curator",
       "mission": "Compare valid same-character source references and retain protected notes and decisions.",
       "canonical_owner": "character-story-review",
-      "related": ["source-voice-mapping", "source-reference-review"],
+      "related": ["source-reference-review"],
       "contracts": ["review-authority", "playback-evidence"]
     },
     {

@@ -87,7 +87,6 @@ Detailed control accounting is retained in:
 
 | ID | Finding | Required change | Acceptance gate |
 | --- | --- | --- | --- |
-| UI-001 | `Reverse1999AuditionDialog` can retain an approved clip/review while dialogue, bank, media, speaker or review fields change. Import can then use a displayed identity that was never approved with those bytes. | Centralize upstream-change invalidation: stop playback, clear clip/review, disable Import, and bind Import to one immutable displayed speaker/bank/media/review token. | Change each dependency after approval; Import remains disabled until the newly displayed identity is completely replayed/reviewed. The saved manifest references exactly that token. |
 | UI-002 | Removing a game profile also deletes profile-scoped OCR corrections, but the confirmation names only the profile and offers no undo. | State the exact profile and correction count in `Remove profile and its OCR corrections`; make Cancel the safe default. Prefer recoverable deletion if it is cheap. | The confirmation names every deleted data class; Escape/default cannot delete; focused tests verify retained data on cancel and complete deletion only after explicit confirmation. |
 
 ### P1: repair broken and misleading journeys
@@ -100,8 +99,8 @@ Detailed control accounting is retained in:
 | UI-006 | Closing the unknown-speaker prompt silently approves narrator fallback for the session; its mapping dialog also allows changing another target and then re-prompts for the original. | Make close/Escape cancel or pause. Label the affirmative scope and lock the initiating speaker in contextual mapping while retaining editable target in general management. | Close never grants fallback; assignment resolves the initiating speaker exactly once; general voice management remains editable. |
 | UI-007 | Default Pocket users see an XTTS model-download action that cannot succeed without unrelated CPML acceptance. | Make Asset Manager backend-aware; hide irrelevant model download or show only choices applicable to the active engine. | Default Pocket setup has no XTTS primary action; every offered download can satisfy the active backend's readiness check. |
 | UI-008 | Settings accepts an existing but structurally invalid game-pack file, closes, and only then reports apply failure. It also presents independent raw authority files as peers. | Reuse onboarding pack validation before Save; choose game pack as the ordinary authority and move/derive independent technical paths. | Invalid pack remains in the open dialog with focused inline error; a valid pack cannot silently conflict with ordinary hidden paths. |
-| UI-009 | Playback evidence rules disagree: Character Story can decide without listening, source audition can approve when playback merely starts, and blind listening seek/skip can satisfy a claimed full-listen gate. | Require one complete initial playback before decision; enable seeking afterward. Explain disabled decisions visibly and accessibly. | Start, partial play and seek-to-end do not authorize; natural first completion does; replay/seek then remain usable. |
-| UI-010 | Offline preparation, voice mapping, OCR review, diagnostics, support and most specialist/extractor windows overflow at large text; several lack scroll/reflow entirely. | Add scroll, wrapping or responsive stacking only where 150%/200% renders fail. Reuse the dashboard's scrollable pattern. | Every surface is fully reachable at its minimum supported work area and 100%, 150%, 200% text scale without horizontal loss of primary actions. |
+| UI-009 | Playback evidence rules disagree: Character Story can decide without listening, and blind listening seek/skip can satisfy a claimed full-listen gate. | Require one complete initial playback before decision; enable seeking afterward. Explain disabled decisions visibly and accessibly. | Start, partial play and seek-to-end do not authorize; natural first completion does; replay/seek then remain usable. |
+| UI-010 | Offline preparation, OCR review, diagnostics, support and most specialist/extractor windows overflow at large text; several lack scroll/reflow entirely. | Add scroll, wrapping or responsive stacking only where 150%/200% renders fail. Reuse the dashboard's scrollable pattern. | Every surface is fully reachable at its minimum supported work area and 100%, 150%, 200% text scale without horizontal loss of primary actions. |
 | UI-031 | During potentially long offline generation, the selection area disappears and the window shows only a phase sentence plus Cancel. It exposes no live completed/total count, saved progress, failure/recovery count or clear final handoff into pack activation. | Keep one window and replace the hidden selection area with a compact progress card: current phase, completed/total, saved-so-far guarantee, failures being recovered, and exact cancel/resume consequence. Poll the existing durable generation state instead of adding a new event framework. Keep per-line detail hidden unless failures need action. | A slow synthetic generation visibly advances durable counts; cancellation reports what was saved and resumes without duplication; recovery, final checks, pack creation and activation have distinct truthful states; success shows the final original/prepared/live-fallback coverage summary. |
 | UI-011 | Tray, dashboard and compact transport enable actions from controller readiness rather than actual pause/queue/history capability. Compact also omits Replay and labels emergency stop merely `Stop`. | Use one runtime capability state across all three surfaces; add compact Replay; use `Emergency stop` or an equally explicit compact label. | Action availability and explanations match across surfaces for idle, live, speaking, paused, queued and replayable states. |
 | UI-012 | Reverse: 1999 audition prepares, converts and analyses clips synchronously on the Qt thread with no busy/cancel state. | Run the existing bounded operation outside the UI thread and expose request-scoped progress/cancel. | A slow-storage fixture leaves the window responsive, prevents conflicting edits and supports safe cancellation. |
@@ -147,7 +146,7 @@ undo framework without new evidence.
 
 ## Implementation order
 
-1. UI-001 and UI-002: identity/data safety.
+1. UI-002: identity/data safety.
 2. UI-003 through UI-009: incorrect state, consequence and authorization.
 3. UI-010 through UI-015 and UI-031: responsive access, generation progress,
    capability parity and recovery.
@@ -175,6 +174,9 @@ Implemented 2026-09-03:
 - Verification passed all 2,062 discovered `VisualNovelTextToSpeach` tests and
   all 21 extractor UI tests with the main UI runtime, plus Ruff and diff checks
   in both repositories.
+
+Retired 2026-09-25: UI-001 no longer applies because the source voice mapping
+window was removed.
 
 The remaining work is platform and human qualification, not another source
 inventory or UI redesign.
