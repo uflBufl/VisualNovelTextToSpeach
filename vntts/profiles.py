@@ -10,6 +10,7 @@ from vntts.settings import (
     audio_source_policies,
     default_audio_source_policy,
     get_config_directory,
+    legacy_narrator_assignment_forces_live_tts,
     live_sequence_modes,
 )
 from vntts.versioned_json import load_versioned_json, write_versioned_json
@@ -78,6 +79,9 @@ class GameProfile:
         force_live_narrator = values.get("force_live_narrator", False)
         if not isinstance(force_live_narrator, bool):
             raise ValueError("force_live_narrator must be a boolean")
+        force_live_narrator = force_live_narrator or (
+            source_schema < 5 and legacy_narrator_assignment_forces_live_tts(values)
+        )
         live_sequence_mode = values.get("live_sequence_mode")
         recognized_live_sequence_mode = live_sequence_mode in live_sequence_modes
         if not isinstance(live_sequence_mode, str) or not recognized_live_sequence_mode:

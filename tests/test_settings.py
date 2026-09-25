@@ -215,17 +215,41 @@ class SettingsTest(unittest.TestCase):
         )
 
     def test_obsolete_voice_assignments_are_ignored(self):
-        settings = AppSettings.from_mapping(
-            {
-                "schema_version": settings_schema_version,
-                "voice_assignments": {"Narrator": "preset:alba"},
-                "character_voice_defaults": {"Hotelier": "default"},
-            }
-        )
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "settings.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": settings_schema_version,
+                        "voice_assignments": {"Narrator": "preset:alba"},
+                        "character_voice_defaults": {"Hotelier": "default"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            settings = load_app_settings(path, environment={})
 
         self.assertFalse(settings.force_live_narrator)
         self.assertNotIn("voice_assignments", asdict(settings))
         self.assertNotIn("character_voice_defaults", asdict(settings))
+
+    def test_legacy_narrator_assignment_migrates_to_force_live_routing(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "settings.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 21,
+                        "voice_assignments": {"Narrator": "preset:alba"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            settings = load_app_settings(path, environment={})
+
+        self.assertTrue(settings.force_live_narrator)
 
     def test_audio_source_policy_can_be_selected_from_environment(self):
         settings = AppSettings().with_environment_overrides(

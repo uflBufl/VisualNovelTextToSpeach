@@ -92,6 +92,17 @@ def is_live_sequence_audio_mode(value: object) -> bool:
     return value in live_sequence_audio_modes
 
 
+def legacy_narrator_assignment_forces_live_tts(values: Mapping[str, object]) -> bool:
+    assignments = values.get("voice_assignments")
+    return isinstance(assignments, Mapping) and any(
+        isinstance(character, str)
+        and character.strip().casefold() == "narrator"
+        and isinstance(source_id, str)
+        and source_id.strip()
+        for character, source_id in assignments.items()
+    )
+
+
 restart_required_setting_names = (
     "speech_backend",
     "tts_model",
@@ -365,6 +376,10 @@ class AppSettings:
             and parsed["announce_speaker_changes"]
         ):
             parsed["speaker_announcement_mode"] = "all-speakers"
+
+        parsed["force_live_narrator"] = parsed["force_live_narrator"] or (
+            source_schema < 22 and legacy_narrator_assignment_forces_live_tts(values)
+        )
 
         # The keys and values above are validated dynamically from versioned JSON;
         # typeshed cannot express that mapping through dataclasses.replace.

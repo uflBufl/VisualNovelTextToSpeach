@@ -146,6 +146,66 @@ class GameProfileStoreTest(unittest.TestCase):
 
         self.assertEqual(profile.audio_source_policy, "live-tts-only")
 
+    def test_legacy_profile_narrator_assignment_migrates_to_force_live_routing(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "profiles.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 4,
+                        "profiles": [
+                            {
+                                "id": "legacy",
+                                "name": "Legacy game",
+                                "capture_mode": "screen",
+                                "dialog_region": {
+                                    "left": 0.1,
+                                    "top": 0.6,
+                                    "width": 0.8,
+                                    "height": 0.3,
+                                },
+                                "voice_assignments": {"Narrator": "preset:alba"},
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            profile = GameProfileStore.load(path).get("legacy")
+
+        self.assertTrue(profile.force_live_narrator)
+
+    def test_current_profile_ignores_obsolete_narrator_assignment(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "profiles.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": profiles_schema_version,
+                        "profiles": [
+                            {
+                                "id": "current",
+                                "name": "Current game",
+                                "capture_mode": "screen",
+                                "dialog_region": {
+                                    "left": 0.1,
+                                    "top": 0.6,
+                                    "width": 0.8,
+                                    "height": 0.3,
+                                },
+                                "voice_assignments": {"Narrator": "preset:alba"},
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            profile = GameProfileStore.load(path).get("current")
+
+        self.assertFalse(profile.force_live_narrator)
+
     def test_duplicate_profile_names_are_rejected_case_insensitively(self):
         with TemporaryDirectory() as temporary_directory:
             store = GameProfileStore(Path(temporary_directory) / "profiles.json")
