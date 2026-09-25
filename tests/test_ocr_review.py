@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -204,6 +204,33 @@ class OCRReviewStoreTest(unittest.TestCase):
             preserved = json.loads(sample.metadata_path.read_text(encoding="utf-8"))
 
         self.assertEqual(preserved["text"], "A newer observation.")
+        self.assertNotIn("resolved", preserved)
+
+    def test_concurrent_metadata_edit_is_not_overwritten(self):
+        with TemporaryDirectory() as temporary_directory:
+            store = OCRReviewStore(temporary_directory)
+            record_uncertain_sample(temporary_directory)
+            sample = store.pending_samples()[0]
+
+            def read_then_edit(path, **_kwargs):
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                path.write_text(
+                    json.dumps({**payload, "note": "concurrent edit"}),
+                    encoding="utf-8",
+                )
+                return payload
+
+            with (
+                patch(
+                    "vntts.ocr_review.read_versioned_json", side_effect=read_then_edit
+                ),
+                self.assertRaisesRegex(OSError, "changed on disk"),
+            ):
+                store.mark_resolved(sample)
+
+            preserved = json.loads(sample.metadata_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(preserved["note"], "concurrent edit")
         self.assertNotIn("resolved", preserved)
 
 

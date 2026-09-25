@@ -5,9 +5,10 @@ from math import isfinite
 from pathlib import Path
 
 from vntts.versioned_json import (
+    file_revision,
     load_versioned_json,
     read_versioned_json,
-    write_versioned_json,
+    write_versioned_json_if_unchanged,
 )
 
 OCR_REVIEW_SCHEMA_VERSION = 1
@@ -72,6 +73,7 @@ class OCRReviewStore:
         scope: str | None = None,
         corrections: Mapping[str, str] | None = None,
     ) -> None:
+        revision = file_revision(sample.metadata_path)
         payload = read_versioned_json(
             sample.metadata_path,
             schema_version=OCR_REVIEW_SCHEMA_VERSION,
@@ -86,10 +88,12 @@ class OCRReviewStore:
             payload["correction_scope"] = scope
         if corrections:
             payload["corrections"] = dict(corrections)
-        write_versioned_json(
+        write_versioned_json_if_unchanged(
             sample.metadata_path,
             OCR_REVIEW_SCHEMA_VERSION,
             payload,
+            revision=revision,
+            document_name="OCR review metadata",
         )
 
     def _load_sample(self, metadata_path: Path) -> OCRReviewSample | None:
