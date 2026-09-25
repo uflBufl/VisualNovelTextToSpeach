@@ -764,6 +764,94 @@ class GeneratedAudioTest(unittest.TestCase):
         backend.voice_override.assert_not_called()
         live.prepare_playback.assert_called_once_with("Narrator", "Hello.")
 
+    def test_pending_partial_source_cue_keeps_the_remaining_generated_lead(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / "generated-audio.json"
+            write_generated_audio_manifest(
+                manifest, {"vntts.runtime.progress": True}, []
+            )
+            clock = Mock(return_value=10.0)
+            library = GeneratedAudioLibrary.load_optional(manifest)
+            backend = GeneratedAudioFallbackBackend(
+                self.create_live_backend(),
+                library,
+                self.create_resolver(
+                    source_audio_status="available",
+                    source_audio_duration_seconds=1.25,
+                    source_audio_completeness="partial",
+                    source_audio_authoritative=True,
+                ),
+                audio_source_policy="prefer-game-audio",
+                audio_output=FakeAudioOutput(),
+                clock=clock,
+            )
+            pending = backend.prepare_route("Ada", "Hello.")
+            self.assertIsInstance(pending, PendingGeneratedAudioRoute)
+            self.assertAlmostEqual(pending.source_audio_lead_deadline, 11.6)
+            clock.return_value = 10.25
+            self.create_library(root)
+
+            resolved = backend.resolved_pending_route(pending)
+            with patch.object(
+                backend.playback_owner.source_audio_completion_stop,
+                "wait",
+                return_value=True,
+            ) as wait:
+                outcome = backend.play_route(resolved)
+
+        self.assertIsInstance(resolved, GeneratedAudioRoute)
+        self.assertAlmostEqual(resolved.source_audio_lead_seconds, 1.35)
+        self.assertIs(outcome.status, PlaybackStatus.INTERRUPTED)
+        self.assertAlmostEqual(wait.call_args.args[0], 1.35)
+
+    def test_pending_partial_source_cue_expired_before_fallback_does_not_wait_again(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / "generated-audio.json"
+            write_generated_audio_manifest(
+                manifest, {"vntts.runtime.progress": True}, []
+            )
+            clock = Mock(return_value=10.0)
+            library = GeneratedAudioLibrary.load_optional(manifest)
+            live = self.create_live_backend()
+            live.name = "pocket-tts"
+            live.model_identity = None
+            live.model_name = "pocket-tts"
+            live.generation_profile = "default"
+            backend = GeneratedAudioFallbackBackend(
+                live,
+                library,
+                self.create_resolver(
+                    source_audio_status="available",
+                    source_audio_duration_seconds=1.25,
+                    source_audio_completeness="partial",
+                    source_audio_authoritative=True,
+                ),
+                audio_source_policy="prefer-game-audio",
+                audio_output=FakeAudioOutput(),
+                clock=clock,
+            )
+            pending = backend.prepare_route("Ada", "Hello.")
+            self.assertIsInstance(pending, PendingGeneratedAudioRoute)
+            clock.return_value = 12.0
+            self.create_live_fallback_library(root, runtime_progress=True)
+
+            resolved = backend.resolved_pending_route(pending)
+            with patch.object(
+                backend.playback_owner.source_audio_completion_stop,
+                "wait",
+            ) as wait:
+                outcome = backend.play_route(resolved)
+
+        self.assertIsInstance(resolved, LiveFallbackRoute)
+        self.assertEqual(resolved.source_audio_lead_seconds, 0.0)
+        self.assertTrue(outcome.successful)
+        wait.assert_not_called()
+        live.play_prepared.assert_called_once()
+
     def test_explicit_live_fallback_uses_only_bound_pocket_backend(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -159,6 +159,7 @@ class PendingGeneratedAudioRoute:
     synthesis_ms: float = 0.0
     first_audio_ms: float | None = None
     cache_source: str | None = "generation-in-progress"
+    source_audio_lead_deadline: float | None = None
 
 
 @dataclass(frozen=True)
@@ -965,6 +966,11 @@ class GeneratedAudioFallbackBackend:
                     line.line_id,
                     "generation-in-progress",
                 ),
+                source_audio_lead_deadline=(
+                    self.clock() + (source_audio_wait or 0.0)
+                    if source_audio_partial
+                    else None
+                ),
             )
         line_id = line.line_id if line is not None else None
         if live_fallback is not None:
@@ -1093,6 +1099,7 @@ class GeneratedAudioFallbackBackend:
                     effective_source="generated",
                     artifact_preflight_state="generated-audio-entry-verified",
                 ),
+                source_audio_lead_seconds=self._remaining_source_audio_lead(route),
             )
         live_fallback = self.library.find_live_fallback(
             route.line_id, route.text_sha256
@@ -1100,8 +1107,16 @@ class GeneratedAudioFallbackBackend:
         if live_fallback is None:
             return None
         return self._live_fallback_route(
-            live_fallback, text=route.text, trace=route.trace
+            live_fallback,
+            text=route.text,
+            trace=route.trace,
+            source_audio_lead_seconds=self._remaining_source_audio_lead(route),
         )
+
+    def _remaining_source_audio_lead(self, route: PendingGeneratedAudioRoute) -> float:
+        if route.source_audio_lead_deadline is None:
+            return 0.0
+        return max(0.0, route.source_audio_lead_deadline - self.clock())
 
     def prime(self, character: str) -> object:
         prime = getattr(self.live_backend, "prime", None)
