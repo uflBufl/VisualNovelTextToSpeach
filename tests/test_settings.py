@@ -18,6 +18,21 @@ from vntts.settings import (
 
 
 class SettingsTest(unittest.TestCase):
+    def test_explicit_home_path_round_trips_between_save_and_load(self):
+        with TemporaryDirectory() as directory:
+            with patch.dict(
+                "os.environ", {"HOME": directory, "USERPROFILE": directory}
+            ):
+                saved_path = AppSettings(onboarding_completed=True).save(
+                    "~/settings.json"
+                )
+                loaded = load_app_settings(
+                    "~/settings.json", environment={}, warn=lambda _message: None
+                )
+
+            self.assertEqual(saved_path, Path(directory) / "settings.json")
+            self.assertTrue(loaded.onboarding_completed)
+
     def test_last_main_section_is_validated_and_round_trips(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"

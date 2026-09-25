@@ -501,7 +501,11 @@ def load_app_settings(
     report: WarningHandler = (
         (lambda message: print(message, file=sys.stderr)) if warn is None else warn
     )
-    path = get_settings_path(environment=environment) if path is None else Path(path)
+    path = (
+        get_settings_path(environment=environment)
+        if path is None
+        else Path(path).expanduser()
+    )
 
     settings = load_versioned_json(
         path,
