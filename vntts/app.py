@@ -3160,6 +3160,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self._controller_busy or self._shutting_down:
             self.set_status("Controller reconfiguration is already in progress")
             return
+        if not self._recover_active_profile():
+            return
         dialog = GameProfilesDialog(
             self.settings,
             self.profile_store,

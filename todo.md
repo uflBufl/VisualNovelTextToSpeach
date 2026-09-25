@@ -27,7 +27,7 @@ Planned implementation order after approval:
 
 ## P1 - Type the desktop application shell
 
-- [ ] Reduce the 181 `no-untyped-def` findings in `vntts/app.py` by coherent
+- [ ] Reduce the 173 `no-untyped-def` findings in `vntts/app.py` by coherent
       feature area. Use existing domain types and narrow protocols for Qt,
       controller and worker callbacks rather than replacing missing types with
       `Any` or unverified casts.
@@ -35,17 +35,6 @@ Planned implementation order after approval:
       `vntts/app.py`, lower `tests/fixtures/mypy-inventory-v1.json` to the
       measured remaining count, and commit that area separately. When the count
       reaches zero, add `vntts/app.py` to the normal mypy scope.
-
-## Investigate - Recover settings/profile divergence after a profile write failure
-
-- [ ] Reproduce a saved settings change followed by a failed active-profile
-      update, then reselect that profile: its old snapshot can reapply stale
-      capture/content options. Existing UI tests intentionally retain the saved
-      settings and warn on the failed profile write; preserve that contract.
-- [ ] Compare a retry-on-next-save or startup repair against joint publication
-      without losing either document on an interrupted write. Choose the
-      smallest recovery that survives restart, add a failing regression, and
-      reduce this TODO to any remaining external validation.
 
 ## P0 - Play while offline audio is still preparing
 

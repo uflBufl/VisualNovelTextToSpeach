@@ -18,7 +18,8 @@ from vntts.configuration_apply import (
     _Signals,
 )
 from vntts.ocr import DialogRegion
-from vntts.settings import AppSettings
+from vntts.profiles import GameProfile
+from vntts.settings import AppSettings, get_settings_path, load_app_settings
 
 VoiceChange: TypeAlias = Callable[[SettingsCommit], AppSettings]
 
@@ -38,7 +39,7 @@ class _OnboardingWizard(Protocol):
 
 
 class _ProfileStore(Protocol):
-    def get(self, profile_id: str) -> object | None: ...
+    def get(self, profile_id: str) -> GameProfile | None: ...
 
     def update_region(self, profile_id: str, region: DialogRegion) -> object: ...
 
@@ -243,3 +244,25 @@ class DurableSettingsMixin:
                 )
                 return False
         return True
+
+    def _recover_active_profile(self) -> bool:
+        profile_id = self.settings.active_profile_id
+        profile = self.profile_store.get(profile_id) if profile_id else None
+        if profile is None:
+            return True
+        path = get_settings_path()
+        if not path.is_file():
+            return True
+        # The saved settings, not transient environment overrides, own the active snapshot.
+        warnings: list[str] = []
+        persisted = load_app_settings(
+            path,
+            environment={},
+            warn=warnings.append,
+            on_game_pack_error=lambda error: warnings.append(str(error)),
+        )
+        if warnings or persisted.active_profile_id != profile_id:
+            return True
+        if profile.updated_from_settings(persisted) == profile:
+            return True
+        return self._sync_active_profile(persisted)

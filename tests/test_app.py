@@ -34,7 +34,7 @@ from vntts.ocr import DialogRegion  # noqa: E402
 from vntts.pregeneration_activation import OfflinePackActivationResult  # noqa: E402
 from vntts.pregeneration_pack import OfflinePackResult  # noqa: E402
 from vntts.profiles import GameProfileStore  # noqa: E402
-from vntts.settings import AppSettings  # noqa: E402
+from vntts.settings import AppSettings, load_app_settings  # noqa: E402
 from vntts.voice_library import VoiceLibrary  # noqa: E402
 from vntts.window_capture import WindowGeometry  # noqa: E402
 
@@ -3538,6 +3538,112 @@ class TrayApplicationTest(unittest.TestCase):
             self.assertFalse(tray_application.profile_restart_runner.active)
             self.assertIn("disk full", tray_application.status_action.text())
             tray_application.shutdown()
+
+    def test_profile_manager_repairs_saved_profile_without_persisting_environment_override(
+        self,
+    ):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            store_path = root / "profiles.json"
+            settings_path = root / "settings.json"
+            store = GameProfileStore(store_path)
+            profile = store.create("Game", AppSettings(game_window_title="Old"))
+            profile.apply(AppSettings()).updated(game_window_title="Saved").save(
+                settings_path
+            )
+            runtime = load_app_settings(
+                settings_path,
+                environment={"VNTTS_GAME_WINDOW_TITLE": "Temporary"},
+            )
+            restored_store = GameProfileStore.load(store_path)
+            tray = TrayApplication(
+                self.application,
+                runtime,
+                controller_factory=Mock(return_value=Mock()),
+                profile_store=restored_store,
+            )
+            with (
+                patch.dict(os.environ, {"VNTTS_SETTINGS_FILE": str(settings_path)}),
+                patch("vntts.app.GameProfilesDialog") as dialog,
+            ):
+                dialog.return_value.exec.return_value = QDialog.DialogCode.Rejected
+                tray.open_profiles()
+
+            self.assertEqual(tray.settings.game_window_title, "Temporary")
+            self.assertEqual(
+                GameProfileStore.load(store_path).get(profile.id).game_window_title,
+                "Saved",
+            )
+            tray.shutdown()
+
+    def test_profile_manager_stays_closed_when_profile_recovery_fails(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            store_path = root / "profiles.json"
+            settings_path = root / "settings.json"
+            store = GameProfileStore(store_path)
+            profile = store.create("Game", AppSettings(game_window_title="Old"))
+            saved = profile.apply(AppSettings()).updated(game_window_title="Saved")
+            saved.save(settings_path)
+            tray = TrayApplication(
+                self.application,
+                load_app_settings(settings_path, environment={}),
+                controller_factory=Mock(return_value=Mock()),
+                profile_store=GameProfileStore.load(store_path),
+            )
+            with (
+                patch.dict(os.environ, {"VNTTS_SETTINGS_FILE": str(settings_path)}),
+                patch.object(
+                    tray.profile_store,
+                    "update_from_settings",
+                    side_effect=OSError("disk full"),
+                ),
+                patch("vntts.app.GameProfilesDialog") as dialog,
+            ):
+                tray.open_profiles()
+
+            dialog.assert_not_called()
+            self.assertEqual(tray.settings.game_window_title, "Saved")
+            self.assertEqual(
+                GameProfileStore.load(store_path).get(profile.id).game_window_title,
+                "Old",
+            )
+            self.assertIn("disk full", tray.status_action.text())
+            tray.shutdown()
+
+    def test_profile_recovery_preserves_changes_from_another_store(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            store_path = root / "profiles.json"
+            settings_path = root / "settings.json"
+            store = GameProfileStore(store_path)
+            profile = store.create("Game", AppSettings(game_window_title="Old"))
+            profile.apply(AppSettings()).updated(game_window_title="Saved").save(
+                settings_path
+            )
+            stale = GameProfileStore.load(store_path)
+            GameProfileStore.load(store_path).rename(profile.id, "Externally renamed")
+            tray = TrayApplication(
+                self.application,
+                load_app_settings(settings_path, environment={}),
+                controller_factory=Mock(return_value=Mock()),
+                profile_store=stale,
+            )
+            with (
+                patch.dict(os.environ, {"VNTTS_SETTINGS_FILE": str(settings_path)}),
+                patch("vntts.app.GameProfilesDialog") as dialog,
+            ):
+                tray.open_profiles()
+
+            dialog.assert_not_called()
+            self.assertEqual(
+                GameProfileStore.load(store_path).get(profile.id).name,
+                "Externally renamed",
+            )
+            self.assertIn(
+                "active profile could not be updated", tray.status_action.text()
+            )
+            tray.shutdown()
 
     def test_live_modal_stop_wait_does_not_block_qt_events(self):
         controller = Mock()
