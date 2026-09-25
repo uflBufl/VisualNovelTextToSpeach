@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 )
 from vntts_artifacts.game_pack import GamePackError
 
-from vntts.ocr import get_dialog_region, get_dialog_region_file, save_dialog_region
+from vntts.ocr import get_dialog_region
 from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.profiles import GameProfile, GameProfileStore
 from vntts.settings import AppSettings
@@ -274,7 +274,6 @@ class GameProfilesDialog(QDialog):
         except GamePackError as error:
             QMessageBox.warning(self, "Unable to use profile", str(error))
             return
-        save_dialog_region(profile.dialog_region, get_dialog_region_file())
         self.selected_settings = selected_settings
         self.active_profile_id = profile.id
         self.accept()

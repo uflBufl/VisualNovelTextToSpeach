@@ -331,7 +331,7 @@ class GameProfilesDialogTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
-    def test_using_profile_activates_region_and_settings(self):
+    def test_using_profile_selects_settings(self):
         with TemporaryDirectory() as temporary_directory:
             store = GameProfileStore(Path(temporary_directory) / "profiles.json")
             region = DialogRegion(0.05, 0.65, 0.9, 0.3)
@@ -348,11 +348,8 @@ class GameProfilesDialogTest(unittest.TestCase):
             dialog = GameProfilesDialog(AppSettings(), store)
             dialog.refresh_profiles(profile.id)
 
-            with patch("vntts.profiles_ui.save_dialog_region") as save_region:
-                dialog.use_profile()
+            dialog.use_profile()
 
-        save_region.assert_called_once()
-        self.assertEqual(save_region.call_args.args[0], region)
         self.assertEqual(dialog.settings().active_profile_id, profile.id)
         self.assertEqual(dialog.settings().game_window_title, "Reverse: 1999")
 
