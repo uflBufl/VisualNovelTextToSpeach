@@ -331,7 +331,9 @@ class SettingsDialog(QDialog):
 
     def _initialize_settings(self, settings: AppSettings) -> None:
         self.original_settings = settings
-        self._game_pack_validation = None
+        self._game_pack_validation: (
+            tuple[tuple[str, bool, str | None, str, str | None], AppSettings] | None
+        ) = None
         self.setWindowTitle(f"{application_name} settings")
 
     def _build_capture_controls(self, settings: AppSettings) -> QHBoxLayout:
@@ -1370,8 +1372,8 @@ class SettingsDialog(QDialog):
             return
         self.accept()
 
-    def _raw_settings(self):
-        def optional_text(widget):
+    def _raw_settings(self) -> AppSettings:
+        def optional_text(widget: QLineEdit) -> str | None:
             return widget.text().strip() or None
 
         hotkeys = self.hotkey_assignments()
@@ -1431,7 +1433,7 @@ class SettingsDialog(QDialog):
             }
         )
 
-    def _settings_with_game_pack(self, settings):
+    def _settings_with_game_pack(self, settings: AppSettings) -> AppSettings:
         if not settings.game_pack:
             return settings
         selected_new_pack = settings.game_pack != self.original_settings.game_pack
@@ -1465,25 +1467,20 @@ class SettingsDialog(QDialog):
         else:
             validated = self._game_pack_validation[1]
         return settings.updated(
-            **{
-                name: getattr(validated, name)
-                for name in (
-                    "game_pack",
-                    "story_index",
-                    "voice_manifest",
-                    "generated_audio_manifest",
-                    "live_sequence_plan",
-                    "live_sequence_mode",
-                )
-            }
+            game_pack=validated.game_pack,
+            story_index=validated.story_index,
+            voice_manifest=validated.voice_manifest,
+            generated_audio_manifest=validated.generated_audio_manifest,
+            live_sequence_plan=validated.live_sequence_plan,
+            live_sequence_mode=validated.live_sequence_mode,
         )
 
-    def settings(self):
+    def settings(self) -> AppSettings:
         return guard_auto_advance_settings(
             self._settings_with_game_pack(self._raw_settings())
         )
 
-    def hotkey_assignments(self):
+    def hotkey_assignments(self) -> dict[str, str]:
         return {
             "Read once": self.read_hotkey.hotkey(),
             "Live reading": self.live_hotkey.hotkey(),

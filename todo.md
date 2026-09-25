@@ -27,7 +27,7 @@ Planned implementation order after approval:
 
 ## P1 - Type the desktop application shell
 
-- [ ] Reduce the 133 `no-untyped-def` findings in `vntts/app.py` by coherent
+- [ ] Reduce the 127 `no-untyped-def` findings in `vntts/app.py` by coherent
       feature area. Use existing domain types and narrow protocols for Qt,
       controller and worker callbacks rather than replacing missing types with
       `Any` or unverified casts.
