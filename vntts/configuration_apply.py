@@ -18,10 +18,18 @@ from vntts.settings import (
 )
 
 
+class _ReadingLineSignal(Protocol):
+    def emit(self, line_id: str, text_sha256: str) -> None: ...
+
+
 class _PreparationDialog(Protocol):
+    readingLineObserved: _ReadingLineSignal
+
     def has_pending_work(self) -> bool: ...
 
     def apply_narrator_settings(self, settings: AppSettings) -> None: ...
+
+    def prioritize_line(self, line_id: str, text_sha256: str) -> bool: ...
 
 
 class _SettingsDialog(Protocol):

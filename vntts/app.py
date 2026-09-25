@@ -1914,7 +1914,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.speech_runtime_timer.start()
         self._refresh_speech_runtime()
 
-    def _speech_runtime_label(self):
+    def _speech_runtime_label(self) -> str:
         retained = self.moss_runtime.backend
         return speech_runtime_label(
             None
@@ -1922,7 +1922,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             else retained or getattr(self.controller, "speech_backend", None)
         )
 
-    def _refresh_speech_runtime(self):
+    def _refresh_speech_runtime(self) -> None:
         self.dashboard.set_speech_runtime(self._speech_runtime_label())
         loaded = self.moss_runtime.loaded
         label = (
@@ -1951,7 +1951,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.dashboard.moss_runtime_button.setEnabled(enabled)
         self.moss_runtime_action.setEnabled(enabled)
 
-    def toggle_moss_runtime(self):
+    def toggle_moss_runtime(self) -> None:
         if self.settings.speech_backend != "moss-tts" or self._shutting_down:
             return
         if self.moss_runtime.loaded:
@@ -2003,14 +2003,16 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             allow_download=download is not None,
         )
 
-    def _moss_runtime_finished(self, _backend, error):
+    def _moss_runtime_finished(
+        self, _backend: object | None, error: Exception | None
+    ) -> None:
         if error is not None:
             self.show_error(f"Unable to load OpenMOSS: {error}")
         elif not self._shutting_down:
             self.set_status("OpenMOSS is loaded and ready.")
         self._refresh_speech_runtime()
 
-    def _update_auto_advance_action(self):
+    def _update_auto_advance_action(self) -> None:
         allowed, enabled, reason = auto_advance_control_state(
             self.settings.capture_mode,
             self.settings.live_sequence_mode,
@@ -2024,10 +2026,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.auto_advance_reason_action.setText(reason)
         self.auto_advance_reason_action.setVisible(not allowed)
 
-    def _application_icon(self):
+    def _application_icon(self) -> QIcon:
         return create_application_icon(self.application.style())
 
-    def start(self):
+    def start(self) -> None:
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray.show()
         else:
@@ -2054,7 +2056,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         QTimer.singleShot(0, self._load_initial_library)
 
-    def _load_initial_library(self):
+    def _load_initial_library(self) -> None:
         section = self.dashboard.sections.currentIndex()
         with QSignalBlocker(self.dashboard.sections):
             try:
@@ -2088,7 +2090,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         with QSignalBlocker(self.dashboard.sections):
             self.dashboard.show_reading()
 
-    def prepare_reading(self, *, start_live=False):
+    def prepare_reading(self, *, start_live: bool = False) -> None:
         if self._controller_busy or self._shutting_down:
             return
         if self.narrator_dialog is not None:
@@ -2140,10 +2142,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._initial_start_generation = generation
         self.initial_start_runner.start(self._initialize_controller, generation)
 
-    def _initialize_controller(self, generation):
+    def _initialize_controller(self, generation: int) -> bool:
         return self.session_owner.start(generation)
 
-    def _initial_start_finished(self, ready, error):
+    def _initial_start_finished(
+        self, ready: bool | None, error: Exception | None
+    ) -> None:
         generation = self._initial_start_generation
         self._initial_start_generation = None
         if not self._lifecycle_is_current(generation):
@@ -2159,10 +2163,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 self.toggle_live()
         self._start_live_after_initial_start = False
 
-    def schedule_hotkeys(self):
+    def schedule_hotkeys(self) -> None:
         QTimer.singleShot(250, self._start_hotkeys_safely)
 
-    def _start_hotkeys_safely(self):
+    def _start_hotkeys_safely(self) -> None:
         if self._shutting_down:
             return
         if sys.platform == "darwin":
