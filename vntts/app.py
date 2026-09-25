@@ -3345,7 +3345,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         else:
             finish()
 
-    def _save_narrator_candidate(self, dialog):
+    def _save_narrator_candidate(
+        self, dialog: GameNarratorDialog
+    ) -> AppSettings | None:
+        if dialog.result_settings is None:
+            self.show_error("Voice selection finished without saved settings")
+            return None
         candidate = dialog.result_settings.updated(
             last_main_section=self.settings.last_main_section
         )

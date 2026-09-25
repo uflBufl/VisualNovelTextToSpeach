@@ -1455,6 +1455,21 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIsNone(tray_application.pending_unknown_speaker)
         tray_application.shutdown()
 
+    def test_missing_narrator_result_does_not_save_settings(self):
+        tray_application = TrayApplication(self.application, AppSettings())
+        with (
+            patch.object(tray_application, "_save_settings_candidate") as save,
+            patch.object(tray_application, "show_error") as show_error,
+        ):
+            self.assertIsNone(
+                tray_application._save_narrator_candidate(Mock(result_settings=None))
+            )
+        save.assert_not_called()
+        show_error.assert_called_once_with(
+            "Voice selection finished without saved settings"
+        )
+        tray_application.shutdown()
+
     def test_cancelled_voice_mapping_stays_paused_and_reoffers_choice(self):
         controller = Mock(is_live_running=False)
         tray_application = TrayApplication(
