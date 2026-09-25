@@ -673,7 +673,7 @@ def _json_payload(document: object) -> bytes:
 
 def _write_payload_no_replace(path: Path, payload: bytes) -> tuple[int, int]:
     temporary: Path | None = None
-    identity: tuple[int, int]
+    identity: tuple[int, int] | None = None
     try:
         with tempfile.NamedTemporaryFile(
             prefix=f".{path.name}.",
@@ -688,6 +688,11 @@ def _write_payload_no_replace(path: Path, payload: bytes) -> tuple[int, int]:
             metadata = os.fstat(stream.fileno())
             identity = metadata.st_dev, metadata.st_ino
         os.link(temporary, path)
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        temporary = None
     except FileExistsError as error:
         raise LiveReplayCaptureError(
             f"Replay capture result already exists: {path}"
@@ -696,12 +701,22 @@ def _write_payload_no_replace(path: Path, payload: bytes) -> tuple[int, int]:
         raise LiveReplayCaptureError(
             f"Unable to publish replay capture result {path}: {error}"
         ) from error
+    except BaseException:
+        if identity is not None:
+            try:
+                current = path.lstat()
+                if (current.st_dev, current.st_ino) == identity:
+                    path.unlink()
+            except OSError:
+                pass
+        raise
     finally:
         if temporary is not None:
             try:
                 temporary.unlink(missing_ok=True)
             except OSError:
                 pass
+    assert identity is not None
     return identity
 
 
@@ -710,7 +725,7 @@ def _write_payloads_no_replace(payloads: Sequence[tuple[Path, bytes]]) -> None:
     try:
         for path, payload in payloads:
             published.append((path, _write_payload_no_replace(path, payload)))
-    except LiveReplayCaptureError:
+    except BaseException:
         for path, identity in reversed(published):
             try:
                 current = path.lstat()

@@ -354,6 +354,37 @@ class LiveReplayCaptureTest(unittest.TestCase):
             self.assertTrue(result.report.is_file())
             self.assertTrue(result.corpus.is_file())
 
+    def test_capture_retries_after_interrupted_result_publication(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "capture"
+            session = LiveReplayCaptureSession(root)
+            session.observe(frame("red"), "Narrator", "A line.")
+            original_unlink = Path.unlink
+            interrupted = False
+
+            def interrupt_report_temp_cleanup(path, *arguments, **keywords):
+                nonlocal interrupted
+                if not interrupted and path.name.startswith(".capture-report.json."):
+                    interrupted = True
+                    raise KeyboardInterrupt("injected result interruption")
+                return original_unlink(path, *arguments, **keywords)
+
+            with patch.object(Path, "unlink", interrupt_report_temp_cleanup):
+                with self.assertRaisesRegex(KeyboardInterrupt, "result interruption"):
+                    session.finish()
+
+            self.assertFalse(session.finished)
+            for name in (
+                "observation-ledger.json",
+                "capture-report.json",
+                "corpus.json",
+            ):
+                self.assertFalse((root / name).exists())
+            result = session.finish()
+            self.assertTrue(result.observation_ledger.is_file())
+            self.assertTrue(result.report.is_file())
+            self.assertTrue(result.corpus.is_file())
+
     def test_capture_rollback_keeps_replaced_result(self):
         with TemporaryDirectory() as directory:
             root = Path(directory) / "capture"
@@ -361,26 +392,25 @@ class LiveReplayCaptureTest(unittest.TestCase):
             session.observe(frame("red"), "Narrator", "A line.")
             replacement = root / "replacement.json"
             replacement.write_bytes(b"other writer")
-            original_write = live_replay_capture._write_payload_no_replace
-            calls = 0
+            original_link = live_replay_capture.os.link
 
-            def replace_then_fail(path, payload):
-                nonlocal calls
-                calls += 1
-                if calls == 2:
-                    replacement.replace(root / "observation-ledger.json")
-                    raise LiveReplayCaptureError("injected later failure")
-                return original_write(path, payload)
+            def replace_then_interrupt(source, destination):
+                original_link(source, destination)
+                if Path(destination).name == "capture-report.json":
+                    replacement.replace(destination)
+                    raise KeyboardInterrupt("injected replacement interruption")
 
             with patch(
-                "vntts.live_replay_capture._write_payload_no_replace",
-                side_effect=replace_then_fail,
+                "vntts.live_replay_capture.os.link",
+                side_effect=replace_then_interrupt,
             ):
-                with self.assertRaisesRegex(LiveReplayCaptureError, "later failure"):
+                with self.assertRaisesRegex(
+                    KeyboardInterrupt, "replacement interruption"
+                ):
                     session.finish()
 
             self.assertEqual(
-                (root / "observation-ledger.json").read_bytes(), b"other writer"
+                (root / "capture-report.json").read_bytes(), b"other writer"
             )
 
     def test_capture_rejects_a_story_index_symlink(self):
