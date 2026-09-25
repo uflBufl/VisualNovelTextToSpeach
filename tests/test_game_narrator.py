@@ -276,6 +276,14 @@ class GameNarratorTest(unittest.TestCase):
             Path(self._voice_library_directory.name) / "library"
         )
         self._voice_library_patches = (
+            patch.dict(
+                os.environ,
+                {
+                    "VNTTS_SETTINGS_FILE": str(
+                        Path(self._voice_library_directory.name) / "settings.json"
+                    )
+                },
+            ),
             patch(
                 "vntts.game_narrator_ui.application_voice_library",
                 return_value=self._voice_library,
