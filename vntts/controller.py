@@ -705,7 +705,7 @@ class AppController:
     def get_capture_geometry(self) -> WindowGeometry | None:
         return self.diagnostics.capture_geometry()
 
-    def get_latest_diagnostic(self) -> object:
+    def get_latest_diagnostic(self) -> DiagnosticSnapshot | None:
         return self.diagnostics.latest()
 
     def get_live_pipeline_metrics(self) -> object:

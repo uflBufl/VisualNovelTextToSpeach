@@ -1191,7 +1191,7 @@ class DiagnosticsComponent:
         target = self.controller.capture_target
         return None if target is None else target.get_geometry()
 
-    def latest(self) -> object:
+    def latest(self) -> DiagnosticSnapshot | None:
         with self.controller.diagnostic_lock:
             return self.controller.last_diagnostic
 
