@@ -98,6 +98,9 @@ try {
     }
     $env:VNTTS_SPEECH_RUNTIMES_DIR = $SpeechRuntimesPath
     $env:VNTTS_VGMSTREAM_DIR = Join-Path $ProjectRoot "build\windows\vgmstream"
+    if (Test-Path -LiteralPath $env:VNTTS_VGMSTREAM_DIR) {
+        Remove-Item -LiteralPath $env:VNTTS_VGMSTREAM_DIR -Recurse -Force
+    }
     uv run --frozen python -m vntts.game_audio_decoder $env:VNTTS_VGMSTREAM_DIR
     if ($LASTEXITCODE -ne 0) {
         throw "Game-audio decoder staging failed."

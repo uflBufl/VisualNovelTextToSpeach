@@ -84,6 +84,7 @@ speech_runtimes_path="$project_root/build/macos/speech-runtimes"
 uv run --frozen python -m vntts.release_runtime "$speech_runtimes_path"
 export VNTTS_SPEECH_RUNTIMES_DIR="$speech_runtimes_path"
 export VNTTS_VGMSTREAM_DIR="$project_root/build/macos/vgmstream"
+rm -rf "$VNTTS_VGMSTREAM_DIR"
 uv run --frozen python -m vntts.game_audio_decoder "$VNTTS_VGMSTREAM_DIR"
 uv run --frozen pyinstaller --noconfirm --clean \
     --workpath "$work_path" \
