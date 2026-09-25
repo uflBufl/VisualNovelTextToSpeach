@@ -105,6 +105,25 @@ class GameProfileStoreTest(unittest.TestCase):
 
                 self.assertEqual(store.profiles, before)
 
+    def test_stale_store_cannot_overwrite_another_store(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "profiles.json"
+            original = GameProfileStore(path)
+            profile = original.create("Game", AppSettings())
+            first = GameProfileStore.load(path)
+            stale = GameProfileStore.load(path)
+            first.rename(profile.id, "Renamed")
+
+            with self.assertRaisesRegex(OSError, "changed on disk"):
+                stale.remove(profile.id)
+            with self.assertRaisesRegex(OSError, "changed on disk"):
+                stale.save()
+
+            self.assertEqual(stale.get(profile.id).name, "Game")
+            self.assertEqual(
+                GameProfileStore.load(path).get(profile.id).name, "Renamed"
+            )
+
     def test_profile_persists_and_preflights_game_pack_on_activation(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "profiles.json"
