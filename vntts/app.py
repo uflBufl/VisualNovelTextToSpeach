@@ -58,7 +58,7 @@ from vntts.auto_advance_policy import (
     auto_advance_control_state,
     guard_auto_advance_settings,
 )
-from vntts.calibration import show_calibration_overlay
+from vntts.calibration import DialogRegionOverlay, show_calibration_overlay
 from vntts.configuration_apply import ConfigurationApplyMixin
 from vntts.controller import AppController, LiveSequenceStatus
 from vntts.dashboard_ui import (
@@ -92,7 +92,7 @@ from vntts.macos import (
 )
 from vntts.macos_ui import MacOSPermissionsDialog
 from vntts.moss_runtime import RetainedMossRuntime
-from vntts.ocr import get_dialog_region_file, save_dialog_region
+from vntts.ocr import DialogRegion, get_dialog_region_file, save_dialog_region
 from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.ocr_corrections_ui import OCRCorrectionsDialog
 from vntts.ocr_review_ui import OCRReviewDialog
@@ -1675,7 +1675,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._reported_speech_paused = False
         self._onboarding_test_active = False
         self.correction_store = correction_store or OCRCorrectionStore.load()
-        self.hotkey_listener = self.calibration_overlay = None
+        self.hotkey_listener = None
+        self.calibration_overlay: DialogRegionOverlay | None = None
         self.onboarding_wizard = self.diagnostics_dialog = None
         self.diagnostics_refresh_generation = 0
         self.readiness_dialog = self.pregeneration_dialog = None
@@ -2408,7 +2409,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return
         self._start_live_with_available_scope(allow_scope_bootstrap=False)
 
-    def _offer_story_match_recovery(self, message):
+    def _offer_story_match_recovery(self, message: str) -> bool:
         self.show_dashboard()
         self.dashboard.show_reading()
         prompt = QMessageBox(self.dashboard)
@@ -2455,23 +2456,23 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.signals.live_changed.emit(False)
         return False
 
-    def toggle_speech_pause(self):
+    def toggle_speech_pause(self) -> None:
         if self.narrator_dialog is not None:
             return
         self.signals.speech_paused_changed.emit(self.controller.toggle_speech_pause())
 
-    def skip_current_speech(self):
+    def skip_current_speech(self) -> None:
         self.controller.skip_current_speech()
 
-    def repeat_last_speech(self):
+    def repeat_last_speech(self) -> None:
         if self.narrator_dialog is not None:
             return
         self.controller.repeat_last_speech()
 
-    def clear_speech_queue(self):
+    def clear_speech_queue(self) -> None:
         self.controller.clear_speech_queue()
 
-    def emergency_stop(self):
+    def emergency_stop(self) -> None:
         if self.narrator_dialog is not None:
             self._resume_live_after_narrator = False
             self.narrator_dialog.reject()
@@ -2481,7 +2482,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.signals.live_changed.emit(False)
         self.signals.speech_paused_changed.emit(False)
 
-    def calibrate(self):
+    def calibrate(self) -> None:
         try:
             geometry = self.controller.get_capture_geometry()
         except WindowCaptureError as error:
@@ -2494,19 +2495,20 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.readiness_dialog.hide()
         QTimer.singleShot(200, lambda: self._open_calibration_overlay(geometry))
 
-    def _open_calibration_overlay(self, geometry):
+    def _open_calibration_overlay(self, geometry: WindowGeometry | None) -> None:
         try:
-            self.calibration_overlay = show_calibration_overlay(
+            overlay = show_calibration_overlay(
                 geometry, save_region=self._save_calibration_region
             )
         except Exception as error:
             self.restore_control_window()
             self.show_error(f"Unable to capture a calibration preview: {error}")
             return
-        self.calibration_overlay.closed.connect(self.restore_control_window)
-        self.calibration_overlay.save_failed.connect(self.set_status)
+        self.calibration_overlay = overlay
+        overlay.closed.connect(self.restore_control_window)
+        overlay.save_failed.connect(self.set_status)
 
-    def _save_calibration_region(self, region):
+    def _save_calibration_region(self, region: DialogRegion) -> None:
         profile_id = self.settings.active_profile_id
         profile = self.profile_store.get(profile_id) if profile_id else None
         if profile is not None:
@@ -2514,7 +2516,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         else:
             save_dialog_region(region, get_dialog_region_file())
 
-    def restore_control_window(self):
+    def restore_control_window(self) -> None:
         if self.restore_compact_after_calibration:
             self.show_compact_controls()
         else:
