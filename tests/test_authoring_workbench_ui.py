@@ -33,7 +33,7 @@ from vntts.authoring.workbench import (
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import QPoint, QProcess, QSettings, Qt, QTimer
+    from PySide6.QtCore import QByteArray, QPoint, QProcess, QSettings, Qt, QTimer
     from PySide6.QtGui import QCloseEvent
     from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtTest import QTest
@@ -146,10 +146,10 @@ class FakeProcess:
         self.kill_calls += 1
 
     def readAllStandardOutput(self):
-        return b""
+        return QByteArray()
 
     def readAllStandardError(self):
-        return b""
+        return QByteArray()
 
 
 @unittest.skipIf(QApplication is None, "PySide6 is not installed")
@@ -1992,7 +1992,10 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 workspace, settings=self.settings(root), process=process
             )
             process.readAllStandardOutput = Mock(
-                side_effect=[b"abc", b"def\n\xe2", b"\x82\xac", b""]
+                side_effect=[
+                    QByteArray(chunk)
+                    for chunk in (b"abc", b"def\n\xe2", b"\x82\xac", b"")
+                ]
             )
 
             dialog._append_process_output()
@@ -2012,10 +2015,13 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             )
             process.readAllStandardOutput = Mock(
                 side_effect=[
-                    b"a" * PROCESS_LOG_CHARACTER_LIMIT,
-                    b"discarded\xe2",
-                    b"\x82\xac-tail",
-                    b"",
+                    QByteArray(chunk)
+                    for chunk in (
+                        b"a" * PROCESS_LOG_CHARACTER_LIMIT,
+                        b"discarded\xe2",
+                        b"\x82\xac-tail",
+                        b"",
+                    )
                 ]
             )
 
