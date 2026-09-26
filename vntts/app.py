@@ -27,6 +27,7 @@ from PySide6.QtGui import (
     QPixmap,
 )
 from PySide6.QtWidgets import (
+    QAbstractButton,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -1684,16 +1685,18 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.readiness_dialog = None
         self.pregeneration_dialog: OfflineAudioPreparationDialog | None = None
         self.support_dialog: SupportCenterDialog | None = None
-        self.narrator_dialog = None
-        self._narrator_preparation = None
+        self.narrator_dialog: GameNarratorDialog | None = None
+        self._narrator_preparation: OfflineAudioPreparationDialog | None = None
         self._narrator_return_to_stories = False
         self._resume_live_after_narrator = False
         self._preparation_activation_settings: AppSettings | None = None
-        self.unknown_speaker_prompt = self.unknown_speaker_choose_button = None
-        self.unknown_speaker_continue_button = self.unknown_speaker_cancel_button = None
-        self.pending_unknown_speaker = None
+        self.unknown_speaker_prompt: QMessageBox | None = None
+        self.unknown_speaker_choose_button: QPushButton | None = None
+        self.unknown_speaker_continue_button: QPushButton | None = None
+        self.unknown_speaker_cancel_button: QPushButton | None = None
+        self.pending_unknown_speaker: str | None = None
         self._queued_unknown_speakers: list[str] = []
-        self.unknown_speaker_mapping_in_progress = None
+        self.unknown_speaker_mapping_in_progress: str | None = None
         self.resume_live_after_unknown_mapping = False
         self.onboarding_cancel_event = Event()
         self.restore_compact_after_calibration = False
@@ -3221,8 +3224,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if continuation is not None:
             QTimer.singleShot(0, continuation)
 
-    def open_corrections(self):
-        profile = self.profile_store.get(self.settings.active_profile_id)
+    def open_corrections(self) -> None:
+        profile_id = self.settings.active_profile_id
+        profile = self.profile_store.get(profile_id) if profile_id else None
         dialog = OCRCorrectionsDialog(
             self.settings.active_profile_id,
             profile.name if profile is not None else None,
@@ -3233,8 +3237,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.controller.refresh_corrections()
         self.set_status("OCR corrections saved")
 
-    def open_ocr_review(self):
-        profile = self.profile_store.get(self.settings.active_profile_id)
+    def open_ocr_review(self) -> None:
+        profile_id = self.settings.active_profile_id
+        profile = self.profile_store.get(profile_id) if profile_id else None
         dialog = OCRReviewDialog(
             self.settings.ocr_diagnostics_directory,
             self.correction_store,
@@ -3245,7 +3250,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         dialog.exec()
         self.set_status("OCR review closed")
 
-    def open_voice_previews(self, *, character=None, resume_live=None, recovery=False):
+    def open_voice_previews(
+        self,
+        *,
+        character: str | None = None,
+        resume_live: bool | None = None,
+        recovery: bool = False,
+    ) -> None:
         if self._controller_busy or self._shutting_down:
             return
         if self.narrator_dialog is not None:
@@ -3291,7 +3302,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             recovery=recovery,
         )
 
-    def _open_narrator_picker(self, resume_live, *, character=None, recovery=False):
+    def _open_narrator_picker(
+        self,
+        resume_live: bool,
+        *,
+        character: str | None = None,
+        recovery: bool = False,
+    ) -> None:
         if self._shutting_down or self._quit_requested:
             return
         self.emergency_stop()
@@ -3347,11 +3364,17 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._apply_controller_action_state()
         self.set_status("Choose a voice in Voices. Changes apply when you save.")
 
-    def _open_preparation_narrator(self, _settings, _parent, *, character=None):
+    def _open_preparation_narrator(
+        self,
+        _settings: AppSettings,
+        _parent: QWidget,
+        *,
+        character: str | None = None,
+    ) -> AppSettings | None:
         self.open_voice_previews(character=character)
         return None
 
-    def _load_voice_impact_context(self):
+    def _load_voice_impact_context(self) -> None:
         dialog = self.narrator_dialog
         if dialog is None:
             return
@@ -3365,7 +3388,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return
         self._narrator_preparation = preparation
 
-        def finish(*_args):
+        def finish(*_args: object) -> None:
             if self.narrator_dialog is not dialog:
                 return
             content = preparation.current_content()
@@ -3437,7 +3460,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         preparation.select_voice_affected_stories(results)
         return True
 
-    def _narrator_finished(self, result):
+    def _narrator_finished(self, result: int) -> None:
         dialog = self.narrator_dialog
         if dialog is None:
             return
@@ -3508,11 +3531,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def _finish_unknown_speaker_mapping(
         self,
-        speaker,
+        speaker: str | None,
         *,
-        resolved,
-        resume_live,
-    ):
+        resolved: bool,
+        resume_live: bool,
+    ) -> bool:
         if not speaker:
             return resume_live
         self.unknown_speaker_mapping_in_progress = None
@@ -3536,7 +3559,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.speaker_mapping_action.setText("Manage character voices...")
         return resume_live
 
-    def offer_speaker_mapping(self, speaker):
+    def offer_speaker_mapping(self, speaker: str) -> None:
         active_speaker = (
             self.unknown_speaker_mapping_in_progress or self.pending_unknown_speaker
         )
@@ -3573,7 +3596,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         # notification would duplicate attention and may expose OCR speaker text.
         self._show_unknown_speaker_prompt(speaker)
 
-    def _show_unknown_speaker_prompt(self, speaker):
+    def _show_unknown_speaker_prompt(self, speaker: str) -> None:
         if self.unknown_speaker_prompt is not None:
             self.unknown_speaker_prompt.close()
         # A QMessageBox parented to a hidden dashboard becomes a macOS sheet.
@@ -3594,13 +3617,14 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         # screen-region OCR so the warning cannot become dialogue itself.
         QTimer.singleShot(0, lambda: configure_floating_window(prompt))
 
-    def _unknown_speaker_prompt_clicked(self, button):
+    def _unknown_speaker_prompt_clicked(self, button: QAbstractButton) -> None:
         prompt = self.sender()
-        speaker = (
-            prompt.property("vntts_unknown_speaker")
-            if isinstance(prompt, QMessageBox)
-            else self.pending_unknown_speaker
-        )
+        if not isinstance(prompt, QMessageBox):
+            return
+        value = prompt.property("vntts_unknown_speaker")
+        speaker = value if isinstance(value, str) else self.pending_unknown_speaker
+        if not speaker:
+            return
         if button is self.unknown_speaker_choose_button:
             prompt.setProperty("vntts_unknown_resolved", True)
             self.unknown_speaker_mapping_in_progress = speaker
@@ -3612,13 +3636,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             prompt.setProperty("vntts_unknown_resolved", True)
             self._cancel_unknown_speaker(speaker)
 
-    def _unknown_speaker_prompt_finished(self, _result):
+    def _unknown_speaker_prompt_finished(self, _result: int) -> None:
         prompt = self.sender()
-        speaker = (
-            prompt.property("vntts_unknown_speaker")
-            if isinstance(prompt, QMessageBox)
-            else self.pending_unknown_speaker
-        )
+        if not isinstance(prompt, QMessageBox):
+            return
+        value = prompt.property("vntts_unknown_speaker")
+        speaker = value if isinstance(value, str) else self.pending_unknown_speaker
         if (
             speaker
             and not prompt.property("vntts_unknown_resolved")
@@ -3631,7 +3654,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.unknown_speaker_continue_button = None
             self.unknown_speaker_cancel_button = None
 
-    def _cancel_unknown_speaker(self, speaker):
+    def _cancel_unknown_speaker(self, speaker: str | None) -> None:
         if self._shutting_down or not speaker:
             return
         self.pending_unknown_speaker = speaker
@@ -3648,7 +3671,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return
         self.set_status(message)
 
-    def _continue_unknown_with_narrator(self, speaker):
+    def _continue_unknown_with_narrator(self, speaker: str) -> None:
         self.controller.allow_narrator_fallback(speaker)
         if self._queued_unknown_speakers:
             next_speaker = self._queued_unknown_speakers.pop(0)
@@ -3665,7 +3688,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.toggle_live()
         self.resume_live_after_unknown_mapping = False
 
-    def _open_pending_speaker_mapping(self, speaker=None):
+    def _open_pending_speaker_mapping(self, speaker: str | None = None) -> None:
         if self._shutting_down:
             return
         speaker = speaker or self.pending_unknown_speaker
@@ -3686,7 +3709,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             recovery=True,
         )
 
-    def open_speaker_mapping(self):
+    def open_speaker_mapping(self) -> None:
         if self.pending_unknown_speaker:
             self._open_pending_speaker_mapping(self.pending_unknown_speaker)
         else:
@@ -3736,7 +3759,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 "settings-folder", True, f"Settings folder opened: {path}"
             )
 
-    def open_history(self):
+    def open_history(self) -> None:
         # Region capture has no focus probe. A modal over the calibrated region
         # makes OCR append the history list repeatedly. Stop
         # capture for the modal session, then restore the previous live state.
@@ -3749,7 +3772,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return
         self._open_history_dialog(False)
 
-    def _open_history_dialog(self, resume_live):
+    def _open_history_dialog(self, resume_live: bool) -> None:
         if self._shutting_down:
             return
         dialog = DialogueHistoryDialog(
