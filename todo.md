@@ -25,6 +25,12 @@ Planned implementation order after approval:
 4. Run platform, hardware and signing gates only when the required host or
    credentials are available.
 
+## P1 - Generated audio correctness
+
+- [ ] Make route activation and stop atomic for generated, source, and pending
+      playback. Gate: a barrier test at the former clear/publish race stops the
+      route before any device output; existing route and shutdown tests pass.
+
 ## P0 - Validate automatic game-update refresh on Windows
 
 - [ ] After a real Reverse: 1999 update, open Stories without using Add or import

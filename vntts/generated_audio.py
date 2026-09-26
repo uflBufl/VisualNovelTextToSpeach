@@ -472,7 +472,7 @@ class GeneratedAudioLibrary:
         prepared = PreparedGeneratedAudio(
             line_id=entry.line_id,
             text_sha256=entry.text_sha256,
-            samples=samples,
+            samples=samples.copy(),
             sample_rate=sample_rate,
             narrator_fallback_role=narrator_fallback_role,
             provider=getattr(entry, "provider", None),

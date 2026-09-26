@@ -477,6 +477,20 @@ class GeneratedAudioTest(unittest.TestCase):
         )
         return GeneratedAudioLibrary(GeneratedAudioIndex.load(manifest)), audio
 
+    def test_returned_samples_cannot_change_verified_cache(self):
+        with TemporaryDirectory() as directory:
+            library, _audio = self.create_library(Path(directory))
+            line_hash = text_sha256("Hello.")
+            first = library.find("game:1", line_hash)
+            self.assertIsNotNone(first)
+            first.samples[0] = 0.875
+
+            second = library.find("game:1", line_hash)
+
+        self.assertIsNotNone(second)
+        self.assertEqual(float(second.samples[0]), 0.0)
+        self.assertFalse(np.shares_memory(first.samples, second.samples))
+
     def test_optional_library_rejects_symlink_escape_from_manifest(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
