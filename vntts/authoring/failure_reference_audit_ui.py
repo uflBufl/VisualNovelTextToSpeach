@@ -89,14 +89,7 @@ class AuditDecisions(TypedDict):
     decision_set_id: str | None
 
 
-class _SignalConnector(Protocol):
-    def connect(self, slot: Callable[..., object]) -> object: ...
-
-
 class _AudioPlayer(Protocol):
-    mediaStatusChanged: _SignalConnector
-    errorOccurred: _SignalConnector
-
     def stop(self) -> None: ...
 
     def play_bytes(self, payload: bytes, source: str) -> object | None: ...

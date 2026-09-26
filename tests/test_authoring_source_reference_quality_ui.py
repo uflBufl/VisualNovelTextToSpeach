@@ -176,7 +176,7 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
                 session, confirmer=lambda _decision: True
             )
 
-            self.assertFalse(dialog.accept.isEnabled())
+            self.assertFalse(dialog.accept_button.isEnabled())
             self.assertFalse(dialog.reject_reference.isEnabled())
             self.assertFalse(dialog.needs_sample.isEnabled())
             self.assertFalse(dialog.stop.isEnabled())
@@ -198,13 +198,13 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
 
             self.finish_audio(dialog, "reference")
             self.assertFalse(dialog.stop.isEnabled())
-            self.assertFalse(dialog.accept.isEnabled())
+            self.assertFalse(dialog.accept_button.isEnabled())
             self.assertTrue(dialog.reject_reference.isEnabled())
             self.assertTrue(dialog.needs_sample.isEnabled())
             self.finish_audio(dialog, "queue-1")
-            self.assertFalse(dialog.accept.isEnabled())
+            self.assertFalse(dialog.accept_button.isEnabled())
             self.finish_audio(dialog, "queue-2")
-            self.assertTrue(dialog.accept.isEnabled())
+            self.assertTrue(dialog.accept_button.isEnabled())
             self.assertTrue(dialog.reject_reference.isEnabled())
             self.assertTrue(dialog.needs_sample.isEnabled())
             dialog._decide("reject")
@@ -333,7 +333,7 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             self.assertFalse(dialog.failures.isHidden())
             self.assertIn("No WAV was published", dialog.failures.text())
             self.finish_audio(dialog, "reference")
-            self.assertFalse(dialog.accept.isEnabled())
+            self.assertFalse(dialog.accept_button.isEnabled())
             self.assertTrue(dialog.reject_reference.isEnabled())
             self.assertTrue(dialog.needs_sample.isEnabled())
             dialog.close()
@@ -359,14 +359,14 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
                 dialog.technical_toggle,
                 dialog.failures,
                 dialog.status,
-                dialog.accept,
+                dialog.accept_button,
                 dialog.reject_reference,
                 dialog.needs_sample,
             ):
                 self.assertTrue(widget.accessibleName(), type(widget).__name__)
             self.assertEqual(dialog.play_reference.shortcut().toString(), "Ctrl+O")
             self.assertEqual(dialog.play_generated.shortcut().toString(), "Ctrl+G")
-            self.assertEqual(dialog.accept.shortcut().toString(), "Ctrl+Return")
+            self.assertEqual(dialog.accept_button.shortcut().toString(), "Ctrl+Return")
             self.assertEqual(dialog.size().width(), 700)
             self.assertEqual(dialog.size().height(), 500)
             self.assertIs(
@@ -422,7 +422,7 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
                 dialog.play_generated,
                 dialog.stop,
                 dialog.technical_toggle,
-                dialog.accept,
+                dialog.accept_button,
                 dialog.reject_reference,
                 dialog.needs_sample,
                 dialog.close_button,
@@ -464,7 +464,7 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
 
             self.assertLess(elapsed, 0.1)
             self.assertTrue(dialog._decision_active)
-            self.assertFalse(dialog.accept.isEnabled())
+            self.assertFalse(dialog.accept_button.isEnabled())
             self.assertTrue(dialog.play_reference.isEnabled())
             self.assertIn("Saving the exact", dialog.status.text())
             close_event = QCloseEvent()
@@ -502,7 +502,7 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             dialog._decide("accept")
             self.wait_for(lambda: not dialog._decision_active)
             self.assertIn("Choose again to retry", dialog.status.text())
-            self.assertTrue(dialog.accept.isEnabled())
+            self.assertTrue(dialog.accept_button.isEnabled())
             self.assertEqual(
                 load_source_reference_quality_review(session)["completed_count"], 0
             )

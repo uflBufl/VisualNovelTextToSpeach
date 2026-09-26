@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Callable, Literal, Protocol, TypeAlias, TypedDict
+from typing import Callable, Literal, TypeAlias, TypedDict
 
 from PySide6.QtCore import QObject, Qt, QThreadPool, QUrl
 from PySide6.QtGui import QCloseEvent, QKeySequence
@@ -123,29 +123,12 @@ class ReviewSession(TypedDict):
     heard: list[HeardRecord]
 
 
-class _SignalConnector(Protocol):
-    def connect(self, slot: Callable[..., object]) -> object: ...
-
-
-class _AudioPlayer(Protocol):
-    playbackStateChanged: _SignalConnector
-    mediaStatusChanged: _SignalConnector
-    errorOccurred: _SignalConnector
-
-    def setSource(self, source: QUrl) -> None: ...
-
-    def play(self) -> None: ...
-
-    def stop(self) -> None: ...
-
-
 HeardKey: TypeAlias = tuple[str, str, str]
 HeardRecorder: TypeAlias = Callable[[Path, str, str, str], object]
 DecisionRecorder: TypeAlias = Callable[[Path, str, str], object]
 DecisionConfirmer: TypeAlias = Callable[[str], bool]
 ReviewLoader: TypeAlias = Callable[[Path], tuple[object, object]]
 ReviewProgress: TypeAlias = Callable[[ReviewBundle, ReviewSession], tuple[int, int]]
-AudioPlayerFactory: TypeAlias = Callable[[QObject], _AudioPlayer]
 
 _review_loader: ReviewLoader = load_missing_voice_reuse_review
 _review_progress: ReviewProgress = missing_voice_reuse_review_progress
@@ -394,9 +377,8 @@ def _review_data(value: object) -> tuple[ReviewBundle, ReviewSession]:
     )
 
 
-def _create_audio_player(parent: QObject) -> _AudioPlayer:
-    factory: AudioPlayerFactory = QMediaPlayer
-    return factory(parent)
+def _create_audio_player(parent: QObject) -> QMediaPlayer:
+    return QMediaPlayer(parent)
 
 
 class MissingVoiceReuseReviewDialog(QDialog):

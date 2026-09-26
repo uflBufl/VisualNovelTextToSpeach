@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QFormLayout,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -745,7 +746,7 @@ class CohortReviewBundleDialog(QDialog):
         self.reject_button.clicked.connect(lambda: self.apply_decision("rejected"))
         self.retry_load.clicked.connect(self.reload_bundle)
 
-    def _build_decision_controls(self) -> tuple[QGridLayout, QGroupBox, QVBoxLayout]:
+    def _build_decision_controls(self) -> tuple[QFormLayout, QGroupBox, QVBoxLayout]:
         navigation = review_form_layout()
         navigation.addRow(self.previous, self.next)
         navigation.addRow(self.replay, self.stop)
@@ -788,7 +789,7 @@ class CohortReviewBundleDialog(QDialog):
 
     def _build_review_groups(
         self,
-        navigation: QGridLayout,
+        navigation: QFormLayout,
         defect_group: QGroupBox,
         decisions: QVBoxLayout,
     ) -> tuple[QGroupBox, QGroupBox, QGroupBox, QGroupBox]:

@@ -156,7 +156,7 @@ _record_decision: DecisionRecorder = _record_decision_document
 class SourceReferenceQualityDialog(QDialog):
     """Present exact original and generated evidence without cross-character A/B."""
 
-    accept: QPushButton
+    accept_button: QPushButton
     stop: QPushButton
 
     def __init__(
@@ -258,20 +258,20 @@ class SourceReferenceQualityDialog(QDialog):
         self.status = QLabel()
         self.status.setWordWrap(True)
         self.status.setAccessibleName("Source reference review status")
-        self.accept = QPushButton("Accept reference")
+        self.accept_button = QPushButton("Accept reference")
         self.reject_reference = QPushButton("Reject reference")
         self.needs_sample = QPushButton("Need another sample")
-        self.accept.setAccessibleName("Accept exact source reference")
+        self.accept_button.setAccessibleName("Accept exact source reference")
         self.reject_reference.setAccessibleName("Reject exact source reference")
         self.needs_sample.setAccessibleName("Request another source reference sample")
-        self.accept.setShortcut(QKeySequence("Ctrl+Return"))
+        self.accept_button.setShortcut(QKeySequence("Ctrl+Return"))
         self.reject_reference.setShortcut(QKeySequence("Ctrl+Backspace"))
         self.needs_sample.setShortcut(QKeySequence("Ctrl+N"))
-        self.accept.clicked.connect(lambda: self._decide("accept"))
+        self.accept_button.clicked.connect(lambda: self._decide("accept"))
         self.reject_reference.clicked.connect(lambda: self._decide("reject"))
         self.needs_sample.clicked.connect(lambda: self._decide("needs_sample"))
         decisions = review_form_layout()
-        decisions.addRow(self.accept, self.reject_reference)
+        decisions.addRow(self.accept_button, self.reject_reference)
         decisions.addRow(self.needs_sample)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.close)
@@ -310,8 +310,8 @@ class SourceReferenceQualityDialog(QDialog):
         self.setTabOrder(self.play_reference, self.play_generated)
         self.setTabOrder(self.play_generated, self.stop)
         self.setTabOrder(self.stop, self.technical_toggle)
-        self.setTabOrder(self.technical_toggle, self.accept)
-        self.setTabOrder(self.accept, self.reject_reference)
+        self.setTabOrder(self.technical_toggle, self.accept_button)
+        self.setTabOrder(self.accept_button, self.reject_reference)
         self.setTabOrder(self.reject_reference, self.needs_sample)
         self.setTabOrder(self.needs_sample, self.close_button)
 
@@ -514,13 +514,13 @@ class SourceReferenceQualityDialog(QDialog):
         )
 
     def _set_actions_enabled(self, enabled: bool, reason: str | None = None) -> None:
-        self.accept.setEnabled(enabled)
+        self.accept_button.setEnabled(enabled)
         self.reject_reference.setEnabled(enabled)
         self.needs_sample.setEnabled(enabled)
         if reason is not None:
             self.evidence_progress.setText(reason)
         for button, action in (
-            (self.accept, "accept this exact reference"),
+            (self.accept_button, "accept this exact reference"),
             (self.reject_reference, "reject this exact reference"),
             (self.needs_sample, "request another sample"),
         ):
@@ -542,7 +542,7 @@ class SourceReferenceQualityDialog(QDialog):
         all_generated_finished = bool(generated_tokens) and generated_tokens.issubset(
             self.completed_audio
         )
-        self.accept.setEnabled(reference_finished and all_generated_finished)
+        self.accept_button.setEnabled(reference_finished and all_generated_finished)
         self.reject_reference.setEnabled(reference_finished)
         self.needs_sample.setEnabled(reference_finished)
         self.evidence_progress.setText(
@@ -553,7 +553,7 @@ class SourceReferenceQualityDialog(QDialog):
             "published generated samples too."
         )
         for button, action in (
-            (self.accept, "accept this exact reference"),
+            (self.accept_button, "accept this exact reference"),
             (self.reject_reference, "reject this exact reference"),
             (self.needs_sample, "request another sample"),
         ):
@@ -697,7 +697,7 @@ class SourceReferenceQualityDialog(QDialog):
             self.status.setText("Wait for the current decision to finish saving.")
             return
         if not {
-            "accept": self.accept,
+            "accept": self.accept_button,
             "reject": self.reject_reference,
             "needs_sample": self.needs_sample,
         }[decision].isEnabled():

@@ -67,14 +67,7 @@ class ReviewProgress(TypedDict):
     decisions: list[ReviewDecision]
 
 
-class _SignalConnector(Protocol):
-    def connect(self, slot: Callable[..., object]) -> object: ...
-
-
 class _AudioPlayer(Protocol):
-    errorOccurred: _SignalConnector
-    mediaStatusChanged: _SignalConnector
-
     def stop(self) -> None: ...
 
     def play_bytes(self, payload: bytes, source: str) -> object | None: ...
@@ -85,7 +78,6 @@ class _AudioPlayer(Protocol):
 CandidateLoader: TypeAlias = Callable[[Path, str, str], bytes]
 DecisionRecorder: TypeAlias = Callable[[Path, str, str], object]
 DecisionConfirmer: TypeAlias = Callable[[str], bool]
-AudioPlayerFactory: TypeAlias = Callable[[QObject | None], _AudioPlayer]
 CandidatePayload: TypeAlias = tuple[str, str, str, int, bytes]
 ReviewDocumentLoader: TypeAlias = Callable[[Path], object]
 ReviewProgressLoader: TypeAlias = Callable[[Path], object]
@@ -190,9 +182,8 @@ def _is_candidate_payload(value: object) -> TypeGuard[CandidatePayload]:
     )
 
 
-def _create_audio_player(parent: QObject) -> _AudioPlayer:
-    factory: AudioPlayerFactory = QMediaPlayer
-    return factory(parent)
+def _create_audio_player(parent: QObject) -> QMediaPlayer:
+    return QMediaPlayer(parent)
 
 
 class TerminalConflictReviewDialog(QDialog):
