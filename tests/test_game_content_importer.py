@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import sys
 import unittest
@@ -61,6 +62,58 @@ class Reverse1999GameImporterTest(unittest.TestCase):
         )
         override.start()
         self.addCleanup(override.stop)
+
+    def test_installed_story_change_check_reuses_saved_file_signatures(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            resources = root / "game"
+            bundle = resources / "bundles" / "story.dat"
+            bundle.parent.mkdir(parents=True)
+            bundle.write_bytes(b"old story")
+            configs = root / "configs"
+            (configs / "language").mkdir(parents=True)
+            (configs / "datacfg_1.dat").write_bytes(b"old config")
+            (configs / "language/json_language_en.json.dat").write_bytes(b"old text")
+            audio = root / "audio"
+            audio.mkdir()
+            (audio / "hero.bnk").touch()
+            story = write_content(root / "import" / "reverse1999")
+            lines = story.read_text().splitlines()
+            metadata = json.loads(lines[0])
+            metadata["source_bundle"] = str(bundle.resolve())
+            lines[0] = json.dumps(metadata)
+            story.write_text("\n".join(lines) + "\n")
+            importer = Reverse1999GameImporter(output_root=root / "import")
+            roots = (resources, configs, audio)
+            importer._remember_installation(roots)
+
+            self.assertFalse(importer.installed_story_changed())
+            bundle.write_bytes(b"newer story content")
+            self.assertTrue(importer.installed_story_changed())
+            importer._remember_story_inputs(story, roots)
+            self.assertFalse(importer.installed_story_changed())
+            (configs / "datacfg_1.dat").write_bytes(b"new config")
+            self.assertTrue(importer.installed_story_changed())
+
+    def test_failed_update_restores_previous_story_catalog(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story = write_content(root / "import" / "reverse1999")
+            original = story.read_bytes()
+            importer = Reverse1999GameImporter(
+                command=("extractor",), output_root=root / "import"
+            )
+
+            def fail_after_story_write(_arguments, _cancel_event):
+                replacement = story.with_suffix(".new")
+                replacement.write_bytes(b"partial new catalog")
+                os.replace(replacement, story)
+                raise GameContentImportError("later importer step failed")
+
+            with patch.object(importer, "_run", side_effect=fail_after_story_write):
+                with self.assertRaisesRegex(GameContentImportError, "later"):
+                    importer.import_installed()
+            self.assertEqual(story.read_bytes(), original)
 
     def test_failed_import_records_saved_source_fallback_and_process_details(self):
         with TemporaryDirectory() as directory:

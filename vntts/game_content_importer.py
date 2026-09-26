@@ -220,22 +220,126 @@ class Reverse1999GameImporter:
             self._record(
                 "import-roots", reason="no usable saved source; auto-discovery required"
             )
-        self._run(arguments, cancel_event)
         story_index = self.output_root / "reverse1999" / "story-index.jsonl"
-        if not story_index.is_file():
-            self._record(
-                "import-result", outcome="missing-story-index", index=story_index
-            )
-            raise GameContentImportError(
-                "The game importer finished without producing story content."
-            )
-        result = inspect_story_index(story_index, provider_id=self.provider_id)
+        backup = story_index.with_name(f".story-index-{uuid.uuid4().hex}.backup")
+        if story_index.is_file():
+            try:
+                # The extractor atomically replaces the index. A hard link keeps
+                # the previous 243 MB catalog usable without copying its bytes.
+                os.link(story_index, backup)
+            except OSError as error:
+                raise GameContentImportError(
+                    f"Unable to preserve the previous story catalog: {error}"
+                ) from error
+        try:
+            self._run(arguments, cancel_event)
+            if not story_index.is_file():
+                self._record(
+                    "import-result", outcome="missing-story-index", index=story_index
+                )
+                raise GameContentImportError(
+                    "The game importer finished without producing story content."
+                )
+            result = inspect_story_index(story_index, provider_id=self.provider_id)
+        except Exception:
+            if backup.is_file():
+                os.replace(backup, story_index)
+            raise
+        else:
+            try:
+                backup.unlink(missing_ok=True)
+            except OSError as error:
+                self._record("story-backup-cleanup", reason=str(error))
         if roots is None:
             roots = self._previous_installation()
         if roots is not None:
             self._remember_installation(roots)
+            self._remember_story_inputs(story_index, roots)
         self._record("import-result", outcome="complete", index=story_index)
         return result
+
+    def installed_story_changed(self) -> bool:
+        """Check known source metadata without scanning or parsing game archives."""
+        story_index = self.output_root / "reverse1999" / "story-index.jsonl"
+        if not story_index.is_file():
+            return False
+        state_path = story_index.parent / "source-inputs.json"
+        try:
+            saved = json.loads(state_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            roots = self._previous_installation()
+            if roots is None:
+                return False
+            try:
+                paths = self._story_input_paths(story_index, roots)
+                changed = any(
+                    path.stat().st_mtime_ns > story_index.stat().st_mtime_ns
+                    for path in paths
+                )
+            except OSError, ValueError, KeyError, TypeError:
+                return False
+        except OSError, ValueError:
+            changed = True
+        else:
+            try:
+                if (
+                    saved["version"] != 1
+                    or not isinstance(saved["inputs"], dict)
+                    or len(saved["inputs"]) != 3
+                ):
+                    raise ValueError("Invalid saved import inputs")
+                changed = saved["story_index"] != self._file_signature(story_index)
+                for raw_path, signature in saved["inputs"].items():
+                    if not isinstance(raw_path, str) or not raw_path:
+                        raise ValueError("Invalid saved import input path")
+                    changed |= signature != self._file_signature(Path(raw_path))
+            except OSError, ValueError, KeyError, TypeError:
+                changed = True
+        self._record("story-update-check", changed=changed, index=story_index)
+        return changed
+
+    @staticmethod
+    def _file_signature(path: Path) -> list[int]:
+        stat = path.stat()
+        return [stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
+
+    @staticmethod
+    def _story_input_paths(
+        story_index: Path, roots: InstallationRoots
+    ) -> tuple[Path, Path, Path]:
+        with story_index.open(encoding="utf-8") as stream:
+            metadata = json.loads(stream.readline())
+        source = metadata.get("source_bundle")
+        if not isinstance(source, str) or not source:
+            raise ValueError("Imported story source is missing")
+        bundle = Path(source).resolve()
+        if bundle.parent != (roots[0] / "bundles").resolve():
+            raise ValueError("Imported story source is outside the selected game")
+        configs = roots[1]
+        return (
+            bundle,
+            configs / "datacfg_1.dat",
+            configs / "language/json_language_en.json.dat",
+        )
+
+    def _remember_story_inputs(
+        self, story_index: Path, roots: InstallationRoots
+    ) -> None:
+        try:
+            inputs = {
+                str(path): self._file_signature(path)
+                for path in self._story_input_paths(story_index, roots)
+            }
+            atomic_write_json(
+                story_index.parent / "source-inputs.json",
+                {
+                    "version": 1,
+                    "story_index": self._file_signature(story_index),
+                    "inputs": inputs,
+                },
+            )
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            self._record("story-inputs-save", outcome="failed", reason=str(error))
 
     def _remember_installation(self, roots: InstallationRoots) -> None:
         resources, configs, audio = roots
