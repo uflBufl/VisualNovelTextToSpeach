@@ -4377,12 +4377,10 @@ class TrayApplicationTest(unittest.TestCase):
             lambda success, message: results.append((success, message))
         )
         with patch("vntts.app.Thread") as thread:
-            thread.return_value.start.side_effect = lambda: thread.call_args.kwargs[
-                "target"
-            ]()
             tray_application.run_onboarding_test(
                 AppSettings(speech_backend="coqui-xtts", tts_model=None)
             )
+        thread.assert_not_called()
         self.assertEqual(
             results, [(False, "Select a Coqui model before testing speech.")]
         )

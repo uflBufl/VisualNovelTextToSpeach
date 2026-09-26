@@ -2662,99 +2662,124 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         wizard.activateWindow()
 
     def run_onboarding_test(self, settings: AppSettings) -> None:
+        model_name = settings.tts_model
+        if settings.speech_backend == "coqui-xtts" and not model_name:
+            self.signals.onboarding_test_finished.emit(
+                False, "Select a Coqui model before testing speech."
+            )
+            return
         cancel_event = Event()
         self._lifecycle_generation = self.session_owner.begin(cancel_event)
         generation = self._lifecycle_generation
         self.onboarding_cancel_event = cancel_event
         self._onboarding_test_active = True
 
-        def run_test() -> None:
-            started = preview_succeeded = False
-
-            def cancelled() -> bool:
-                if not cancel_event.is_set():
-                    return False
-                self.signals.onboarding_test_finished.emit(
-                    False, "OCR-to-speech test cancelled."
-                )
-                return True
-
-            try:
-                if cancelled():
-                    return
-                self.controller.apply_settings(settings)
-                if cancelled():
-                    return
-                if settings.speech_backend == "coqui-xtts":
-                    if not settings.tts_model:
-                        self.signals.onboarding_test_finished.emit(
-                            False, "Select a Coqui model before testing speech."
-                        )
-                        return
-                    try:
-                        self.controller.model_assets.download(
-                            settings.tts_model,
-                            progress=self.signals.onboarding_test_progress.emit,
-                            cancel_event=cancel_event,
-                        )
-                    except Exception as error:
-                        message = (
-                            str(error)
-                            if isinstance(error, ModelDownloadCancelled)
-                            else f"Model download or verification failed: {error}"
-                        )
-                        self.signals.onboarding_test_finished.emit(False, message)
-                        return
-                if cancelled():
-                    return
-                self.last_controller_error = None
-                self.controller.prepare_startup()
-                if cancelled():
-                    self.controller.request_shutdown()
-                    return
-                started = self.controller.start()
-                if cancelled():
-                    return
-                if not started:
-                    self.signals.onboarding_test_finished.emit(
-                        False,
-                        self.last_controller_error
-                        or "The speech engine could not be initialized.",
-                    )
-                    return
-                try:
-                    character, text = self.controller.test_current_dialog()
-                except Exception as error:
-                    self.signals.onboarding_test_finished.emit(
-                        False,
-                        format_runtime_error(error),
-                    )
-                    return
-                if cancelled():
-                    return
-                preview = _onboarding_preview(text)
-                self.signals.onboarding_test_finished.emit(
-                    True,
-                    f"Success. Recognized {character}: {preview}",
-                )
-                preview_succeeded = True
-            except Exception as error:
-                self.signals.onboarding_test_finished.emit(
-                    False, format_runtime_error(error)
-                )
-            finally:
-                try:
-                    if cancel_event.is_set() or (started and not preview_succeeded):
-                        self.controller.shutdown()
-                except Exception as error:
-                    self.report_controller_error(error)
-                finally:
-                    self._onboarding_test_active = False
-
         Thread(
-            target=lambda: self._run_owned_onboarding_test(generation, run_test),
+            target=lambda: self._run_owned_onboarding_test(
+                generation,
+                lambda: self._run_onboarding_check(settings, model_name, cancel_event),
+            ),
             daemon=True,
         ).start()
+
+    def _run_onboarding_check(
+        self, settings: AppSettings, model_name: str | None, cancel_event: Event
+    ) -> None:
+        started = preview_succeeded = False
+
+        def cancelled() -> bool:
+            if not cancel_event.is_set():
+                return False
+            self.signals.onboarding_test_finished.emit(
+                False, "OCR-to-speech test cancelled."
+            )
+            return True
+
+        try:
+            if cancelled():
+                return
+            if not self._prepare_onboarding_controller(
+                settings, model_name, cancel_event, cancelled
+            ):
+                return
+            started = self.controller.start()
+            if cancelled():
+                return
+            if not started:
+                self.signals.onboarding_test_finished.emit(
+                    False,
+                    self.last_controller_error
+                    or "The speech engine could not be initialized.",
+                )
+                return
+            preview_succeeded = self._preview_onboarding_dialog(cancelled)
+        except Exception as error:
+            self.signals.onboarding_test_finished.emit(
+                False, format_runtime_error(error)
+            )
+        finally:
+            try:
+                if cancel_event.is_set() or (started and not preview_succeeded):
+                    self.controller.shutdown()
+            except Exception as error:
+                self.report_controller_error(error)
+            finally:
+                self._onboarding_test_active = False
+
+    def _prepare_onboarding_controller(
+        self,
+        settings: AppSettings,
+        model_name: str | None,
+        cancel_event: Event,
+        cancelled: Callable[[], bool],
+    ) -> bool:
+        self.controller.apply_settings(settings)
+        if cancelled():
+            return False
+        if settings.speech_backend == "coqui-xtts" and model_name:
+            if not self._download_onboarding_model(model_name, cancel_event):
+                return False
+        if cancelled():
+            return False
+        self.last_controller_error = None
+        self.controller.prepare_startup()
+        if cancelled():
+            self.controller.request_shutdown()
+            return False
+        return True
+
+    def _download_onboarding_model(self, model_name: str, cancel_event: Event) -> bool:
+        try:
+            self.controller.model_assets.download(
+                model_name,
+                progress=self.signals.onboarding_test_progress.emit,
+                cancel_event=cancel_event,
+            )
+        except Exception as error:
+            message = (
+                str(error)
+                if isinstance(error, ModelDownloadCancelled)
+                else f"Model download or verification failed: {error}"
+            )
+            self.signals.onboarding_test_finished.emit(False, message)
+            return False
+        return True
+
+    def _preview_onboarding_dialog(self, cancelled: Callable[[], bool]) -> bool:
+        try:
+            character, text = self.controller.test_current_dialog()
+        except Exception as error:
+            self.signals.onboarding_test_finished.emit(
+                False, format_runtime_error(error)
+            )
+            return False
+        if cancelled():
+            return False
+        self.signals.onboarding_test_finished.emit(
+            True,
+            f"Success. Recognized {character}: {_onboarding_preview(text)}",
+        )
+        return True
 
     def _run_owned_onboarding_test(
         self, generation: int, run_test: Callable[[], None]
