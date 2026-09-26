@@ -194,6 +194,44 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
 
         self.assertEqual(progress.ready_line_ids, ("generated", "original"))
 
+    def test_progress_refreshes_static_ready_lines_after_story_reimport(self):
+        with TemporaryDirectory() as directory:
+            inputs, _plan = generation_inputs(Path(directory))
+            worker = OfflineGenerationWorker()
+            for revision, line_id in (("c", "first"), ("d", "second")):
+                write_story_index_document(
+                    inputs.story_index,
+                    {"game": "Synthetic", "language": "en"},
+                    [
+                        {
+                            "record_type": "line",
+                            "line_id": line_id,
+                            "chapter": "1",
+                            "sequence": 1,
+                            "speaker": "Ada",
+                            "text": "Silent cue.",
+                            "kind": "dialogue",
+                            "speakable": False,
+                        }
+                    ],
+                )
+                current = replace(
+                    inputs,
+                    identity=revision * 64,
+                    story_index_sha256=revision * 64,
+                )
+                output = current.directory.parent / (
+                    f"generation-output-{current.identity[:16]}"
+                )
+                output.mkdir()
+                (output / "generation-state.json").write_text(
+                    json.dumps({"queue_sha256": current.queue_sha256, "items": {}}),
+                    encoding="utf-8",
+                )
+                self.assertEqual(
+                    worker.inspect_progress(current).ready_line_ids, (line_id,)
+                )
+
     def test_missing_progress_is_not_a_report_of_zero_completed_work(self):
         with TemporaryDirectory() as directory:
             inputs, _plan = generation_inputs(Path(directory))

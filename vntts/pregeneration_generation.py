@@ -256,6 +256,7 @@ class OfflineGenerationWorker:
             ),
             ready_line_ids=_ready_line_ids(
                 Path(generation_input.story_index),
+                generation_input.story_index_sha256,
                 items,
             ),
         )
@@ -435,7 +436,9 @@ def runtime_progress_manifest_path(generation_input: PregenerationInput) -> Path
 
 
 @lru_cache(maxsize=16)
-def _static_ready_line_ids(story_index: Path) -> tuple[str, ...]:
+def _static_ready_line_ids(
+    story_index: Path, story_index_sha256: str
+) -> tuple[str, ...]:
     """Return immutable source/non-spoken routes that need no generated WAV."""
     try:
         story = load_story_index_document(story_index)
@@ -458,9 +461,10 @@ def _static_ready_line_ids(story_index: Path) -> tuple[str, ...]:
 
 def _ready_line_ids(
     story_index: Path,
+    story_index_sha256: str,
     items: Mapping[str, Mapping[str, object]],
 ) -> tuple[str, ...]:
-    ready_line_ids = set(_static_ready_line_ids(story_index))
+    ready_line_ids = set(_static_ready_line_ids(story_index, story_index_sha256))
     for item in items.values():
         if not isinstance(item, dict) or item.get("status") not in {
             "generated",
