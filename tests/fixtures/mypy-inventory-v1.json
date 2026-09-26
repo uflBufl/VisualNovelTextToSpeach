@@ -1,6 +1,4 @@
 {
   "schema_version": 1,
-  "maximum_errors_by_file": {
-    "vntts/app.py": 4
-  }
+  "maximum_errors_by_file": {}
 }

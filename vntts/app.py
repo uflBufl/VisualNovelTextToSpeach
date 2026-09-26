@@ -1,6 +1,6 @@
 import argparse
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from multiprocessing import freeze_support
 from pathlib import Path
@@ -25,6 +25,7 @@ from PySide6.QtGui import (
     QPainter,
     QPainterPath,
     QPixmap,
+    QStandardItemModel,
 )
 from PySide6.QtWidgets import (
     QAbstractButton,
@@ -147,6 +148,7 @@ from vntts.support import (
     GenerationTimelineLog,
     RuntimeSupportLog,
     SupportBundleBuilder,
+    SupportDocument,
     collect_active_content_identity,
     configure_audio_lifecycle_log,
     configure_game_import_log,
@@ -183,7 +185,7 @@ def _onboarding_preview(text: str) -> str:
     return f"{preview[:157]}..." if len(preview) > 160 else preview
 
 
-def create_application_icon(style, *, platform=None):
+def create_application_icon(style: QStyle, *, platform: str | None = None) -> QIcon:
     platform = sys.platform if platform is None else platform
     if platform != "darwin":
         return style.standardIcon(QStyle.StandardPixmap.SP_MediaVolume)
@@ -407,8 +409,9 @@ class SettingsDialog(QDialog):
         ):
             self.speech_backend.addItem(label, backend)
             if not available:
-                item = self.speech_backend.model().item(self.speech_backend.count() - 1)
-                item.setEnabled(False)
+                model = self.speech_backend.model()
+                if isinstance(model, QStandardItemModel):
+                    model.item(self.speech_backend.count() - 1).setEnabled(False)
         self.speech_backend.setCurrentIndex(
             max(0, self.speech_backend.findData(settings.speech_backend))
         )
@@ -938,7 +941,9 @@ class SettingsDialog(QDialog):
         for row in range(form.rowCount()):
             label = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
             if label is not None:
-                label.widget().setWordWrap(True)
+                widget = label.widget()
+                if isinstance(widget, QLabel):
+                    widget.setWordWrap(True)
         for choice in region.findChildren(QComboBox):
             choice.setSizeAdjustPolicy(
                 QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
@@ -1010,7 +1015,7 @@ class SettingsDialog(QDialog):
         self.narrator_reference.textEdited.connect(self._use_narrator_file)
         for recorder in self.hotkey_recorders:
             recorder.keySequenceChanged.connect(self.update_validation_summary)
-        for field in (
+        for text_field in (
             self.screenshot_directory,
             self.ocr_diagnostics_directory,
             self.tts_model,
@@ -1024,20 +1029,20 @@ class SettingsDialog(QDialog):
             self.generated_audio_manifest,
             self.narrator_speaker,
         ):
-            field.textChanged.connect(self.update_validation_summary)
-        for field in (
+            text_field.textChanged.connect(self.update_validation_summary)
+        for combo_box in (
             self.capture_mode,
             self.game_window,
             self.speech_backend,
             self.live_sequence_mode,
         ):
-            field.currentIndexChanged.connect(self.update_validation_summary)
+            combo_box.currentIndexChanged.connect(self.update_validation_summary)
         self.game_window.currentTextChanged.connect(self.update_validation_summary)
-        for field in (
+        for check_box in (
             self.retain_uncertain_frames,
             self.xtts_terms,
         ):
-            field.toggled.connect(self.update_validation_summary)
+            check_box.toggled.connect(self.update_validation_summary)
 
     @staticmethod
     def _directory_validation_error(label: str, value: str) -> str | None:
@@ -1504,15 +1509,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def __init__(
         self,
-        application,
-        settings=None,
-        controller_factory=AppController,
-        profile_store=None,
-        correction_store=None,
-        pregeneration_activator=None,
-        moss_runtime=None,
-        pocket_runtime=None,
-    ):
+        application: QApplication,
+        settings: AppSettings | None = None,
+        controller_factory: Callable[..., AppController] = AppController,
+        profile_store: GameProfileStore | None = None,
+        correction_store: OCRCorrectionStore | None = None,
+        pregeneration_activator: OfflinePackActivator | None = None,
+        moss_runtime: RetainedMossRuntime | None = None,
+        pocket_runtime: RetainedWorkerRuntime | None = None,
+    ) -> None:
         super().__init__()
         self._initialize_runtime(
             application,
@@ -1534,13 +1539,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def _initialize_runtime(
         self,
-        application,
-        settings,
-        controller_factory,
-        moss_runtime,
-        pocket_runtime,
-        profile_store,
-    ):
+        application: QApplication,
+        settings: AppSettings | None,
+        controller_factory: Callable[..., AppController],
+        moss_runtime: RetainedMossRuntime | None,
+        pocket_runtime: RetainedWorkerRuntime | None,
+        profile_store: GameProfileStore | None,
+    ) -> None:
         self.application = application
         self._settings_path = get_settings_path().expanduser().absolute()
         self._settings_commit_lock = Lock()
@@ -1549,14 +1554,14 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         except OSError:
             self._settings_revision = None
         uses_saved_settings = settings is None
-        self.previous_session = (
+        self.previous_session: SupportDocument = (
             preserve_previous_session(get_local_data_directory())
             if uses_saved_settings
             else {"available": False}
         )
         if uses_saved_settings:
             configure_performance_log(get_local_data_directory() / "performance.log")
-        self._startup_game_pack_errors = []
+        self._startup_game_pack_errors: list[Exception] = []
         settings_started = perf_counter()
         self.settings = settings or load_app_settings(
             self._settings_path,
@@ -1570,7 +1575,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 "complete",
             )
         self.signals = AppSignals()
-        self.last_controller_error = None
+        self.last_controller_error: str | None = None
         self.support_log = RuntimeSupportLog(
             path=(
                 get_local_data_directory() / "runtime.log"
@@ -4226,7 +4231,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.application.quit()
 
 
-def main(argv=None):
+def main(argv: Sequence[str] | None = None) -> int:
     freeze_support()
     parser = argparse.ArgumentParser(
         prog="vntts-app",
@@ -4272,7 +4277,9 @@ def main(argv=None):
         ).exit_code
 
     enable_windows_dpi_awareness()
-    application = QApplication.instance() or QApplication([sys.argv[0], *qt_arguments])
+    application = QApplication.instance()
+    if not isinstance(application, QApplication):
+        application = QApplication([sys.argv[0], *qt_arguments])
     application.setApplicationName(application_name)
     application.setQuitOnLastWindowClosed(False)
     tray_application = TrayApplication(application)

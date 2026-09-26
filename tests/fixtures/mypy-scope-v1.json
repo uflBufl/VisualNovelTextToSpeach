@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "minimum_files": [
+    "vntts/app.py",
     "vntts/application_directories.py",
     "vntts/asset_ui.py",
     "vntts/async_ui.py",

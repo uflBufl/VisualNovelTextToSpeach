@@ -25,18 +25,6 @@ Planned implementation order after approval:
 4. Run platform, hardware and signing gates only when the required host or
    credentials are available.
 
-## P1 - Type the desktop application shell
-
-- [ ] Reduce the 4 `no-untyped-def` findings in `vntts/app.py` by coherent
-      feature area. Use existing domain types and narrow protocols for Qt,
-      controller and worker callbacks rather than replacing missing types with
-      `Any` or unverified casts.
-- [ ] After each independently reviewed area, run its UI tests and mypy on
-      `vntts/app.py`, lower `tests/fixtures/mypy-inventory-v1.json` to the
-      measured remaining count, and commit that area separately. Also resolve
-      the nine existing non-annotation mypy diagnostics in the settings dialog
-      and mixin contracts; then add `vntts/app.py` to the normal mypy scope.
-
 ## P0 - Play while offline audio is still preparing
 
 - [ ] **Validate in a sustained chapter:** an occurrence is now claimed as soon as

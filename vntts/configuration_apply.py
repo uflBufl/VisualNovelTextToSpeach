@@ -5,9 +5,9 @@ from pathlib import Path
 from threading import Event
 from typing import TYPE_CHECKING, Protocol
 
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QObject, SignalInstance
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QAbstractButton, QDialog, QPushButton, QTabWidget
+from PySide6.QtWidgets import QDialog, QPushButton, QTabWidget
 
 from vntts.async_ui import LatestTaskRunner
 from vntts.player_session import PlayerSessionOwner
@@ -79,23 +79,16 @@ class _Dashboard(Protocol):
     live_button: QPushButton
     sections: QTabWidget
     prepare_reading_button: QPushButton
-    loading_blocked_buttons: list[QAbstractButton]
 
     def set_configuration(self, settings: AppSettings) -> None: ...
 
     def show_reading(self) -> None: ...
 
 
-class _Signal(Protocol):
-    def disconnect(self, slot: Callable[..., object]) -> object: ...
-
-    def emit(self) -> None: ...
-
-
 class _Signals(Protocol):
-    onboarding_test_finished: _Signal
-    onboarding_test_progress: _Signal
-    hotkeys_requested: _Signal
+    onboarding_test_finished: SignalInstance
+    onboarding_test_progress: SignalInstance
+    hotkeys_requested: SignalInstance
 
 
 class _ReadinessDialog(Protocol):
