@@ -1,23 +1,31 @@
 """Capture one live dialog snapshot without routing speech."""
 
-from typing import Any, Callable
+from collections.abc import Callable
 
-from vntts.dialog_capture import analyze_dialog_snapshot
-from vntts.ocr import default_minimum_ocr_confidence
+from vntts.diagnostics import DiagnosticSnapshot
+from vntts.dialog_capture import PathInput, analyze_dialog_snapshot
+from vntts.ocr import (
+    DialogRegion,
+    OCRResult,
+    UncertainFrameRecorder,
+    VoiceRegistry,
+    default_minimum_ocr_confidence,
+)
+from vntts.ocr_corrections import OCRCorrectionDictionary
 
 
 def read_live_snapshot(
-    screenshot_directory: Any,
-    voice_registry: Any = None,
-    capture_target: Any = None,
+    screenshot_directory: PathInput,
+    voice_registry: VoiceRegistry | None = None,
+    capture_target: object | None = None,
     minimum_confidence: float = default_minimum_ocr_confidence,
-    uncertain_handler: Callable[[Any, float], Any] | None = None,
-    uncertain_frame_recorder: Any = None,
-    diagnostic_handler: Callable[[Any], Any] | None = None,
-    voice_resolver: Callable[[str], Any] | None = None,
+    uncertain_handler: Callable[[OCRResult, float], object] | None = None,
+    uncertain_frame_recorder: UncertainFrameRecorder | None = None,
+    diagnostic_handler: Callable[[DiagnosticSnapshot], object] | None = None,
+    voice_resolver: Callable[[str], str] | None = None,
     ocr_language: str = "eng",
-    correction_dictionary: Any = None,
-    region: Any = None,
+    correction_dictionary: OCRCorrectionDictionary | None = None,
+    region: DialogRegion | None = None,
 ) -> tuple[str | None, str]:
     image, _, result = analyze_dialog_snapshot(
         screenshot_directory,
