@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QAbstractButton, QDialog, QPushButton, QTabWidget
 
 from vntts.async_ui import LatestTaskRunner
 from vntts.player_session import PlayerSessionOwner
+from vntts.pregeneration_pack import OfflinePackResult
 from vntts.settings import (
     AppSettings,
     is_live_sequence_audio_mode,
@@ -30,6 +31,14 @@ class _PreparationDialog(Protocol):
     def apply_narrator_settings(self, settings: AppSettings) -> None: ...
 
     def prioritize_line(self, line_id: str, text_sha256: str) -> bool: ...
+
+    def pack_result(self) -> OfflinePackResult | None: ...
+
+    def setEnabled(self, enabled: bool) -> None: ...
+
+    def close(self) -> bool: ...
+
+    def reject(self) -> None: ...
 
 
 class _SettingsDialog(Protocol):

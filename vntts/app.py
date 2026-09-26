@@ -1635,7 +1635,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.profile_restart_runner.finished.connect(self._profile_restart_finished)
         self.initial_start_runner = LatestTaskRunner(self)
         self.initial_start_runner.finished.connect(self._initial_start_finished)
-        self._initial_start_generation = None
+        self._initial_start_generation: int | None = None
         self.live_scope_runner = LatestTaskRunner(self)
         self.live_scope_runner.finished.connect(self._live_scope_finished)
         self._live_scope_generation: int | None = None
@@ -3884,7 +3884,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         elif recovery == "support":
             self.open_support_center()
 
-    def _controller_configuration_actions(self):
+    def _controller_configuration_actions(self) -> tuple[QAction, ...]:
         return (
             self.pregeneration_action,
             self.calibrate_action,
@@ -3900,7 +3900,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.history_action,
         )
 
-    def _runtime_control_state(self, *, enabled=None, unavailable_reason=None):
+    def _runtime_control_state(
+        self,
+        *,
+        enabled: bool | None = None,
+        unavailable_reason: str | None = None,
+    ) -> RuntimeControlState:
         if enabled is None:
             enabled = (
                 self._controller_ready
@@ -3947,7 +3952,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             ),
         )
 
-    def _apply_runtime_control_state(self, state):
+    def _apply_runtime_control_state(self, state: RuntimeControlState) -> None:
         if self.pregeneration_dialog is not None:
             self.pregeneration_dialog.setEnabled(
                 not (
@@ -3988,7 +3993,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             for button in self.dashboard.loading_blocked_buttons:
                 button.setEnabled(False)
 
-    def _apply_controller_action_state(self):
+    def _apply_controller_action_state(self) -> None:
         enabled = (
             self._controller_ready
             and not self._controller_busy
@@ -4034,7 +4039,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             }:
                 self.set_sequence_status(sequence_status)
 
-    def _set_modal_launchers_enabled(self, enabled):
+    def _set_modal_launchers_enabled(self, enabled: bool) -> None:
         available = (
             bool(enabled)
             and not self._controller_busy
@@ -4045,7 +4050,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.speaker_mapping_action.setEnabled(available)
         self.history_action.setEnabled(available)
 
-    def _begin_controller_lifecycle(self, cancellation=None):
+    def _begin_controller_lifecycle(self, cancellation: Event | None = None) -> int:
         self._live_scope_generation = None
         self.live_scope_runner.cancel()
         self._cancel_diagnostics_refresh()
@@ -4055,11 +4060,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._apply_controller_action_state()
         return self._lifecycle_generation
 
-    def _finish_controller_lifecycle(self):
+    def _finish_controller_lifecycle(self) -> None:
         self._controller_busy = False
         self._apply_controller_action_state()
 
-    def _lifecycle_is_current(self, generation):
+    def _lifecycle_is_current(self, generation: int | None) -> bool:
         return (
             isinstance(generation, int)
             and generation == self._lifecycle_generation
@@ -4067,13 +4072,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             and not self._shutting_down
         )
 
-    def set_ready(self, ready):
+    def set_ready(self, ready: bool) -> None:
         self._controller_ready = bool(ready)
         self._apply_controller_action_state()
         if not ready:
             self.set_status("Unable to start")
 
-    def set_live(self, running):
+    def set_live(self, running: bool) -> None:
         self._reported_live = bool(running)
         self.live_action.setText("Stop reading" if running else "Start reading")
         self.dashboard.set_live(running)
@@ -4087,14 +4092,14 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         ):
             QTimer.singleShot(0, self._activate_ready_preparation)
 
-    def set_speech_paused(self, paused):
+    def set_speech_paused(self, paused: bool) -> None:
         self._reported_speech_paused = bool(paused)
         self.pause_action.setText("Resume speech" if paused else "Pause speech")
         self.dashboard.set_paused(paused)
         self.compact_controller.set_paused(paused)
         self._apply_runtime_control_state(self._runtime_control_state())
 
-    def show_error(self, message):
+    def show_error(self, message: str) -> None:
         self.support_log.add("error", message)
         self.set_status(message)
         self._show_tray_notification(
@@ -4104,12 +4109,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             recovery="support",
         )
 
-    def report_controller_error(self, error):
+    def report_controller_error(self, error: BaseException) -> None:
         message = format_runtime_error(error)
         self.last_controller_error = message
         self.signals.error_reported.emit(message)
 
-    def shutdown(self):
+    def shutdown(self) -> None:
         if self._shutting_down:
             return
         self.speech_runtime_timer.stop()
@@ -4158,7 +4163,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.moss_runtime.shutdown()
         self.pocket_runtime.shutdown()
 
-    def request_quit(self):
+    def request_quit(self) -> None:
         self._quit_requested = True
         # Embedded dialogs can be hidden by navigation or dashboard.close().
         # close() may not emit finished then; reject() runs their cancellation
