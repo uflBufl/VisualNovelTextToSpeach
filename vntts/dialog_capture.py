@@ -361,14 +361,12 @@ def detect_standalone_ellipsis_frame(image: object) -> bool:
     top = min(height - 1, round(height * 0.38))
     bottom = min(height, max(top + 1, round(height * 0.88)))
     pixels = rgb.load()
-    if pixels is None:
-        return False
+    assert pixels is not None
     bright = set()
     for y in range(top, bottom):
         for x in range(right):
             pixel = pixels[x, y]
-            if not isinstance(pixel, tuple) or len(pixel) != 3:
-                return False
+            assert isinstance(pixel, tuple) and len(pixel) == 3
             red, green, blue = pixel
             if (
                 min(red, green, blue) >= 150
