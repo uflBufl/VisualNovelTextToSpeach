@@ -11,34 +11,14 @@ from PySide6.QtWidgets import QAbstractButton, QDialog, QPushButton, QTabWidget
 
 from vntts.async_ui import LatestTaskRunner
 from vntts.player_session import PlayerSessionOwner
-from vntts.pregeneration_pack import OfflinePackResult
 from vntts.settings import (
     AppSettings,
     is_live_sequence_audio_mode,
     restart_required_setting_changes,
 )
 
-
-class _ReadingLineSignal(Protocol):
-    def emit(self, line_id: str, text_sha256: str) -> None: ...
-
-
-class _PreparationDialog(Protocol):
-    readingLineObserved: _ReadingLineSignal
-
-    def has_pending_work(self) -> bool: ...
-
-    def apply_narrator_settings(self, settings: AppSettings) -> None: ...
-
-    def prioritize_line(self, line_id: str, text_sha256: str) -> bool: ...
-
-    def pack_result(self) -> OfflinePackResult | None: ...
-
-    def setEnabled(self, enabled: bool) -> None: ...
-
-    def close(self) -> bool: ...
-
-    def reject(self) -> None: ...
+if TYPE_CHECKING:
+    from vntts.pregeneration_ui import OfflineAudioPreparationDialog
 
 
 class _SettingsDialog(Protocol):
@@ -123,6 +103,12 @@ class _ReadinessDialog(Protocol):
 
     def hide(self) -> None: ...
 
+    def show(self) -> None: ...
+
+    def raise_(self) -> None: ...
+
+    def activateWindow(self) -> None: ...
+
 
 class _Menu(Protocol):
     def insertAction(self, before: QAction, action: QAction) -> object: ...
@@ -143,7 +129,7 @@ class ConfigurationApplyMixin:
         session_owner: PlayerSessionOwner
         dashboard: _Dashboard
         signals: _Signals
-        pregeneration_dialog: _PreparationDialog | None
+        pregeneration_dialog: OfflineAudioPreparationDialog | None
         readiness_dialog: _ReadinessDialog | None
         menu: _Menu
         voice_preview_action: QAction

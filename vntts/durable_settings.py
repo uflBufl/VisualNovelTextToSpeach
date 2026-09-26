@@ -19,7 +19,7 @@ from vntts.configuration_apply import (
     _Signals,
 )
 from vntts.ocr import DialogRegion
-from vntts.profiles import GameProfile
+from vntts.profiles import GameProfileStore
 from vntts.settings import (
     AppSettings,
     load_app_settings,
@@ -51,16 +51,6 @@ class _OnboardingWizard(Protocol):
     def activateWindow(self) -> None: ...
 
 
-class _ProfileStore(Protocol):
-    def get(self, profile_id: str) -> GameProfile | None: ...
-
-    def update_region(self, profile_id: str, region: DialogRegion) -> object: ...
-
-    def update_from_settings(
-        self, profile_id: str, settings: AppSettings
-    ) -> object: ...
-
-
 class DurableSettingsMixin:
     """Persist settings candidates before publishing them to runtime state."""
 
@@ -68,7 +58,7 @@ class DurableSettingsMixin:
         settings: AppSettings
         controller: _Controller
         dashboard: _Dashboard
-        profile_store: _ProfileStore
+        profile_store: GameProfileStore
         signals: _Signals
         onboarding_wizard: _OnboardingWizard | None
         onboarding_cancel_event: Event

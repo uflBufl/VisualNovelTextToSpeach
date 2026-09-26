@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
   "maximum_errors_by_file": {
-    "vntts/app.py": 38
+    "vntts/app.py": 23
   }
 }
