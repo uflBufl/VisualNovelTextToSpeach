@@ -4348,6 +4348,31 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIn("Marcus", results[0][1])
         tray_application.shutdown()
 
+    def test_onboarding_test_requires_a_coqui_model(self):
+        controller = Mock()
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        results = []
+        tray_application.signals.onboarding_test_finished.connect(
+            lambda success, message: results.append((success, message))
+        )
+        with patch("vntts.app.Thread") as thread:
+            thread.return_value.start.side_effect = lambda: thread.call_args.kwargs[
+                "target"
+            ]()
+            tray_application.run_onboarding_test(
+                AppSettings(speech_backend="coqui-xtts", tts_model=None)
+            )
+        self.assertEqual(
+            results, [(False, "Select a Coqui model before testing speech.")]
+        )
+        controller.model_assets.download.assert_not_called()
+        controller.start.assert_not_called()
+        tray_application.shutdown()
+
     def test_onboarding_test_shuts_down_after_preview_error(self):
         class ImmediateThread:
             def __init__(self, *, target, daemon):

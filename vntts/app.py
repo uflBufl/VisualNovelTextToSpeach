@@ -2626,7 +2626,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         elif remediation == "settings":
             self.open_settings()
 
-    def run_onboarding(self):
+    def run_onboarding(self) -> None:
         if self.narrator_dialog is not None:
             self.dashboard.show_voices()
             return
@@ -2661,17 +2661,17 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         wizard.raise_()
         wizard.activateWindow()
 
-    def run_onboarding_test(self, settings):
+    def run_onboarding_test(self, settings: AppSettings) -> None:
         cancel_event = Event()
         self._lifecycle_generation = self.session_owner.begin(cancel_event)
         generation = self._lifecycle_generation
         self.onboarding_cancel_event = cancel_event
         self._onboarding_test_active = True
 
-        def run_test():
+        def run_test() -> None:
             started = preview_succeeded = False
 
-            def cancelled():
+            def cancelled() -> bool:
                 if not cancel_event.is_set():
                     return False
                 self.signals.onboarding_test_finished.emit(
@@ -2686,6 +2686,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 if cancelled():
                     return
                 if settings.speech_backend == "coqui-xtts":
+                    if not settings.tts_model:
+                        self.signals.onboarding_test_finished.emit(
+                            False, "Select a Coqui model before testing speech."
+                        )
+                        return
                     try:
                         self.controller.model_assets.download(
                             settings.tts_model,
@@ -2763,25 +2768,25 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.session_owner.cancel()
         self.set_status("Cancelling setup test in background...")
 
-    def _create_settings_dialog(self):
+    def _create_settings_dialog(self) -> SettingsDialog:
         return SettingsDialog(
             self.settings, voice_library=self.controller.voice_library
         )
 
-    def _create_asset_manager_dialog(self):
+    def _create_asset_manager_dialog(self) -> AssetManagerDialog:
         return AssetManagerDialog(self.settings)
 
-    def _configure_macos_launch_at_login(self, enabled):
+    def _configure_macos_launch_at_login(self, enabled: bool) -> None:
         configure_macos_launch_at_login(enabled)
 
-    def show_dashboard(self):
+    def show_dashboard(self) -> None:
         self.compact_controller.hide()
         self.dashboard.show()
         self.dashboard.raise_()
         self.dashboard.activateWindow()
         self._save_compact_preference(False)
 
-    def show_compact_controls(self, *, persist=True):
+    def show_compact_controls(self, *, persist: bool = True) -> None:
         geometry = None
         try:
             geometry = self.controller.get_capture_geometry()
@@ -2794,7 +2799,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if persist:
             self._save_compact_preference(True)
 
-    def notify_background_mode(self):
+    def notify_background_mode(self) -> None:
         if self._background_notification_shown:
             return
         self._background_notification_shown = True

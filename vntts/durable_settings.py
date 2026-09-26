@@ -37,11 +37,18 @@ class _OnboardingTestPage(Protocol):
 
 
 class _OnboardingWizard(Protocol):
-    test_page: _OnboardingTestPage
+    @property
+    def test_page(self) -> _OnboardingTestPage: ...
 
     def settings(self) -> AppSettings: ...
 
     def deleteLater(self) -> None: ...
+
+    def show(self) -> None: ...
+
+    def raise_(self) -> None: ...
+
+    def activateWindow(self) -> None: ...
 
 
 class _ProfileStore(Protocol):
