@@ -134,7 +134,7 @@ class ModelAssetManager:
                 payload = source.read(_ASSET_MANIFEST_READ_LIMIT + 1)
             if len(payload) > _ASSET_MANIFEST_READ_LIMIT:
                 raise ValueError("checksum manifest is too large")
-            manifest: Any = json.loads(payload)
+            manifest: object = json.loads(payload)
         except (OSError, ValueError) as error:
             raise ModelIntegrityError(
                 f"Unable to read model checksum manifest: {error}"
@@ -144,7 +144,7 @@ class ModelAssetManager:
     @staticmethod
     def _validate_checksum_manifest(
         manifest: object, model_name: str, asset: ModelAsset
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         if not isinstance(manifest, dict):
             raise ModelIntegrityError("Model checksum manifest is malformed")
         if manifest.get("version") != 1:
@@ -160,7 +160,7 @@ class ModelAssetManager:
             raise ModelIntegrityError("Model checksum manifest has the wrong files")
         return files
 
-    def _validate_model_files(self, model_path: Path, files: dict[str, Any]) -> None:
+    def _validate_model_files(self, model_path: Path, files: dict[str, object]) -> None:
         for filename, metadata in files.items():
             self._validate_model_file(model_path / filename, filename, metadata)
 
@@ -627,7 +627,7 @@ def load_coqui_model_asset(model_name: str) -> ModelAsset:
     )
 
 
-def read_json(path: str | os.PathLike[str], default: Any) -> Any:
+def read_json(path: str | os.PathLike[str], default: object) -> object:
     path = Path(path)
     if path.is_symlink() or path.is_junction():
         return default
