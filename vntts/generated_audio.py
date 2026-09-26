@@ -1151,12 +1151,33 @@ class AudioRoutePlaybackOwner:
     def __init__(self, router: GeneratedAudioFallbackBackend) -> None:
         self.router = router
         self.playback_lock = RLock()
+        self.state_lock = Lock()
         self.source_audio_completion_stop = Event()
         self.generated_audio_stop = Event()
         self.progress_wait_stop = Event()
         self.active_generated_stream: object | None = None
         self.active_playback_source: str | None = None
         self.playback_active = False
+
+    def _activate(self, source: str, *, clear: Event | None = None) -> bool:
+        with self.state_lock:
+            previous_stop = {
+                "preparing": self.progress_wait_stop,
+                "game": self.source_audio_completion_stop,
+                "generated": self.generated_audio_stop,
+            }.get(self.active_playback_source or "")
+            if previous_stop is not None and previous_stop.is_set():
+                return False
+            if clear is not None:
+                clear.clear()
+            self.playback_active = True
+            self.active_playback_source = source
+            return True
+
+    def _deactivate(self) -> None:
+        with self.state_lock:
+            self.playback_active = False
+            self.active_playback_source = None
 
     def play_route(
         self, route: RouteDecision, *, playback_guard: PlaybackGuard = None
@@ -1194,20 +1215,23 @@ class AudioRoutePlaybackOwner:
     ) -> PlaybackOutcome:
         if self.router.library is None:
             raise RuntimeError("Generated-audio progress route requires a library")
-        self.progress_wait_stop.clear()
-        self.router.progress_wait_request(route.line_id, route.text_sha256)
-        last_status = (
-            self.router.library.progress_description(route.line_id, route.text_sha256)
-            or "Waiting for offline preparation to finish the current dialogue..."
-        )
-        self.router.progress_wait_status(last_status)
+        if not self._activate("preparing", clear=self.progress_wait_stop):
+            return _route_outcome(route, PlaybackStatus.INTERRUPTED, None)
         started = self.router.clock()
-        self.playback_active = True
-        self.active_playback_source = "preparing"
         try:
+            self.router.progress_wait_request(route.line_id, route.text_sha256)
+            last_status = (
+                self.router.library.progress_description(
+                    route.line_id, route.text_sha256
+                )
+                or "Waiting for offline preparation to finish the current dialogue..."
+            )
+            self.router.progress_wait_status(last_status)
             while playback_guard is None or playback_guard():
                 resolved = self.router.resolved_pending_route(route)
                 if resolved is not None:
+                    if self.progress_wait_stop.is_set():
+                        break
                     self.router.progress_wait_status(
                         (
                             "Prepared audio is ready; continuing reading."
@@ -1230,8 +1254,7 @@ class AudioRoutePlaybackOwner:
                 (self.router.clock() - started) * 1000,
             )
         finally:
-            self.playback_active = False
-            self.active_playback_source = None
+            self._deactivate()
 
     def _play_source_route(
         self, route: SourceAudioRoute, playback_guard: PlaybackGuard
@@ -1245,10 +1268,9 @@ class AudioRoutePlaybackOwner:
             if playback_guard is not None and not playback_guard():
                 return _route_outcome(route, PlaybackStatus.INTERRUPTED, None)
             started = self.router.clock()
-            self.source_audio_completion_stop.clear()
+            if not self._activate("game", clear=self.source_audio_completion_stop):
+                return _route_outcome(route, PlaybackStatus.INTERRUPTED, None)
             try:
-                self.playback_active = True
-                self.active_playback_source = "game"
                 interrupted = self.source_audio_completion_stop.wait(
                     prepared.completion_seconds
                 )
@@ -1264,8 +1286,7 @@ class AudioRoutePlaybackOwner:
                     (self.router.clock() - started) * 1000,
                 )
             finally:
-                self.playback_active = False
-                self.active_playback_source = None
+                self._deactivate()
 
     def _play_generated_route(
         self, route: GeneratedAudioRoute, playback_guard: PlaybackGuard
@@ -1284,16 +1305,21 @@ class AudioRoutePlaybackOwner:
                     None,
                 )
             started = self.router.clock()
-            self.generated_audio_stop.clear()
+            if not self._activate("generated", clear=self.generated_audio_stop):
+                return _route_outcome(route, PlaybackStatus.INTERRUPTED, None)
             try:
-                self.playback_active = True
                 if not self._wait_for_source_audio_lead(route, playback_guard):
                     return _route_outcome(
                         route,
                         PlaybackStatus.INTERRUPTED,
                         (self.router.clock() - started) * 1000,
                     )
-                self.active_playback_source = "generated"
+                if not self._activate("generated"):
+                    return _route_outcome(
+                        route,
+                        PlaybackStatus.INTERRUPTED,
+                        (self.router.clock() - started) * 1000,
+                    )
                 samples = (
                     np.asarray(route.prepared.samples, dtype=np.float32)
                     * self.router.volume
@@ -1371,8 +1397,7 @@ class AudioRoutePlaybackOwner:
                 )
             finally:
                 self.active_generated_stream = None
-                self.playback_active = False
-                self.active_playback_source = None
+                self._deactivate()
 
     def _play_live_route(
         self,
@@ -1384,20 +1409,22 @@ class AudioRoutePlaybackOwner:
         lead_ms = 0.0
         if route.source_audio_lead_seconds > 0:
             lead_started = self.router.clock()
-            self.playback_active = True
             try:
-                if not self._wait_for_source_audio_lead(route, playback_guard):
-                    return _route_outcome(
-                        route,
-                        PlaybackStatus.INTERRUPTED,
-                        (self.router.clock() - lead_started) * 1000,
-                    )
-            finally:
-                self.playback_active = False
-                self.active_playback_source = None
+                ready = self._wait_for_source_audio_lead(route, playback_guard)
+            except BaseException:
+                self._deactivate()
+                raise
+            if not ready:
+                self._deactivate()
+                return _route_outcome(
+                    route,
+                    PlaybackStatus.INTERRUPTED,
+                    (self.router.clock() - lead_started) * 1000,
+                )
             lead_ms = (self.router.clock() - lead_started) * 1000
-        self.playback_active = True
-        self.active_playback_source = "live"
+        if not self._activate("live"):
+            self._deactivate()
+            return _route_outcome(route, PlaybackStatus.INTERRUPTED, lead_ms)
         try:
             outcome = self.router.live_backend.play_prepared(
                 route.prepared,
@@ -1412,8 +1439,7 @@ class AudioRoutePlaybackOwner:
                 error=str(error),
             )
         finally:
-            self.playback_active = False
-            self.active_playback_source = None
+            self._deactivate()
         return replace(
             outcome,
             audio_source=route.trace.effective_source,
@@ -1435,18 +1461,19 @@ class AudioRoutePlaybackOwner:
         seconds = float(getattr(route, "source_audio_lead_seconds", 0.0) or 0.0)
         if seconds <= 0:
             return playback_guard is None or bool(playback_guard())
-        self.active_playback_source = "game"
-        self.source_audio_completion_stop.clear()
+        if not self._activate("game", clear=self.source_audio_completion_stop):
+            return False
         interrupted = self.source_audio_completion_stop.wait(seconds)
         return not interrupted and (playback_guard is None or bool(playback_guard()))
 
     def stop(self) -> bool:
-        was_playing = self.playback_active
-        self.progress_wait_stop.set()
-        if self.active_playback_source == "game":
-            self.source_audio_completion_stop.set()
-        elif self.active_playback_source == "generated":
-            self.generated_audio_stop.set()
+        with self.state_lock:
+            was_playing = self.playback_active
+            self.progress_wait_stop.set()
+            if self.active_playback_source == "game":
+                self.source_audio_completion_stop.set()
+            elif self.active_playback_source == "generated":
+                self.generated_audio_stop.set()
         return bool(self.router.live_backend.stop()) or was_playing
 
 

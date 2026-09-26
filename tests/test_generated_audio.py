@@ -1720,6 +1720,101 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertFalse(worker.is_alive())
         self.assertIs(outcomes[0].status, PlaybackStatus.INTERRUPTED)
 
+    def test_stop_during_generated_activation_cannot_be_lost(self):
+        output = FakeAudioOutput()
+        backend = GeneratedAudioFallbackBackend(
+            self.create_live_backend(), Mock(), Mock(), audio_output=output
+        )
+        owner = backend.playback_owner
+        route = GeneratedAudioRoute(
+            PreparedGeneratedAudio(
+                "game:1",
+                hashlib.sha256(b"Hello.").hexdigest(),
+                np.zeros(480, dtype=np.float32),
+                48_000,
+            ),
+            Mock(effective_source="generated"),
+        )
+        clearing = Event()
+        release_clear = Event()
+        activated = Event()
+        release_playback = Event()
+        stopped = Event()
+        original_clear = owner.generated_audio_stop.clear
+        original_lead = owner._wait_for_source_audio_lead
+        outcomes = []
+        stop_results = []
+
+        def pause_clear():
+            original_clear()
+            clearing.set()
+            release_clear.wait(2)
+
+        def pause_after_activation(*args):
+            activated.set()
+            release_playback.wait(2)
+            return original_lead(*args)
+
+        with (
+            patch.object(owner.generated_audio_stop, "clear", side_effect=pause_clear),
+            patch.object(
+                owner, "_wait_for_source_audio_lead", side_effect=pause_after_activation
+            ),
+        ):
+            worker = Thread(target=lambda: outcomes.append(backend.play_route(route)))
+            stopper = Thread(
+                target=lambda: (stop_results.append(backend.stop()), stopped.set())
+            )
+            try:
+                worker.start()
+                self.assertTrue(clearing.wait(1))
+                stopper.start()
+                release_clear.set()
+                self.assertTrue(activated.wait(1))
+                self.assertTrue(stopped.wait(1))
+            finally:
+                release_clear.set()
+                release_playback.set()
+                worker.join(2)
+                if stopper.ident is not None:
+                    stopper.join(2)
+
+        self.assertFalse(worker.is_alive())
+        self.assertFalse(stopper.is_alive())
+        self.assertEqual(stop_results, [True])
+        self.assertIs(outcomes[0].status, PlaybackStatus.INTERRUPTED)
+        self.assertEqual(output.plays, [])
+
+    def test_stop_at_source_lead_transition_cannot_start_generated_audio(self):
+        output = FakeAudioOutput()
+        backend = GeneratedAudioFallbackBackend(
+            self.create_live_backend(), Mock(), Mock(), audio_output=output
+        )
+        route = GeneratedAudioRoute(
+            PreparedGeneratedAudio(
+                "game:1",
+                hashlib.sha256(b"Hello.").hexdigest(),
+                np.zeros(480, dtype=np.float32),
+                48_000,
+            ),
+            Mock(effective_source="generated"),
+            source_audio_lead_seconds=0.1,
+        )
+
+        def stop_at_wait(_seconds):
+            self.assertTrue(backend.stop())
+            return False
+
+        with patch.object(
+            backend.playback_owner.source_audio_completion_stop,
+            "wait",
+            side_effect=stop_at_wait,
+        ):
+            outcome = backend.play_route(route)
+
+        self.assertIs(outcome.status, PlaybackStatus.INTERRUPTED)
+        self.assertEqual(output.plays, [])
+
     def test_generated_guard_change_during_wait_returns_interrupted(self):
         playable = True
 
