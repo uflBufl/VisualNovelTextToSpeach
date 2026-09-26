@@ -335,6 +335,8 @@ class DialogRegionOverlay(QWidget):
     ) -> None:
         if self.origin is None or self.current is None:
             self._set_suggested_keyboard_region()
+        if self.origin is None or self.current is None:
+            return
         rectangle = QRect(self.origin, self.current).normalized()
         step = 10 if modifiers & Qt.KeyboardModifier.ControlModifier else 2
         horizontal = {

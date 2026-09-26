@@ -198,11 +198,12 @@ class OCRCorrectionsDialog(QDialog):
     ) -> None:
         row = table.rowCount()
         table.insertRow(row)
-        table.setItem(row, 0, QTableWidgetItem(source))
+        source_item = QTableWidgetItem(source)
+        table.setItem(row, 0, source_item)
         table.setItem(row, 1, QTableWidgetItem(replacement))
         if not source:
             table.setCurrentCell(row, 0)
-            table.editItem(table.item(row, 0))
+            table.editItem(source_item)
 
     def _remove_selected_rows(self, table: QTableWidget) -> None:
         rows = sorted({item.row() for item in table.selectedItems()}, reverse=True)

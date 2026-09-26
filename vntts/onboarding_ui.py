@@ -8,6 +8,7 @@ from threading import Event
 from typing import Protocol, TypeGuard
 
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
+from PySide6.QtGui import QStandardItemModel
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -223,8 +224,9 @@ class ConfigurationPage(QWizardPage):
         ):
             self.speech_backend.addItem(label, backend)
             if not available:
-                item = self.speech_backend.model().item(self.speech_backend.count() - 1)
-                item.setEnabled(False)
+                model = self.speech_backend.model()
+                if isinstance(model, QStandardItemModel):
+                    model.item(self.speech_backend.count() - 1).setEnabled(False)
         self.speech_backend.setCurrentIndex(
             max(0, self.speech_backend.findData(settings.speech_backend))
         )

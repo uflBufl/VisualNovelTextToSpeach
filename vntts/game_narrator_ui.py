@@ -11,7 +11,7 @@ from traceback import format_exception
 from typing import TypeGuard
 
 from PySide6.QtCore import QSignalBlocker, Qt, QThreadPool, QTimer, QUrl, Signal
-from PySide6.QtGui import QCloseEvent, QPixmap
+from PySide6.QtGui import QCloseEvent, QPixmap, QStandardItemModel
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -412,10 +412,10 @@ class GameNarratorDialog(QDialog):
         layout.addLayout(status_layout)
         layout.addWidget(self.runtime)
         layout.addWidget(self.progress)
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setWidget(self.controls)
-        layout.addWidget(self.scroll, 1)
+        self.controls_scroll = QScrollArea()
+        self.controls_scroll.setWidgetResizable(True)
+        self.controls_scroll.setWidget(self.controls)
+        layout.addWidget(self.controls_scroll, 1)
         self.reference_details = QLabel()
         self.reference_details.setWordWrap(True)
         self.reference_details.setTextFormat(Qt.TextFormat.PlainText)
@@ -543,11 +543,11 @@ class GameNarratorDialog(QDialog):
             QWidget.setTabOrder(current, following)
         make_text_copyable(self)
         outer_labels = [
-            item.widget()
+            label
             for row in range(self.form.rowCount())
             if (item := self.form.itemAt(row, QFormLayout.ItemRole.LabelRole))
             is not None
-            and item.widget() is not None
+            and (label := item.widget()) is not None
         ]
         label_width = max(label.sizeHint().width() for label in outer_labels)
         for row in range(self.game_form.rowCount()):
@@ -861,12 +861,10 @@ class GameNarratorDialog(QDialog):
         self.role_summary.setToolTip("\n".join(self._story_titles))
 
     def _select_role_source(self, narrator: bool, selected: str | None) -> None:
-        self.source.model().item(self.source.findData("automatic")).setEnabled(
-            not narrator
-        )
-        self.source.model().item(self.source.findData("narrator")).setEnabled(
-            not narrator
-        )
+        model = self.source.model()
+        if isinstance(model, QStandardItemModel):
+            model.item(self.source.findData("automatic")).setEnabled(not narrator)
+            model.item(self.source.findData("narrator")).setEnabled(not narrator)
         mode = "game"
         if not narrator and selected is None:
             mode = "automatic"
@@ -1122,7 +1120,9 @@ class GameNarratorDialog(QDialog):
         warming = self.runner.active and self._operation == "warm"
         self.role.setEnabled(idle)
         self.catalog_choice.setEnabled(idle)
-        self.source.model().item(self.source.findData("preset")).setEnabled(pocket)
+        model = self.source.model()
+        if isinstance(model, QStandardItemModel):
+            model.item(self.source.findData("preset")).setEnabled(pocket)
         self.presets.setEnabled(idle)
         self.consent.setEnabled(idle)
         self.text.setEnabled(idle)
