@@ -57,17 +57,21 @@ def prune_obsolete_voice_candidate_caches(
     for directory in candidates:
         if directory.name in referenced or len(removed) == _MAX_DELETIONS:
             continue
-        signature = _signature(directory)
-        if signature is None:
-            return tuple(removed)
-        if _signature(directory) != signature:
-            return tuple(removed)
-        try:
-            shutil.rmtree(directory)
-        except OSError:
+        if not _remove_candidate(directory):
             return tuple(removed)
         removed.append(directory)
     return tuple(removed)
+
+
+def _remove_candidate(directory: Path) -> bool:
+    signature = _signature(directory)
+    if signature is None or _signature(directory) != signature:
+        return False
+    try:
+        shutil.rmtree(directory)
+    except OSError:
+        return False
+    return True
 
 
 def _candidate_directories(root: Path) -> tuple[Path, ...] | None:
@@ -111,15 +115,24 @@ def _references_in_jobs(root: Path, jobs: Path) -> set[str] | None:
             return None
         if not directory.is_dir() or not _JOB_ID.fullmatch(directory.name):
             continue
-        for path in (directory / "voice-plan.json", *_pack_manifests(directory)):
-            if path is None:
-                return None
-            if not path.exists():
-                continue
-            found = _references_in_document(root, path)
-            if found is None:
-                return None
-            references.update(found)
+        found = _references_in_job(root, directory)
+        if found is None:
+            return None
+        references.update(found)
+    return references
+
+
+def _references_in_job(root: Path, directory: Path) -> set[str] | None:
+    references: set[str] = set()
+    for path in (directory / "voice-plan.json", *_pack_manifests(directory)):
+        if path is None:
+            return None
+        if not path.exists():
+            continue
+        found = _references_in_document(root, path)
+        if found is None:
+            return None
+        references.update(found)
     return references
 
 
