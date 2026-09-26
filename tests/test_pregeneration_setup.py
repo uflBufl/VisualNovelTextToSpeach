@@ -762,6 +762,135 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.close()
             dialog.deleteLater()
 
+    def test_changed_installed_game_imports_automatically_and_replaces_source(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = inspect_story_index(write_story_index(root / "content"))
+            updated = replace(original, story_index_sha256="f" * 64)
+            importer = Mock()
+            importer.availability.return_value = ImporterAvailability(True, "Ready")
+            importer.installed_story_changed.return_value = True
+            importer.import_installed.return_value = updated
+            importer.output_root = root / "import"
+            obsolete_cache = (
+                importer.output_root / "reverse1999" / "voice-candidates" / ("a" * 24)
+            )
+            obsolete_cache.mkdir(parents=True)
+            (obsolete_cache / "manifest.json").write_text("{}")
+            pool = ManualThreadPool()
+            with patch(
+                "vntts.pregeneration_ui.discover_game_content",
+                return_value=ContentDiscovery((original,)),
+            ):
+                dialog = OfflineAudioPreparationDialog(
+                    AppSettings(),
+                    importer=importer,
+                    job_store=PregenerationJobStore(root / "jobs"),
+                    thread_pool=pool,
+                )
+                self.addCleanup(dialog.deleteLater)
+                dialog.show()
+                self.application.processEvents()
+                self.run_next_task(pool)
+                self.assertTrue(dialog.importing)
+                self.assertTrue(dialog.discovery_panel.isVisible())
+                self.assertIn("Updating", dialog.discovery_message.text())
+                self.assertEqual(len(pool.tasks), 1)
+                self.run_next_task(pool)
+
+            self.assertFalse(dialog.importing)
+            self.assertEqual(dialog.source.count(), 1)
+            self.assertEqual(dialog.current_content().story_index_sha256, "f" * 64)
+            self.assertFalse(obsolete_cache.exists())
+            importer.import_installed.assert_called_once()
+
+    def test_unchanged_installed_game_does_not_start_import(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            importer = Mock()
+            importer.availability.return_value = ImporterAvailability(True, "Ready")
+            importer.installed_story_changed.return_value = False
+            pool = ManualThreadPool()
+            with patch(
+                "vntts.pregeneration_ui.discover_game_content",
+                return_value=ContentDiscovery((content,)),
+            ):
+                dialog = OfflineAudioPreparationDialog(
+                    AppSettings(),
+                    importer=importer,
+                    job_store=PregenerationJobStore(root / "jobs"),
+                    thread_pool=pool,
+                )
+                self.addCleanup(dialog.deleteLater)
+                dialog.show()
+                self.application.processEvents()
+                self.run_next_task(pool)
+
+            self.assertFalse(dialog.importing)
+            self.assertEqual(dialog.source.count(), 1)
+            importer.import_installed.assert_not_called()
+
+    def test_failed_automatic_update_keeps_catalog_and_enables_retry(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            importer = Mock()
+            importer.availability.return_value = ImporterAvailability(True, "Ready")
+            importer.installed_story_changed.return_value = True
+            importer.import_installed.side_effect = RuntimeError("update failed")
+            pool = ManualThreadPool()
+            with patch(
+                "vntts.pregeneration_ui.discover_game_content",
+                return_value=ContentDiscovery((content,)),
+            ):
+                dialog = OfflineAudioPreparationDialog(
+                    AppSettings(),
+                    importer=importer,
+                    job_store=PregenerationJobStore(root / "jobs"),
+                    thread_pool=pool,
+                )
+                self.addCleanup(dialog.deleteLater)
+                dialog.show()
+                self.application.processEvents()
+                self.run_next_task(pool)
+                self.run_next_task(pool)
+
+            self.assertEqual(dialog.source.count(), 1)
+            self.assertEqual(dialog.current_content(), content)
+            self.assertIn("update failed", dialog.source_status.text())
+            self.assertTrue(dialog.import_button.isEnabled())
+
+    def test_reimport_preserves_still_available_story_selection(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = inspect_story_index(write_story_index(root / "content"))
+            updated = replace(original, story_index_sha256="f" * 64)
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((original,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+                thread_pool=ManualThreadPool(),
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog.select_all_button.click()
+            selected = dialog.selected_story_ids()
+
+            dialog._select_content(updated, "Updated stories")
+
+            self.assertEqual(dialog.source.count(), 1)
+            self.assertEqual(dialog.selected_story_ids(), selected)
+
+            reduced = replace(
+                updated,
+                story_index_sha256="e" * 64,
+                selections=updated.selections[:1],
+            )
+            dialog._select_content(reduced, "Updated stories")
+            self.assertEqual(dialog.source.count(), 1)
+            self.assertEqual(dialog.selected_story_ids(), selected[:1])
+            self.assertIn("no longer available", dialog.source_status.text())
+
     def test_manual_game_folder_can_replace_discovery_while_it_is_loading(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

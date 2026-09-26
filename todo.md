@@ -25,25 +25,16 @@ Planned implementation order after approval:
 4. Run platform, hardware and signing gates only when the required host or
    credentials are available.
 
-## P0 - Refresh installed stories after game updates
+## P0 - Validate automatic game-update refresh on Windows
 
-- [ ] On opening Stories and on Refresh, cheaply compare the saved Reverse: 1999
-      import with its known game story/config inputs; do not scan or reimport the
-      whole game when they are unchanged. When changed, run the existing cancellable
-      import with a clear updating/progress state. Preserve the last usable catalog
-      if import fails, then replace it after successful publication. Gate: new
-      stories appear without opening Add or import content; unchanged launches are
-      fast and a failed update offers a clear retry.
-- [ ] Replace, rather than append, a Game content entry when a reimport changes
-      the checksum at the same source path. Preserve selected story IDs and saved
-      voice choices where they still exist; require explicit reselection only for
-      removed stories. Gate: repeated game updates never add duplicate source rows
-      in an open preparation window.
-- [ ] Bound immutable voice-candidate cache growth. Keep the current catalog and
-      any manifest referenced by an active job or published pack; prune only
-      unreferenced older candidate directories while no matching operation is
-      running. Gate: no source WAV or resumable job is removed, and refreshed
-      candidates regenerate safely after pruning.
+- [ ] After a real Reverse: 1999 update, open Stories without using Add or import
+      content. Confirm that the update is detected, the cancellable import has a
+      visible status, new stories appear in the existing Game content source,
+      previously selected stories and voice choices remain, and an unchanged
+      second opening starts no import. If the import fails, confirm the old story
+      catalog remains usable and the import can be retried. Check that obsolete
+      story-candidate caches are reclaimed without touching saved jobs or narrator
+      references.
 
 ## P0 - Play while offline audio is still preparing
 

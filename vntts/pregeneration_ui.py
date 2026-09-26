@@ -106,6 +106,7 @@ from vntts.ui_text import (
     plain_label_text,
     set_labeled_text,
 )
+from vntts.voice_candidate_cache import prune_obsolete_voice_candidate_caches
 from vntts.voice_default_impact import StoryVoiceImpact
 from vntts.voice_library import VoiceLibrary, VoiceLibraryError
 from vntts.voices import (
@@ -268,6 +269,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.import_cancel_event = Event()
         self.voice_cancel_event = Event()
         self.importing = False
+        self._automatic_import = False
         self.planning_voices = False
         self.auditioning_voices = False
         self.inspecting_voice_plan = False
@@ -759,11 +761,11 @@ class OfflineAudioPreparationDialog(QDialog):
             QSizePolicy.Policy.Maximum,
         )
         self.discovery_panel.setAccessibleName("Loading game content")
-        discovery_message = QLabel(
+        self.discovery_message = QLabel(
             "Finding local stories. Controls unlock when loading finishes."
         )
-        discovery_message.setWordWrap(True)
-        discovery_message.setStyleSheet("font-weight: 600;")
+        self.discovery_message.setWordWrap(True)
+        self.discovery_message.setStyleSheet("font-weight: 600;")
         self.discovery_progress = QProgressBar()
         self.discovery_progress.setRange(0, 0)
         self.discovery_progress.setTextVisible(False)
@@ -773,7 +775,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.discovery_game_folder_button = QPushButton("Choose game folder...")
         self.discovery_game_folder_button.clicked.connect(self.choose_game_folder)
         discovery_layout = QVBoxLayout(self.discovery_panel)
-        discovery_layout.addWidget(discovery_message)
+        discovery_layout.addWidget(self.discovery_message)
         discovery_layout.addWidget(self.discovery_progress)
         discovery_actions = QHBoxLayout()
         discovery_actions.addStretch()
@@ -872,6 +874,9 @@ class OfflineAudioPreparationDialog(QDialog):
             self.refresh()
 
     def refresh(self) -> None:
+        self.discovery_message.setText(
+            "Finding local stories. Controls unlock when loading finishes."
+        )
         self.coverage_runner.cancel()
         self._checking_story = None
         self._story_audio_checks.clear()
@@ -1751,6 +1756,12 @@ class OfflineAudioPreparationDialog(QDialog):
         assert isinstance(discovery, ContentDiscovery)
         self._apply_discovery(discovery)
         self._set_discovery_loading(False)
+        if (
+            self._background_discovery
+            and self.importer.availability().available
+            and self.importer.installed_story_changed() is True
+        ):
+            self._start_import(None, automatic=True)
 
     def _stale_voice_job_finished(
         self, result: object, error: Exception | None
@@ -1895,19 +1906,43 @@ class OfflineAudioPreparationDialog(QDialog):
     def _select_content(self, content: GameContent, status: str) -> None:
         self._prepared_voice_manifest = None
         self._prepared_voice_job = None
-        existing = next(
-            (
-                index
-                for index, value in enumerate(self._content)
-                if value.story_index_sha256 == content.story_index_sha256
-            ),
-            None,
-        )
-        if existing is None:
-            self._content = (*self._content, content)
-            self.source.addItem(_content_label(content), content.story_index_sha256)
-            existing = len(self._content) - 1
-        self.source.setCurrentIndex(existing)
+        previous = self.current_content()
+        removed_selections: set[str] = set()
+        for checksum, (draft_content, selected) in tuple(
+            self._unsaved_story_selections.items()
+        ):
+            if draft_content.story_index == content.story_index:
+                del self._unsaved_story_selections[checksum]
+                self._story_selection_drafts[content.story_index_sha256] = set(
+                    selected
+                ) & {selection.selection_id for selection in content.selections}
+        if (
+            previous is not None
+            and previous.story_index == content.story_index
+            and previous.story_index_sha256 != content.story_index_sha256
+        ):
+            available = {selection.selection_id for selection in content.selections}
+            removed_selections = set(self.selected_story_ids()) - available
+            self._story_selection_drafts[content.story_index_sha256] = (
+                set(self.selected_story_ids()) & available
+            )
+        self._content = tuple(
+            value
+            for value in self._content
+            if value.story_index != content.story_index
+            and value.story_index_sha256 != content.story_index_sha256
+        ) + (content,)
+        with QSignalBlocker(self.source):
+            self.source.clear()
+            for value in self._content:
+                self.source.addItem(_content_label(value), value.story_index_sha256)
+            self.source.setCurrentIndex(len(self._content) - 1)
+        self._source_changed(self.source.currentIndex())
+        if removed_selections:
+            status += (
+                f" {len(removed_selections)} previously selected stories are no "
+                "longer available; review the selection before continuing."
+            )
         self.source_status.setText(status)
         self.source_status.show()
         self.import_options_toggle.setChecked(False)
@@ -1930,7 +1965,9 @@ class OfflineAudioPreparationDialog(QDialog):
         if self.discovery_runner.cancel():
             self._set_discovery_loading(False)
 
-    def _start_import(self, installation_root: str | None) -> None:
+    def _start_import(
+        self, installation_root: str | None, *, automatic: bool = False
+    ) -> None:
         if self.importing:
             return
         availability = self.importer.availability()
@@ -1939,6 +1976,15 @@ class OfflineAudioPreparationDialog(QDialog):
             self.source_status.show()
             return
         self.importing = True
+        self._automatic_import = automatic
+        if automatic:
+            self.discovery_message.setText(
+                "Game files changed. Updating the story list; previous recordings "
+                "remain saved. You can cancel this update."
+            )
+            self._set_discovery_loading(True)
+            self.discovery_import_button.setEnabled(False)
+            self.discovery_game_folder_button.setEnabled(False)
         self.continue_button.hide()
         self.phaseChanged.emit("Importing installed game")
         self.import_cancel_event.clear()
@@ -1946,14 +1992,41 @@ class OfflineAudioPreparationDialog(QDialog):
         self.cancel_button.setText("Cancel import")
         self.cancel_button.setEnabled(True)
         self.source_status.setText(
-            "Finding the installed game and importing story content..."
+            "Updating stories from the installed game..."
+            if automatic
+            else "Finding the installed game and importing story content..."
         )
         self.source_status.show()
+        protected = tuple(
+            path
+            for path in (
+                self._prepared_voice_manifest,
+                self._voice_plan.voice_manifest if self._voice_plan else None,
+                self.settings.voice_manifest,
+            )
+            if path
+        )
         self.import_runner.start(
-            self.importer.import_installed,
+            self._import_and_prune,
             self.import_cancel_event,
             installation_root,
+            protected,
         )
+
+    def _import_and_prune(
+        self,
+        cancel_event: Event,
+        installation_root: str | None,
+        protected: tuple[str | Path, ...],
+    ) -> GameContent:
+        content = self.importer.import_installed(cancel_event, installation_root)
+        if isinstance(self.importer.output_root, Path):
+            prune_obsolete_voice_candidate_caches(
+                self.importer.output_root / "reverse1999" / "voice-candidates",
+                self.job_store.root,
+                protected_paths=protected,
+            )
+        return content
 
     def current_content(self) -> GameContent | None:
         index = self.source.currentIndex()
@@ -3848,6 +3921,13 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _import_finished(self, content: object, error: Exception | None) -> None:
         self.importing = False
+        was_automatic = self._automatic_import
+        if was_automatic:
+            self._automatic_import = False
+            self._set_discovery_loading(False)
+            available = self.importer.availability().available
+            self.discovery_import_button.setEnabled(available)
+            self.discovery_game_folder_button.setEnabled(available)
         if self._close_after_voice_cancel:
             self.source_status.setText("Game import cancelled.")
             self.source_status.show()
@@ -3867,7 +3947,12 @@ class OfflineAudioPreparationDialog(QDialog):
             self.source_status.show()
             return
         assert isinstance(content, GameContent)
-        self._select_content(content, "Installed game content imported successfully.")
+        self._select_content(
+            content,
+            "Updated stories from the installed game."
+            if was_automatic
+            else "Installed game content imported successfully.",
+        )
 
     def _set_import_controls(self, enabled: bool) -> None:
         self._refresh_story_statuses()
