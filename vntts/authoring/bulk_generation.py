@@ -226,6 +226,7 @@ from vntts.authoring.workspace_foundation import load_json_object
 from vntts.speech_presentation import speech_runtime_label
 from vntts.synthesis import (
     SynthesisCachePolicy,
+    SynthesisCancellation,
     SynthesisChunkStream,
     SynthesisCompletion,
     SynthesisRequest,
@@ -477,7 +478,7 @@ class _GenerationExecutionContext:
     render_prefetch: ThreadPoolExecutor
     seed: int
     retries: int
-    cancellation: object
+    cancellation: SynthesisCancellation
     synthesis_cache_policy: SynthesisCachePolicy
     recorded_voices: dict[str, RecordedVoice]
     evidence_directory: Path | None
@@ -3001,7 +3002,7 @@ def run_bulk_generation(
     regenerate_existing: bool = False,
     item_filter: Callable[[VoiceGenerationQueueItem], bool] | None = None,
     seed: object = 0,
-    cancellation: object = None,
+    cancellation: SynthesisCancellation = None,
     control_files: Mapping[str, str | Path | tuple[str | Path, str]] | None = None,
     text_transform: Callable[[str], str] | None = None,
     text_transform_id: object = None,
@@ -3184,7 +3185,7 @@ def _run_generation_execution(
     render: GenerationRenderer,
     seed: int,
     retries: int,
-    cancellation: object,
+    cancellation: SynthesisCancellation,
     synthesis_cache_policy: SynthesisCachePolicy,
     recorded_voices: dict[str, RecordedVoice],
     evidence_directory: Path | None,

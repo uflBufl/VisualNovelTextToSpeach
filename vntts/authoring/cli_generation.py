@@ -46,6 +46,7 @@ from vntts.authoring.source_reference_bindings import (
     queue_voice_overrides_from_manifest,
 )
 from vntts.speech_backend_runtime import shutdown_speech_backend
+from vntts.synthesis import SynthesisCancellation
 from vntts.tts_benchmark import create_backend
 from vntts.voices import (
     CharacterVoice,
@@ -593,7 +594,7 @@ def _generation_text_transform(
 def _run_bulk_generation(
     arguments: argparse.Namespace,
     backend_factory: Callable[..., object],
-    cancellation: object,
+    cancellation: SynthesisCancellation,
     startup_progress: object,
     registry: CharacterVoiceRegistry,
     policy_queue: VoiceGenerationQueue,
@@ -689,7 +690,7 @@ def run_generation(
     arguments: argparse.Namespace,
     *,
     backend_factory: Callable[..., object] | None = None,
-    cancellation: object = None,
+    cancellation: SynthesisCancellation = None,
     startup_progress: object = None,
 ) -> BulkGenerationResult:
     missing_policy = missing_voice_policy(arguments)

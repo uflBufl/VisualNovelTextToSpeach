@@ -2,7 +2,7 @@ import re
 from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Protocol, TypeAlias
 
 import numpy as np
 
@@ -42,6 +42,13 @@ class SynthesisCompletion(str, Enum):
     LIMITED = "limited"
 
 
+class CancellationSignal(Protocol):
+    def is_set(self) -> bool: ...
+
+
+SynthesisCancellation: TypeAlias = Callable[[], bool] | CancellationSignal | None
+
+
 @dataclass(frozen=True)
 class SynthesisRequest:
     """All inputs that can change a rendered waveform."""
@@ -50,7 +57,7 @@ class SynthesisRequest:
     text: str
     seed: int | None = None
     generation_profile: str = "stable"
-    cancellation: Callable[[], bool] | Any | None = field(
+    cancellation: SynthesisCancellation = field(
         default=None,
         compare=False,
         repr=False,
