@@ -213,6 +213,7 @@ def fingerprint_dialog_frame(frame: object) -> bytes:
             indicator_top = max(0, round(height * 0.68) - top)
             band.paste(0, (indicator_left, indicator_top, width, bottom - top))
         brightest = band.getextrema()[1]
+        assert isinstance(brightest, (int, float))
         # Fully covered glyph pixels keep the same value even when the
         # anti-aliased edge is composited over a changing background.
         glyph_threshold = max(minimum_brightness, brightest)
@@ -263,6 +264,7 @@ def fingerprint_dialog_render_activity(frame: object) -> bytes:
     top = min(height - 1, max(0, round(height * 0.25)))
     band = grayscale.crop((left, top, right, height))
     brightest = band.getextrema()[1]
+    assert isinstance(brightest, (int, float))
     threshold = max(205, brightest - 20)
     mask = band.point(
         tuple(255 if value >= threshold else 0 for value in range(256))
@@ -307,7 +309,7 @@ def dialog_completion_cue_visible(frame: object) -> bool:
         (x, y)
         for y in range(region.height)
         for x in range(region.width)
-        if region.getpixel((x, y)) >= 150
+        if isinstance((pixel := region.getpixel((x, y))), (int, float)) and pixel >= 150
     }
     components = []
     while bright:
@@ -359,10 +361,15 @@ def detect_standalone_ellipsis_frame(image: object) -> bool:
     top = min(height - 1, round(height * 0.38))
     bottom = min(height, max(top + 1, round(height * 0.88)))
     pixels = rgb.load()
+    if pixels is None:
+        return False
     bright = set()
     for y in range(top, bottom):
         for x in range(right):
-            red, green, blue = pixels[x, y]
+            pixel = pixels[x, y]
+            if not isinstance(pixel, tuple) or len(pixel) != 3:
+                return False
+            red, green, blue = pixel
             if (
                 min(red, green, blue) >= 150
                 and max(red, green, blue) - min(red, green, blue) <= 45
