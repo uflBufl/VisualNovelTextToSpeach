@@ -174,15 +174,20 @@ class DisclosureSection(QWidget):
     def first_control(self) -> QWidget:
         for index in range(self.content_layout.count()):
             item = self.content_layout.itemAt(index)
+            if item is None:
+                continue
             widget = item.widget()
             if widget is not None:
-                return cast(QWidget, widget)
+                return widget
             child_layout = item.layout()
             if child_layout is not None:
                 for child_index in range(child_layout.count()):
-                    child = child_layout.itemAt(child_index).widget()
-                    if child is not None:
-                        return cast(QWidget, child)
+                    child_item = child_layout.itemAt(child_index)
+                    if (
+                        child_item is not None
+                        and (child := child_item.widget()) is not None
+                    ):
+                        return child
         return self.header
 
     def _set_expanded(self, checked: bool, *, emit: bool = True) -> None:
@@ -2100,7 +2105,9 @@ class AuthoringWorkbenchDialog(QDialog):
             position = -1 if offset > 0 else 0
         row = pending[(position + int(offset)) % len(pending)]
         self.review_table.setCurrentCell(row, 0)
-        self.review_table.scrollToItem(self.review_table.item(row, 0))
+        item = self.review_table.item(row, 0)
+        if item is not None:
+            self.review_table.scrollToItem(item)
 
     def _next_pending_queue_id(self) -> str | None:
         pending = [
@@ -2531,7 +2538,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.stop_generation.setEnabled(True)
 
     def _append_process_output(self, *, final: bool = False) -> None:
-        data = bytes(self.process.readAllStandardOutput())
+        data = bytes(self.process.readAllStandardOutput().data())
         text = self._log_decoder.decode(data, final=final)
         if text:
             self._append_process_log(text)
