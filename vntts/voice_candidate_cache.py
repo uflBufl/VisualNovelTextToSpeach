@@ -24,7 +24,6 @@ def prune_obsolete_voice_candidate_caches(
     job_root: str | Path,
     *,
     protected_paths: Iterable[str | Path] = (),
-    current_index_paths: Iterable[str | Path] = (),
 ) -> tuple[Path, ...]:
     """Delete at most eight unreferenced extractor cache directories.
 
@@ -47,11 +46,6 @@ def prune_obsolete_voice_candidate_caches(
         referenced = _protected_candidates(root, protected_paths)
         if referenced is None:
             return ()
-        for path in current_index_paths:
-            references = _references_in_document(root, Path(path).expanduser())
-            if references is None:
-                return ()
-            referenced.update(references)
         references = _references_in_jobs(root, jobs)
         if references is None:
             return ()

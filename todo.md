@@ -25,6 +25,12 @@ Planned implementation order after approval:
 4. Run platform, hardware and signing gates only when the required host or
    credentials are available.
 
+## P1 - Voice candidate cache cleanup
+
+- [ ] Separate per-job reference parsing from bounded job enumeration while
+      preserving fail-closed behavior. Gate: cache tests and the complexity
+      ratchet pass without increasing the baseline.
+
 ## P0 - Validate automatic game-update refresh on Windows
 
 - [ ] After a real Reverse: 1999 update, open Stories without using Add or import

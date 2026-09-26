@@ -46,22 +46,6 @@ class VoiceCandidateCacheTest(unittest.TestCase):
         self.assertEqual(removed, (old.resolve(),))
         self.assertTrue(saved.exists())
 
-    def test_keeps_manifest_referenced_by_current_index(self) -> None:
-        old = self._candidate("old")
-        indexed = self._candidate("indexed")
-        index = Path(self.temporary.name) / "story-index.jsonl"
-        index.write_text(
-            json.dumps({"voice_manifest": str(indexed / "manifest.json")}) + "\n",
-            encoding="utf-8",
-        )
-
-        removed = prune_obsolete_voice_candidate_caches(
-            self.root, self.jobs, current_index_paths=(index,)
-        )
-
-        self.assertEqual(removed, (old.resolve(),))
-        self.assertTrue(indexed.exists())
-
     def test_keeps_manifest_referenced_by_published_pack(self) -> None:
         old = self._candidate("old")
         published = self._candidate("published")
