@@ -3944,9 +3944,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             action.setEnabled(enabled)
             action.setToolTip("" if enabled else state.reason_for(control))
         self.sequence_resync_action.setEnabled(state.ready)
-        self.voice_preview_action.setEnabled(
-            not (self._controller_busy or self._shutting_down)
-        )
         self.dashboard.set_runtime_controls(state)
         self.compact_controller.set_runtime_controls(state)
 

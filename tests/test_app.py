@@ -357,6 +357,23 @@ class TrayApplicationTest(unittest.TestCase):
                 self.assertEqual(compact_state, expected)
         tray_application.shutdown()
 
+    def test_status_refresh_preserves_voice_picker_action_lock(self):
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock(is_live_running=False)),
+        )
+        tray_application._controller_ready = True
+        tray_application.narrator_dialog = Mock()
+        tray_application._apply_controller_action_state()
+        self.assertFalse(tray_application.voice_preview_action.isEnabled())
+
+        tray_application.set_status("Choose a voice in Voices.")
+
+        self.assertFalse(tray_application.voice_preview_action.isEnabled())
+        tray_application.narrator_dialog = None
+        tray_application.shutdown()
+
     def test_tray_non_action_text_is_bounded_without_losing_full_tooltip(self):
         tray_application = TrayApplication(
             self.application,
