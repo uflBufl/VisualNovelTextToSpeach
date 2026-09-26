@@ -7,7 +7,7 @@ from collections.abc import Callable, Generator, Mapping, Sequence
 from pathlib import Path
 from threading import Event, Lock
 from time import monotonic
-from typing import Protocol, TypeAlias
+from typing import Protocol, TypeAlias, TypeGuard
 
 import numpy as np
 from numpy.typing import NDArray
@@ -44,7 +44,7 @@ class _Tensor(Protocol):
 
 
 class _AudioTokenizer(Protocol):
-    def to(self, device: str) -> object: ...
+    def to(self, device: str) -> _AudioTokenizer: ...
 
 
 class _ModelConfig(Protocol):
@@ -121,6 +121,56 @@ class _AutoProcessor(Protocol):
     ) -> _DelayProcessor: ...
 
 
+def _is_torch_module(value: object) -> TypeGuard[_Torch]:
+    cuda = getattr(value, "cuda", None)
+    return (
+        callable(getattr(value, "manual_seed", None))
+        and callable(getattr(value, "no_grad", None))
+        and hasattr(value, "bfloat16")
+        and hasattr(value, "float32")
+        and callable(getattr(cuda, "is_available", None))
+        and callable(getattr(cuda, "is_bf16_supported", None))
+        and callable(getattr(cuda, "get_device_capability", None))
+        and callable(getattr(cuda, "manual_seed_all", None))
+    )
+
+
+def _is_auto_model(value: object) -> TypeGuard[_AutoModel]:
+    return callable(getattr(value, "from_pretrained", None))
+
+
+def _is_auto_processor(value: object) -> TypeGuard[_AutoProcessor]:
+    return callable(getattr(value, "from_pretrained", None))
+
+
+def _load_torch_module() -> _Torch:
+    try:
+        import torch
+    except ImportError as error:
+        raise TTSConfigurationError(
+            "MOSS Delay requires its isolated PyTorch runtime. Run "
+            "`uv sync --project backends/moss-tts-delay`."
+        ) from error
+    if not _is_torch_module(torch):
+        raise TTSConfigurationError("Installed PyTorch has an unsupported interface")
+    return torch
+
+
+def _load_transformers() -> tuple[_AutoModel, _AutoProcessor]:
+    try:
+        from transformers import AutoModel, AutoProcessor
+    except ImportError as error:
+        raise TTSConfigurationError(
+            "MOSS Delay requires Transformers in its isolated runtime. "
+            "Run `uv sync --project backends/moss-tts-delay`."
+        ) from error
+    if not _is_auto_model(AutoModel) or not _is_auto_processor(AutoProcessor):
+        raise TTSConfigurationError(
+            "Installed Transformers has an unsupported interface"
+        )
+    return AutoModel, AutoProcessor
+
+
 default_moss_tts_delay_model = "OpenMOSS-Team/MOSS-TTS-v1.5"
 delay_audio_tokens_per_second = 12.5
 
@@ -167,14 +217,7 @@ class MossTTSDelayVoiceRouterBackend:
         self.stop_requested = Event()
 
         if torch_module is None:
-            try:
-                import torch
-            except ImportError as error:
-                raise TTSConfigurationError(
-                    "MOSS Delay requires its isolated PyTorch runtime. Run "
-                    "`uv sync --project backends/moss-tts-delay`."
-                ) from error
-            torch_module = torch
+            torch_module = _load_torch_module()
         self.torch = torch_module
         self.device = self._select_device(torch_module)
         if require_cuda and self.device != "cuda":
@@ -194,15 +237,7 @@ class MossTTSDelayVoiceRouterBackend:
 
         if processor is None or model is None:
             if auto_model is None or auto_processor is None:
-                try:
-                    from transformers import AutoModel, AutoProcessor
-                except ImportError as error:
-                    raise TTSConfigurationError(
-                        "MOSS Delay requires Transformers in its isolated runtime. "
-                        "Run `uv sync --project backends/moss-tts-delay`."
-                    ) from error
-                auto_model = AutoModel
-                auto_processor = AutoProcessor
+                auto_model, auto_processor = _load_transformers()
             try:
                 processor = auto_processor.from_pretrained(
                     self.model_name,

@@ -4,7 +4,7 @@ from collections.abc import Callable, Mapping, Sequence
 from os import PathLike
 from threading import Lock
 from time import monotonic
-from typing import Protocol, TypeAlias
+from typing import Protocol, TypeAlias, TypeGuard
 
 import numpy as np
 
@@ -24,6 +24,23 @@ class _TorchModule(Protocol):
     cuda: _TorchCuda
 
     def device(self, name: str) -> object: ...
+
+
+def _is_torch_module(value: object) -> TypeGuard[_TorchModule]:
+    cuda = getattr(value, "cuda", None)
+    return callable(getattr(value, "device", None)) and callable(
+        getattr(cuda, "is_available", None)
+    )
+
+
+def _load_torch_module() -> _TorchModule:
+    try:
+        import torch
+    except ImportError as error:
+        raise TTSConfigurationError("Coqui TTS requires PyTorch") from error
+    if not _is_torch_module(torch):
+        raise TTSConfigurationError("Installed PyTorch has an unsupported interface")
+    return torch
 
 
 class _TTSSynthesizer(Protocol):
@@ -139,9 +156,7 @@ class TTSEngine(SynchronousPcmPlaybackMixin):
 
             tts_factory = TTS
         if torch_module is None:
-            import torch
-
-            torch_module = torch
+            torch_module = _load_torch_module()
         device = torch_module.device(
             "cuda" if torch_module.cuda.is_available() else "cpu"
         )

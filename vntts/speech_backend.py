@@ -174,6 +174,23 @@ class _TorchModule(Protocol):
     def set_num_threads(self, count: int) -> None: ...
 
 
+def _is_torch_module(value: object) -> TypeGuard[_TorchModule]:
+    cuda = getattr(value, "cuda", None)
+    return callable(getattr(cuda, "is_available", None)) and callable(
+        getattr(value, "set_num_threads", None)
+    )
+
+
+def _load_torch_module() -> _TorchModule:
+    try:
+        import torch
+    except ImportError as error:
+        raise TTSConfigurationError("Chatterbox Nano requires PyTorch") from error
+    if not _is_torch_module(torch):
+        raise TTSConfigurationError("Installed PyTorch has an unsupported interface")
+    return torch
+
+
 class _CancellationSignal(Protocol):
     def is_set(self) -> bool: ...
 
@@ -544,9 +561,7 @@ class ChatterboxNanoVoiceRouterBackend(SynchronousPcmPlaybackMixin):
                 ) from error
             model_factory = ChatterboxTurboTTS.from_pretrained
         if torch_module is None:
-            import torch
-
-            torch_module = torch
+            torch_module = _load_torch_module()
         self.torch_module = torch_module
         device = select_torch_device(torch_module)
         cpu_playback_headroom = (
@@ -1240,6 +1255,7 @@ class PocketTTSVoiceRouterBackend:
             )
 
         try:
+            source_chunks: Iterator[object]
             if prepared.cached_audio is not None:
                 source_chunks = self._cached_chunks(prepared.cached_audio)
                 first_chunk_ms = 0.0
@@ -1986,9 +2002,10 @@ class MossTTSVoiceRouterBackend:
                 if not audio.size:
                     continue
                 if prepared.cached_audio is None:
-                    audio = bounded(audio)
-                    if audio is None:
+                    bounded_audio = bounded(audio)
+                    if bounded_audio is None:
                         break
+                    audio = bounded_audio
                 if first_chunk_ms is None:
                     first_chunk_ms = (self.clock() - started) * 1000
                     self.last_synthesis_ms = first_chunk_ms
