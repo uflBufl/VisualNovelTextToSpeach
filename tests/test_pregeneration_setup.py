@@ -2325,6 +2325,137 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertIn("replan failed", dialog.resume_status.text())
             dialog.deleteLater()
 
+    def test_voice_choice_replans_against_reimported_story_content(self):
+        from tests.test_pregeneration_voices import write_manifest
+        from vntts.pregeneration_voices import VoicePlanStore
+
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            story_index = write_story_index(root / "content")
+            content = inspect_story_index(story_index)
+            jobs = PregenerationJobStore(root / "jobs")
+            job = jobs.create_or_resume(content, ("main-1",))
+            manifest = write_manifest(root / "voices")
+            library = VoiceLibrary(root / "library")
+            library.select("Narrator", route="voice", source_id="preset:alba")
+            settings = AppSettings(
+                voice_manifest=str(manifest), pocket_gated_model_accepted=True
+            )
+            plans = VoicePlanStore(jobs, voice_library=library)
+            plan = plans.create(job, settings, manifest_path=manifest)
+            importer = Mock()
+            importer.availability.return_value = ImporterAvailability(True, "Ready")
+            importer.prepare_voice_candidates.return_value = manifest
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                settings,
+                discovery=lambda: ContentDiscovery((inspect_story_index(story_index),)),
+                job_store=jobs,
+                voice_plan_store=plans,
+                voice_library=library,
+                importer=importer,
+                input_store=Mock(),
+                thread_pool=pool,
+            )
+            dialog._job = job
+            dialog._voice_plan = plan
+            dialog._show_voice_confirmation(plan)
+            write_story_index(root / "content", generated_text="Updated game dialogue.")
+            library.select("Narrator", route="voice", source_id="preset:marius")
+
+            dialog.apply_narrator_settings(settings, voice_changed=True)
+            self.run_next_task(pool)  # Old job detects the replaced index.
+            self.run_next_task(pool)  # Refreshes content and creates a new job.
+            self.run_next_task(pool)  # Replans with the saved voice.
+
+            self.assertNotEqual(dialog.job().job_id, job.job_id)
+            self.assertEqual(dialog.job().selected_story_ids, ("main-1",))
+            self.assertEqual(
+                dialog.job().story_index_sha256,
+                inspect_story_index(story_index).story_index_sha256,
+            )
+            self.assertEqual(library.binding("Narrator").source_id, "preset:marius")
+            self.assertIn("Step 2", dialog.step.text())
+            self.assertFalse(dialog.selection_panel.isVisible())
+            dialog.deleteLater()
+
+    def test_changed_story_selection_requires_explicit_review(self):
+        from tests.test_pregeneration_voices import write_manifest
+        from vntts.pregeneration_voices import VoicePlanStore
+
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            story_index = write_story_index(root / "content")
+            content = inspect_story_index(story_index)
+            jobs = PregenerationJobStore(root / "jobs")
+            job = jobs.create_or_resume(content, ("main-1",))
+            manifest = write_manifest(root / "voices")
+            library = VoiceLibrary(root / "library")
+            library.select("Narrator", route="voice", source_id="preset:alba")
+            settings = AppSettings(
+                voice_manifest=str(manifest), pocket_gated_model_accepted=True
+            )
+            plans = VoicePlanStore(jobs, voice_library=library)
+            plan = plans.create(job, settings, manifest_path=manifest)
+            missing_story = False
+
+            def discovery():
+                refreshed = inspect_story_index(story_index)
+                if missing_story:
+                    refreshed = replace(
+                        refreshed,
+                        selections=tuple(
+                            selection
+                            for selection in refreshed.selections
+                            if selection.selection_id != "main-1"
+                        ),
+                    )
+                return ContentDiscovery((refreshed,))
+
+            importer = Mock()
+            importer.availability.return_value = ImporterAvailability(True, "Ready")
+            importer.prepare_voice_candidates.return_value = manifest
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                settings,
+                discovery=discovery,
+                job_store=jobs,
+                voice_plan_store=plans,
+                voice_library=library,
+                importer=importer,
+                thread_pool=pool,
+            )
+            dialog._job = job
+            dialog._voice_plan = plan
+            dialog._show_voice_confirmation(plan)
+            write_story_index(root / "content", generated_text="Updated game dialogue.")
+            missing_story = True
+            marius = dialog.narrator_choice.findData("preset:marius")
+            self.assertGreaterEqual(marius, 0)
+            dialog.narrator_choice.setCurrentIndex(marius)
+            dialog.continue_button.click()
+            self.run_next_task(pool)
+            self.run_next_task(pool)
+
+            self.assertEqual(dialog.job().job_id, job.job_id)
+            self.assertIn("no longer contains", dialog.resume_status.text())
+            self.assertFalse(dialog.planning_voices)
+            self.assertEqual(library.binding("Narrator").source_id, "preset:marius")
+            dialog.deleteLater()
+
+    def test_cancel_during_changed_story_refresh_closes_dialog(self):
+        dialog = OfflineAudioPreparationDialog(
+            AppSettings(), discovery=lambda: ContentDiscovery(())
+        )
+        dialog.planning_voices = True
+        dialog.cancel_button.click()
+
+        dialog._stale_voice_job_finished(None, None)
+
+        self.assertFalse(dialog.planning_voices)
+        self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
+        dialog.deleteLater()
+
     def test_generation_cancel_terminates_before_dialog_closes(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

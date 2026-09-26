@@ -52,6 +52,10 @@ class PregenerationSetupError(RuntimeError):
     """Player-selected story content cannot be prepared safely."""
 
 
+class StoryContentChanged(ValueError):
+    """The selected story index was replaced after its job was created."""
+
+
 @dataclass(frozen=True)
 class StorySelection:
     selection_id: str
@@ -382,7 +386,7 @@ def _cached_story_selection(document: object) -> StorySelection:
 def _cached_story_index_document(path: str, expected_sha256: str) -> StoryIndexDocument:
     document = load_story_index_document(path)
     if sha256_file(path) != expected_sha256:
-        raise ValueError("Story content changed while it was being read")
+        raise StoryContentChanged("Story content changed while it was being read")
     return document
 
 
@@ -392,7 +396,7 @@ def load_verified_story_index_document(
     """Reuse an immutable parse while still checking the current file bytes."""
     path = Path(path).expanduser().resolve()
     if sha256_file(path) != expected_sha256:
-        raise ValueError("Story content checksum changed")
+        raise StoryContentChanged("Story content checksum changed")
     return _cached_story_index_document(str(path), expected_sha256)
 
 

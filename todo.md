@@ -65,6 +65,12 @@ Planned implementation order after approval:
 
 ## P0 - Validate the non-blocking Voice plan
 
+- [ ] **Validate refreshed game stories on Windows:** after saving Centurion in
+      Voices during preparation, confirm Step 2 resumes with the same selected
+      story and voice when game discovery replaces `story-index.jsonl`; no import
+      deletion or second voice choice should be needed. If a selected story
+      disappears, the saved voice must remain while Stories requests a new
+      selection. Cancel during refresh must close the dialog.
 - [ ] **Validate Mrs. Owen on fresh Windows state:** after updating the extractor,
       open her voice from both Voices and Stories. Both must expose the same
       checksum-bound 3.17-second media `562400954` and 1.95-second media

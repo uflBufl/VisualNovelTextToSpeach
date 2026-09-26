@@ -75,6 +75,7 @@ from vntts.pregeneration_setup import (
     PregenerationJob,
     PregenerationJobStore,
     PregenerationSetupError,
+    StoryContentChanged,
     StorySelection,
     discover_game_content,
     estimate_generation_resources,
@@ -296,6 +297,8 @@ class OfflineAudioPreparationDialog(QDialog):
         self._pack_result: OfflinePackResult | None = None
         self._awaiting_voice_confirmation = False
         self._pending_voice_rematch = False
+        self._stale_job_retry_attempted = False
+        self._recovering_stale_job = False
         self._provisional_binding_snapshot: tuple[VoiceBinding, ...] | None = None
         self._changes_rows: tuple[tuple[str, str], ...] = ()
         self._resume_error_details = ""
@@ -1683,7 +1686,64 @@ class OfflineAudioPreparationDialog(QDialog):
             raise TypeError("discovery must return ContentDiscovery")
         return discovery
 
+    def _refresh_stale_voice_job(
+        self, job: PregenerationJob
+    ) -> tuple[
+        ContentDiscovery, GameContent | None, PregenerationJob | None, str | None
+    ]:
+        discovery = self._discover_content()
+        source = Path(job.story_index).expanduser().resolve()
+        content = next(
+            (
+                value
+                for value in discovery.content
+                if Path(value.story_index).expanduser().resolve() == source
+            ),
+            None,
+        )
+        if content is None:
+            return (
+                discovery,
+                None,
+                None,
+                (
+                    "The game story source changed and could not be found again. "
+                    "Your voice choice was saved; select the story source and continue."
+                ),
+            )
+        available = {selection.selection_id for selection in content.selections}
+        missing = set(job.selected_story_ids) - available
+        if missing:
+            return (
+                discovery,
+                content,
+                None,
+                (
+                    "The updated game content no longer contains every selected story. "
+                    "Your voice choice was saved; review the story selection and continue."
+                ),
+            )
+        try:
+            if sha256_file(source) != content.story_index_sha256:
+                raise StoryContentChanged("Game story content changed again")
+            fresh_job = self.job_store.create_or_resume(content, job.selected_story_ids)
+        except (OSError, PregenerationSetupError, StoryContentChanged) as error:
+            return (
+                discovery,
+                content,
+                None,
+                (
+                    f"Unable to refresh the selected stories: {error}. "
+                    "Your voice choice was saved; refresh Stories and retry."
+                ),
+            )
+        return discovery, content, fresh_job, None
+
     def _discovery_finished(self, discovery: object, error: Exception | None) -> None:
+        if self._recovering_stale_job:
+            self._recovering_stale_job = False
+            self._stale_voice_job_finished(discovery, error)
+            return
         if error is None and not isinstance(discovery, ContentDiscovery):
             error = TypeError("Content discovery returned an invalid result")
         if error is not None:
@@ -1691,6 +1751,66 @@ class OfflineAudioPreparationDialog(QDialog):
         assert isinstance(discovery, ContentDiscovery)
         self._apply_discovery(discovery)
         self._set_discovery_loading(False)
+
+    def _stale_voice_job_finished(
+        self, result: object, error: Exception | None
+    ) -> None:
+        if self._close_after_voice_cancel:
+            self.planning_voices = False
+            self.reject()
+            return
+        if error is not None or not (
+            isinstance(result, tuple)
+            and len(result) == 4
+            and isinstance(result[0], ContentDiscovery)
+        ):
+            reason = error or PregenerationVoiceError("Invalid story refresh result")
+            self.planning_voices = False
+            self._provisional_binding_snapshot = None
+            self._show_voice_plan_error(self._voice_plan_completion_error(None, reason))
+            return
+        discovery, content, job, reason = result
+        if isinstance(content, GameContent) and isinstance(job, PregenerationJob):
+            self._story_selection_drafts[content.story_index_sha256] = set(
+                job.selected_story_ids
+            )
+        self._apply_discovery(discovery)
+        if isinstance(content, GameContent):
+            index = next(
+                (
+                    index
+                    for index, value in enumerate(self._content)
+                    if Path(value.story_index).expanduser().resolve()
+                    == Path(content.story_index).expanduser().resolve()
+                ),
+                -1,
+            )
+            if index >= 0:
+                self.source.setCurrentIndex(index)
+        if not isinstance(job, PregenerationJob):
+            self.planning_voices = False
+            self._provisional_binding_snapshot = None
+            self._show_voice_plan_error(
+                self._voice_plan_completion_error(
+                    None,
+                    PregenerationVoiceError(reason or "Unable to refresh game stories"),
+                )
+            )
+            return
+        self._job = job
+        self._voice_plan = None
+        self._prepared_voice_manifest = None
+        self._prepared_voice_job = None
+        self.step.setText("Step 2 of 4 - Choose and confirm voices")
+        self._show_waiting_phase(
+            "Matching updated game stories",
+            "The game content changed while choosing voices. Reusing your saved "
+            "voice choice with the updated stories...",
+            "Cancel stops voice matching. Your saved voice choice remains available.",
+        )
+        self.voice_runner.start(
+            self._create_voice_plan, job, self._pending_voice_rematch
+        )
 
     def _set_discovery_loading(self, loading: bool) -> None:
         if loading:
@@ -3165,6 +3285,7 @@ class OfflineAudioPreparationDialog(QDialog):
         if not self._generation_engine_available():
             self._selection_changed()
             return
+        self._stale_job_retry_attempted = False
         self.coverage_runner.cancel()
         self._checking_story = None
         content = self.current_content()
@@ -3256,10 +3377,29 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _voice_plan_finished(self, plan: object, error: Exception | None) -> None:
         self.planning_voices = False
+        if (
+            error is not None
+            and self._job is not None
+            and not self._close_after_voice_cancel
+            and not self._stale_job_retry_attempted
+            and _story_index_was_replaced(error)
+        ):
+            self._stale_job_retry_attempted = True
+            self._recovering_stale_job = True
+            self.planning_voices = True
+            self._show_waiting_phase(
+                "Updating changed game stories",
+                "The installed game content changed while choosing voices. "
+                "Refreshing the same story selection...",
+                "Cancel stops voice matching. Saved voice choices remain available.",
+            )
+            self.discovery_runner.start(self._refresh_stale_voice_job, self._job)
+            return
         error = self._voice_plan_completion_error(plan, error)
         if self._show_voice_plan_error(error):
             return
         assert _is_voice_plan_result(plan)
+        self._stale_job_retry_attempted = False
         self._voice_plan = plan
         self.replanning_voice_decisions = False
         if (
@@ -3933,6 +4073,15 @@ def _voice_resolution_label(resolution: str) -> str:
         "saved-player-decision": "Explicitly approved voice",
         "saved-voice-assignment": "Saved character voice assignment",
     }.get(resolution, str(resolution).replace("-", " ").capitalize())
+
+
+def _story_index_was_replaced(error: Exception) -> bool:
+    current: BaseException | None = error
+    while current is not None:
+        if isinstance(current, StoryContentChanged):
+            return True
+        current = current.__cause__
+    return False
 
 
 __all__ = ["OfflineAudioPreparationDialog"]
