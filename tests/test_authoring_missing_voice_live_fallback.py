@@ -1,4 +1,3 @@
-import copy
 import json
 import unittest
 from pathlib import Path
@@ -8,9 +7,12 @@ from tests.test_authoring_missing_voice_reuse_binding import (
     create_missing_voice_reuse_binding_review,
 )
 from vntts.authoring.bulk_generation import (
-    _canonical_sha256,
     authorize_live_fallback,
     load_generation_state,
+)
+from vntts.authoring.generation_manifest import (
+    RUNTIME_PROGRESS_MANIFEST_NAME,
+    write_runtime_progress_manifest_from_state,
 )
 from vntts.authoring.missing_voice_live_fallback import (
     MissingVoiceLiveFallbackError,
@@ -20,7 +22,7 @@ from vntts.authoring.missing_voice_live_fallback import (
 from vntts.authoring.missing_voice_reuse_binding import (
     publish_missing_voice_reuse_binding,
 )
-from vntts.generated_audio import _live_fallback_index
+from vntts.generated_audio import GeneratedAudioLibrary
 
 
 def create_missing_voice_live_fallback_fixture(root):
@@ -45,12 +47,23 @@ class AuthoringMissingVoiceLiveFallbackTest(unittest.TestCase):
             workspace, binding, queue_id = self.fixture(root)
             state_path = workspace / "generated-audio/generation-state.json"
             queue_path = workspace / "queue.jsonl"
+            progress_path = state_path.parent / RUNTIME_PROGRESS_MANIFEST_NAME
+            write_runtime_progress_manifest_from_state(
+                load_generation_state(state_path, queue_path),
+                state_path.parent,
+                progress_path,
+                validate_files=False,
+            )
+            progress_before = progress_path.read_bytes()
+            runtime = GeneratedAudioLibrary.load_optional(progress_path)
+            self.assertIsNotNone(runtime)
             before = state_path.read_bytes()
 
             preflight = authorize_missing_voice_live_fallback(
                 workspace, binding, "Aderyn"
             )
             after_preflight = state_path.read_bytes()
+            self.assertEqual(progress_path.read_bytes(), progress_before)
             applied = authorize_missing_voice_live_fallback(
                 workspace,
                 binding,
@@ -58,6 +71,7 @@ class AuthoringMissingVoiceLiveFallbackTest(unittest.TestCase):
                 accept_known_role_narrator_fallback=True,
             )
             after_apply = state_path.read_bytes()
+            progress_after_apply = progress_path.read_bytes()
             repeated = authorize_missing_voice_live_fallback(
                 workspace,
                 binding,
@@ -65,22 +79,12 @@ class AuthoringMissingVoiceLiveFallbackTest(unittest.TestCase):
                 accept_known_role_narrator_fallback=True,
             )
             repeated_unchanged = after_apply == state_path.read_bytes()
+            self.assertEqual(progress_path.read_bytes(), progress_after_apply)
             state = load_generation_state(state_path, queue_path)
             item = state["items"][queue_id]
             decision = item["live_fallback"]
-            runtime = _live_fallback_index(
-                {
-                    "vntts.authoring.live_fallback": {
-                        "schema_version": 1,
-                        "mode": "explicit",
-                        "entries": [
-                            {
-                                **copy.deepcopy(decision),
-                                "decision_sha256": _canonical_sha256(decision),
-                            }
-                        ],
-                    }
-                }
+            fallback = runtime.find_live_fallback(
+                decision["line_id"], decision["text_sha256"]
             )
 
         self.assertFalse(preflight.applied)
@@ -92,9 +96,8 @@ class AuthoringMissingVoiceLiveFallbackTest(unittest.TestCase):
         self.assertEqual(item["status"], "live_fallback")
         self.assertEqual(decision["schema_version"], 4)
         self.assertEqual(decision["evidence"]["batch_id"], applied.batch_id)
-        self.assertEqual(
-            next(iter(runtime.values())).requested_voice_character, "Aderyn"
-        )
+        self.assertIsNotNone(fallback)
+        self.assertEqual(fallback.requested_voice_character, "Aderyn")
 
     def test_wrong_role_stale_authority_and_partial_scope_fail_closed(self):
         with TemporaryDirectory() as directory:

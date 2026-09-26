@@ -24,8 +24,10 @@ from vntts.authoring.bulk_generation import (
 )
 from vntts.authoring.generation_lease import GenerationLease, process_is_alive
 from vntts.authoring.generation_manifest import (
+    RUNTIME_PROGRESS_MANIFEST_NAME,
     approved_manifest_entries,
     write_generated_manifest_from_state,
+    write_runtime_progress_manifest_from_state,
 )
 from vntts.authoring.generation_state import (
     LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION,
@@ -317,6 +319,14 @@ def authorize_missing_voice_live_fallback(
             lease.assert_owned()
             os.replace(staged_manifest, manifest_path)
             lease.mark_committed()
+            progress_manifest = state_path.parent / RUNTIME_PROGRESS_MANIFEST_NAME
+            if progress_manifest.is_file():
+                write_runtime_progress_manifest_from_state(
+                    proposed,
+                    state_path.parent,
+                    progress_manifest,
+                    validate_files=False,
+                )
     except BulkGenerationError as error:
         raise MissingVoiceLiveFallbackError(str(error)) from error
     finally:
