@@ -25,6 +25,26 @@ Planned implementation order after approval:
 4. Run platform, hardware and signing gates only when the required host or
    credentials are available.
 
+## P0 - Refresh installed stories after game updates
+
+- [ ] On opening Stories and on Refresh, cheaply compare the saved Reverse: 1999
+      import with its known game story/config inputs; do not scan or reimport the
+      whole game when they are unchanged. When changed, run the existing cancellable
+      import with a clear updating/progress state. Preserve the last usable catalog
+      if import fails, then replace it after successful publication. Gate: new
+      stories appear without opening Add or import content; unchanged launches are
+      fast and a failed update offers a clear retry.
+- [ ] Replace, rather than append, a Game content entry when a reimport changes
+      the checksum at the same source path. Preserve selected story IDs and saved
+      voice choices where they still exist; require explicit reselection only for
+      removed stories. Gate: repeated game updates never add duplicate source rows
+      in an open preparation window.
+- [ ] Bound immutable voice-candidate cache growth. Keep the current catalog and
+      any manifest referenced by an active job or published pack; prune only
+      unreferenced older candidate directories while no matching operation is
+      running. Gate: no source WAV or resumable job is removed, and refreshed
+      candidates regenerate safely after pruning.
+
 ## P0 - Play while offline audio is still preparing
 
 - [ ] **Validate in a sustained chapter:** an occurrence is now claimed as soon as
@@ -65,12 +85,10 @@ Planned implementation order after approval:
 
 ## P0 - Validate the non-blocking Voice plan
 
-- [ ] **Validate refreshed game stories on Windows:** after saving Centurion in
-      Voices during preparation, confirm Step 2 resumes with the same selected
-      story and voice when game discovery replaces `story-index.jsonl`; no import
-      deletion or second voice choice should be needed. If a selected story
-      disappears, the saved voice must remain while Stories requests a new
-      selection. Cancel during refresh must close the dialog.
+- [ ] **Validate changed-story edge cases on Windows:** if a previously selected
+      story disappears after a game update, the saved Centurion choice must remain
+      while Stories requests a new selection. Cancel during content refresh must
+      close the dialog. The normal same-story refresh already passed player review.
 - [ ] **Validate Mrs. Owen on fresh Windows state:** after updating the extractor,
       open her voice from both Voices and Stories. Both must expose the same
       checksum-bound 3.17-second media `562400954` and 1.95-second media
