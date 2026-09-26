@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterable, Mapping, Sequence
+from concurrent.futures import Executor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from threading import Lock
+from threading import Event, Lock, Thread
 from typing import TYPE_CHECKING, Callable, Protocol, TypeGuard, runtime_checkable
 from uuid import uuid4
 
@@ -234,6 +235,17 @@ class RuntimeLifecycleComponent:
         compare=False,
         repr=False,
     )
+    _shutdown_lock: Lock = field(default_factory=Lock, compare=False, repr=False)
+    _shutdown_started: Event = field(default_factory=Event, compare=False, repr=False)
+
+    def prepare_startup(self) -> None:
+        with self._shutdown_lock:
+            if self._shutdown_started.is_set():
+                if not self.controller.shutdown_complete.is_set():
+                    return
+                self._shutdown_started.clear()
+                self.controller.shutdown_complete.clear()
+            self.controller.shutdown_requested.clear()
 
     def start(self) -> bool:
         controller = self.controller
@@ -618,8 +630,12 @@ class RuntimeLifecycleComponent:
 
     def shutdown(self) -> None:
         controller = self.controller
+        with self._shutdown_lock:
+            if self._shutdown_started.is_set():
+                return
+            self._shutdown_started.set()
+            controller.shutdown_requested.set()
         live_reader_timed_out = False
-        controller.shutdown_requested.set()
         with controller.voice_prime_lock:
             voice_prime_futures = tuple(controller.voice_prime_futures)
         for future in voice_prime_futures:
@@ -637,6 +653,27 @@ class RuntimeLifecycleComponent:
                 controller.error_handler(error)
             controller.live_reader = None
 
+        executors = self._shutdown_executors(wait=not live_reader_timed_out)
+        if live_reader_timed_out:
+
+            def finish_shutdown() -> None:
+                try:
+                    for executor in executors:
+                        executor.shutdown(wait=True)
+                finally:
+                    controller._stop_tts()
+                    controller.shutdown_complete.set()
+
+            Thread(
+                target=finish_shutdown, name="tts-shutdown-drain", daemon=True
+            ).start()
+        else:
+            controller._stop_tts()
+            controller.shutdown_complete.set()
+
+    def _shutdown_executors(self, *, wait: bool) -> list[Executor]:
+        controller = self.controller
+        pending: list[Executor] = []
         for attribute in (
             "capture_executor",
             "ocr_executor",
@@ -646,12 +683,14 @@ class RuntimeLifecycleComponent:
             executor = getattr(controller, attribute)
             if executor is not None:
                 executor.shutdown(
-                    wait=not live_reader_timed_out,
-                    cancel_futures=live_reader_timed_out,
+                    wait=wait,
+                    cancel_futures=not wait,
                 )
+                if not wait:
+                    pending.append(executor)
                 setattr(controller, attribute, None)
         controller.schedule_dialog_read = None
-        controller._stop_tts()
+        return pending
 
 
 @dataclass(frozen=True)

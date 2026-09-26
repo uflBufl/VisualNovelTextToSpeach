@@ -4204,8 +4204,23 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self.hotkey_listener is not None:
             self.hotkey_listener.stop()
             self.hotkey_listener = None
-        self.moss_runtime.shutdown()
-        self.pocket_runtime.shutdown()
+        shutdown_complete = self.controller.shutdown_complete
+        moss_runtime = self.moss_runtime
+        pocket_runtime = self.pocket_runtime
+
+        def close_retained_runtimes() -> None:
+            shutdown_complete.wait()
+            moss_runtime.shutdown()
+            pocket_runtime.shutdown()
+
+        if shutdown_complete.is_set():
+            close_retained_runtimes()
+        else:
+            Thread(
+                target=close_retained_runtimes,
+                name="retained-runtime-shutdown",
+                daemon=True,
+            ).start()
 
     def request_quit(self) -> None:
         self._quit_requested = True

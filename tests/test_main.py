@@ -1262,9 +1262,13 @@ class MainTest(unittest.TestCase):
     def test_shutdown_returns_after_live_reader_timeout_with_blocked_worker(self):
         started = Event()
         release = Event()
+        worker_done = Event()
+        backend_closed = Event()
+        used_closed_backend = Event()
         errors = []
         controller = AppController(AppSettings(), error_handler=errors.append)
         backend = Mock()
+        backend.shutdown.side_effect = backend_closed.set
         controller.tts = backend
         controller.speech_backend = backend
         reader = Mock()
@@ -1272,7 +1276,16 @@ class MainTest(unittest.TestCase):
         controller.live_reader = reader
         executor = ThreadPoolExecutor(max_workers=1)
         controller.speech_executor = executor
-        executor.submit(lambda: (started.set(), release.wait()))
+
+        def blocked_worker():
+            started.set()
+            release.wait()
+            if backend_closed.is_set():
+                used_closed_backend.set()
+            backend.prepare_playback("Ada", "Still preparing")
+            worker_done.set()
+
+        executor.submit(blocked_worker)
         self.assertTrue(started.wait(1))
         finished = Event()
         shutdown_thread = Thread(
@@ -1282,13 +1295,38 @@ class MainTest(unittest.TestCase):
         shutdown_thread.start()
         try:
             self.assertTrue(finished.wait(1))
+            controller.shutdown()
+            controller.prepare_startup()
+            self.assertFalse(controller.start())
+            self.assertTrue(controller.shutdown_requested.is_set())
+            self.assertFalse(backend_closed.is_set())
         finally:
             release.set()
             shutdown_thread.join(1)
 
+        self.assertTrue(worker_done.wait(1))
+        self.assertTrue(backend_closed.wait(1))
+        self.assertTrue(controller.shutdown_complete.wait(1))
+        self.assertFalse(used_closed_backend.is_set())
         self.assertIsNone(controller.speech_executor)
         self.assertEqual(len(errors), 1)
         backend.shutdown.assert_called_once_with()
+        controller.prepare_startup()
+        self.assertFalse(controller.shutdown_requested.is_set())
+
+    def test_shutdown_after_normal_restart_closes_new_backend(self):
+        controller = AppController(AppSettings())
+        original_backend = Mock()
+        controller.tts = original_backend
+        controller.shutdown()
+
+        controller.prepare_startup()
+        replacement_backend = Mock()
+        controller.tts = replacement_backend
+        controller.shutdown()
+
+        original_backend.shutdown.assert_called_once_with()
+        replacement_backend.shutdown.assert_called_once_with()
 
     def test_shutdown_waits_for_worker_when_live_reader_stops(self):
         started = Event()

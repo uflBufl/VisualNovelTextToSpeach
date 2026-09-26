@@ -1,5 +1,6 @@
 import os
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
@@ -27,7 +28,7 @@ from vntts.app import (  # noqa: E402
 )
 from vntts.async_ui import LatestTaskRunner  # noqa: E402
 from vntts.cli import CLIReportResult  # noqa: E402
-from vntts.controller import LiveSequenceStatus  # noqa: E402
+from vntts.controller import AppController, LiveSequenceStatus  # noqa: E402
 from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
 from vntts.generated_audio import AudioRouteTrace  # noqa: E402
 from vntts.ocr import DialogRegion  # noqa: E402
@@ -83,6 +84,54 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIs(tray.controller.pocket_backend_factory, runtime)
         tray.shutdown()
         runtime.shutdown.assert_called_once_with()
+        delete_dialog(tray.dashboard)
+        delete_dialog(tray.compact_controller)
+
+    def test_quit_waits_for_live_worker_before_closing_retained_runtime(self):
+        started = Event()
+        release = Event()
+        retained_closed = Event()
+        used_closed_runtime = Event()
+        moss_runtime = Mock(loaded=False)
+        moss_runtime.shutdown.side_effect = retained_closed.set
+        pocket_runtime = Mock()
+        controller = AppController(AppSettings())
+        backend = Mock()
+        controller.tts = backend
+        controller.live_reader = Mock()
+        controller.live_reader.wait.side_effect = TimeoutError("reader did not stop")
+        executor = ThreadPoolExecutor(max_workers=1)
+        controller.speech_executor = executor
+
+        def blocked_worker():
+            started.set()
+            release.wait()
+            if retained_closed.is_set():
+                used_closed_runtime.set()
+            backend.prepare_playback("Ada", "Still preparing")
+
+        executor.submit(blocked_worker)
+        self.assertTrue(started.wait(1))
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+            moss_runtime=moss_runtime,
+            pocket_runtime=pocket_runtime,
+        )
+        try:
+            tray.shutdown()
+            self.assertFalse(retained_closed.is_set())
+            self.assertFalse(controller.shutdown_complete.is_set())
+        finally:
+            release.set()
+
+        self.assertTrue(controller.shutdown_complete.wait(1))
+        self.assertTrue(retained_closed.wait(1))
+        self.assertFalse(used_closed_runtime.is_set())
+        moss_runtime.shutdown.assert_called_once_with()
+        pocket_runtime.shutdown.assert_called_once_with()
+        backend.shutdown.assert_called_once_with()
         delete_dialog(tray.dashboard)
         delete_dialog(tray.compact_controller)
 

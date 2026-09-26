@@ -551,6 +551,7 @@ class AppController:
         self.next_live_narrator_fallback_names: dict[str, str] = {}
         self.voice_prime_futures: set[_ExecutorFuture] = set()
         self.shutdown_requested = Event()
+        self.shutdown_complete = Event()
         self.runtime_lifecycle = RuntimeLifecycleComponent(self)
         self.live_session = LiveSessionComponent(self)
         self.voice_assignments = VoiceAssignmentComponent(self)
@@ -583,7 +584,7 @@ class AppController:
         return self.runtime_lifecycle.start()
 
     def prepare_startup(self) -> None:
-        self.shutdown_requested.clear()
+        self.runtime_lifecycle.prepare_startup()
 
     def request_shutdown(self) -> None:
         self.shutdown_requested.set()
