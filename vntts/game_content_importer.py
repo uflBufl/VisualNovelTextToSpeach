@@ -220,6 +220,19 @@ class Reverse1999GameImporter:
             self._record(
                 "import-roots", reason="no usable saved source; auto-discovery required"
             )
+        story_index, result = self._replace_story_catalog(arguments, cancel_event)
+        if roots is None:
+            roots = self._previous_installation()
+        if roots is not None:
+            self._remember_installation(roots)
+            self._remember_story_inputs(story_index, roots)
+        self._record("import-result", outcome="complete", index=story_index)
+        return result
+
+    def _replace_story_catalog(
+        self, arguments: Sequence[str], cancel_event: Cancellation | None
+    ) -> tuple[Path, GameContent]:
+        """Run the extractor as one rollback-safe story-catalog replacement."""
         story_index = self.output_root / "reverse1999" / "story-index.jsonl"
         backup = story_index.with_name(f".story-index-{uuid.uuid4().hex}.backup")
         if story_index.is_file():
@@ -245,18 +258,11 @@ class Reverse1999GameImporter:
             if backup.is_file():
                 os.replace(backup, story_index)
             raise
-        else:
-            try:
-                backup.unlink(missing_ok=True)
-            except OSError as error:
-                self._record("story-backup-cleanup", reason=str(error))
-        if roots is None:
-            roots = self._previous_installation()
-        if roots is not None:
-            self._remember_installation(roots)
-            self._remember_story_inputs(story_index, roots)
-        self._record("import-result", outcome="complete", index=story_index)
-        return result
+        try:
+            backup.unlink(missing_ok=True)
+        except OSError as error:
+            self._record("story-backup-cleanup", reason=str(error))
+        return story_index, result
 
     def installed_story_changed(self) -> bool:
         """Check known source metadata without scanning or parsing game archives."""
@@ -281,22 +287,32 @@ class Reverse1999GameImporter:
         except OSError, ValueError:
             changed = True
         else:
-            try:
-                if (
-                    saved["version"] != 1
-                    or not isinstance(saved["inputs"], dict)
-                    or len(saved["inputs"]) != 3
-                ):
-                    raise ValueError("Invalid saved import inputs")
-                changed = saved["story_index"] != self._file_signature(story_index)
-                for raw_path, signature in saved["inputs"].items():
-                    if not isinstance(raw_path, str) or not raw_path:
-                        raise ValueError("Invalid saved import input path")
-                    changed |= signature != self._file_signature(Path(raw_path))
-            except OSError, ValueError, KeyError, TypeError:
-                changed = True
+            changed = self._saved_story_inputs_changed(story_index, saved)
         self._record("story-update-check", changed=changed, index=story_index)
         return changed
+
+    def _saved_story_inputs_changed(self, story_index: Path, saved: object) -> bool:
+        """Validate persisted source signatures before using them for refresh."""
+        try:
+            if not isinstance(saved, dict):
+                raise ValueError("Invalid saved import inputs")
+            inputs = saved.get("inputs")
+            if (
+                saved.get("version") != 1
+                or not isinstance(inputs, dict)
+                or len(inputs) != 3
+            ):
+                raise ValueError("Invalid saved import inputs")
+            if saved.get("story_index") != self._file_signature(story_index):
+                return True
+            for raw_path, signature in inputs.items():
+                if not isinstance(raw_path, str) or not raw_path:
+                    raise ValueError("Invalid saved import input path")
+                if signature != self._file_signature(Path(raw_path)):
+                    return True
+        except OSError, ValueError, TypeError:
+            return True
+        return False
 
     @staticmethod
     def _file_signature(path: Path) -> list[int]:
