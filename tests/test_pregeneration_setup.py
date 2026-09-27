@@ -1037,7 +1037,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertIn("Clear filters", dialog.story_filter_status.text())
             self.assertEqual(dialog.selected_story_ids(), ("main-1",))
 
-    def test_story_type_filter_keeps_checked_stories_selected(self):
+    def test_story_types_group_and_filter_without_losing_selection(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             content = story_filter_content(
@@ -1058,20 +1058,19 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.select_all_button.click()
             type_filter = dialog.story_type_filter
             type_filter.setCurrentIndex(type_filter.findData("character_story"))
-
-            self.assertEqual(
-                dialog.selected_story_ids(), ("main-1", "anecdote-1", "character-1")
-            )
             self.assertEqual(
                 [dialog.stories.item(row).isHidden() for row in range(3)],
                 [True, True, False],
+            )
+            self.assertEqual(
+                dialog.selected_story_ids(), ("main-1", "anecdote-1", "character-1")
             )
             type_filter.setCurrentIndex(type_filter.findData(None))
             self.assertFalse(
                 any(dialog.stories.item(row).isHidden() for row in range(3))
             )
 
-    def test_story_search_matches_character_and_episode_title(self):
+    def test_story_search_matches_visible_character_and_episode_title(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             content = inspect_story_index(write_story_index(root / "content"))
@@ -1082,16 +1081,12 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             )
             self.addCleanup(dialog.deleteLater)
 
-            dialog.story_search.setText("Aderyn")
-            self.assertEqual(
-                [not dialog.stories.item(row).isHidden() for row in range(2)],
-                [False, True],
-            )
-            dialog.story_search.setText("Wandering Child")
-            self.assertEqual(
-                [not dialog.stories.item(row).isHidden() for row in range(2)],
-                [False, True],
-            )
+            for query in ("Aderyn", "Wandering Child"):
+                dialog.story_search.setText(query)
+                self.assertEqual(
+                    [not dialog.stories.item(row).isHidden() for row in range(2)],
+                    [False, True],
+                )
 
     def test_fresh_catalog_starts_with_no_story_selected(self):
         with TemporaryDirectory() as temporary_directory:

@@ -913,7 +913,10 @@ def _selection_from_records(
                 episode_title.strip()
                 for record in records
                 if isinstance(
-                    episode_title := getattr(record, "document", {}).get("episode_title"), str
+                    episode_title := getattr(record, "document", {}).get(
+                        "episode_title"
+                    ),
+                    str,
                 )
                 and episode_title.strip()
             )
