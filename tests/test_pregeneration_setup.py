@@ -162,6 +162,7 @@ def write_story_index(root, *, generated_text="Generate me."):
                 "sequence": 1,
                 "speaker": "Centurion",
                 "voice_character": "Centurion",
+                "episode_title": "The Storm",
                 "text": text,
                 "text_sha256": text_hash,
                 "kind": "dialogue",
@@ -201,6 +202,7 @@ def write_story_index(root, *, generated_text="Generate me."):
                 "sequence": 1,
                 "speaker": "Aderyn",
                 "voice_character": "Rhiannon child",
+                "episode_title": "The Wandering Child",
                 "text": "A child line.",
                 "kind": "dialogue",
                 "collection_id": "rhiannon",
@@ -210,6 +212,27 @@ def write_story_index(root, *, generated_text="Generate me."):
         ],
     )
     return path
+
+
+def story_filter_content(content):
+    return replace(
+        content,
+        selections=(
+            replace(
+                content.selections[1],
+                selection_id="character-1",
+                title="Rhiannon's Story",
+                kind="character_story",
+            ),
+            replace(content.selections[0], kind="main_story"),
+            replace(
+                content.selections[1],
+                selection_id="anecdote-1",
+                title="An Anecdote",
+                kind="anecdote",
+            ),
+        ),
+    )
 
 
 class ManualThreadPool:
@@ -997,6 +1020,57 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.story_search.setText("missing story")
             self.assertIn("Clear filters", dialog.story_filter_status.text())
             self.assertEqual(dialog.selected_story_ids(), ("main-1",))
+
+    def test_story_types_group_and_filter_without_losing_selection(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = story_filter_content(
+                inspect_story_index(write_story_index(root / "content"))
+            )
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+            )
+            self.addCleanup(dialog.deleteLater)
+
+            self.assertTrue(dialog.stories.item(0).text().startswith("Main story\n"))
+            self.assertTrue(dialog.stories.item(1).text().startswith("Anecdotes\n"))
+            self.assertTrue(
+                dialog.stories.item(2).text().startswith("Character stories\n")
+            )
+            dialog.select_all_button.click()
+            type_filter = dialog.story_type_filter
+            type_filter.setCurrentIndex(type_filter.findData("character_story"))
+            self.assertEqual(
+                [dialog.stories.item(row).isHidden() for row in range(3)],
+                [True, True, False],
+            )
+            self.assertEqual(
+                dialog.selected_story_ids(), ("main-1", "anecdote-1", "character-1")
+            )
+            type_filter.setCurrentIndex(type_filter.findData(None))
+            self.assertFalse(
+                any(dialog.stories.item(row).isHidden() for row in range(3))
+            )
+
+    def test_story_search_matches_visible_character_and_episode_title(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+            )
+            self.addCleanup(dialog.deleteLater)
+
+            for query in ("Aderyn", "Wandering Child"):
+                dialog.story_search.setText(query)
+                self.assertEqual(
+                    [not dialog.stories.item(row).isHidden() for row in range(2)],
+                    [False, True],
+                )
 
     def test_fresh_catalog_starts_with_no_story_selected(self):
         with TemporaryDirectory() as temporary_directory:
