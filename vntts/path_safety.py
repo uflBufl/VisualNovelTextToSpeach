@@ -1,6 +1,6 @@
 """Shared filesystem containment checks."""
 
-from pathlib import Path, PurePath, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 
 
 def safe_relative_path(
@@ -13,7 +13,11 @@ def safe_relative_path(
     if not isinstance(value, str) or not value.strip() or "\\" in value:
         raise error_type(f"{label} must be a POSIX-relative path")
     pure = PurePosixPath(value)
-    if pure.is_absolute() or any(part in {"", ".", ".."} for part in value.split("/")):
+    if (
+        pure.is_absolute()
+        or PureWindowsPath(value).drive
+        or any(part in {"", ".", ".."} for part in value.split("/"))
+    ):
         raise error_type(f"{label} must stay inside its workspace")
     return Path(*pure.parts)
 
