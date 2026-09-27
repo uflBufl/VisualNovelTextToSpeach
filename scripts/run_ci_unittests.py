@@ -113,7 +113,7 @@ def _run_exact_test_file(path):
     return 0 if result.wasSuccessful() else 1
 
 
-def _run_sharded_full_discovery(system):
+def _run_sharded_full_discovery(system, selected_modules=None):
     suite = unittest.defaultTestLoader.discover("tests", top_level_dir=".")
     test_ids = tuple(value.id() for value in _flatten_suite(suite))
     try:
@@ -133,6 +133,16 @@ def _run_sharded_full_discovery(system):
             ("qt-ocr", ocr_ids),
             ("remainder", remainder_ids),
         )
+        if selected_modules is not None:
+            prefixes = tuple(f"{module}." for module in selected_modules)
+            shards = tuple(
+                (name, tuple(value for value in ids if value.startswith(prefixes)))
+                for name, ids in shards
+            )
+        shards = tuple((name, ids) for name, ids in shards if ids)
+        if not shards:
+            print("No selected unittest cases were discovered", file=sys.stderr)
+            return 2
         for name, ids in shards:
             inventory = root / f"{name}.json"
             inventory.write_text(json.dumps(ids), encoding="utf-8")
@@ -187,9 +197,8 @@ def _run_sharded_full_discovery(system):
                             file=sys.stderr,
                         )
                 return completed.returncode
-    print(
-        f"Ran all {len(test_ids)} exact discovered tests once in {len(shards)} shards"
-    )
+    count = sum(len(ids) for _, ids in shards)
+    print(f"Ran {count} exact discovered tests once in {len(shards)} shards")
     return 0
 
 
@@ -211,6 +220,14 @@ def main(arguments=None):
         if len(arguments) != 2:
             return 2
         return _run_exact_test_file(arguments[1])
+    if arguments[:1] == ["--selected"]:
+        modules = arguments[1:]
+        if not modules or any(not value.startswith("tests.test_") for value in modules):
+            return 2
+        system = platform.system()
+        if system in SHARD_TIMEOUTS:
+            return _run_sharded_full_discovery(system, modules)
+        arguments = modules
     system = platform.system()
     if system in SHARD_TIMEOUTS and arguments == ["discover", "-s", "tests"]:
         return _run_sharded_full_discovery(system)

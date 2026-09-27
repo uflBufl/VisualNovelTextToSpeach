@@ -786,11 +786,19 @@ uv run ruff check --fix .
 uv run ruff format .
 ```
 
-Verify formatting, linting, and tests:
+Verify formatting, linting, and tests affected by branch and local changes:
 
 ```sh
 uv run ruff format --check .
 uv run ruff check .
+uv run python -m scripts.run_changed_unittests
+```
+
+Use `--local` to check only staged, unstaged, and untracked changes, or `--list`
+to inspect the selected test modules. Changes to shared dependency configuration
+run the full suite. To run all tests explicitly:
+
+```sh
 uv run python scripts/run_ci_unittests.py discover -s tests
 ```
 
