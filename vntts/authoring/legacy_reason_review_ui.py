@@ -8,16 +8,15 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
 
-from PySide6.QtCore import QUrl, SignalInstance
-from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
+from PySide6.QtCore import QEvent, QObject, Qt, QUrl, SignalInstance
+from PySide6.QtGui import QCloseEvent, QFont
+from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QDialog,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -32,6 +31,7 @@ from vntts.authoring.legacy_reason_review import (
     publish_reason_review_decisions,
     write_reason_review_progress,
 )
+from vntts.authoring.review_context_ui import review_scroll_area
 from vntts.qt_audio import QtPcmPlayer
 
 _REASON_LABELS = {
@@ -49,6 +49,7 @@ ReasonSelections = dict[str, tuple[str, ...]]
 
 class _AudioPlayer(Protocol):
     errorOccurred: SignalInstance
+    mediaStatusChanged: SignalInstance
 
     def setSource(self, source: QUrl) -> None: ...
 
@@ -81,6 +82,9 @@ class LegacyReasonReviewDialog(QDialog):
         self.selections: ReasonSelections = load_reason_review_progress(
             review, self.progress_path
         )
+        self._persisted_selections = dict(self.selections)
+        self._heard_items: set[str] = set()
+        self._playing_item_id: str | None = None
         self.index = next(
             (
                 index
@@ -90,46 +94,64 @@ class LegacyReasonReviewDialog(QDialog):
             0,
         )
         self._syncing = False
-        self.setWindowTitle("Classify rejected speech")
-        self.setMinimumWidth(700)
+        self.setWindowTitle("Reassess rejected recordings")
+        self.setMinimumSize(640, 380)
 
+        self.heading = QLabel("Rejected recording reassessment")
+        bold = QFont()
+        bold.setBold(True)
+        self.heading.setFont(bold)
         self.progress = QLabel()
-        self.progress.setStyleSheet("font-weight: 700;")
         self.context = QLabel(
-            "Every item here was rejected in an earlier review. Judge it against "
-            "your current practical MOSS quality bar: mark a clear defect, or mark "
-            "it acceptable now. Previously accepted WAVs are excluded."
+            "Listen to each previously rejected recording. Choices save automatically. "
+            "After all are assessed, publishing adds new decisions without changing "
+            "earlier reviews."
         )
         self.context.setWordWrap(True)
         self.speaker = QLabel()
-        self.speaker.setStyleSheet("font-weight: 600;")
+        self.speaker.setFont(bold)
         self.text = QLabel()
         self.text.setWordWrap(True)
-        self.play = QPushButton("Play / replay")
+        self.text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.text.setFrameShape(QLabel.Shape.StyledPanel)
+        self.text.setMargin(8)
+        self.play = QPushButton("Play recording")
         self.play.clicked.connect(self.play_current)
+        self.stop = QPushButton("Stop")
+        self.stop.clicked.connect(self.stop_current)
         self.status = QLabel()
         self.status.setWordWrap(True)
-        self.player.errorOccurred.connect(
-            lambda _error, message: self.status.setText(f"Playback failed: {message}")
-        )
+        self.status.setAccessibleName("Recording and save status")
+        self.player.errorOccurred.connect(self._playback_failed)
+        self.player.mediaStatusChanged.connect(self._media_status_changed)
 
         self.acceptable = QCheckBox(
             "Sounds acceptable now (minor imperfections are okay)"
         )
+        checkbox_style = (
+            "QCheckBox { border: 1px solid transparent; }"
+            "QCheckBox:focus { border-color: palette(highlight); }"
+            "QCheckBox::indicator { width: 16px; height: 16px; }"
+            "QCheckBox::indicator:enabled { border: 2px solid palette(text); }"
+            "QCheckBox::indicator:enabled:checked { background: palette(highlight); }"
+            "QCheckBox::indicator:disabled { border: 1px solid palette(mid); }"
+        )
+        self.acceptable.setStyleSheet(checkbox_style)
         self.acceptable.toggled.connect(self._acceptable_changed)
-        reasons = QGridLayout()
+        reasons = QVBoxLayout()
         self.reason_controls: dict[str, QCheckBox] = {}
-        for index, (reason, label) in enumerate(_REASON_LABELS.items()):
+        for reason, label in _REASON_LABELS.items():
             control = QCheckBox(label)
+            control.setStyleSheet(checkbox_style)
             control.toggled.connect(self._reasons_changed)
-            reasons.addWidget(control, index // 2, index % 2)
+            reasons.addWidget(control)
             self.reason_controls[reason] = control
 
         self.previous = QPushButton("Previous")
         self.previous.clicked.connect(lambda: self._move(-1))
         self.next = QPushButton("Next")
         self.next.clicked.connect(lambda: self._move(1))
-        self.finish = QPushButton("Publish reason labels")
+        self.finish = QPushButton("Publish assessments")
         self.finish.clicked.connect(self.publish)
         actions = QHBoxLayout()
         actions.addWidget(self.previous)
@@ -137,30 +159,80 @@ class LegacyReasonReviewDialog(QDialog):
         actions.addStretch()
         actions.addWidget(self.finish)
 
+        audio_actions = QHBoxLayout()
+        audio_actions.addWidget(self.play)
+        audio_actions.addWidget(self.stop)
+        audio_actions.addStretch()
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.addWidget(self.context)
+        content_layout.addWidget(self.speaker)
+        content_layout.addWidget(self.text)
+        content_layout.addLayout(audio_actions)
+        assessment_hint = QLabel("Choose acceptable, or select all defects you hear.")
+        assessment_hint.setWordWrap(True)
+        content_layout.addWidget(assessment_hint)
+        content_layout.addWidget(self.acceptable)
+        content_layout.addWidget(QLabel("Defects"))
+        content_layout.addLayout(reasons)
+        content_layout.addStretch()
+        self.review_scroll = review_scroll_area(content, "Recording and assessment")
+        for widget in content.findChildren(QWidget):
+            if widget.focusPolicy() != Qt.FocusPolicy.NoFocus:
+                widget.installEventFilter(self)
         layout = QVBoxLayout(self)
+        layout.addWidget(self.heading)
         layout.addWidget(self.progress)
-        layout.addWidget(self.context)
-        layout.addWidget(self.speaker)
-        layout.addWidget(self.text)
-        layout.addWidget(self.play)
-        layout.addWidget(self.acceptable)
-        layout.addLayout(reasons)
+        layout.addWidget(self.review_scroll, 1)
         layout.addWidget(self.status)
         layout.addLayout(actions)
 
-        QShortcut(QKeySequence("Space"), self, self.play_current)
-        QShortcut(QKeySequence("Left"), self, lambda: self._move(-1))
-        QShortcut(QKeySequence("Right"), self, lambda: self._move(1))
         self._show_current()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.FocusIn and isinstance(watched, QWidget):
+            self.review_scroll.ensureWidgetVisible(watched)
+        return super().eventFilter(watched, event)
+
+    def changeEvent(self, event: QEvent) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.FontChange and hasattr(self, "reason_controls"):
+            for control in (self.acceptable, *self.reason_controls.values()):
+                control.setFont(self.font())
 
     def current_item(self) -> LegacyReasonReviewItem:
         return self.review.items[self.index]
 
     def play_current(self) -> None:
         item = self.current_item()
-        self.status.setText("Playing rejected WAV...")
+        self._playing_item_id = item.item_id
+        self.status.setText("Playing recording. Listen to the end before assessing.")
         self.player.setSource(QUrl.fromLocalFile(str(item.audio)))
         self.player.play()
+
+    def stop_current(self) -> None:
+        self.player.stop()
+        self._playing_item_id = None
+        self.status.setText("Playback stopped. Play the recording to the end.")
+        self._update_actions()
+
+    def _media_status_changed(self, status: object) -> None:
+        if status != QMediaPlayer.MediaStatus.EndOfMedia:
+            return
+        playing_item_id = self._playing_item_id
+        if (
+            playing_item_id is not None
+            and playing_item_id == self.current_item().item_id
+        ):
+            self._heard_items.add(playing_item_id)
+            self.status.setText("Recording heard. Choose an assessment.")
+        self._playing_item_id = None
+        self._update_actions()
+
+    def _playback_failed(self, _error: object, message: str) -> None:
+        self._playing_item_id = None
+        self.status.setText(f"Playback failed: {message}")
+        self._update_actions()
 
     def _reasons_changed(self, _checked: bool = False) -> None:
         if self._syncing:
@@ -203,24 +275,30 @@ class LegacyReasonReviewDialog(QDialog):
         try:
             self.progress_writer(self.review, self.progress_path, self.selections)
         except (OSError, LegacyReasonReviewError) as error:
-            self.status.setText(f"Could not save progress: {error}")
+            self.selections = dict(self._persisted_selections)
+            self._show_current()
+            self.status.setText(
+                f"Assessment not saved; last change reverted: {error}. "
+                "Fix the storage problem, then choose again."
+            )
             return
-        self.status.setText("Saved. Choose Next or replay this WAV.")
+        self._persisted_selections = dict(self.selections)
+        self.status.setText(
+            "Assessment saved. Choose Publish assessments or replay this recording."
+            if len(self.selections) == len(self.review.items)
+            else "Assessment saved. Choose Next or replay this recording."
+        )
         self._update_actions()
 
     def _move(self, offset: int) -> None:
         self.player.stop()
+        self._playing_item_id = None
         self.index = max(0, min(len(self.review.items) - 1, self.index + offset))
         self._show_current()
 
     def _show_current(self) -> None:
         item = self.current_item()
-        classified = len(self.selections)
-        self.progress.setText(
-            f"Rejected WAV {self.index + 1} of {len(self.review.items)} - "
-            f"{classified} classified"
-        )
-        self.speaker.setText(f"Speaker: {item.speaker} | Line: {item.line_id}")
+        self.speaker.setText(f"Speaker: {item.speaker}")
         self.text.setText(item.text)
         selected = set(self.selections.get(item.item_id, ()))
         classified = item.item_id in self.selections
@@ -234,13 +312,26 @@ class LegacyReasonReviewDialog(QDialog):
         finally:
             self._syncing = False
         self.status.setText(
-            "This WAV still needs a current assessment."
-            if not classified
-            else "Current assessment saved; replay or continue."
+            "Current assessment saved; replay or continue."
+            if classified
+            else "Recording heard. Choose an assessment."
+            if item.item_id in self._heard_items
+            else "Play this recording to the end before assessing."
         )
         self._update_actions()
 
     def _update_actions(self) -> None:
+        item = self.current_item()
+        self.progress.setText(
+            f"Recording {self.index + 1} of {len(self.review.items)} | "
+            f"{len(self.selections)} assessed"
+        )
+        assessed = item.item_id in self.selections
+        can_assess = assessed or item.item_id in self._heard_items
+        self.acceptable.setEnabled(can_assess)
+        for control in self.reason_controls.values():
+            control.setEnabled(can_assess and not self.acceptable.isChecked())
+        self.stop.setEnabled(self._playing_item_id is not None)
         self.previous.setEnabled(self.index > 0)
         self.next.setEnabled(self.index + 1 < len(self.review.items))
         self.finish.setEnabled(len(self.selections) == len(self.review.items))
@@ -249,13 +340,17 @@ class LegacyReasonReviewDialog(QDialog):
         try:
             paths = self.publisher(self.review, self.selections)
         except (OSError, LegacyReasonReviewError) as error:
-            QMessageBox.critical(self, "Reason labels were not published", str(error))
+            self.status.setText(
+                f"Assessments not published: {error}. Resolve the problem, then "
+                "choose Publish assessments again."
+            )
             return
         self.status.setText(f"Published {len(paths)} additive cohort decisions.")
         self.accept()
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self.player.stop()
+        self._playing_item_id = None
         super().closeEvent(event)
 
 

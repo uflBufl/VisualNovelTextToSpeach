@@ -31,6 +31,7 @@ from vntts.pregeneration_voices import (
     PregenerationVoiceError,
     VoiceDecisionStore,
     VoicePlanStore,
+    player_voice_catalog_is_current,
     resolve_pregeneration_settings,
 )
 from vntts.settings import AppSettings
@@ -386,6 +387,14 @@ def write_player_candidate_manifest(
                 "voice_character": voice_character,
                 "reference_sha256": sha256_file(reference),
                 "source_line_ids": [f"line:source:{index}"],
+                "source_excerpts": [
+                    {
+                        "line_id": f"line:source:{index}",
+                        "title": "Voice line",
+                        "text": f"Original line {index}.",
+                    }
+                ],
+                "candidate_origin": "story_line_route",
                 "source_event_ids": [index],
                 "duration_seconds": 3.0 + index,
                 "quality_score": quality_score,
@@ -399,7 +408,7 @@ def write_player_candidate_manifest(
                 "voices": voices,
                 PLAYER_VOICE_CANDIDATES_FIELD: {
                     "schema": "vntts.player-voice-candidates",
-                    "schema_version": 2,
+                    "schema_version": 4,
                     "story_index_sha256": story_index_sha256,
                     "candidate_report": report.name,
                     "candidate_report_sha256": sha256_file(report),
@@ -1115,6 +1124,8 @@ class VoicePlanStoreTest(unittest.TestCase):
             for variant in document[PLAYER_VOICE_CANDIDATES_FIELD]["variants"]:
                 variant["source_voice_ids"] = []
                 variant["source_line_ids"] = []
+                variant["source_excerpts"] = []
+                variant["candidate_origin"] = "exact_bank_unrouted_media"
             manifest.write_text(json.dumps(document), encoding="utf-8")
 
             plan = VoicePlanStore(jobs).create(
@@ -1126,10 +1137,93 @@ class VoicePlanStoreTest(unittest.TestCase):
             rhiannon = next(
                 group for group in plan.groups if group.character == "Rhiannon"
             )
-            self.assertEqual(rhiannon.candidates[0].source_voice_ids, ())
-            self.assertEqual(rhiannon.candidates[0].source_line_ids, ())
+            self.assertEqual(rhiannon.route, "narrator")
+            self.assertEqual(rhiannon.candidates, ())
             self.assertEqual(len(rhiannon.candidate_inventory), 2)
             self.assertEqual(rhiannon.candidate_inventory[0].source_voice_ids, ())
+            self.assertEqual(rhiannon.candidate_inventory[0].source_line_ids, ())
+
+    def test_unlinked_bank_clip_requires_a_manual_voice_choice(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            manifest = write_player_candidate_manifest(
+                root / "player-voices", job.story_index_sha256, quality_scores=(99,)
+            )
+            document = json.loads(manifest.read_text(encoding="utf-8"))
+            variant = document[PLAYER_VOICE_CANDIDATES_FIELD]["variants"][0]
+            variant["source_line_ids"] = []
+            variant["source_excerpts"] = []
+            variant["candidate_origin"] = "exact_bank_unrouted_media"
+            manifest.write_text(json.dumps(document), encoding="utf-8")
+            settings = AppSettings(pocket_gated_model_accepted=True)
+            source_id = "character:playercandidaterhiannon1"
+
+            automatic = VoicePlanStore(jobs).create(
+                job, settings, manifest_path=manifest
+            )
+            group = next(
+                value for value in automatic.groups if value.character == "Rhiannon"
+            )
+            self.assertEqual(group.route, "narrator", group.candidate_inventory)
+            self.assertEqual(group.candidates, ())
+            self.assertEqual(len(group.candidate_inventory), 1)
+
+            library = VoiceLibrary(root / "library")
+            registry = CharacterVoiceRegistry.from_file(manifest)
+            remember_voice_binding(
+                library, registry, "Rhiannon", source_id, method="automatic"
+            )
+            repeated = VoicePlanStore(jobs, voice_library=library).create(
+                job, settings, manifest_path=manifest
+            )
+            group = next(
+                value for value in repeated.groups if value.character == "Rhiannon"
+            )
+            self.assertEqual(group.route, "narrator", group.candidate_inventory)
+            self.assertIsNone(library.binding("Rhiannon"))
+
+            remember_voice_binding(library, registry, "Rhiannon", source_id)
+            manual = VoicePlanStore(jobs, voice_library=library).create(
+                job, settings, manifest_path=manifest
+            )
+            group = next(
+                value for value in manual.groups if value.character == "Rhiannon"
+            )
+            self.assertEqual(group.route, "voice")
+            self.assertEqual(group.resolution, "saved-voice-assignment")
+            self.assertEqual(
+                group.source_id, voice_binding_source_id(library.binding("Rhiannon"))
+            )
+
+    def test_story_routed_voice_wins_over_unlinked_bank_clip(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            manifest = write_player_candidate_manifest(
+                root / "player-voices",
+                job.story_index_sha256,
+                quality_scores=(100, 60),
+            )
+            document = json.loads(manifest.read_text(encoding="utf-8"))
+            unlinked = document[PLAYER_VOICE_CANDIDATES_FIELD]["variants"][0]
+            unlinked["source_line_ids"] = []
+            unlinked["source_excerpts"] = []
+            unlinked["candidate_origin"] = "exact_bank_unrouted_media"
+            manifest.write_text(json.dumps(document), encoding="utf-8")
+
+            plan = VoicePlanStore(jobs).create(
+                job,
+                AppSettings(pocket_gated_model_accepted=True),
+                manifest_path=manifest,
+            )
+            group = next(
+                value for value in plan.groups if value.character == "Rhiannon"
+            )
+            self.assertEqual(group.route, "voice")
+            self.assertEqual(group.source_id, "character:playercandidaterhiannon2")
+            self.assertEqual(len(group.candidate_inventory), 2)
+            self.assertEqual(len(group.candidates), 1)
 
     def test_player_audition_keeps_only_three_best_equal_evidence_clips(self):
         with TemporaryDirectory() as temporary_directory:
@@ -1158,6 +1252,79 @@ class VoicePlanStoreTest(unittest.TestCase):
                     "Player candidate Rhiannon 5",
                     "Player candidate Rhiannon 3",
                 ],
+            )
+
+    def test_playable_main_voice_surfaces_without_auto_selecting_long_clips(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            manifest = write_player_candidate_manifest(
+                root / "player-voices",
+                job.story_index_sha256,
+                quality_scores=(100,) * 6,
+            )
+            document = json.loads(manifest.read_text(encoding="utf-8"))
+            variants = document[PLAYER_VOICE_CANDIDATES_FIELD]["variants"]
+            for index, duration in ((5, 9.0), (6, 15.0)):
+                variant = variants[index - 1]
+                line_id = f"playable-voice:3146:main:{index}"
+                variant.update(
+                    source_bank="hero3146_mainvoc.bnk",
+                    source_line_ids=[line_id],
+                    source_excerpts=[
+                        {"line_id": line_id, "title": "Greeting", "text": "Hello."}
+                    ],
+                    duration_seconds=duration,
+                )
+                reference = (
+                    manifest.parent / document["voices"][index - 1]["references"][0]
+                )
+                with wave.open(str(reference), "wb") as audio:
+                    audio.setparams((1, 2, 16_000, 0, "NONE", "not compressed"))
+                    audio.writeframes(b"\x00\x00" * round(duration * 16_000))
+                variant["reference_sha256"] = sha256_file(reference)
+            manifest.write_text(json.dumps(document), encoding="utf-8")
+
+            settings = AppSettings(pocket_gated_model_accepted=True)
+            group = next(
+                value
+                for value in VoicePlanStore(jobs)
+                .create(job, settings, manifest_path=manifest)
+                .groups
+                if value.character == "Rhiannon"
+            )
+            self.assertEqual(len(group.candidate_inventory), 6)
+            self.assertEqual(
+                [candidate.source_character for candidate in group.candidates],
+                [
+                    "Player candidate Rhiannon 1",
+                    "Player candidate Rhiannon 2",
+                    "Player candidate Rhiannon 5",
+                ],
+            )
+            self.assertEqual(group.route, "needs-audition")
+
+            library = VoiceLibrary(root / "library")
+            long_source = "character:playercandidaterhiannon6"
+            remember_voice_binding(
+                library,
+                CharacterVoiceRegistry.from_file(manifest),
+                "Rhiannon",
+                long_source,
+            )
+            selected = next(
+                value
+                for value in VoicePlanStore(jobs, voice_library=library)
+                .create(job, settings, manifest_path=manifest)
+                .groups
+                if value.character == "Rhiannon"
+            )
+            self.assertEqual(selected.route, "voice")
+            self.assertEqual(
+                selected.source_id, voice_binding_source_id(library.binding("Rhiannon"))
+            )
+            self.assertEqual(
+                selected.reference_sha256s, (variants[5]["reference_sha256"],)
             )
 
     def test_saved_player_voice_keeps_other_references_available_for_inspection(self):
@@ -1192,6 +1359,24 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(rhiannon.resolution, "saved-voice-assignment")
             self.assertEqual(len(rhiannon.candidates), 1)
             self.assertEqual(len(rhiannon.candidate_inventory), 2)
+
+    def test_old_player_catalog_requires_refresh_before_planning(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            manifest = write_player_candidate_manifest(
+                root / "player-voices", job.story_index_sha256
+            )
+            document = json.loads(manifest.read_text(encoding="utf-8"))
+            document[PLAYER_VOICE_CANDIDATES_FIELD]["schema_version"] = 3
+            for variant in document[PLAYER_VOICE_CANDIDATES_FIELD]["variants"]:
+                del variant["source_excerpts"]
+                del variant["candidate_origin"]
+            manifest.write_text(json.dumps(document), encoding="utf-8")
+
+            self.assertFalse(player_voice_catalog_is_current(manifest))
+            with self.assertRaisesRegex(PregenerationVoiceError, "need refreshing"):
+                VoicePlanStore(jobs).create(job, AppSettings(), manifest_path=manifest)
 
     def test_player_import_candidates_reject_another_story_index(self):
         with TemporaryDirectory() as temporary_directory:
@@ -1252,7 +1437,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             )
             document = json.loads(manifest.read_text(encoding="utf-8"))
             player = document[PLAYER_VOICE_CANDIDATES_FIELD]
-            player["schema_version"] = 3
+            player["schema_version"] = 4
             for index, variant in enumerate(player["variants"], 1):
                 variant["source_excerpts"] = [
                     {
@@ -1261,6 +1446,15 @@ class VoicePlanStoreTest(unittest.TestCase):
                         "text": f"Original line {index}.",
                     }
                 ]
+                if index == 1:
+                    variant["source_line_ids"] = ["line:alias:1", "line:source:1"]
+                    variant["source_excerpts"].append(
+                        {
+                            "line_id": "line:alias:1",
+                            "title": "Night",
+                            "text": "Original line 1.",
+                        }
+                    )
             manifest.write_text(json.dumps(document), encoding="utf-8")
 
             plan = VoicePlanStore(jobs).create(
@@ -1274,7 +1468,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             )
             self.assertEqual(
                 group.candidate_inventory[0].source_excerpts,
-                ("Chitchat: Original line 1.",),
+                ("Original line 1.",),
             )
 
     def test_player_import_skips_unbound_original_spoken_text(self):
@@ -1286,11 +1480,13 @@ class VoicePlanStoreTest(unittest.TestCase):
             )
             document = json.loads(manifest.read_text(encoding="utf-8"))
             player = document[PLAYER_VOICE_CANDIDATES_FIELD]
-            player["schema_version"] = 3
+            player["schema_version"] = 4
             player["variants"][0]["source_excerpts"] = [
                 {"line_id": "wrong-line", "title": None, "text": "Wrong speech."}
             ]
             player["variants"][1]["source_excerpts"] = []
+            player["variants"][1]["source_line_ids"] = []
+            player["variants"][1]["candidate_origin"] = "exact_bank_unrouted_media"
             manifest.write_text(json.dumps(document), encoding="utf-8")
 
             plan = VoicePlanStore(jobs).create(

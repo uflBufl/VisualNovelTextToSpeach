@@ -11,7 +11,11 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication, QDialog, QMessageBox  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QDialog,
+    QMessageBox,
+)
 from vntts_artifacts import write_story_index_document  # noqa: E402
 from vntts_artifacts.atomic_io import atomic_write_json  # noqa: E402
 from vntts_artifacts.file_integrity import sha256_file  # noqa: E402
@@ -162,6 +166,7 @@ def write_story_index(root, *, generated_text="Generate me."):
                 "sequence": 1,
                 "speaker": "Centurion",
                 "voice_character": "Centurion",
+                "episode_title": "The Storm",
                 "text": text,
                 "text_sha256": text_hash,
                 "kind": "dialogue",
@@ -201,6 +206,7 @@ def write_story_index(root, *, generated_text="Generate me."):
                 "sequence": 1,
                 "speaker": "Aderyn",
                 "voice_character": "Rhiannon child",
+                "episode_title": "The Wandering Child",
                 "text": "A child line.",
                 "kind": "dialogue",
                 "collection_id": "rhiannon",
@@ -210,6 +216,39 @@ def write_story_index(root, *, generated_text="Generate me."):
         ],
     )
     return path
+
+
+def story_filter_content(content):
+    return replace(
+        content,
+        selections=(
+            replace(
+                content.selections[1],
+                selection_id="character-1",
+                title="Rhiannon's Story",
+                kind="character_story",
+                speakers=("Rhiannon",),
+                playback_speakers=("Rhiannon",),
+                episode_titles=("The Wandering Child",),
+            ),
+            replace(
+                content.selections[0],
+                kind="main_story",
+                speakers=("Centurion",),
+                playback_speakers=("Centurion",),
+                episode_titles=("The Storm",),
+            ),
+            replace(
+                content.selections[1],
+                selection_id="anecdote-1",
+                title="An Anecdote",
+                kind="anecdote",
+                speakers=("Druvis III",),
+                playback_speakers=("Druvis III",),
+                episode_titles=("Tea at Dawn",),
+            ),
+        ),
+    )
 
 
 class ManualThreadPool:
@@ -997,6 +1036,62 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.story_search.setText("missing story")
             self.assertIn("Clear filters", dialog.story_filter_status.text())
             self.assertEqual(dialog.selected_story_ids(), ("main-1",))
+
+    def test_story_type_filter_keeps_checked_stories_selected(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = story_filter_content(
+                inspect_story_index(write_story_index(root / "content"))
+            )
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+            )
+            self.addCleanup(dialog.deleteLater)
+
+            self.assertTrue(dialog.stories.item(0).text().startswith("Main story\n"))
+            self.assertTrue(dialog.stories.item(1).text().startswith("Anecdotes\n"))
+            self.assertTrue(
+                dialog.stories.item(2).text().startswith("Character stories\n")
+            )
+            dialog.select_all_button.click()
+            type_filter = dialog.story_type_filter
+            type_filter.setCurrentIndex(type_filter.findData("character_story"))
+
+            self.assertEqual(
+                dialog.selected_story_ids(), ("main-1", "anecdote-1", "character-1")
+            )
+            self.assertEqual(
+                [dialog.stories.item(row).isHidden() for row in range(3)],
+                [True, True, False],
+            )
+            type_filter.setCurrentIndex(type_filter.findData(None))
+            self.assertFalse(
+                any(dialog.stories.item(row).isHidden() for row in range(3))
+            )
+
+    def test_story_search_matches_character_and_episode_title(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+            )
+            self.addCleanup(dialog.deleteLater)
+
+            dialog.story_search.setText("Aderyn")
+            self.assertEqual(
+                [not dialog.stories.item(row).isHidden() for row in range(2)],
+                [False, True],
+            )
+            dialog.story_search.setText("Wandering Child")
+            self.assertEqual(
+                [not dialog.stories.item(row).isHidden() for row in range(2)],
+                [False, True],
+            )
 
     def test_fresh_catalog_starts_with_no_story_selected(self):
         with TemporaryDirectory() as temporary_directory:
@@ -2504,7 +2599,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 inspect_story_index(story_index).story_index_sha256,
             )
             self.assertEqual(library.binding("Narrator").source_id, "preset:marius")
-            self.assertIn("Step 2", dialog.step.text())
+            self.assertEqual(
+                dialog.step.text(), "Step 2 of 4 - Choose and confirm voices"
+            )
             self.assertFalse(dialog.selection_panel.isVisible())
             dialog.deleteLater()
 

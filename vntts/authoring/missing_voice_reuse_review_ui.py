@@ -6,18 +6,20 @@ import sys
 from pathlib import Path
 from typing import Callable, Literal, TypeAlias, TypedDict
 
-from PySide6.QtCore import QObject, Qt, QThreadPool, QUrl
+from PySide6.QtCore import QEvent, QObject, Qt, QThreadPool, QUrl
 from PySide6.QtGui import QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -45,6 +47,14 @@ class ReviewSample(TypedDict):
     line_id: str
     length_bucket: str
     text: str
+
+
+def _failure_label(kind: str) -> str:
+    return (
+        "audio render did not finish"
+        if kind == "missed_eos_audio_limit"
+        else kind.replace("_", " ")
+    )
 
 
 class GeneratedReviewArm(TypedDict):
@@ -420,7 +430,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
             if self.failed_control_mode
             else "Blind missing-voice reuse review"
         )
-        self.setMinimumSize(820, 520)
+        self.setMinimumSize(820, 640)
         self.resize(1050, 650)
 
         self.progress = QLabel()
@@ -432,11 +442,12 @@ class MissingVoiceReuseReviewDialog(QDialog):
             "fallback only if it completed every required sample and sounds "
             "acceptable; otherwise keep the exact lines unresolved."
             if self.failed_control_mode
-            else "Compare opaque voices only within this family. Failed renders stay "
-            "visible and cannot be selected. Finish every available sample, then "
-            "choose one complete voice or Neither."
+            else "Listen to every available A/B sample to the end. Failed renders "
+            "remain visible but cannot be chosen. Then choose a complete voice "
+            "or Neither."
         )
         self.instructions = QLabel(instructions)
+        self._instructions_text = instructions
         self.instructions.setWordWrap(True)
         self.instructions.setAccessibleName("Missing voice review instructions")
         self.decision_context = ReviewDecisionContext()
@@ -446,6 +457,9 @@ class MissingVoiceReuseReviewDialog(QDialog):
         self.cohort_heading.setAccessibleName("Current missing voice family")
 
         self.previous = QPushButton("Previous sample")
+        self.previous.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
+        )
         self.sample_selector = QComboBox()
         self.sample_selector.setSizeAdjustPolicy(
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
@@ -459,6 +473,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
         self.sample_label = QLabel("Sample")
         self.sample_label.setBuddy(self.sample_selector)
         self.next = QPushButton("Next sample")
+        self.next.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self.previous.setAccessibleName("Previous exact review sample")
         self.previous.setAccessibleDescription(
             "Select the previous sample in the current family"
@@ -481,15 +496,22 @@ class MissingVoiceReuseReviewDialog(QDialog):
         self.sample_text.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
-        self.sample_text.setMinimumHeight(80)
+        self.sample_text.setMinimumHeight(48)
+        self.sample_text.setStyleSheet(
+            "QLabel { padding: 8px; background: palette(base); "
+            "border: 1px solid palette(mid); border-radius: 4px; }"
+        )
+        self._sync_sample_font()
         self.sample_text.setAccessibleName("Exact review sample text")
         sample_layout = QVBoxLayout()
         sample_layout.addLayout(navigation)
         sample_layout.addWidget(self.sample_text)
-        sample_box = QGroupBox("Current exact sample")
-        sample_box.setLayout(sample_layout)
+        self.sample_box = QGroupBox("Current sample")
+        self.sample_box.setLayout(sample_layout)
 
-        self.play_grid = review_form_layout()
+        self.play_grid = QGridLayout()
+        self.play_grid.setColumnStretch(0, 1)
+        self.play_grid.setColumnStretch(1, 1)
         candidate_panels = []
         self.play_buttons: dict[str, QPushButton] = {}
         self.arm_statuses: dict[str, QLabel] = {}
@@ -497,6 +519,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
             label = candidate["label"]
             button = QPushButton(f"Play {label}")
             button.setMinimumWidth(180)
+            button.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
             button.setAccessibleName(f"Play opaque candidate {label}")
             button.setAccessibleDescription(
                 "Play this checksum-bound candidate to completion before deciding"
@@ -513,30 +536,32 @@ class MissingVoiceReuseReviewDialog(QDialog):
             panel = QWidget()
             panel_layout = QVBoxLayout(panel)
             panel_layout.setContentsMargins(0, 0, 0, 0)
-            panel_layout.addWidget(button)
+            panel_layout.addWidget(button, alignment=Qt.AlignmentFlag.AlignLeft)
             panel_layout.addWidget(status)
             candidate_panels.append(panel)
             self.play_buttons[label] = button
             self.arm_statuses[label] = status
-        for index in range(0, len(candidate_panels), 2):
-            self.play_grid.addRow(*candidate_panels[index : index + 2])
-        playback_box = QGroupBox("Opaque candidate evidence")
-        playback_box.setLayout(self.play_grid)
+        for index, panel in enumerate(candidate_panels):
+            self.play_grid.addWidget(panel, index // 2, index % 2)
+        self.playback_box = QGroupBox("Opaque candidate evidence")
+        self.playback_box.setLayout(self.play_grid)
 
         self.now_playing = QLabel("READY")
         self.now_playing.setAccessibleName("Current missing voice playback")
         self.now_playing.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.now_playing.setMinimumHeight(42)
+        self.now_playing.setMinimumHeight(26)
         self.now_playing.setStyleSheet(
             "QLabel { background-color: #3f3f46; color: white; "
-            "font-weight: 700; border-radius: 5px; padding: 7px; }"
+            "font-weight: 700; border-radius: 5px; padding: 4px; }"
         )
         self.stop = QPushButton("Stop audio")
         self.stop.setAccessibleName("Stop missing voice review audio")
         self.stop.setAccessibleDescription("Stop the current candidate playback")
         self.stop.setShortcut(QKeySequence("Ctrl+Space"))
         self.stop.clicked.connect(self._stop)
-        playback_controls = QHBoxLayout()
+        self.playback_controls_widget = QWidget()
+        playback_controls = QHBoxLayout(self.playback_controls_widget)
+        playback_controls.setContentsMargins(0, 0, 0, 0)
         playback_controls.addWidget(self.now_playing, 1)
         playback_controls.addWidget(self.stop)
 
@@ -552,6 +577,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
                 if self.failed_control_mode
                 else f"Choose {label} for this family"
             )
+            button.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
             button.clicked.connect(
                 lambda _checked=False, value=label: self._save_decision(value)
             )
@@ -568,6 +594,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
             if self.failed_control_mode
             else "Neither voice is acceptable"
         )
+        self.neither.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self.neither.setShortcut(QKeySequence("Alt+N"))
         self.neither.setAccessibleName(
             "Keep failed lines unresolved"
@@ -582,10 +609,10 @@ class MissingVoiceReuseReviewDialog(QDialog):
         decision_layout = QVBoxLayout()
         decision_layout.addWidget(self.decision_reason)
         decision_layout.addLayout(decisions)
-        decision_box = QGroupBox(
+        self.decision_box = QGroupBox(
             "Failed-line decision" if self.failed_control_mode else "Family decision"
         )
-        decision_box.setLayout(decision_layout)
+        self.decision_box.setLayout(decision_layout)
 
         self.status = QLabel()
         self.status.setWordWrap(True)
@@ -603,19 +630,20 @@ class MissingVoiceReuseReviewDialog(QDialog):
         review_layout.setContentsMargins(0, 0, 0, 0)
         review_layout.addWidget(self.progress)
         review_layout.addWidget(self.instructions)
-        review_layout.addWidget(self.decision_context)
         review_layout.addWidget(self.cohort_heading)
-        review_layout.addWidget(sample_box)
-        review_layout.addWidget(playback_box)
-        review_layout.addLayout(playback_controls)
-        review_layout.addWidget(decision_box)
+        review_layout.addWidget(self.sample_box)
+        review_layout.addWidget(self.playback_box)
+        review_layout.addWidget(self.playback_controls_widget)
         review_layout.addWidget(self.status)
+        review_layout.addWidget(self.decision_context)
+        review_layout.addStretch(1)
         self.review_scroll = review_scroll_area(
             review_content,
             "Scrollable missing voice review",
         )
         layout = QVBoxLayout(self)
         layout.addWidget(self.review_scroll, 1)
+        layout.addWidget(self.decision_box)
         layout.addWidget(close_buttons)
 
         self.player = _create_audio_player(self)
@@ -637,6 +665,19 @@ class MissingVoiceReuseReviewDialog(QDialog):
             prior = button
         self.setTabOrder(prior, self.neither)
         self.setTabOrder(self.neither, self.close_button)
+
+    def _sync_sample_font(self) -> None:
+        font = self.font()
+        if font.pointSizeF() > 0:
+            font.setPointSizeF(font.pointSizeF() + 2)
+        elif font.pixelSize() > 0:
+            font.setPixelSize(font.pixelSize() + 3)
+        self.sample_text.setFont(font)
+
+    def changeEvent(self, event: QEvent) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.FontChange and hasattr(self, "sample_text"):
+            self._sync_sample_font()
 
     def _show_decision_context(self) -> None:
         context = self.bundle["decision_context"]
@@ -687,7 +728,8 @@ class MissingVoiceReuseReviewDialog(QDialog):
         self.bundle, self.session = _review_data(_review_loader(self.session_path))
         completed, total = _review_progress(self.bundle, self.session)
         self.progress.setText(
-            f"Completed {completed} of {total} families | Remaining {total - completed}"
+            f"Completed {completed} of {total} "
+            f"{'family' if total == 1 else 'families'} | Remaining {total - completed}"
         )
         decisions = {
             value["cohort_id"]: value["decision"] for value in self.session["decisions"]
@@ -709,25 +751,67 @@ class MissingVoiceReuseReviewDialog(QDialog):
                 value.get("decision_origin") == AUTOMATIC_UNRESOLVED_ORIGIN
                 for value in self.session["decisions"]
             )
-            self.cohort_heading.setText("Review complete")
-            if automatic_count:
+            selected_count = len(self.session["decisions"]) - automatic_count
+            self.cohort_heading.setText(
+                "Review complete - unresolved automatically"
+                if automatic_count and not selected_count
+                else "Review complete"
+            )
+            if automatic_count and selected_count:
+                self.instructions.setText(
+                    f"{selected_count} family decision"
+                    f"{'s' if selected_count != 1 else ''} saved; "
+                    f"{automatic_count} stayed unresolved automatically."
+                )
+                self.sample_text.setText(self.instructions.text())
+                self.status.setText(
+                    "All outcomes are recorded. You can close this window."
+                )
+            elif automatic_count:
+                self.instructions.setText(
+                    "Neither candidate completed the required audio. "
+                    "The family stays unresolved; no listening or decision is required."
+                )
                 self.sample_text.setText(
                     f"{automatic_count} cohort(s) had no complete selectable candidate "
                     "and were kept unresolved automatically. No listening or human "
                     "confirmation is required."
                 )
                 self.status.setText(
-                    "Any surviving WAV is optional diagnostic evidence only. "
-                    "The automatic unresolved outcome is ready for decision import."
+                    "The unresolved result is recorded. You can close this window."
                 )
             else:
+                self.instructions.setText("The review decision is saved.")
                 self.sample_text.setText("All exact families have a recorded decision.")
-                self.status.setText(
-                    "The blind key remains private until decision import."
-                )
+                self.status.setText("You can close this window.")
             self.sample_selector.blockSignals(False)
+            self.sample_box.hide()
+            self.playback_controls_widget.hide()
+            self.decision_box.hide()
+            self.decision_context.hide()
+            for candidate in self.bundle["candidates"]:
+                label = candidate["label"]
+                self.play_buttons[label].hide()
+                failures = [
+                    arm["failure_kind"]
+                    for arm in candidate["samples"]
+                    if arm["status"] == "failed"
+                ]
+                self.arm_statuses[label].setText(
+                    f"{label}: Failed - "
+                    + ", ".join(_failure_label(value) for value in failures)
+                    if failures
+                    else f"{label}: Available evidence remains recorded"
+                )
             self._set_all_actions(False)
             return
+        self.instructions.setText(self._instructions_text)
+        self.sample_box.show()
+        self.playback_controls_widget.show()
+        self.decision_box.show()
+        self.decision_context.show()
+        for button in self.play_buttons.values():
+            button.show()
         for sample in self._cohort["samples"]:
             self.sample_selector.addItem(
                 f"{sample['length_bucket'].title()} | {sample['line_id']}"
@@ -737,12 +821,10 @@ class MissingVoiceReuseReviewDialog(QDialog):
         self.cohort_heading.setText(
             f"{'Failed-line group' if self.failed_control_mode else 'Family'} "
             f"{completed + 1} of {total} | "
-            f"{self._cohort['sample_count']} required sample(s)"
+            f"{self._cohort['sample_count']} required "
+            f"sample{'s' if self._cohort['sample_count'] != 1 else ''}"
         )
-        self.status.setText(
-            f"Replay remains available while the {self._decision_name} decision "
-            "is saved in the background."
-        )
+        self.status.setText("Stopping playback early does not count as heard.")
         self._refresh_sample()
 
     def _select_sample(self, index: int) -> None:
@@ -788,13 +870,15 @@ class MissingVoiceReuseReviewDialog(QDialog):
                 )
                 repair = arm["repair_strategy"] or "direct render"
                 self.arm_statuses[label].setText(
-                    f"AVAILABLE | {duration_text} | {repair}"
+                    f"{'HEARD' if was_heard else 'NOT HEARD'} | "
+                    f"{duration_text} | {repair}"
                 )
             else:
                 button.setText(f"{label} unavailable")
                 button.setEnabled(False)
                 self.arm_statuses[label].setText(
-                    f"FAILED | {arm['failure_kind']} | attempts: {arm['attempt_count']}"
+                    f"FAILED | {_failure_label(arm['failure_kind'])} | "
+                    f"attempts: {arm['attempt_count']}"
                 )
         self.previous.setEnabled(self._sample_index > 0)
         self.next.setEnabled(self._sample_index + 1 < len(self._cohort["samples"]))

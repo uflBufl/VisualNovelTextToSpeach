@@ -437,6 +437,11 @@ class GameNarratorTest(unittest.TestCase):
                 candidate_origin=origin,
                 reference_sha256=sha256_file(reference),
             )
+            if origin == "exact_bank_unrouted_media":
+                variant["source_line_ids"] = []
+                variant["source_voice_ids"] = []
+                variant["source_event_ids"] = []
+                variant["source_excerpts"] = []
         manifest.write_text(json.dumps(document))
         return manifest, originals
 
@@ -444,8 +449,10 @@ class GameNarratorTest(unittest.TestCase):
     def add_player_candidate_excerpts(manifest):
         document = json.loads(manifest.read_text())
         player_evidence = document["vntts.player.voice_candidates"]
-        player_evidence["schema_version"] = 3
+        player_evidence["schema_version"] = 4
         for index, variant in enumerate(player_evidence["variants"], 1):
+            if variant["candidate_origin"] == "exact_bank_unrouted_media":
+                continue
             variant["source_excerpts"] = [
                 {
                     "line_id": variant["source_line_ids"][0],
@@ -467,7 +474,7 @@ class GameNarratorTest(unittest.TestCase):
             (preserved_source, replacement_source),
         )
         self.assertIn("3.170 s", dialog.references.itemText(0))
-        self.assertIn("Original spoken line 1", dialog.references.itemText(0))
+        self.assertIn("Unlinked game-bank audio", dialog.references.itemText(0))
         self.assertIn("1.950 s", dialog.references.itemText(1))
         self.assertIn("Original spoken line 2", dialog.references.itemText(1))
         self.assertNotIn(
@@ -510,6 +517,17 @@ class GameNarratorTest(unittest.TestCase):
             root = Path(directory)
             manifest, originals = self.player_candidate_manifest(root)
             self.add_player_candidate_excerpts(manifest)
+            document = json.loads(manifest.read_text(encoding="utf-8"))
+            variant = document["vntts.player.voice_candidates"]["variants"][1]
+            variant["source_line_ids"] = ["line:alias:2", "line:source:2"]
+            variant["source_excerpts"].append(
+                {
+                    "line_id": "line:alias:2",
+                    "title": "Night",
+                    "text": "Original spoken line 2.",
+                }
+            )
+            manifest.write_text(json.dumps(document), encoding="utf-8")
             importer = Mock()
             importer.narrator_characters.return_value = ("Mrs. Owen",)
             importer.prepare_voice_roles.return_value = manifest
@@ -549,6 +567,10 @@ class GameNarratorTest(unittest.TestCase):
                 self.assert_player_candidate_options(
                     dialog, importer, preserved_source, replacement_source
                 )
+                self.assertEqual(
+                    dialog.references.itemData(1, Qt.ItemDataRole.ToolTipRole),
+                    "Original spoken line 2.",
+                )
 
                 dialog.original_button.click()
                 self.run_task(pool)
@@ -563,6 +585,9 @@ class GameNarratorTest(unittest.TestCase):
                 )
                 dialog.role.setCurrentText("Narrator")
                 dialog.references.setCurrentIndex(1)
+                self.assertEqual(
+                    dialog.reference_text.text(), "Original spoken line 2."
+                )
                 dialog.save_button.click()
                 self.run_task(pool)
                 self.run_task(pool)
@@ -628,15 +653,20 @@ class GameNarratorTest(unittest.TestCase):
             alternate = narrator_preview_plan(
                 AppSettings(speech_backend="moss-tts"), manifest_a, source_b, "Line."
             )
+            playable = replace(
+                plan.groups[0].candidates[0],
+                source_bank="hero3146_mainvoc.bnk",
+                source_line_ids=("playable-voice:3146:main:1",),
+            )
             group = replace(
                 plan.groups[0],
                 character="Mrs. Owen",
                 candidates=(
-                    plan.groups[0].candidates[0],
+                    playable,
                     alternate.groups[0].candidates[0],
                 ),
                 candidate_inventory=(
-                    plan.groups[0].candidates[0],
+                    playable,
                     alternate.groups[0].candidates[0],
                 ),
             )
@@ -665,6 +695,7 @@ class GameNarratorTest(unittest.TestCase):
                     ),
                     (source_a, source_b),
                 )
+                self.assertIn("Playable line", dialog.references.itemText(0))
                 importer.prepare_voice_roles.assert_not_called()
             finally:
                 dialog.reject()
@@ -1935,6 +1966,12 @@ class GameNarratorTest(unittest.TestCase):
                 thread_pool=ManualThreadPool(),
             )
             job = jobs.create_or_resume(content, ["story"])
+            stale = root / "old-candidates.json"
+            old_document = json.loads(candidates.read_text(encoding="utf-8"))
+            old_document["vntts.player.voice_candidates"]["schema_version"] = 3
+            stale.write_text(json.dumps(old_document), encoding="utf-8")
+            dialog._prepared_voice_job = job.job_id
+            dialog._prepared_voice_manifest = stale
             plan = dialog._create_voice_plan(job)
             importer.prepare_voice_candidates.assert_called_once()
             self.assertTrue(any(group.candidates for group in plan.groups))

@@ -1,5 +1,23 @@
 # TODO
 
+## Active - Merge story discovery into main
+
+- [ ] Check current origin/main and isolate only story grouping and search changes from the dirty checkout.
+- [ ] Apply and verify the isolated change against current main, then commit it in English.
+- [ ] Fast-forward local main and merge the feature commit without including unrelated working-tree changes.
+
+## Active - Review remaining source-extraction UI
+
+- [ ] In `reverse1999-extractor`, reduce empty Character Story table/portrait space so review and A/B actions are easier to reach, and scale table headers with enlarged text.
+- [ ] Re-render Character Story review, resolve Astra findings and risks, then run extractor UI tests and an independent code review. Integrate a released extractor revision into this project's pinned dependency only after the user authorizes the cross-repository workflow.
+
+
+## Validate game voice provenance on Windows
+
+- [ ] Validate the repaired mid-preparation game-index refresh on Windows without deleting the import or choosing Centurion again. After voice discovery updates `story-index.jsonl`, confirm Step 2 resumes with the same story selection and saved narrator. If a selected story disappears, confirm the saved voice remains and Stories asks for a new selection; Cancel during refresh must close the dialog.
+- [ ] Open Voice plan and Voices with a fresh installed-game import. Confirm known game dialogue displays its original text, unlinked bank clips are explicitly labelled and available only for manual choice, and the saved reviewed Mrs. Owen clip remains selected after reopening. Old candidate catalogs should refresh without deleting the game import.
+- [ ] On Windows, refresh an existing Centurion candidate catalog from the installed game. Confirm Voices and Story inspection show all usable character references (not just the three automatic recommendations), each original transcript contains spoken words once without labels such as `Greeting` or `Night`, and distinct in-game line IDs still resolve to the shared audio. No game-import deletion should be needed.
+
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements in agent memory and completed-work history in Git, not here.
 
@@ -88,10 +106,12 @@ Planned implementation order after approval:
       story. Gate: the saved choice remains selected and offline generation uses
       that exact reference; no automatic choice silently replaces it.
 - [ ] **Validate Rhiannon's playable references on Windows:** with extractor
-      commit `fbc38c2` installed, run a fresh voice import. Confirm her main-bank
-      Greeting (15.3 s) and Chitchat I (14.9 s) appear in Voices and Stories,
-      play the correct original, and can produce a preview and survive save/reopen.
-      The previous report cache must not hide them; reject clips with other
+      commit `2be370e` installed, run a fresh voice import. Confirm her main-bank
+      9.0-second line appears among the three Voice plan options alongside story
+      lines, while Greeting (15.3 s) and Chitchat I (14.9 s) remain visible only
+      for manual choice in Voices and Story inspection. Play the correct originals,
+      generate previews, and verify a manual choice survives save/reopen. The
+      previous schema-v2 report cache must refresh; reject clips with other
       technical defects. Keep the 45.8-second Chitchat II optional, not a default.
 - [ ] **Validate the Windows preview startup repair:** Python 3.14 `Popen` does not
       retain a `_thread` handle, so the suspended owned MOSS process failed before
@@ -104,10 +124,11 @@ Planned implementation order after approval:
       character, one ambiguous character and one narrator fallback. Confirm that
       generation can start without reviewing them; the Voice plan lists all roles
       in useful order; `Inspect selected voice` plays the original and the exact
-      production preview; `Another phrase`, `Use selected reference`, `Use narrator`,
-      `Keep automatic choice`, and `Change selected voice...` are clear;
-      and an explicit choice survives reopening while an untouched recommendation
-      remains automatic.
+      production preview; voice-reference and preview-phrase selectors can move
+      backward and forward independently; returning to a previously generated pair
+      reuses only that pair's preview; `Use <voice>`, narrator fallback, automatic
+      choice and `Change selected voice...` are clear; and an explicit choice
+      survives reopening while an untouched recommendation remains automatic.
 - [ ] **Validate the no-choice voice route on Windows:** in a real story, return
       from Inspect selected voice before playback, during a preview and after a
       failed save. Confirm Back becomes enabled, no reference is silently saved,
@@ -221,6 +242,139 @@ Planned implementation order after approval:
       Check Stories, Voices, Reading, setup and Settings for visible primary
       actions at small sizes, exact clipboard copying, keyboard navigation and
       contrast when switching system light/dark themes while the app is open.
+      In Settings, reach the final Advanced speech field and restart note by
+      keyboard at 200% scaling; focus must scroll into view while Save stays
+      visible. Confirm Cancel discards a cross-section draft and Save persists it.
+- [ ] **Validate story-match recovery on macOS and Windows:** with an unmatched
+      visible line and the smallest supported display at 200% text scaling, use
+      VoiceOver/Narrator and keyboard only. Require the mismatch to be announced,
+      all three actions and their focus to remain visible and distinguishable,
+      Enter to start live reading, Stories to open with reading stopped, and Escape
+      to leave reading stopped. Retain a short recording or accessibility trace.
+- [ ] **Validate Readiness on macOS and Windows:** at 200% text scaling, use
+      VoiceOver/Narrator and keyboard only through loading, an OCR error, a voice
+      warning and success. Require the first error and its remedy to be announced,
+      the full long error to scroll to its end, the install guide to open the
+      official Tesseract page, cancel/retry to show no stale result, and Open
+      Voices/Open Reading to return focus to the correct destination. Retain a
+      short recording or accessibility trace.
+- [ ] **Validate macOS permission recovery on a real host:** deny and grant Screen
+      Recording and Accessibility independently, return from each System Settings
+      pane, and verify automatic status refresh. Check the unknown-status and
+      request-failure paths, restart after a newly granted permission, then
+      confirm Reading can capture text. At 200% text scaling, both paths and
+      Refresh/Close must remain keyboard and VoiceOver accessible.
+- [ ] **Validate the asset manager on real macOS and Windows hosts:** at 200% text
+      scaling in light and dark themes, use keyboard and VoiceOver/Narrator to
+      choose, checksum-validate and save an existing voice manifest; import a
+      manifest and one character voice; verify, download, cancel and retry an
+      XTTS model. Confirm changed model selections never inherit another
+      model's ready state and that failure text stays readable.
+- [ ] **Validate game profiles on real macOS and Windows hosts:** at 200% text
+      scaling, confirm the full selected-settings summary and every action remain
+      visible, keyboard focus follows selection/management/activation order,
+      unavailable actions are announced as disabled, and Close does not imply
+      rollback of saved profile edits. Simulate a read-only region file and full
+      settings volume to verify activation leaves the previous profile usable.
+- [ ] **Validate manual voice import on real macOS and Windows hosts:** use keyboard
+      and VoiceOver/Narrator to enter required character/optional aliases, select
+      and replace audio files, inspect a long scrollable file list, cancel without
+      import, and confirm an import error preserves the entered selection for retry.
+- [ ] **Validate calibration on real macOS and Windows hosts:** at 200% text
+      scaling, use mouse and keyboard to draw, move, resize, clear and review a
+      region. Deny region-file write permission and confirm the selected pixels,
+      error and retry remain visible; retry after restoring permission. Check that
+      an active profile and global region agree after each success/failure.
+- [ ] **Investigate OCR cancellation under repeated calibration retries:** close
+      or redraw while a real OCR subprocess is stalled and measure whether old
+      workers continue consuming the global thread pool. If reproducible, add
+      a bounded OCR timeout/cancellation path without changing live OCR behavior.
+- [ ] **Validate uncertain OCR review on real macOS and Windows hosts:** at 200%
+      text scaling, correct one speaker-only and one text-only sample, inspect a
+      wide/tall screenshot with both scrollbars, retry after read-only storage,
+      and confirm the rule reaches only its selected game scope. Retain screenshots
+      of compact, error and zoom states plus the saved correction entries.
+- [ ] **Validate OCR correction editor on real macOS and Windows hosts:** at 200%
+      text scaling, add/edit/delete rules in both scopes, hover and keyboard-edit
+      a long clipped value, cancel an uncommitted cell edit, inspect first-error
+      tab navigation, and retry after a denied write. Keep screenshots of compact,
+      validation and discard-confirmation states plus the persisted rule file.
+- [ ] **Validate dialogue history on real macOS and Windows hosts:** use keyboard
+      and a screen reader to search, select, speak and stop a line; verify that
+      current voice assignments are used, status changes are announced, the full
+      session exports even under a filter, and the compact layout works at 200%
+      text scaling. Confirm a backend without Stop keeps the window open until
+      speech finishes.
+- [ ] **Validate diagnostics and support on real macOS and Windows hosts:** at
+      200% text scaling, inspect and enlarge a current capture with both scroll
+      axes, trigger permission/window warnings and a timeout, and verify stale
+      data is dated while Refresh and its remedy stay keyboard/screen-reader
+      reachable. Browse a growing log without losing selection, export and
+      inspect a support archive for screenshots/dialogue/audio/secrets, then
+      retry after a read-only destination. Retain screenshots and archive inventory.
+- [ ] **Validate the authoring workbench on real macOS and Windows hosts:** at
+      200% text scaling, choose collections with and without pending lines,
+      generate one line, stop playback before the end and confirm Approve/Reject
+      stay blocked, then finish playback and approve. Reopen and replay the
+      approved recording, including while another window owns generation;
+      confirm review decisions wait for the lease, saved review filters remain
+      independent of collection selection, and the full selected dialogue text
+      stays visible and keyboard/screen-reader accessible. Retain the screenshots
+      and playback/decision evidence.
+- [ ] **Validate cohort review on real macOS and Windows hosts:** at 200% text
+      scaling, listen to every required sample to the end, mark one unclear
+      defect and replace it with a specific reason, accept a clean cohort,
+      reject a bad cohort, request more evidence when available, and leave
+      undecided. Trigger a bundle-load failure and verify the blocked status and
+      Retry are visible without scrolling; confirm keyboard/screen-reader order
+      and that checksum or stale-authority errors cannot commit a decision.
+- [ ] **Validate blind missing-voice review on real macOS and Windows hosts:**
+      at 200% text scaling, compare two playable A/B candidates, stop each
+      before the end and confirm Neither/Choose remain blocked, then hear both
+      fully and save one choice. Repeat with one failed candidate and with both
+      failed; require the read-only automatic unresolved summary, keyboard and
+      screen-reader access, and no disclosure of hidden source identity before
+      import. Confirm a mixed multi-family session counts manual and automatic
+      outcomes separately after reopen.
+- [ ] **Validate failed-reference audit on real macOS and Windows hosts:**
+      at 200% text scaling, use keyboard and VoiceOver/NVDA to switch groups,
+      candidates and affected lines in both directions; confirm the full line
+      remains readable and focus scrolls into view. Interrupt original playback,
+      switch selection during playback, fail source preparation and generate or
+      cancel a preview. Only full original playback of every candidate may enable
+      either decision; a preview must never count as original evidence. Save and
+      reopen to confirm the selected reference and progress persist.
+- [ ] **Validate source-reference quality review on real macOS and Windows hosts:**
+      at 200% text scaling, inspect the source identity/portrait, switch generated
+      samples, copy their full text and use keyboard plus VoiceOver/NVDA to reach
+      playback and decisions. Stop original and generated audio early and switch
+      samples mid-playback; neither action may count as complete listening. After
+      the original alone, Reject and Need another should enable while Accept
+      remains blocked; after every generated sample, Accept should enable.
+      Save and reopen a final decision and confirm the completion message stays
+      visible at enlarged text.
+- [ ] **Validate blind A/B listening on real macOS and Windows hosts:** at
+      200% text scaling, read and scroll a long dialogue, use keyboard and
+      VoiceOver/NVDA to reach A, B, Review context and all four decisions.
+      Confirm a pause/resume preserves only natural full-playback credit, seeking
+      or stopping does not grant credit, and automatic playback starts B only
+      after A finishes. Save A/B/tie/neither outcomes; verify no model is called
+      a leader for tied or all-neither results, the report button receives focus,
+      and the saved report opens in the default application.
+- [ ] **Validate terminal-conflict review on real macOS and Windows hosts:**
+      at 200% text scaling, read a multiline affected line, move by keyboard and
+      VoiceOver/NVDA through Play A/B, Review context, and all three outcomes.
+      Stop playback early and verify no listening credit; natural completion of
+      both recordings alone must unlock Keep A/B and Neither. Save a decision,
+      reopen, and verify progress and unchanged source workspaces. A dangling
+      progress artifact must block opening rather than present a fresh review.
+- [ ] **Validate rejected-recording reassessment on real macOS and Windows hosts:**
+      at 200% text scaling, hear two recordings to their natural ends, stop one
+      early, choose multiple defects and then acceptable, navigate both ways,
+      and publish. Check VoiceOver/NVDA announces the evidence, choices, save
+      status and errors; confirm focus follows the scrolled final defect.
+      Repeat after read-only progress and publication folders, then reopen to
+      verify only saved choices persisted and earlier decisions remain intact.
 - [ ] **Validate manually:** run a 30-minute macOS and Windows soak covering CPU/GPU
       speech and animated scenes. Require no buzzing, underruns, stale speech or
       stale auto-advance; record hardware and timing evidence instead of relying
@@ -236,3 +390,51 @@ Planned implementation order after approval:
       SoundEffect v2 using a small fixed corpus and multiple checksum-bound seeds.
       Require technical and blinded perceptual approval before adding a provider;
       unsupported effects remain explicit omissions.
+## Active - Voice-picker accessibility verification
+
+- [ ] Diagnose the Windows Mrs. Owen original-reference silence. Record the
+      selected reference checksum and authoring playback queued/started/finished/
+      failed states in support bundles without recording audio or dialogue. The
+      reported failure was a mismatch between the candidate's source display name
+      and its manifest name; verify original playback and preview on Windows after
+      the identity-check fix, then remove this item.
+- [ ] On supported macOS and Windows builds, use VoiceOver and NVDA to traverse
+      target, source, game-reference, consent, preview, impact and action controls;
+      enter the same editor from live character recovery with that character selected.
+      Trigger original and preview playback states. Gate: focus follows visual order,
+      every control has a meaningful announced name, and each changing status is
+      announced once with its subject. Retain a screen-reader transcript or recording.
+- [ ] In Preparation voice audition, use a source with a known title and transcript;
+      require ordinary evidence to remain visible outside technical details. Exercise
+      in-place Play/Stop for original and preview, switch candidates during playback,
+      and inject a delayed save failure while pressing Back. Gate: stale audio stops,
+      Back waits for persistence, Retry saves the same visible choice, and the replanned
+      route matches that choice. Repeat the flow by keyboard and screen reader.
+
+## Active - Offline preparation hardware acceptance
+
+- [ ] On supported macOS and Windows hardware, start Reading while generation is
+      incomplete, cross a prepared boundary, cancel and resume after restart, and
+      exercise deferred activation after settings change. Verify audio continuity,
+      that completed lines are not regenerated, keyboard and screen-reader status,
+      and the minimum-width layout with increased text scaling.
+
+## Active - Isolate UI catalog story renderers
+
+- [ ] After the concurrent `story-match-recovery` catalog edits settle, split the
+      coupled scenario factories inside `scripts/render_ui_catalog.py:_render_stories`.
+      It still has four targeted complexity findings across the owner, voice editor
+      and offline preparation. Keep Qt imports lazy so `--validate-only` needs no
+      desktop runtime; preserve the current 27 stories / 33 surfaces, screenshot
+      IDs, rendering order and cleanup. Gate: catalog render and tests pass, and
+      these four findings can be removed from the ratchet.
+
+## Active - Expand type and runtime coverage
+
+- [ ] After concurrent `vntts/app.py` edits settle, resolve its 184 whole-package
+      mypy errors against the existing 181-error inventory baseline. Type coherent
+      ownership slices without `Any`, casts or ignores; preserve Qt signal behavior
+      and persisted settings. Add the file to configured scope only at zero errors.
+- [ ] After concurrent UI edits settle, rerun full Ruff format/complexity and mypy
+      inventory ratchets, fix new findings in their owners, run broad CI tests and
+      push separately verified commits.

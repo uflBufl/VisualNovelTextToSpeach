@@ -1866,7 +1866,7 @@ def sanitize_event(entry: SupportDetails) -> SupportDocument:
     sanitized = {
         "recorded_at": entry.get("recorded_at"),
         "level": entry.get("level"),
-        "message": redact_text(entry.get("message", "")),
+        "message": _redact_game_import_text(entry.get("message", "")),
     }
     sanitized.update(
         (key, _sanitize_event_value(entry[key]))
@@ -1899,7 +1899,7 @@ def sanitize_event(entry: SupportDetails) -> SupportDocument:
 def _sanitize_event_value(value: object) -> object:
     if value is None or isinstance(value, (bool, int, float)):
         return value
-    return redact_text(value)
+    return _redact_game_import_text(value)
 
 
 def _sanitize_game_import_value(key: str, value: object) -> object:

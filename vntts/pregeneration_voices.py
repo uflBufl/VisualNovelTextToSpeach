@@ -113,11 +113,14 @@ voice_plan_schema_version = 5
 voice_decisions_schema_version = 1
 PLAYER_VOICE_CANDIDATES_FIELD = "vntts.player.voice_candidates"
 PLAYER_VOICE_CANDIDATES_SCHEMA = "vntts.player-voice-candidates"
-PLAYER_VOICE_CANDIDATES_VERSION = 3
-PLAYER_VOICE_CANDIDATES_VERSIONS = frozenset({1, 2, PLAYER_VOICE_CANDIDATES_VERSION})
+PLAYER_VOICE_CANDIDATES_VERSION = 4
+UNLINKED_BANK_MEDIA = "exact_bank_unrouted_media"
+STORY_LINE_ROUTE = "story_line_route"
+UNLINKED_BANK_LABEL = "Unlinked game-bank audio; spoken text unknown"
 _CLEAR_WINNER_SCORE = 80
 _CLEAR_WINNER_MARGIN = 20
 _MAX_AUDITION_CANDIDATES = 3
+_MAX_AUTOMATIC_REFERENCE_SECONDS = 12.0
 
 
 class PregenerationVoiceError(RuntimeError):
@@ -184,6 +187,7 @@ class VoiceCandidate:
     source_line_ids: tuple[str, ...] = ()
     reference_duration_seconds: float | None = None
     source_excerpts: tuple[str, ...] = ()
+    candidate_origin: str | None = None
 
     def to_document(self) -> JsonObject:
         value = asdict(self)
@@ -839,6 +843,22 @@ class VoicePlanStore:
             library=self.voice_library,
             variant_key=variant_key,
         )
+        binding = (
+            self.voice_library.binding(routing_role, variant_key=variant_key)
+            if self.voice_library is not None
+            else None
+        )
+        if (
+            binding is None
+            and self.voice_library is not None
+            and variant_key is not None
+        ):
+            binding = self.voice_library.binding(routing_role)
+        manually_selected_source = (
+            assignment_source
+            if binding is not None and binding.provenance.get("method") == "manual"
+            else None
+        )
         linked_names: tuple[str, ...] = (character,)
         linked_names += tuple(
             alias
@@ -866,6 +886,31 @@ class VoicePlanStore:
             linked_names=linked_names,
             archived_sources=archived_sources,
         )
+        if (
+            binding is not None
+            and binding.provenance.get("method") == "automatic"
+            and any(
+                candidate.source_id == assignment_source
+                and candidate.candidate_origin == UNLINKED_BANK_MEDIA
+                for candidate in candidate_inventory
+            )
+            and self.voice_library is not None
+        ):
+            self.voice_library.clear(binding.role, variant_key=binding.variant_key)
+            if bound_source == assignment_source:
+                bound_source = None
+            assignment_source = None
+            registry = registry_with_voice_library(registry, self.voice_library)
+            candidate_inventory = _candidate_inventory(
+                character,
+                bound_source,
+                settings,
+                registry,
+                candidate_variants,
+                assignment_source=None,
+                linked_names=linked_names,
+                archived_sources=archived_sources,
+            )
         if self.voice_library is not None:
             for available in candidate_inventory:
                 discover_voice_source(
@@ -878,7 +923,10 @@ class VoicePlanStore:
                     evidence={"recommendation": available.recommendation},
                     algorithm="voice-plan-v1",
                 )
-        eligible_candidates = _eligible_candidates(candidate_inventory)
+        eligible_candidates = _eligible_candidates(
+            candidate_inventory,
+            manually_selected_source=manually_selected_source,
+        )
         narrator_candidate = _narrator_candidate(
             settings,
             registry,
@@ -986,8 +1034,8 @@ class VoicePlanStore:
                 if narrator_candidate is not None
                 else None
             )
-        elif candidate_inventory:
-            selected_candidate = candidate_inventory[0]
+        elif eligible_candidates:
+            selected_candidate = eligible_candidates[0]
             source_id = selected_candidate.source_id
             candidate = _candidate_from_source(source_id, registry)
             if _requires_audition(eligible_candidates, records):
@@ -1243,6 +1291,29 @@ def _candidate_inventory(
     assignment = assignment_source
     candidates: dict[str, VoiceCandidate] = {}
     candidate_ranks: dict[str, tuple[float, float]] = {}
+    target = normalize_character_name(character)
+    linked_targets = {
+        target,
+        *(normalize_character_name(name) for name in linked_names),
+    }
+    variants_by_source = {}
+    for variant in candidate_variants:
+        if (
+            not isinstance(variant, dict)
+            or normalize_character_name(variant.get("character", ""))
+            not in linked_targets
+        ):
+            continue
+        voice_character = variant.get("voice_character")
+        if isinstance(voice_character, str) and voice_character.strip():
+            variants_by_source[
+                f"character:{normalize_character_name(voice_character)}"
+            ] = variant
+    variants_by_reference = {
+        variant["reference_sha256"]: variant
+        for variant in variants_by_source.values()
+        if isinstance(variant.get("reference_sha256"), str)
+    }
 
     def add(
         source_id: str,
@@ -1253,6 +1324,9 @@ def _candidate_inventory(
         voice = _candidate_from_source(source_id, registry)
         if voice is None:
             return
+        variant = variant or variants_by_source.get(source_id)
+        if variant is None and len(voice.references) == 1:
+            variant = variants_by_reference.get(sha256_file(voice.references[0]))
         variant = variant or {}
         candidate = _ranked_candidate(
             source_id,
@@ -1320,27 +1394,15 @@ def _candidate_inventory(
     if exact is not None:
         add(exact[0], 90, "Exact character name or known alias")
 
-    target = normalize_character_name(character)
-    linked_targets = {
-        target,
-        *(normalize_character_name(name) for name in linked_names),
-    }
-    for variant in candidate_variants:
-        if (
-            not isinstance(variant, dict)
-            or normalize_character_name(variant.get("character", ""))
-            not in linked_targets
-        ):
-            continue
-        voice_character = variant.get("voice_character")
-        if not isinstance(voice_character, str) or not voice_character.strip():
-            continue
-        source_id = f"character:{normalize_character_name(voice_character)}"
+    for source_id, variant in variants_by_source.items():
         same_name = normalize_character_name(variant["character"]) == target
+        bank_only = variant.get("candidate_origin") == UNLINKED_BANK_MEDIA
         add(
             source_id,
-            90 if same_name else 60,
-            "Reviewed voice for this character"
+            40 if bank_only else 90 if same_name else 60,
+            "Unlinked game-bank audio; listen before choosing"
+            if bank_only
+            else "Reviewed voice for this character"
             if same_name
             else "Reference from another name; preview before choosing",
             variant,
@@ -1450,10 +1512,10 @@ def _text_values(value: object) -> tuple[str, ...]:
     return tuple(value)
 
 
-def _source_excerpt_labels(value: object) -> tuple[str, ...]:
+def _source_excerpt_transcripts(value: object) -> tuple[str, ...]:
     if not isinstance(value, (list, tuple)):
         raise PregenerationVoiceError("Voice candidate source excerpts are invalid")
-    labels = []
+    transcripts = []
     for excerpt in value:
         if not isinstance(excerpt, dict):
             raise PregenerationVoiceError("Voice candidate source excerpts are invalid")
@@ -1464,8 +1526,8 @@ def _source_excerpt_labels(value: object) -> tuple[str, ...]:
             or not isinstance(text, str)
         ):
             raise PregenerationVoiceError("Voice candidate source excerpts are invalid")
-        labels.append(f"{title}: {text}" if title else text)
-    return tuple(labels)
+        transcripts.append(text)
+    return tuple(dict.fromkeys(transcripts))
 
 
 def _ranked_candidate(
@@ -1489,7 +1551,8 @@ def _ranked_candidate(
         source_voice_ids=_text_values(variant.get("source_voice_ids")),
         source_line_ids=_text_values(variant.get("source_line_ids")),
         reference_duration_seconds=_reference_duration_seconds(voice.references),
-        source_excerpts=_source_excerpt_labels(variant.get("source_excerpts", ())),
+        source_excerpts=_source_excerpt_transcripts(variant.get("source_excerpts", ())),
+        candidate_origin=_optional_variant(variant.get("candidate_origin")),
     )
 
 
@@ -1558,9 +1621,36 @@ def _requires_audition(
     )
 
 
+def is_playable_main_voice_source(source_bank: object, source_line_ids: object) -> bool:
+    if not isinstance(source_bank, str) or not isinstance(
+        source_line_ids, (list, tuple)
+    ):
+        return False
+    bank = source_bank.replace("\\", "/").rsplit("/", 1)[-1].removesuffix(".bnk")
+    return (bank.startswith("mianvoc_hero") or bank.endswith("_mainvoc")) and any(
+        isinstance(line_id, str) and line_id.startswith("playable-voice:")
+        for line_id in source_line_ids
+    )
+
+
 def _eligible_candidates(
     candidates: tuple[VoiceCandidate, ...],
+    *,
+    manually_selected_source: str | None = None,
 ) -> tuple[VoiceCandidate, ...]:
+    candidates = tuple(
+        candidate
+        for candidate in candidates
+        if candidate.source_id == manually_selected_source
+        or candidate.candidate_origin != UNLINKED_BANK_MEDIA
+        and (
+            not is_playable_main_voice_source(
+                candidate.source_bank, candidate.source_line_ids
+            )
+            or candidate.reference_duration_seconds is None
+            or candidate.reference_duration_seconds <= _MAX_AUTOMATIC_REFERENCE_SECONDS
+        )
+    )
     if len(candidates) < 2:
         return candidates
     best_score = candidates[0].match_score
@@ -1569,7 +1659,20 @@ def _eligible_candidates(
         for candidate in candidates
         if best_score - candidate.match_score < _CLEAR_WINNER_MARGIN
     )
-    return (eligible or candidates[:1])[:_MAX_AUDITION_CANDIDATES]
+    shortlist = list((eligible or candidates[:1])[:_MAX_AUDITION_CANDIDATES])
+    playable = next(
+        (
+            candidate
+            for candidate in eligible
+            if is_playable_main_voice_source(
+                candidate.source_bank, candidate.source_line_ids
+            )
+        ),
+        None,
+    )
+    if playable is not None and playable not in shortlist:
+        shortlist[-1] = playable
+    return tuple(shortlist)
 
 
 def _manifest_queue_bindings(
@@ -1597,29 +1700,24 @@ def _manifest_queue_bindings(
         ) from error
 
 
-def _validate_player_voice_variant(variant: object, index: int, version: int) -> None:
+def _validate_player_voice_variant(variant: object, index: int) -> None:
     fields = {
         "variant_id",
         "character",
         "portrait",
+        "portrait_image_sha256",
         "source_bank",
         "source_voice_ids",
         "voice_character",
         "reference_sha256",
         "source_line_ids",
+        "source_excerpts",
+        "candidate_origin",
         "source_event_ids",
         "duration_seconds",
         "quality_score",
     }
-    if version >= 2:
-        fields.add("portrait_image_sha256")
-    if version >= 3:
-        fields.add("source_excerpts")
-    if (
-        not isinstance(variant, dict)
-        or not fields <= set(variant)
-        or set(variant) - fields - {"candidate_origin"}
-    ):
+    if not isinstance(variant, dict) or set(variant) != fields:
         raise PregenerationVoiceError(f"Player voice candidate {index} is malformed")
     character = variant.get("character")
     portrait = variant.get("portrait")
@@ -1668,20 +1766,23 @@ def _validate_player_voice_variant(variant: object, index: int, version: int) ->
         ),
         (
             "portrait_image_sha256",
-            version < 2
-            or variant.get("portrait_image_sha256") is None
+            variant.get("portrait_image_sha256") is None
             or _is_sha256(variant["portrait_image_sha256"]),
         ),
         (
             "candidate_origin",
-            variant.get("candidate_origin")
-            in {None, "exact_bank_unrouted_media", "story_line_route"},
+            variant.get("candidate_origin") in {UNLINKED_BANK_MEDIA, STORY_LINE_ROUTE}
+            and (
+                bool(variant.get("source_line_ids"))
+                == (variant.get("candidate_origin") == STORY_LINE_ROUTE)
+            ),
         ),
         (
             "source_excerpts",
-            version < 3
-            or isinstance(variant.get("source_excerpts"), list)
+            isinstance(variant.get("source_excerpts"), list)
             and isinstance(variant.get("source_line_ids"), list)
+            and bool(variant["source_excerpts"])
+            == (variant.get("candidate_origin") == STORY_LINE_ROUTE)
             and all(
                 isinstance(value, dict)
                 and set(value) == {"line_id", "title", "text"}
@@ -1724,6 +1825,13 @@ def _manifest_candidate_variants(
     player = manifest_document.get(PLAYER_VOICE_CANDIDATES_FIELD)
     if player is None:
         return tuple(variants)
+    if (
+        isinstance(player, dict)
+        and player.get("schema_version") != PLAYER_VOICE_CANDIDATES_VERSION
+    ):
+        raise PregenerationVoiceError(
+            "Game voice references need refreshing to show their source dialogue"
+        )
     expected_fields = {
         "schema",
         "schema_version",
@@ -1736,7 +1844,7 @@ def _manifest_candidate_variants(
         not isinstance(player, dict)
         or set(player) != expected_fields
         or player.get("schema") != PLAYER_VOICE_CANDIDATES_SCHEMA
-        or player.get("schema_version") not in PLAYER_VOICE_CANDIDATES_VERSIONS
+        or player.get("schema_version") != PLAYER_VOICE_CANDIDATES_VERSION
         or player.get("story_index_sha256") != story_index_sha256
         or manifest_path is None
     ):
@@ -1771,10 +1879,9 @@ def _manifest_candidate_variants(
     if not isinstance(values, list) or not values:
         raise PregenerationVoiceError("Player voice candidate inventory is empty")
     seen = set()
-    version = player["schema_version"]
     for index, variant in enumerate(values):
         try:
-            _validate_player_voice_variant(variant, index, version)
+            _validate_player_voice_variant(variant, index)
         except PregenerationVoiceError as error:
             _record_rejected_player_voice_candidate(str(error))
             continue
@@ -1798,6 +1905,21 @@ def _manifest_candidate_variants(
         seen.add(variant_id)
         variants.append(dict(variant))
     return tuple(variants)
+
+
+def player_voice_catalog_is_current(manifest_path: Path | str) -> bool:
+    """Return whether a cached game candidate catalog has source provenance."""
+    try:
+        document = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    except OSError, ValueError, TypeError:
+        return False
+    if not isinstance(document, dict):
+        return False
+    player = document.get(PLAYER_VOICE_CANDIDATES_FIELD)
+    return player is None or (
+        isinstance(player, dict)
+        and player.get("schema_version") == PLAYER_VOICE_CANDIDATES_VERSION
+    )
 
 
 def validated_player_voice_candidates(

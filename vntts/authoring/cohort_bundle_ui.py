@@ -25,7 +25,6 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
-    QFormLayout,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -36,6 +35,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -62,7 +62,6 @@ from vntts.authoring.cohort_review import (
 )
 from vntts.authoring.review_context_ui import (
     ReviewDecisionContext,
-    review_form_layout,
     review_model_label,
     review_scroll_area,
 )
@@ -564,15 +563,18 @@ class CohortReviewBundleDialog(QDialog):
     def _build_status_widgets(self) -> None:
         self.setWindowTitle("VNTTS specialist cohort review")
         self.resize(1280, 820)
-        self.setMinimumSize(900, 820)
+        self.setMinimumSize(900, 640)
         self.heading = QLabel("Specialist voice review")
         self.heading.setObjectName("reviewHeading")
         self.heading.setAccessibleName("Specialist voice review")
         self.guide = QLabel(
-            "1. Play every required sample   2. Mark any bad sample   "
-            "3. Repair marked, accept, reject all, or request more evidence. "
-            "Technical attention "
-            "only selects samples for listening; it is not a rejection verdict."
+            "Listen to every required sample to the end before accepting. "
+            "Mark defects you hear, then decide this cohort. "
+            "Technical flags only select what to hear; they are not a verdict."
+        )
+        self.guide.setToolTip(
+            "Technical attention only selects samples for listening; "
+            "it is not a rejection verdict."
         )
         self.guide.setWordWrap(True)
         self.guide.setObjectName("reviewGuide")
@@ -660,13 +662,16 @@ class CohortReviewBundleDialog(QDialog):
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
+        self.table.setStyleSheet(
+            "QTableWidget::item:selected { background: #4b5563; color: white; }"
+        )
         self.table.setShowGrid(False)
         self.table.setWordWrap(False)
         self.table.setMinimumHeight(140)
         self.table.horizontalHeader().setSectionResizeMode(
             7, QHeaderView.ResizeMode.Stretch
         )
-        for column, width in enumerate((65, 100, 120, 130, 240, 220, 190)):
+        for column, width in enumerate((75, 220, 120, 130, 240, 220, 190)):
             self.table.setColumnWidth(column, width)
         self.table.itemSelectionChanged.connect(self._selection_changed)
         self.table.doubleClicked.connect(lambda _index: self.play_selected())
@@ -699,7 +704,8 @@ class CohortReviewBundleDialog(QDialog):
             (
                 self.mark_bad,
                 "Mark selected cohort sample bad",
-                "Mark or clear speech-defect evidence for the selected sample",
+                "Mark with an unclear reason or clear the bad mark; "
+                "specific reasons can replace the unclear reason",
             ),
             (
                 self.need_another,
@@ -746,16 +752,20 @@ class CohortReviewBundleDialog(QDialog):
         self.reject_button.clicked.connect(lambda: self.apply_decision("rejected"))
         self.retry_load.clicked.connect(self.reload_bundle)
 
-    def _build_decision_controls(self) -> tuple[QFormLayout, QGroupBox, QVBoxLayout]:
-        navigation = review_form_layout()
-        navigation.addRow(self.previous, self.next)
-        navigation.addRow(self.replay, self.stop)
-        evidence_actions = review_form_layout()
-        evidence_actions.addRow(self.mark_bad, self.need_another)
-        evidence_actions.addRow(self.leave_undecided)
-        terminal_actions = review_form_layout()
-        terminal_actions.addRow(self.repair_marked)
-        terminal_actions.addRow(self.accept_button, self.reject_button)
+    def _build_decision_controls(self) -> tuple[QHBoxLayout, QGroupBox, QVBoxLayout]:
+        navigation = QHBoxLayout()
+        for button in (self.previous, self.replay, self.stop, self.next, self.mark_bad):
+            navigation.addWidget(button)
+        navigation.addStretch(1)
+        evidence_actions = QHBoxLayout()
+        evidence_actions.addWidget(self.need_another)
+        evidence_actions.addWidget(self.repair_marked)
+        evidence_actions.addStretch(1)
+        evidence_actions.addWidget(self.leave_undecided)
+        terminal_actions = QHBoxLayout()
+        terminal_actions.addStretch(1)
+        terminal_actions.addWidget(self.reject_button)
+        terminal_actions.addWidget(self.accept_button)
         decisions = QVBoxLayout()
         decisions.addLayout(evidence_actions)
         decisions.addLayout(terminal_actions)
@@ -770,9 +780,17 @@ class CohortReviewBundleDialog(QDialog):
             control.toggled.connect(self._defect_reasons_changed)
             self.defect_checks[reason] = control
             defect_layout.addWidget(control, index // 2, index % 2)
-        defect_group = QGroupBox("Why the selected sample sounds bad")
+        defect_group = QGroupBox(
+            "Specific defects in selected sample (after listening)"
+        )
         defect_group.setAccessibleName("Selected sample speech defect reasons")
         defect_group.setLayout(defect_layout)
+        self.defect_toggle = QToolButton()
+        self.defect_toggle.setText("Choose defect reason...")
+        self.defect_toggle.setCheckable(True)
+        self.defect_toggle.setAccessibleName("Show specific defect reasons")
+        self.defect_toggle.toggled.connect(defect_group.setVisible)
+        defect_group.hide()
         self.decision_help = QLabel()
         self.decision_help.setWordWrap(True)
         self.decision_help.setAccessibleName("Cohort decision requirements")
@@ -789,7 +807,7 @@ class CohortReviewBundleDialog(QDialog):
 
     def _build_review_groups(
         self,
-        navigation: QFormLayout,
+        navigation: QHBoxLayout,
         defect_group: QGroupBox,
         decisions: QVBoxLayout,
     ) -> tuple[QGroupBox, QGroupBox, QGroupBox, QGroupBox]:
@@ -797,10 +815,8 @@ class CohortReviewBundleDialog(QDialog):
         progress_layout.addWidget(self.summary, 0, 0)
         progress_layout.addWidget(self.quality_baseline, 1, 0)
         progress_layout.addWidget(self.overall_progress, 2, 0)
-        progress_layout.addWidget(self.status, 3, 0)
-        progress_layout.addWidget(self.operation, 4, 0)
-        progress_layout.addWidget(self.progress, 5, 0)
-        progress_layout.addWidget(self.retry_load, 6, 0)
+        progress_layout.addWidget(self.operation, 3, 0)
+        progress_layout.addWidget(self.progress, 4, 0)
         progress_group = QGroupBox("Review progress")
         progress_group.setLayout(progress_layout)
 
@@ -821,14 +837,18 @@ class CohortReviewBundleDialog(QDialog):
         sample_layout.addWidget(self.sample_identity)
         sample_layout.addWidget(self.sample_text)
         sample_layout.addLayout(navigation)
+        sample_layout.addWidget(self.defect_toggle)
+        sample_layout.addWidget(defect_group)
         sample_group = QGroupBox("Current sample")
         sample_group.setLayout(sample_layout)
 
         decision_layout = QVBoxLayout()
+        self.cohort_scope = QLabel()
+        self.cohort_scope.setAccessibleName("Current cohort decision scope")
+        decision_layout.addWidget(self.cohort_scope)
         decision_layout.addWidget(self.decision_help)
-        decision_layout.addWidget(defect_group)
         decision_layout.addLayout(decisions)
-        decision_layout.addWidget(self.shortcuts_help)
+        self.shortcuts_help.setToolTip(self.shortcuts_help.text())
         decision_group = QGroupBox("Cohort decision")
         decision_group.setLayout(decision_layout)
         return progress_group, cohort_group, sample_group, decision_group
@@ -846,11 +866,16 @@ class CohortReviewBundleDialog(QDialog):
         review_layout.setSpacing(10)
         review_layout.addWidget(self.heading)
         review_layout.addWidget(self.guide)
-        review_layout.addWidget(self.decision_context)
-        review_layout.addWidget(progress_group)
+        status_row = QHBoxLayout()
+        status_row.addWidget(self.status, 1)
+        status_row.addWidget(self.retry_load)
+        review_layout.addLayout(status_row)
         review_layout.addWidget(cohort_group)
         review_layout.addWidget(sample_group)
         review_layout.addWidget(self.table, 1)
+        review_layout.addWidget(progress_group)
+        review_layout.addWidget(self.decision_context)
+        review_layout.addWidget(self.shortcuts_help)
         self.review_scroll = review_scroll_area(
             review_content,
             "Scrollable cohort review context",
@@ -875,7 +900,7 @@ class CohortReviewBundleDialog(QDialog):
             "  border-radius: 4px; }"
             "QLabel#decisionHelp { padding: 4px; }"
             "QLabel#shortcutHelp { font-size: 12px; }"
-            "QPushButton { min-height: 30px; padding: 4px 10px; }"
+            "QPushButton { min-height: 26px; padding: 3px 8px; }"
             "QPushButton#acceptCohort { font-weight: 700; }"
             "QPushButton#rejectCohort { font-weight: 700; }"
         )
@@ -909,9 +934,10 @@ class CohortReviewBundleDialog(QDialog):
             self.replay,
             self.stop,
             self.next,
+            self.mark_bad,
+            self.defect_toggle,
             self.table,
             *self.defect_checks.values(),
-            self.mark_bad,
             self.need_another,
             self.leave_undecided,
             self.repair_marked,
@@ -1134,10 +1160,12 @@ class CohortReviewBundleDialog(QDialog):
             key = (cohort["workspace_id"], cohort["cohort_id"])
             identity = cast(Mapping[str, object], cohort["identity"])
             self.cohort_choice.addItem(
-                f"Required {position}/{len(available)} - "
-                f"{identity['voice_character']} role - "
-                f"{len(cohort['samples'])} samples decide "
-                f"{cohort['item_count']} WAVs",
+                f"Cohort {position} of {len(available)} | "
+                f"{identity['voice_character']} | "
+                f"{len(cohort['samples'])} required "
+                f"sample{'s' if len(cohort['samples']) != 1 else ''} | "
+                f"{cohort['item_count']} WAV"
+                f"{'s' if cohort['item_count'] != 1 else ''}",
                 key,
             )
         index = self.cohort_choice.findData(previous)
@@ -1166,6 +1194,9 @@ class CohortReviewBundleDialog(QDialog):
         )
 
     def _toggle_technical_details(self, visible: bool) -> None:
+        self.table.setColumnHidden(2, not visible)
+        self.table.setColumnHidden(3, not visible)
+        self.table.setColumnHidden(4, not visible)
         self.table.setColumnHidden(5, not visible)
         self.table.setColumnHidden(6, not visible)
         self.cohort_audit.setVisible(bool(visible and self._current_key()))
@@ -1184,6 +1215,8 @@ class CohortReviewBundleDialog(QDialog):
             self.sample_text.setText(
                 "All required cohorts are complete."
                 if completed
+                else "Retry loading the samples to begin."
+                if self._load_failed
                 else "Select a cohort and sample to begin."
             )
             self.cohort_audit.clear()
@@ -1201,10 +1234,13 @@ class CohortReviewBundleDialog(QDialog):
             f"Sample {row} of {len(samples)} | {heard} heard | {bad} marked bad"
         )
         self.sample_identity.setText(
-            f"Source label: {sample.item.speaker} | Generated role: "
-            f"{sample.item.voice_character} | Required sample: "
-            f"{_display_required_reason(sample.required_reason)} | "
-            "Pace metrics are report-only; listening decides quality"
+            f"Speaker in game: {sample.item.speaker} | "
+            f"Voice used: {sample.item.voice_character}\n"
+            f"Selected to hear: {_display_required_reason(sample.required_reason)}"
+        )
+        self.sample_identity.setToolTip(
+            f"Required because: {_display_required_reason(sample.required_reason)}. "
+            "Pace metrics are report-only; listening decides quality."
         )
         self.sample_text.setText(sample.item.text)
         cohort = self._current_cohort()
@@ -1259,6 +1295,7 @@ class CohortReviewBundleDialog(QDialog):
         self.table.setRowCount(len(samples))
         key = self._current_key()
         if key is None:
+            self._toggle_technical_details(self.technical_details.isChecked())
             self._update_selected_sample_details()
             self._update_actions()
             return
@@ -1276,7 +1313,7 @@ class CohortReviewBundleDialog(QDialog):
                     )
                 )
                 if item.queue_id in self.bad[key]
-                else "Sounds acceptable"
+                else "No defect marked"
                 if item.queue_id in self.heard[key]
                 else "Waiting",
                 item.speaker,
@@ -1293,6 +1330,15 @@ class CohortReviewBundleDialog(QDialog):
                 cell.setData(Qt.ItemDataRole.UserRole, sample)
         if samples:
             self.table.selectRow(0)
+        if self.status.text() in {
+            "READY: play the selected sample",
+            "Ready to decide this cohort",
+        }:
+            self.status.setText(
+                "Ready to decide this cohort"
+                if len(self.heard[key]) == len(samples)
+                else "READY: play the selected sample"
+            )
         self._toggle_technical_details(self.technical_details.isChecked())
         self._update_selected_sample_details()
         self._update_actions()
@@ -1415,6 +1461,10 @@ class CohortReviewBundleDialog(QDialog):
         self._show_current_cohort()
         if selected_queue_id is not None:
             self._select_queue_id(selected_queue_id)
+        key = self._current_key()
+        samples = self._current_samples()
+        if key is not None and samples and len(self.heard[key]) == len(samples):
+            self.status.setText("Ready to decide this cohort")
         self._checkpoint_observations()
 
     def _media_error(self, _error: object, message: str = "") -> None:
@@ -1498,6 +1548,11 @@ class CohortReviewBundleDialog(QDialog):
             for reason, control in self.defect_checks.items()
             if control.isChecked()
         }
+        if "other_or_unclear" in reasons and len(reasons) > 1:
+            reasons.remove("other_or_unclear")
+            self._updating_defect_controls = True
+            self.defect_checks["other_or_unclear"].setChecked(False)
+            self._updating_defect_controls = False
         if not reasons.issubset(COHORT_REVIEW_DEFECT_REASONS):
             self.status.setText("BLOCKED: unsupported speech defect reason")
             self._sync_defect_controls()
@@ -1814,10 +1869,13 @@ class CohortReviewBundleDialog(QDialog):
         self.mark_bad.setEnabled(
             authority_ready and sample is not None and sample.item.queue_id in heard
         )
+        self.defect_toggle.setEnabled(
+            authority_ready and sample is not None and sample.item.queue_id in heard
+        )
         self.mark_bad.setText(
-            "Clear selected defect reasons"
+            "Clear bad mark"
             if ready and sample is not None and sample.item.queue_id in bad
-            else "Mark bad: other or unclear"
+            else "Mark bad (reason unclear)"
         )
         all_heard = bool(samples) and len(heard) == len(samples)
         self.accept_button.setEnabled(authority_ready and all_heard and not bad)
@@ -1898,10 +1956,22 @@ class CohortReviewBundleDialog(QDialog):
             else "Send marked WAVs to repair and continue"
         )
         self.accept_button.setText(
-            f"Accept all {item_count} WAVs" if item_count else "Accept cohort"
+            f"Accept cohort ({item_count} WAV{'s' if item_count != 1 else ''})"
+            if item_count
+            else "Accept cohort"
         )
         self.reject_button.setText(
-            f"Reject all {item_count} WAVs" if item_count else "Reject cohort"
+            f"Reject cohort ({item_count} WAV{'s' if item_count != 1 else ''})"
+            if item_count
+            else "Reject cohort"
+        )
+        identity = cast(Mapping[str, object], cohort["identity"]) if cohort else {}
+        self.cohort_scope.setText(
+            f"Cohort {self.cohort_choice.currentIndex() + 1} of "
+            f"{self.cohort_choice.count()} | {identity['voice_character']} | "
+            f"{item_count} WAV{'s' if item_count != 1 else ''}"
+            if cohort
+            else "No cohort awaiting a decision"
         )
         self.retry_load.setEnabled(
             self._load_failed and not self._load_active and not self._decision_active
@@ -1936,8 +2006,10 @@ class CohortReviewBundleDialog(QDialog):
             decision_text = "No reviewable cohort is currently loaded."
         elif remaining:
             decision_text = (
-                f"Play {remaining} remaining sample{'s' if remaining != 1 else ''}. "
-                "A sample-level bad mark does not reject anything by itself."
+                f"Listen to {remaining} remaining sample{'s' if remaining != 1 else ''} "
+                "to the end. Reject needs one heard sample. Repair needs all heard, "
+                "a bad mark, and another WAV to accept or keep pending. "
+                "More evidence needs all heard and another sample available."
             )
         elif bad:
             if split_acceptable_count or split_unreviewed_count:
@@ -1950,16 +2022,22 @@ class CohortReviewBundleDialog(QDialog):
                     f"reject all {item_count}."
                 )
             else:
-                unsampled = max(0, item_count - len(sample_ids))
                 decision_text = (
-                    f"{len(bad)} heard samples are marked bad, but {unsampled} target "
-                    "WAVs were not individually sampled. Mixed review is blocked so no "
-                    "sibling is approved implicitly; request more evidence or leave undecided."
+                    f"{len(bad)} heard sample{'s' if len(bad) != 1 else ''} "
+                    "marked bad. Mixed repair is unavailable because no heard "
+                    "sample can be accepted. "
+                    + (
+                        "Request more evidence or reject the cohort."
+                        if has_more_clean and current_clean < 5
+                        else "No additional sample is available; reject the cohort "
+                        "or leave undecided."
+                    )
                 )
         else:
             decision_text = (
-                f"All {len(samples)} required samples sound acceptable. Accept will "
-                f"apply this decision to exactly {item_count} checksum-bound WAVs."
+                f"All {len(samples)} required samples heard; none marked bad. "
+                f"Accept will approve exactly {item_count} WAV"
+                f"{'s' if item_count != 1 else ''} in this cohort."
             )
         self.decision_help.setText(decision_text)
         self.replay.setToolTip(

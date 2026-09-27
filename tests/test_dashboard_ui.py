@@ -263,6 +263,25 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertIn("Reading is active", dashboard.action_reason.text())
         dashboard.deleteLater()
 
+    def test_reading_state_distinguishes_waiting_speaking_paused_and_stopped(self):
+        dashboard = ControlDashboard(AppSettings())
+        for state, expected in (
+            (RuntimeControlState(ready=True, live=True), "Waiting for dialogue"),
+            (
+                RuntimeControlState(ready=True, live=True, speaking=True),
+                "Speaking current dialogue",
+            ),
+            (RuntimeControlState(ready=True, live=True, paused=True), "Speech paused"),
+            (RuntimeControlState(ready=True), "Reading stopped"),
+        ):
+            dashboard.set_runtime_controls(state)
+            self.assertEqual(dashboard.reading_state.text(), expected)
+        dashboard.set_live(True)
+        self.assertIn(
+            "queued speech may finish", dashboard.live_button.accessibleDescription()
+        )
+        dashboard.deleteLater()
+
     def test_primary_context_stays_visible_and_does_not_mislabel_recordings(self):
         dashboard = ControlDashboard(
             AppSettings(
@@ -275,7 +294,7 @@ class ControlDashboardTest(unittest.TestCase):
         self.application.processEvents()
         self.assertFalse(dashboard.details_content.isVisibleTo(dashboard))
         self.assertTrue(dashboard.reading_defaults.isVisibleTo(dashboard))
-        self.assertTrue(dashboard.speech_runtime.isVisibleTo(dashboard))
+        self.assertFalse(dashboard.speech_runtime.isVisibleTo(dashboard))
         self.assertEqual(dashboard.speech_runtime.textFormat(), Qt.TextFormat.PlainText)
         self.assertTrue(dashboard.audio_source.isVisibleTo(dashboard))
         self.assertIn("Alba", dashboard.speech_configuration.text())
@@ -295,6 +314,7 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertFalse(dashboard.reading_help.isVisibleTo(dashboard))
         dashboard.details_toggle.click()
         self.assertTrue(dashboard.reading_help.isVisibleTo(dashboard))
+        self.assertTrue(dashboard.speech_runtime.isVisibleTo(dashboard))
         dashboard.details_toggle.click()
         dashboard.set_ready(False, reason="Select a game window")
         self.assertTrue(dashboard.action_reason.isVisibleTo(dashboard))
@@ -337,8 +357,7 @@ class ControlDashboardTest(unittest.TestCase):
             {group.title() for group in dashboard.findChildren(QGroupBox)},
             {
                 "Current dialogue",
-                "For new speech",
-                "Playback",
+                "Reading controls",
                 "Sequence-first story cursor",
             },
         )
@@ -352,6 +371,10 @@ class ControlDashboardTest(unittest.TestCase):
         dashboard.set_loading(True)
 
         self.assertTrue(dashboard.loading_panel.isVisibleTo(dashboard))
+        self.assertIn("unlock", dashboard.action_reason.text())
+        self.assertNotIn("Check readiness", dashboard.action_reason.text())
+        dashboard.set_status("Loading speech model")
+        self.assertIn("unlock", dashboard.action_reason.text())
         self.assertEqual(
             (
                 dashboard.loading_progress.minimum(),
@@ -411,6 +434,14 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertTrue(dashboard.speaker.isVisibleTo(dashboard))
         self.assertEqual(dashboard.speaker.accessibleName(), "Current dialogue speaker")
         self.assertTrue(dashboard.live_button.isVisibleTo(dashboard))
+        controls = next(
+            group
+            for group in dashboard.findChildren(QGroupBox)
+            if group.title() == "Reading controls"
+        )
+        self.assertTrue(controls.isAncestorOf(dashboard.compact_button))
+        self.assertTrue(controls.isAncestorOf(dashboard.pause_button))
+        self.assertTrue(controls.isAncestorOf(dashboard.stop_button))
         self.assertFalse(dashboard.details_content.isVisibleTo(dashboard))
         self.assertEqual(dashboard.details_toggle.text(), "Show technical details")
         self.assertEqual(
@@ -441,6 +472,7 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertEqual(dashboard.setup_primary_button.text(), "Check readiness")
         self.assertTrue(dashboard.setup_more_button.isVisibleTo(dashboard))
         self.assertEqual(dashboard.setup_more_button.text(), "Settings and more")
+        self.assertLess(dashboard.setup_primary_button.width(), dashboard.width() / 2)
         self.assertFalse(dashboard.setup_secondary_content.isVisibleTo(dashboard))
 
         dashboard.setup_primary_button.click()
@@ -568,6 +600,7 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertEqual("Line 41", dashboard.sequence_position.text())
         self.assertIn("314601", dashboard.sequence_identity.text())
         self.assertEqual(dashboard.story_title.text(), "Rhiannon's story")
+        self.assertFalse(dashboard.story_context.isHidden())
         self.assertFalse(dashboard.details_content.isAncestorOf(dashboard.story_title))
         self.assertFalse(
             dashboard.details_content.isAncestorOf(dashboard.sequence_position)
@@ -592,14 +625,48 @@ class ControlDashboardTest(unittest.TestCase):
         )
         self.assertEqual(dashboard.story_title.text(), "No story position yet")
         self.assertEqual(dashboard.sequence_position.text(), "Not located")
+        self.assertTrue(dashboard.story_context.isHidden())
         dashboard.set_sequence_status(
             LiveSequenceStatus("audio-manual", "locked", chapter="2", sequence=1)
         )
         self.assertEqual(dashboard.story_title.text(), "Story title not recorded")
+        self.assertFalse(dashboard.story_context.isHidden())
         dashboard.set_sequence_status(LiveSequenceStatus("off", "off"))
         self.assertEqual(dashboard.sequence_position.text(), "Not located")
+        self.assertTrue(dashboard.story_context.isHidden())
         self.assertTrue(dashboard.recovery_controls.isHidden())
         self.assertFalse(dashboard.sequence_expected_button.isEnabled())
+        dashboard.deleteLater()
+
+    def test_story_position_controls_live_in_stable_details(self):
+        dashboard = ControlDashboard(AppSettings(live_sequence_mode="audio-manual"))
+        dashboard.show_reading()
+        dashboard.show()
+        dashboard.set_ready(True)
+        dashboard.set_sequence_status(
+            LiveSequenceStatus(
+                "audio-manual",
+                "desynchronized",
+                recovery_required=True,
+                guidance="Current line does not match the saved position.",
+            )
+        )
+        self.application.processEvents()
+        self.assertTrue(dashboard.sequence_notice.isVisibleTo(dashboard))
+        self.assertTrue(dashboard.story_actions.isVisibleTo(dashboard))
+        self.assertTrue(dashboard.sequence_resync_button.isVisibleTo(dashboard))
+        self.assertTrue(dashboard.sequence_resync_button.isEnabled())
+        self.assertFalse(dashboard.recovery_controls.isVisibleTo(dashboard))
+        dashboard.details_toggle.click()
+        self.assertTrue(dashboard.recovery_controls.isVisibleTo(dashboard))
+        dashboard.set_sequence_status(LiveSequenceStatus("audio-manual", "locked"))
+        self.assertFalse(dashboard.sequence_notice.isVisibleTo(dashboard))
+        self.assertTrue(dashboard.story_actions.isVisibleTo(dashboard))
+        dashboard.set_sequence_status(LiveSequenceStatus("off", "off"))
+        self.assertFalse(dashboard.recovery_controls.isVisibleTo(dashboard))
+        self.assertFalse(dashboard.story_actions.isVisibleTo(dashboard))
+        self.assertFalse(dashboard.sequence_resync_button.isEnabled())
+        dashboard.close()
         dashboard.deleteLater()
 
     def test_close_quits_by_default_instead_of_hiding_silently(self):
@@ -699,6 +766,30 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertIn("Full controls", controller.action_reason.text())
         controller.close()
         controller.deleteLater()
+        controller.deleteLater()
+
+    def test_compact_story_recovery_points_to_full_controls(self):
+        controller = CompactController(platform="win32")
+        controller.set_ready(True)
+        controller.set_sequence_status(
+            LiveSequenceStatus("audio-manual", "desynchronized", recovery_required=True)
+        )
+        self.assertFalse(controller.sequence_recovery.isHidden())
+        self.assertIn("Full controls", controller.sequence_recovery.text())
+        controller.show()
+        self.application.processEvents()
+        for button in (
+            controller.live_button,
+            controller.stop_button,
+            controller.full_button,
+        ):
+            self.assertTrue(
+                controller.rect().contains(
+                    button.mapTo(controller, button.rect().bottomRight())
+                )
+            )
+        controller.set_sequence_status(LiveSequenceStatus("off", "off"))
+        self.assertTrue(controller.sequence_recovery.isHidden())
         controller.deleteLater()
 
     def test_runtime_capability_state_matches_dashboard_and_compact_controls(self):

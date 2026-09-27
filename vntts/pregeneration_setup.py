@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from vntts.pregeneration_queue import PregenerationInput
 
 job_schema_version = 1
-story_catalog_schema_version = 3
+story_catalog_schema_version = 4
 story_catalog_minimum_bytes = 8 * 1024 * 1024
 # ponytail: assumes 12 text chars/sec and PCM16 mono 24 kHz; upgrade with measured
 # durations and the selected backend's output format if storage estimates matter.
@@ -71,6 +71,8 @@ class StorySelection:
     speakers: tuple[str, ...]
     playback_speakers: tuple[str, ...]
     generation_text_characters: int
+    episode_titles: tuple[str, ...] = ()
+    character_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -346,6 +348,8 @@ def _cached_story_selection(document: object) -> StorySelection:
         "speakers",
         "playback_speakers",
         "generation_text_characters",
+        "episode_titles",
+        "character_names",
     }
     if not isinstance(document, Mapping):
         raise ValueError("story catalog cache selection is malformed")
@@ -370,6 +374,8 @@ def _cached_story_selection(document: object) -> StorySelection:
         generation_text_characters=_nonnegative_int(
             document, "generation_text_characters"
         ),
+        episode_titles=_text_tuple(document, "episode_titles", allow_empty=True),
+        character_names=_text_tuple(document, "character_names", allow_empty=True),
     )
     if (
         selection.line_count != len(line_ids)
@@ -901,6 +907,21 @@ def _selection_from_records(
         playback_speakers=tuple(sorted(playback_speakers)),
         generation_text_characters=sum(
             len(getattr(record, "text", "")) for record in generation
+        ),
+        episode_titles=tuple(
+            dict.fromkeys(
+                episode_title.strip()
+                for record in records
+                if isinstance(
+                    episode_title := getattr(record, "document", {}).get("episode_title"), str
+                )
+                and episode_title.strip()
+            )
+        ),
+        character_names=tuple(
+            dict.fromkeys(
+                record.speaker.strip() for record in speakable if record.speaker.strip()
+            )
         ),
     )
     return selection

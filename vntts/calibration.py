@@ -99,7 +99,7 @@ class CalibrationReviewDialog(QDialog):
         self.runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.runner.finished.connect(self._recognition_finished)
         self.setWindowTitle("Confirm dialogue capture")
-        self.resize(760, 460)
+        self.resize(760, 380)
         self.preview = QLabel()
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview.setAccessibleName("Selected dialogue region preview")
@@ -129,7 +129,7 @@ class CalibrationReviewDialog(QDialog):
         )
         note = QLabel(
             "Confirm only when the speaker name and complete dialogue are inside "
-            "the preview. Retry to draw the area again."
+            'the preview. Choose "Draw again" to change the area.'
         )
         note.setWordWrap(True)
         buttons = QDialogButtonBox(
@@ -172,8 +172,7 @@ class CalibrationReviewDialog(QDialog):
         self.runner.start(self.recognizer, image.copy())
 
     def _recognition_finished(self, result: object, error: Exception | None) -> None:
-        self.progress.setRange(0, 100)
-        self.progress.setValue(100)
+        self.progress.hide()
         if error is not None:
             self.result_text.setPlainText(f"OCR preview failed: {error}")
             self.save_button.setText("Save region without OCR preview")
@@ -195,6 +194,14 @@ class CalibrationReviewDialog(QDialog):
     def closeEvent(self, event: QCloseEvent) -> None:
         self.runner.cancel()
         super().closeEvent(event)
+
+    def done(self, result: int) -> None:
+        self.runner.cancel()
+        super().done(result)
+
+    def reject(self) -> None:
+        self.runner.cancel()
+        super().reject()
 
 
 class DialogRegionOverlay(QWidget):
@@ -412,11 +419,19 @@ class DialogRegionOverlay(QWidget):
         painter.fillRect(self.rect(), QColor(0, 0, 0, 110))
         if self.origin is not None and self.current is not None:
             rectangle = QRect(self.origin, self.current).normalized()
-            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
-            painter.fillRect(rectangle, Qt.GlobalColor.transparent)
-            painter.setCompositionMode(
-                QPainter.CompositionMode.CompositionMode_SourceOver
-            )
+            if self.background_pixmap is not None:
+                painter.save()
+                painter.setClipRect(rectangle)
+                painter.drawPixmap(self.rect(), self.background_pixmap)
+                painter.restore()
+            else:
+                painter.setCompositionMode(
+                    QPainter.CompositionMode.CompositionMode_Clear
+                )
+                painter.fillRect(rectangle, Qt.GlobalColor.transparent)
+                painter.setCompositionMode(
+                    QPainter.CompositionMode.CompositionMode_SourceOver
+                )
             painter.setPen(QPen(QColor(0, 220, 255), 3))
             painter.drawRect(rectangle)
 
@@ -426,7 +441,11 @@ class DialogRegionOverlay(QWidget):
         font = painter.font()
         font.setBold(True)
         painter.setFont(font)
-        if self.origin is None or self.current is None:
+        if self.save_error:
+            instruction = (
+                f"{self.save_error}. Press Enter to review and retry, or Esc to cancel."
+            )
+        elif self.origin is None or self.current is None:
             instruction = (
                 "Drag around the speaker name and dialogue text. Keyboard: press "
                 "Enter for a suggested region. Press Esc to cancel."

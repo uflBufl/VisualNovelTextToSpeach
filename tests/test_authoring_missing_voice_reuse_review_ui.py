@@ -1,6 +1,7 @@
 import os
 import time
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
@@ -16,6 +17,7 @@ try:
         create_missing_voice_reuse_review_fixture,
     )
     from vntts.authoring.missing_voice_reuse_review import (
+        AUTOMATIC_UNRESOLVED_ORIGIN,
         build_missing_voice_reuse_review,
         load_missing_voice_reuse_review,
         record_missing_voice_reuse_decision,
@@ -75,6 +77,17 @@ class AuthoringMissingVoiceReuseReviewUiTest(unittest.TestCase):
             self.assertTrue(
                 all(not button.isEnabled() for button in dialog.play_buttons.values())
             )
+            dialog.show()
+            self.application.processEvents()
+            self.assertFalse(dialog.sample_box.isVisible())
+            self.assertFalse(dialog.decision_box.isVisible())
+            self.assertFalse(dialog.decision_context.isVisible())
+            self.assertTrue(
+                all(not button.isVisible() for button in dialog.play_buttons.values())
+            )
+            self.assertTrue(
+                all("Failed" in label.text() for label in dialog.arm_statuses.values())
+            )
             dialog.deleteLater()
 
     def test_candidate_controls_expose_accessible_task_names(self):
@@ -86,6 +99,38 @@ class AuthoringMissingVoiceReuseReviewUiTest(unittest.TestCase):
             self.assertTrue(dialog.sample_selector.accessibleName())
             self.assertTrue(dialog.sample_text.accessibleName())
             self.assertTrue(all(button.accessibleName() for button in buttons))
+            dialog.show()
+            self.application.processEvents()
+            self.assertTrue(dialog.decision_box.isVisible())
+            self.assertEqual(buttons[0].width(), buttons[1].width())
+            dialog.deleteLater()
+
+    def test_terminal_summary_distinguishes_mixed_recorded_outcomes(self):
+        with TemporaryDirectory() as directory:
+            session_path, _queue_id = self.create_review(Path(directory))
+            bundle, session = load_missing_voice_reuse_review(session_path)
+            first_cohort = bundle["cohorts"][0]
+            second_cohort = deepcopy(first_cohort)
+            second_cohort["cohort_id"] = "automatic-family"
+            bundle["cohorts"].append(second_cohort)
+            session["decisions"] = [
+                {"cohort_id": first_cohort["cohort_id"], "decision": "A"},
+                {
+                    "cohort_id": "automatic-family",
+                    "decision": "neither",
+                    "decision_origin": AUTOMATIC_UNRESOLVED_ORIGIN,
+                },
+            ]
+            with patch(
+                "vntts.authoring.missing_voice_reuse_review_ui._review_loader",
+                return_value=(bundle, session),
+            ):
+                dialog = MissingVoiceReuseReviewDialog(session_path)
+
+            self.assertEqual(dialog.cohort_heading.text(), "Review complete")
+            self.assertIn("1 family decision saved", dialog.instructions.text())
+            self.assertIn("1 stayed unresolved", dialog.instructions.text())
+            self.assertNotIn("Neither candidate completed", dialog.instructions.text())
             dialog.deleteLater()
 
     def test_scaled_font_keeps_keyboard_journey_scroll_reachable(self):
@@ -208,6 +253,27 @@ class AuthoringMissingVoiceReuseReviewUiTest(unittest.TestCase):
         self.wait_for(
             lambda: not dialog.heard_runner.active and not dialog._pending_heard
         )
+
+    def test_both_candidates_require_completed_playback_before_choice(self):
+        with TemporaryDirectory() as directory:
+            session_path, _queue_id = self.create_review(
+                Path(directory), statuses=("generated", "generated")
+            )
+            dialog = MissingVoiceReuseReviewDialog(session_path)
+            dialog.player = Mock()
+            self.assertFalse(dialog.neither.isEnabled())
+
+            dialog.play_buttons["A"].click()
+            self.assertFalse(dialog.decision_buttons["A"].isEnabled())
+            self.finish_current_audio(dialog)
+            self.assertFalse(dialog.neither.isEnabled())
+            self.assertIn("HEARD", dialog.arm_statuses["A"].text())
+
+            dialog.play_buttons["B"].click()
+            self.finish_current_audio(dialog)
+            self.assertTrue(dialog.neither.isEnabled())
+            self.assertTrue(dialog.decision_buttons["A"].isEnabled())
+            self.assertTrue(dialog.decision_buttons["B"].isEnabled())
 
     def test_failed_arm_is_visible_and_replay_stays_available_during_save(self):
         release = Event()

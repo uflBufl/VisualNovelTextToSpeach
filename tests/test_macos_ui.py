@@ -29,9 +29,10 @@ class MacOSPermissionsDialogTest(unittest.TestCase):
         )
 
         self.assertEqual(dialog.screen_status.text(), "Not granted")
-        self.assertEqual(dialog.accessibility_status.text(), "Status unavailable")
-        self.assertIn("auto advance", dialog.note.text())
-        self.assertIn("Global hotkeys are unavailable", dialog.note.text())
+        self.assertEqual(dialog.accessibility_status.text(), "Could not check")
+        self.assertIn("Grant Screen Recording", dialog.note.text())
+        self.assertIn("Global hotkeys are unavailable", dialog.hotkey_note.text())
+        self.assertTrue(dialog.request_accessibility_button.isHidden())
 
         dialog.request_screen()
 
@@ -42,6 +43,7 @@ class MacOSPermissionsDialogTest(unittest.TestCase):
         self.assertEqual(dialog.open_screen_button.text(), "Manage in Settings")
         self.assertFalse(dialog.request_accessibility_button.isHidden())
         self.assertEqual(dialog.open_accessibility_button.text(), "Open Settings")
+        self.assertIn("If you just changed permissions", dialog.note.text())
         dialog.deleteLater()
 
     def test_dialog_opens_specific_system_settings_page(self):
@@ -128,6 +130,9 @@ class MacOSPermissionsDialogTest(unittest.TestCase):
             dialog.accessibility_status.text(),
             "Status check failed: status unavailable",
         )
+        self.assertTrue(dialog.request_screen_button.isHidden())
+        self.assertTrue(dialog.request_accessibility_button.isHidden())
+        self.assertIn("Could not check permissions", dialog.note.text())
         dialog.deleteLater()
 
 

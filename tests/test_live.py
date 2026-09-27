@@ -2157,6 +2157,21 @@ class LiveDialogReaderTest(unittest.TestCase):
         self.assertFalse(reader.toggle_pause())
         self.assertFalse(reader.paused)
 
+    def test_graceful_stop_clears_pause_before_restart(self):
+        reader = self.create_reader()
+        reader.capture_future = Future()
+        reader.ocr_future = Future()
+
+        self.assertTrue(reader.toggle_pause())
+        self.assertTrue(reader.stop())
+        self.assertFalse(reader.runtime_control_snapshot()["paused"])
+
+        reader.capture_future.set_result(None)
+        reader.ocr_future.set_result(None)
+
+        self.assertTrue(reader.start())
+        self.assertFalse(reader.runtime_control_snapshot()["paused"])
+
     def test_pausing_current_speech_interrupts_and_replays_it_on_resume(self):
         speech_executor = Mock()
         speech_executor.submit.return_value = Future()

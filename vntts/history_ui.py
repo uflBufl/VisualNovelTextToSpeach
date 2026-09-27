@@ -2,7 +2,7 @@ from collections.abc import Callable
 from concurrent.futures import Future
 from datetime import datetime
 
-from PySide6.QtCore import QSignalBlocker, QThreadPool, QTimer
+from PySide6.QtCore import QSignalBlocker, Qt, QThreadPool, QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QDialog,
@@ -42,32 +42,35 @@ class DialogueHistoryDialog(QDialog):
         self.stop_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.stop_runner.finished.connect(self._stop_finished)
         self._close_pending = False
+        self._stop_unsupported = False
         self.visible_entries: list[DialogueHistoryEntry] = []
         self.setWindowTitle("Dialogue history")
         self.resize(820, 560)
 
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Search speakers or dialogue...")
+        self.search.setPlaceholderText("Speaker or dialogue text")
         self.search.setAccessibleName("Search dialogue history")
         self.search.textChanged.connect(self.refresh)
-        self.search_label = QLabel("&Search dialogue history")
+        self.search_label = QLabel("&Find a line")
         self.search_label.setBuddy(self.search)
         self.entries = QListWidget()
         self.entries.setAccessibleName("Dialogue history entries")
+        self.entries.setWordWrap(True)
+        self.entries.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.entries.currentRowChanged.connect(self.show_entry)
         self.details = QTextEdit()
         self.details.setReadOnly(True)
         self.details.setAccessibleName("Selected dialogue details")
-        self.details_label = QLabel("Selected dialogue &details")
+        self.details_label = QLabel("Selected &line")
         self.details_label.setBuddy(self.details)
-        self.replay_button = QPushButton("Replay selected")
+        self.replay_button = QPushButton("Speak with current voice")
         self.replay_button.setEnabled(False)
-        self.stop_button = QPushButton("Stop replay")
-        self.stop_button.setAccessibleName("Stop dialogue replay")
+        self.stop_button = QPushButton("Stop speaking")
+        self.stop_button.setAccessibleName("Stop speaking selected dialogue")
         self.stop_button.setEnabled(False)
-        self.export_button = QPushButton("Export...")
-        self.status = QLabel("Select a dialogue to replay or export this session.")
-        self.status.setAccessibleName("Dialogue replay status")
+        self.export_button = QPushButton("Export session...")
+        self.status = QLabel()
+        self.status.setAccessibleName("Dialogue speech status")
         self.status.setWordWrap(True)
         self.replay_button.clicked.connect(self.replay_selected)
         self.stop_button.clicked.connect(self.stop_replay)
@@ -75,27 +78,35 @@ class DialogueHistoryDialog(QDialog):
         actions = QHBoxLayout()
         actions.addWidget(self.replay_button)
         actions.addWidget(self.stop_button)
-        actions.addWidget(self.export_button)
         actions.addStretch()
 
         entries_layout = QVBoxLayout()
+        entries_layout.addWidget(QLabel("Captured lines"))
         entries_layout.addWidget(self.entries)
         details_layout = QVBoxLayout()
         details_layout.addWidget(self.details_label)
         details_layout.addWidget(self.details)
+        details_layout.addLayout(actions)
+        details_layout.addWidget(self.status)
         content = QHBoxLayout()
         content.addLayout(entries_layout, 1)
-        content.addLayout(details_layout, 2)
+        content.addLayout(details_layout, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.close)
+        footer = QHBoxLayout()
+        footer.addWidget(self.export_button)
+        footer.addStretch()
+        footer.addWidget(buttons)
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Current application session"))
+        layout.addWidget(
+            QLabel(
+                "Captured this session. Speak again uses the current voice, not the original audio."
+            )
+        )
         layout.addWidget(self.search_label)
         layout.addWidget(self.search)
         layout.addLayout(content)
-        layout.addLayout(actions)
-        layout.addWidget(self.status)
-        layout.addWidget(buttons)
+        layout.addLayout(footer)
 
         self.timer = QTimer(self)
         self.timer.setInterval(750)
@@ -111,20 +122,32 @@ class DialogueHistoryDialog(QDialog):
         scroll_bar = self.entries.verticalScrollBar()
         previous_scroll = scroll_bar.value()
         latest = self.history.search(self.search.text())
+        self.export_button.setEnabled(bool(self.history.snapshot()))
         if latest == self.visible_entries:
+            if not latest:
+                self.status.setText(
+                    "No matching lines. Try another search."
+                    if self.search.text()
+                    else "No dialogue has been captured in this session yet."
+                )
             return
         self.visible_entries = latest
         signal_blocker = QSignalBlocker(self.entries)
         self.entries.clear()
         for entry in self.visible_entries:
-            recorded_at = datetime.fromisoformat(entry.recorded_at)
-            preview = entry.text if len(entry.text) <= 58 else f"{entry.text[:55]}..."
+            recorded_at = datetime.fromisoformat(entry.recorded_at).astimezone()
+            preview = entry.text if len(entry.text) <= 100 else f"{entry.text[:97]}..."
             self.entries.addItem(
                 f"{recorded_at:%H:%M:%S}  {entry.character}\n{preview}"
             )
         if not self.visible_entries:
             del signal_blocker
             self.show_entry(-1)
+            self.status.setText(
+                "No matching lines. Try another search."
+                if self.search.text()
+                else "No dialogue has been captured in this session yet."
+            )
             return
         selected_index = next(
             (
@@ -137,6 +160,8 @@ class DialogueHistoryDialog(QDialog):
         self.entries.setCurrentRow(selected_index)
         del signal_blocker
         self.show_entry(selected_index)
+        if self.status.text().startswith(("No matching lines", "No dialogue has")):
+            self.status.clear()
         if selected_id is not None:
             scroll_bar.setValue(min(previous_scroll, scroll_bar.maximum()))
         else:
@@ -152,25 +177,28 @@ class DialogueHistoryDialog(QDialog):
         entry = (
             self.visible_entries[row] if 0 <= row < len(self.visible_entries) else None
         )
-        self.replay_button.setEnabled(
+        can_speak = (
             entry is not None
             and not self.replay_runner.active
             and not self.stop_runner.active
         )
+        self.replay_button.setEnabled(can_speak)
         if entry is None:
             self.details.clear()
             return
+        recorded_at = datetime.fromisoformat(entry.recorded_at).astimezone()
         self.details.setPlainText(
-            f"{entry.character}\n{entry.recorded_at}\n\n{entry.text}"
+            f"{entry.character} · {recorded_at:%b %d, %Y %H:%M}\n\n{entry.text}"
         )
 
     def replay_selected(self) -> None:
         entry = self.current_entry()
         if entry is None or self.replay_runner.active:
             return
+        self._stop_unsupported = False
         self.replay_button.setEnabled(False)
         self.stop_button.setEnabled(self.stop_handler is not None)
-        self.status.setText(f"Preparing replay for {entry.character}...")
+        self.status.setText(f"Speaking as {entry.character} with the current voice...")
         self.replay_runner.start(
             self._run_replay,
             self.replay_handler,
@@ -193,9 +221,11 @@ class DialogueHistoryDialog(QDialog):
             self.current_entry() is not None and not self.stop_runner.active
         )
         if error is not None:
-            self.status.setText(f"Replay failed: {error}. Select Replay to retry.")
+            self.status.setText(
+                f"Could not speak this line: {error}. Check voice settings, then try again."
+            )
         else:
-            self.status.setText("Replay finished.")
+            self.status.setText("Speech finished.")
         if self._close_pending:
             self._close_pending = False
             self.close()
@@ -209,25 +239,37 @@ class DialogueHistoryDialog(QDialog):
                 self.close()
             return
         if self.stop_handler is None:
-            self.status.setText("This replay backend does not expose cancellation.")
+            self.status.setText("This speech engine cannot be stopped here.")
+            return
+        if self._stop_unsupported:
+            self.status.setText(
+                "This speech engine cannot stop playback. Wait for it to finish."
+            )
             return
         if self.stop_runner.active:
             return
         self.replay_button.setEnabled(False)
         self.stop_button.setEnabled(False)
-        self.status.setText("Stopping the current replay...")
+        self.status.setText("Stopping speech...")
         self.stop_runner.start(self.stop_handler)
 
     def _stop_finished(self, _result: object, error: Exception | None) -> None:
         if error is not None:
             self._close_pending = False
             self.stop_button.setEnabled(self.replay_runner.active)
-            self.status.setText(f"Unable to stop replay: {error}")
+            self.status.setText(f"Unable to stop speech: {error}")
+            return
+        if _result is False and self.replay_runner.active:
+            self._stop_unsupported = True
+            self.stop_button.setEnabled(False)
+            self.status.setText(
+                "This speech engine cannot stop playback. Wait for it to finish."
+            )
             return
         self.replay_runner.cancel()
         self.stop_button.setEnabled(False)
         self.replay_button.setEnabled(self.current_entry() is not None)
-        self.status.setText("Replay stopped.")
+        self.status.setText("Speech stopped.")
         if self._close_pending:
             self._close_pending = False
             self.close()

@@ -14,10 +14,12 @@ from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QDialogButtonBox,
+    QHBoxLayout,
     QLabel,
     QListWidget,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -197,7 +199,8 @@ class SourceReferenceQualityDialog(QDialog):
         self.portrait_image = QLabel()
         self.portrait_image.setAccessibleName("Exact game portrait")
         self.portrait_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.portrait_image.setMinimumHeight(150)
+        self.portrait_image.setMinimumHeight(96)
+        self.portrait_image.setFixedWidth(112)
         self.identity = QLabel()
         self.identity.setWordWrap(True)
         self.identity.setAccessibleName("Current source reference identity")
@@ -213,6 +216,7 @@ class SourceReferenceQualityDialog(QDialog):
         self.play_reference.clicked.connect(self._play_reference)
 
         self.generated = QListWidget()
+        self.generated.setMaximumHeight(96)
         self.generated.setAccessibleName("Generated samples for this reference")
         self.generated.setAccessibleDescription(
             "Choose one published generated sample for the current exact reference"
@@ -222,6 +226,10 @@ class SourceReferenceQualityDialog(QDialog):
         self.generated.currentRowChanged.connect(self._generated_selection_changed)
         self.generated_details = QLabel()
         self.generated_details.setWordWrap(True)
+        self.generated_details.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
         self.generated_details.setAccessibleName("Selected generated sample details")
         self.play_generated = QPushButton("Play generated")
         self.play_generated.setAccessibleName("Play selected generated sample")
@@ -237,8 +245,7 @@ class SourceReferenceQualityDialog(QDialog):
         self.stop.clicked.connect(self._stop)
         self.stop.setEnabled(False)
         playback = review_form_layout()
-        playback.addRow(self.play_reference, self.play_generated)
-        playback.addRow(self.stop)
+        playback.addRow(self.play_generated, self.stop)
 
         self.failures = QLabel()
         self.failures.setWordWrap(True)
@@ -270,6 +277,15 @@ class SourceReferenceQualityDialog(QDialog):
         self.accept_button.clicked.connect(lambda: self._decide("accept"))
         self.reject_reference.clicked.connect(lambda: self._decide("reject"))
         self.needs_sample.clicked.connect(lambda: self._decide("needs_sample"))
+        for button in (
+            self.play_reference,
+            self.play_generated,
+            self.stop,
+            self.accept_button,
+            self.reject_reference,
+            self.needs_sample,
+        ):
+            button.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         decisions = review_form_layout()
         decisions.addRow(self.accept_button, self.reject_reference)
         decisions.addRow(self.needs_sample)
@@ -284,33 +300,42 @@ class SourceReferenceQualityDialog(QDialog):
         review_content = QWidget()
         review_layout = QVBoxLayout(review_content)
         review_layout.setContentsMargins(0, 0, 0, 0)
+        identity_content = QWidget()
+        identity_panel = QVBoxLayout(identity_content)
+        identity_panel.setContentsMargins(0, 0, 0, 0)
+        identity_panel.addWidget(self.identity)
+        identity_panel.addWidget(self.reference_details)
+        identity_panel.addWidget(self.play_reference)
+        identity_panel.addStretch(1)
+        source_row = QHBoxLayout()
+        source_row.addWidget(self.portrait_image, 0, Qt.AlignmentFlag.AlignTop)
+        source_row.addWidget(identity_content, 1)
         review_layout.addWidget(self.progress)
-        review_layout.addWidget(self.decision_context)
-        review_layout.addWidget(self.portrait_image)
-        review_layout.addWidget(self.identity)
-        review_layout.addWidget(self.reference_details)
+        review_layout.addLayout(source_row)
         review_layout.addWidget(self.generated_label)
+        review_layout.addLayout(playback)
         review_layout.addWidget(self.generated)
         review_layout.addWidget(self.generated_details)
-        review_layout.addLayout(playback)
-        review_layout.addWidget(self.evidence_progress)
+        review_layout.addWidget(self.status)
         review_layout.addWidget(self.technical_toggle)
         review_layout.addWidget(self.failures)
-        review_layout.addWidget(self.status)
-        review_layout.addLayout(decisions)
+        review_layout.addWidget(self.decision_context)
+        review_layout.addStretch(1)
         self.review_scroll = review_scroll_area(
             review_content,
             "Scrollable source-reference review",
         )
         layout = QVBoxLayout(self)
         layout.addWidget(self.review_scroll, 1)
+        layout.addWidget(self.evidence_progress)
+        layout.addLayout(decisions)
         layout.addWidget(buttons)
-        self.setTabOrder(self.decision_context.technical_toggle, self.generated)
-        self.setTabOrder(self.generated, self.play_reference)
-        self.setTabOrder(self.play_reference, self.play_generated)
+        self.setTabOrder(self.play_reference, self.generated)
+        self.setTabOrder(self.generated, self.play_generated)
         self.setTabOrder(self.play_generated, self.stop)
         self.setTabOrder(self.stop, self.technical_toggle)
-        self.setTabOrder(self.technical_toggle, self.accept_button)
+        self.setTabOrder(self.technical_toggle, self.decision_context.technical_toggle)
+        self.setTabOrder(self.decision_context.technical_toggle, self.accept_button)
         self.setTabOrder(self.accept_button, self.reject_reference)
         self.setTabOrder(self.reject_reference, self.needs_sample)
         self.setTabOrder(self.needs_sample, self.close_button)
@@ -326,11 +351,14 @@ class SourceReferenceQualityDialog(QDialog):
         self._stop()
         self.session = session or _load_review(self.session_path)
         completed, total = _quality_progress(self.session)
-        self.progress.setText(f"Progress: {completed}/{total}")
+        self.progress.setText(f"Decisions: {completed}/{total}")
         self.current = _next_pending_variant(self.session)
         self.completed_audio.clear()
         self.generated.clear()
         if self.current is None:
+            completion_height = max(200, self.fontMetrics().height() * 10)
+            self.setMinimumHeight(completion_height)
+            self.resize(self.width(), completion_height)
             self.decision_context.set_context(
                 {
                     "purpose": "Judge whether source audio is safe for voice cloning",
@@ -341,11 +369,17 @@ class SourceReferenceQualityDialog(QDialog):
             self.portrait_image.setVisible(False)
             self.identity.setText("Review complete")
             self.reference_details.clear()
+            self.reference_details.setVisible(False)
+            self.play_reference.setVisible(False)
             self.generated_label.setVisible(False)
             self.generated.setVisible(False)
             self.generated_details.clear()
+            self.generated_details.setVisible(False)
+            self.play_generated.setVisible(False)
+            self.stop.setVisible(False)
             self.failures.clear()
             self.technical_toggle.setVisible(False)
+            self.decision_context.setVisible(False)
             self.evidence_progress.setText("All required decisions are saved.")
             self.status.setText(
                 "All cluster decisions are saved. Only accepted references may be "
@@ -354,7 +388,28 @@ class SourceReferenceQualityDialog(QDialog):
             self._set_actions_enabled(False)
             self.play_reference.setEnabled(False)
             self.play_generated.setEnabled(False)
+            for button in (
+                self.accept_button,
+                self.reject_reference,
+                self.needs_sample,
+            ):
+                button.setVisible(False)
             return
+
+        self.setMinimumHeight(500)
+
+        for widget in (
+            self.reference_details,
+            self.play_reference,
+            self.generated_details,
+            self.play_generated,
+            self.stop,
+            self.decision_context,
+            self.accept_button,
+            self.reject_reference,
+            self.needs_sample,
+        ):
+            widget.setVisible(True)
 
         if self.current.get("reference_kind") == "exact_bank_composite":
             media = "Exact-bank composite media: " + ", ".join(
@@ -362,9 +417,9 @@ class SourceReferenceQualityDialog(QDialog):
             )
         else:
             media = f"Original media: {self.current['media_id']}"
+        position = self.session["variants"].index(self.current) + 1
         self.identity.setText(
-            f"Character: {self.current['character']} | {media} | "
-            f"Affected story lines: {self.current['affected_queue_item_count']}"
+            f"Source recording {position} of {total} for {self.current['character']}"
         )
         synthesis = self.current.get("decision_context")
         if synthesis is None:
@@ -382,7 +437,7 @@ class SourceReferenceQualityDialog(QDialog):
                 "purpose": "Accept, reject, or replace a voice-cloning reference",
                 "game_speaker": self.current["character"],
                 "synthesis_voice": self.current["character"],
-                "reference": media,
+                "reference": f"Original from {review_model_label(self.current['source_bank'])}",
                 "backend": backend,
                 "model": review_model_label(model),
                 "generation_profile": generation_profile,
@@ -396,6 +451,8 @@ class SourceReferenceQualityDialog(QDialog):
             },
             technical=(
                 f"Exact model: {model}\n"
+                f"Source bank: {self.current['source_bank']}\n"
+                f"{media}\n"
                 f"Variant: {self.current['variant_id']}\n"
                 f"Cluster: {self.current['cluster_id']}\n"
                 f"Affected queue items: {self.current['affected_queue_item_count']}"
@@ -405,13 +462,12 @@ class SourceReferenceQualityDialog(QDialog):
         self._load_portrait()
         reference = self.current["reference"]
         self.reference_details.setText(
-            "Original reference: "
-            f"{reference['duration_seconds']:.2f}s, {reference['sample_rate']} Hz"
+            f"From {review_model_label(self.current['source_bank'])} | "
+            f"{reference['duration_seconds']:.2f}s | "
+            f"{self.current['affected_queue_item_count']} story lines affected"
         )
-        for sample in self.current["generated_samples"]:
-            self.generated.addItem(
-                f"{sample['evaluation_kind']} | {sample['duration_seconds']:.2f}s"
-            )
+        for _ in self.current["generated_samples"]:
+            self.generated.addItem("")
         self.generated.setVisible(bool(self.generated.count()))
         self.generated_label.setVisible(bool(self.generated.count()))
         if self.generated.count():
@@ -474,13 +530,13 @@ class SourceReferenceQualityDialog(QDialog):
         if not pixmap.loadFromData(payload):
             self._set_portrait_message("Portrait blocked: invalid PNG")
             return
-        self.portrait_image.setMinimumHeight(150)
-        self.portrait_image.setMaximumHeight(220)
+        self.portrait_image.setMinimumHeight(96)
+        self.portrait_image.setMaximumHeight(112)
         self.portrait_image.setText("")
         self.portrait_image.setPixmap(
             pixmap.scaled(
-                204,
-                204,
+                104,
+                104,
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
@@ -493,6 +549,9 @@ class SourceReferenceQualityDialog(QDialog):
         self.portrait_image.setMaximumHeight(48)
 
     def _generated_selection_changed(self, row: int) -> None:
+        if self.playback_runner.active or self._playing_token is not None:
+            self._stop()
+            self.status.setText("Playback stopped after sample selection changed.")
         self._update_play_enabled()
         if self.current is None or not 0 <= row < len(
             self.current["generated_samples"]
@@ -534,6 +593,18 @@ class SourceReferenceQualityDialog(QDialog):
         if self.current is None:
             self._set_actions_enabled(False, "Review complete.")
             return
+        for index, sample in enumerate(self.current["generated_samples"]):
+            item = self.generated.item(index)
+            if item is not None:
+                heard = (
+                    "heard"
+                    if sample["queue_id"] in self.completed_audio
+                    else "not heard"
+                )
+                summary = " ".join(sample["text"].split())
+                if len(summary) > 84:
+                    summary = summary[:81].rstrip() + "..."
+                item.setText(f"{index + 1}. {heard} - {summary}")
         generated_tokens = {
             sample["queue_id"] for sample in self.current["generated_samples"]
         }

@@ -965,8 +965,15 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             )
             first = jobs.create_or_resume(content, ("main-1",))
             second = jobs.create_or_resume(content, ("rhiannon",))
-            with patch(
-                "vntts.pregeneration_ui.find_default_voice_manifest", return_value=None
+            with (
+                patch(
+                    "vntts.pregeneration_ui.find_default_voice_manifest",
+                    return_value=None,
+                ),
+                patch(
+                    "vntts.pregeneration_ui.player_voice_catalog_is_current",
+                    return_value=True,
+                ),
             ):
                 dialog._create_voice_plan(first)
                 dialog._create_voice_plan(first)

@@ -816,7 +816,11 @@ class SupportBundleBuilderTest(unittest.TestCase):
                 encoding="utf-8",
             )
             log = RuntimeSupportLog()
-            log.add("status", f"Settings at {Path.home() / 'private'}")
+            log.add(
+                "status",
+                f"Settings at {Path.home() / 'private'}; "
+                "token=LEAK_ME authorization: Bearer LEAK_BEARER",
+            )
             imports = GameImportLog()
             imports.record("failed", missing=["game configuration"])
             settings = AppSettings(
@@ -877,6 +881,8 @@ class SupportBundleBuilderTest(unittest.TestCase):
         self.assertNotIn("PRIVATE -> SECRET", combined)
         self.assertTrue(previous["available"])
         self.assertNotIn(str(Path.home()), combined)
+        self.assertNotIn("LEAK_ME", combined)
+        self.assertNotIn("LEAK_BEARER", combined)
         self.assertEqual(metrics["sample_count"], 1)
         self.assertEqual(metrics["average_confidence"], 42)
         self.assertEqual(imports["events"][0]["missing"], ["game configuration"])

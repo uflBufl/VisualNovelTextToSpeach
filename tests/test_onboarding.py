@@ -87,12 +87,12 @@ class OnboardingDiagnosticsTest(unittest.TestCase):
         results = diagnostics.run(
             AppSettings(speech_backend="coqui-xtts", tts_model="xtts_v2")
         )
-        errors = {
-            result.name: result.message for result in results if not result.passed
-        }
+        errors = {result.name: result for result in results if not result.passed}
 
-        self.assertIn("Tesseract executable", errors["Tesseract OCR"])
-        self.assertIn("No output device", errors["Audio output"])
+        self.assertIn("Tesseract executable", errors["Tesseract OCR"].message)
+        self.assertIn("No output device", errors["Audio output"].message)
+        self.assertEqual(errors["Tesseract OCR"].remediation, "external-ocr")
+        self.assertEqual(errors["Audio output"].remediation, "external-audio")
         model_result = next(
             result for result in results if result.name == "Speech model"
         )
@@ -301,7 +301,7 @@ class OnboardingWizardTest(unittest.TestCase):
             wizard.stack.currentWidget().verticalScrollBar().maximum(), 0
         )
         self.assertTrue(wizard.finish_button.isVisibleTo(wizard))
-        self.assertIn("Save and return to Reading", wizard.test_page.status.text())
+        self.assertIn("Save setup to return to Reading", wizard.test_page.status.text())
         wizard.show_page(0)
         requested = []
         wizard.voices_requested.connect(lambda: requested.append(True))
@@ -348,6 +348,102 @@ class OnboardingWizardTest(unittest.TestCase):
             else:
                 self.assertIs(wizard.stack.currentWidget(), page)
                 self.assertFalse(page.advanced_content.isVisibleTo(wizard))
+        wizard.deleteLater()
+
+    def test_reading_setup_keeps_capture_draft_after_visiting_voices(self):
+        wizard = OnboardingWizard(
+            AppSettings(game_window_title="Original"), reading_setup=True
+        )
+        wizard.show()
+        page = wizard.configuration_page
+        page.game_window.setCurrentText("Manually chosen")
+        wizard.request_voices()
+        self.assertFalse(wizard.isVisible())
+
+        wizard.resume_after_editor(
+            AppSettings(game_window_title="Original", speech_backend="pocket-tts")
+        )
+
+        self.assertTrue(wizard.isVisible())
+        self.assertEqual(page.game_window.currentText(), "Manually chosen")
+        self.assertEqual(wizard.draft_settings.game_window_title, "Manually chosen")
+        self.assertEqual(wizard.draft_settings.speech_backend, "pocket-tts")
+        wizard.close()
+        wizard.deleteLater()
+
+    def test_saved_settings_override_only_the_capture_fields_they_change(self):
+        original = AppSettings(
+            capture_mode="window",
+            game_window_title="Original",
+            auto_advance_enabled=True,
+        )
+        wizard = OnboardingWizard(original, reading_setup=True)
+        page = wizard.configuration_page
+        page.game_window.setCurrentText("Unsaved game")
+
+        wizard.resume_after_editor(
+            original.updated(
+                capture_mode="screen",
+                auto_advance_enabled=False,
+                ocr_language="jpn",
+            )
+        )
+
+        self.assertEqual(wizard.draft_settings.capture_mode, "screen")
+        self.assertFalse(wizard.draft_settings.auto_advance_enabled)
+        self.assertEqual(wizard.draft_settings.game_window_title, "Unsaved game")
+        self.assertEqual(wizard.draft_settings.ocr_language, "jpn")
+        wizard.close()
+        wizard.deleteLater()
+
+    def test_reading_screen_region_hides_window_and_auto_advance(self):
+        wizard = OnboardingWizard(AppSettings(), reading_setup=True)
+        wizard.show()
+        page = wizard.configuration_page
+        page.capture_mode.setCurrentIndex(page.capture_mode.findData("screen"))
+
+        self.assertEqual(page.title(), "Choose capture source")
+        self.assertFalse(page.game_window.isVisibleTo(wizard))
+        self.assertFalse(page.auto_advance.isVisibleTo(wizard))
+        self.assertFalse(page.auto_advance_reason.isVisibleTo(wizard))
+        self.assertIn("dialogue area in step 3", page.subTitle())
+        self.assertTrue(page.validatePage())
+        wizard.close()
+        wizard.deleteLater()
+
+    def test_back_navigation_preserves_valid_calibration_and_test(self):
+        wizard = OnboardingWizard(
+            AppSettings(game_window_title="Game"),
+            diagnostics=Mock(),
+            reading_setup=True,
+        )
+        wizard.diagnostics_page.runner.start = Mock()
+        wizard.next_page()
+        wizard.diagnostics_page._checks_finished(
+            (DiagnosticResult("Capture source", "ok", "Game"),), None
+        )
+        wizard.next_page()
+        wizard.previous_page()
+        self.assertEqual(wizard.diagnostics_page.runner.start.call_count, 1)
+        self.assertEqual(wizard.diagnostics_page.results.count(), 1)
+        self.assertTrue(wizard.diagnostics_page.complete)
+        wizard.next_page()
+        wizard.calibration_page.finish_calibration(None)
+        wizard.next_page()
+        wizard.test_page.set_result(True, "Spoke one line")
+        wizard.previous_page()
+        self.assertTrue(wizard.calibration_page.calibrated)
+        wizard.next_page()
+        self.assertTrue(wizard.test_page.successful)
+        self.assertTrue(wizard.finish_button.isEnabled())
+
+        wizard.previous_page()
+        wizard.previous_page()
+        wizard.previous_page()
+        wizard.configuration_page.game_window.setCurrentText("Another game")
+        wizard.next_page()
+        self.assertFalse(wizard.calibration_page.calibrated)
+        self.assertFalse(wizard.test_page.successful)
         wizard.deleteLater()
 
     def test_calibration_capture_failure_restores_context_and_allows_retry(self):
@@ -1047,6 +1143,21 @@ class OnboardingWizardTest(unittest.TestCase):
             self.assertTrue(wizard.isVisible())
             wizard.close()
             wizard.deleteLater()
+
+    def test_reading_setup_passes_profile_aware_region_save_to_overlay(self):
+        save_region = Mock()
+        wizard = OnboardingWizard(
+            AppSettings(active_profile_id="active"),
+            reading_setup=True,
+            save_region=save_region,
+        )
+        wizard.calibration_page.pending_geometry = None
+        with patch("vntts.onboarding_ui.show_calibration_overlay") as show_overlay:
+            wizard.calibration_page.open_overlay()
+
+        show_overlay.assert_called_once_with(None, save_region=save_region)
+        wizard.close()
+        wizard.deleteLater()
 
 
 if __name__ == "__main__":

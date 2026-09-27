@@ -1,11 +1,12 @@
 import os
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PIL import Image  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QScrollArea  # noqa: E402
 
 from vntts.diagnostics import (  # noqa: E402
     DiagnosticSnapshot,
@@ -84,7 +85,7 @@ class DiagnosticsTest(unittest.TestCase):
         dialog.set_snapshot(snapshot)
 
         self.assertEqual(dialog.speaker.text(), "Marcus")
-        self.assertEqual(dialog.text.toPlainText(), "The captured line.")
+        self.assertEqual(dialog.text.text(), "The captured line.")
         self.assertEqual(dialog.confidence.text(), "91.2%")
         self.assertEqual(dialog.preprocessing.text(), "balanced")
         self.assertEqual(dialog.voice.text(), "Marcus (reverse1999-marcus)")
@@ -177,6 +178,28 @@ class DiagnosticsTest(unittest.TestCase):
         dialog.close()
         dialog.deleteLater()
 
+    def test_warning_marks_previous_capture_and_enlargement_scrolls_both_axes(self):
+        dialog = DiagnosticsDialog()
+        dialog.set_snapshot(
+            DiagnosticSnapshot(
+                Image.new("RGB", (1200, 900), "black"),
+                text="Previously captured text",
+                captured_at=datetime(2026, 9, 22, 12, 34, tzinfo=timezone.utc),
+            )
+        )
+        dialog.set_warning("Game window unavailable")
+
+        self.assertIn("previous capture from", dialog.refresh_status.text())
+        self.assertTrue(dialog.enlarge_button.isEnabled())
+        zoom = dialog._capture_dialog()
+        zoom.show()
+        self.application.processEvents()
+        scroll = zoom.findChild(QScrollArea)
+        self.assertGreater(scroll.horizontalScrollBar().maximum(), 0)
+        self.assertGreater(scroll.verticalScrollBar().maximum(), 0)
+        zoom.close()
+        dialog.close()
+
     def test_closing_dialog_cancels_pending_refresh_timeout(self):
         dialog = DiagnosticsDialog(refresh_timeout_ms=1)
         dialog.request_refresh()
@@ -189,6 +212,19 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertFalse(dialog.refresh_timer.isActive())
         self.assertFalse(dialog.refresh_in_flight)
         self.assertGreater(dialog.refresh_generation, generation)
+
+    def test_late_snapshot_does_not_reopen_closed_concealed_dialog(self):
+        dialog = DiagnosticsDialog()
+        dialog.show()
+        self.application.processEvents()
+        dialog.conceal_for_capture()
+        dialog.close()
+
+        dialog.set_snapshot(DiagnosticSnapshot(None, text="Late capture"))
+
+        self.assertFalse(dialog.isVisible())
+        self.assertFalse(dialog.concealed_for_capture)
+        dialog.deleteLater()
 
     def test_macos_permission_warnings_explain_both_permissions(self):
         warnings = macos_permission_warnings(

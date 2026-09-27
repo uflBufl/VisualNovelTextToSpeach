@@ -457,6 +457,7 @@ class LiveDialogReader:
             if self.capture_future is None or self.capture_future.done():
                 return False
             self.stop_event.set()
+            self.paused = False
             self._cancel_auto_advance_locked()
             self.pending_auto_advance_generation = None
             self.auto_advance_attempts = 0

@@ -23,7 +23,7 @@ from vntts.authoring.source_reference_quality import (
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import QTimer
+    from PySide6.QtCore import QPoint, Qt, QTimer
     from PySide6.QtGui import QCloseEvent
     from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtTest import QTest
@@ -183,7 +183,15 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             self.assertIn("original 0/1", dialog.evidence_progress.text())
             self.assertFalse(dialog.portrait_image.pixmap().isNull())
             self.assertNotIn("534704", dialog.identity.text())
+            self.assertIn("hero.bnk", dialog.reference_details.text())
+            self.assertNotIn("Original media: 123", dialog.reference_details.text())
+            self.assertEqual(dialog.progress.text(), "Decisions: 0/1")
             self.assertIn("Text: Generated sample 1.", dialog.generated_details.text())
+            self.assertIn("not heard", dialog.generated.item(0).text())
+            self.assertTrue(
+                dialog.generated_details.textInteractionFlags()
+                & Qt.TextInteractionFlag.TextSelectableByMouse
+            )
             self.assertEqual(
                 dialog.decision_context.values["game_speaker"].text(), "Dobharchu"
             )
@@ -203,6 +211,8 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             self.assertTrue(dialog.needs_sample.isEnabled())
             self.finish_audio(dialog, "queue-1")
             self.assertFalse(dialog.accept_button.isEnabled())
+            self.assertTrue(dialog.generated.item(0).text().startswith("1. heard"))
+            self.assertTrue(dialog.generated.item(1).text().startswith("2. not heard"))
             self.finish_audio(dialog, "queue-2")
             self.assertTrue(dialog.accept_button.isEnabled())
             self.assertTrue(dialog.reject_reference.isEnabled())
@@ -210,6 +220,11 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             dialog._decide("reject")
             self.wait_for(lambda: not dialog._decision_active)
             result = load_source_reference_quality_review(session)
+            self.assertIsNone(dialog.current)
+            self.assertTrue(dialog.play_reference.isHidden())
+            self.assertTrue(dialog.accept_button.isHidden())
+            self.assertTrue(dialog.decision_context.isHidden())
+            self.assertLessEqual(dialog.height(), 220)
             dialog.close()
 
         self.assertEqual(result["variants"][0]["decision"]["decision"], "reject")
@@ -264,6 +279,25 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             self.assertIsNone(dialog._playing_token)
             self.assertIn("audio selection changed", dialog.status.text())
             self.assertIn("Sample 2", dialog.generated_details.text())
+            dialog.close()
+
+    def test_changing_sample_stops_old_audio_without_listening_credit(self):
+        with TemporaryDirectory() as directory:
+            session = write_quality_session(Path(directory))
+            dialog = SourceReferenceQualityDialog(session)
+            dialog._playing_token = dialog.current["generated_samples"][0]["queue_id"]
+
+            dialog.generated.setCurrentRow(1)
+            dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+
+            self.assertIsNone(dialog._playing_token)
+            self.assertEqual(dialog.completed_audio, set())
+            self.assertIn("sample selection changed", dialog.status.text())
+            self.assertIn("Sample 2", dialog.generated_details.text())
+            dialog._playing_token = "reference"
+            dialog._stop()
+            dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+            self.assertEqual(dialog.completed_audio, set())
             dialog.close()
 
     def test_missing_exact_portrait_uses_truthful_placeholder(self):
@@ -369,9 +403,7 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             self.assertEqual(dialog.accept_button.shortcut().toString(), "Ctrl+Return")
             self.assertEqual(dialog.size().width(), 700)
             self.assertEqual(dialog.size().height(), 500)
-            self.assertIs(
-                dialog.play_reference.nextInFocusChain(), dialog.play_generated
-            )
+            self.assertIs(dialog.play_reference.nextInFocusChain(), dialog.generated)
             dialog.close()
 
     def test_scaled_font_keeps_keyboard_journey_scroll_reachable(self):
@@ -414,7 +446,7 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             self.assertIs(dialog.generated_label.buddy(), dialog.generated)
             self.assertIs(
                 dialog.decision_context.technical_toggle.nextInFocusChain(),
-                dialog.generated,
+                dialog.accept_button,
             )
             self.assertIs(dialog.needs_sample.nextInFocusChain(), dialog.close_button)
             for button in (
@@ -431,6 +463,28 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
                 self.assertTrue(button.accessibleDescription(), button.text())
             dialog.close_button.click()
             self.assertFalse(dialog.isVisible())
+
+    def test_complete_message_remains_visible_with_large_text(self):
+        with TemporaryDirectory() as directory:
+            session = write_quality_session(Path(directory))
+            dialog = SourceReferenceQualityDialog(session)
+            font = dialog.font()
+            font.setPixelSize(48)
+            dialog.setFont(font)
+            dialog.session["variants"][0]["decision"] = "accept"
+            dialog._load_next(dialog.session)
+            dialog.show()
+            self.application.processEvents()
+
+            status_bottom = (
+                dialog.status.mapTo(dialog.review_scroll.viewport(), QPoint(0, 0)).y()
+                + dialog.status.height()
+            )
+            self.assertLessEqual(
+                status_bottom, dialog.review_scroll.viewport().height()
+            )
+            self.assertIn("Only accepted references", dialog.status.text())
+            dialog.close()
 
     def test_slow_decision_keeps_qt_responsive_and_defers_close(self):
         with TemporaryDirectory() as directory:

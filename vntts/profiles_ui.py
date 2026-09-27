@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -41,10 +42,10 @@ class GameProfilesDialog(QDialog):
 
         self.profiles = QComboBox()
         self.profiles.currentIndexChanged.connect(self.update_summary)
-        self.create_button = QPushButton("Save current setup as profile...")
+        self.create_button = QPushButton("Save current setup...")
         self.duplicate_button = QPushButton("Duplicate...")
         self.rename_button = QPushButton("Rename...")
-        self.remove_button = QPushButton("Remove selected profile")
+        self.remove_button = QPushButton("Remove")
         self.create_button.clicked.connect(self.create_profile)
         self.duplicate_button.clicked.connect(self.duplicate_profile)
         self.rename_button.clicked.connect(self.rename_profile)
@@ -54,13 +55,17 @@ class GameProfilesDialog(QDialog):
         self.rename_button.setAccessibleName("Rename selected game profile")
         self.remove_button.setAccessibleName("Remove selected game profile")
         actions = QHBoxLayout()
-        actions.addWidget(self.create_button)
         actions.addWidget(self.duplicate_button)
         actions.addWidget(self.rename_button)
-        actions.addStretch()
         actions.addWidget(self.remove_button)
+        actions.addStretch()
+        management_layout = QVBoxLayout()
+        management_layout.addWidget(
+            self.create_button, alignment=Qt.AlignmentFlag.AlignLeft
+        )
+        management_layout.addLayout(actions)
         management = QGroupBox("Manage stored profiles")
-        management.setLayout(actions)
+        management.setLayout(management_layout)
 
         self.active_status = QLabel()
         self.active_status.setAccessibleName("Active game profile")
@@ -71,9 +76,9 @@ class GameProfilesDialog(QDialog):
         form = QFormLayout()
         form.addRow("Active", self.active_status)
         form.addRow("Profile", self.profiles)
-        form.addRow("Stored settings", self.summary)
+        summary_label = QLabel("Stored settings")
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         self.use_button = _add_action_button(
             buttons,
             "Use selected profile",
@@ -82,10 +87,15 @@ class GameProfilesDialog(QDialog):
         self.use_button.setAccessibleName("Activate selected game profile")
         buttons.accepted.connect(self.use_profile)
         buttons.rejected.connect(self.reject)
+        persistence_note = QLabel("Profile changes are saved immediately.")
+        persistence_note.setWordWrap(True)
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
+        layout.addWidget(summary_label)
+        layout.addWidget(self.summary)
         layout.addWidget(management)
+        layout.addWidget(persistence_note)
         layout.addWidget(buttons)
         self.refresh_profiles(settings.active_profile_id)
 
@@ -134,13 +144,22 @@ class GameProfilesDialog(QDialog):
         )
         if name is None:
             return
+        duplicate: GameProfile | None = None
         try:
             duplicate = self.store.duplicate(profile.id, name)
+            if self.correction_store is not None:
+                self.correction_store.copy_profile(profile.id, duplicate.id)
         except (OSError, ValueError) as error:
+            if duplicate is not None:
+                try:
+                    self.store.remove(duplicate.id)
+                except OSError as rollback_error:
+                    error = OSError(
+                        f"{error}; duplicate cleanup failed: {rollback_error}"
+                    )
             QMessageBox.warning(self, "Unable to duplicate profile", str(error))
+            self.refresh_profiles(profile.id)
             return
-        if self.correction_store is not None:
-            self.correction_store.copy_profile(profile.id, duplicate.id)
         self.refresh_profiles(duplicate.id)
 
     def rename_profile(self) -> None:
@@ -163,7 +182,7 @@ class GameProfilesDialog(QDialog):
 
     def remove_profile(self) -> None:
         profile = self.current_profile()
-        if profile is None:
+        if profile is None or profile.id == self.active_profile_id:
             return
         correction_count = (
             len(self.correction_store.profile_entries.get(str(profile.id), {}))
@@ -198,7 +217,27 @@ class GameProfilesDialog(QDialog):
             QMessageBox.warning(self, "Unable to remove profile", str(error))
             return
         if self.correction_store is not None:
-            self.correction_store.remove_profile(profile.id)
+            try:
+                self.correction_store.remove_profile(profile.id)
+            except OSError as error:
+                try:
+                    self.store._commit_profiles((*self.store.profiles, profile))
+                except OSError as rollback_error:
+                    QMessageBox.warning(
+                        self,
+                        "Profile removal incomplete",
+                        f"OCR corrections remain after profile removal: {error}. "
+                        f"Restoring the profile also failed: {rollback_error}",
+                    )
+                else:
+                    QMessageBox.warning(
+                        self,
+                        "Profile removal cancelled",
+                        f"OCR corrections could not be removed: {error}. "
+                        "The profile was restored; retry removal later.",
+                    )
+                self.refresh_profiles(profile.id)
+                return
         self.refresh_profiles()
 
     def update_summary(self) -> None:
@@ -254,15 +293,27 @@ class GameProfilesDialog(QDialog):
         narrator_routing = (
             "always live" if profile.force_live_narrator else "prepared audio first"
         )
+        audio_source = {
+            "live-tts-only": "Live TTS only",
+            "prefer-generated": "Generated audio, then live TTS",
+            "prefer-game-audio": "Original game audio, then generated/live TTS",
+        }.get(profile.audio_source_policy, profile.audio_source_policy)
+        sequence = {
+            "off": "Disabled",
+            "shadow": "Diagnostics only",
+            "audio-auto": "Automatic prepared-audio advance",
+            "audio-manual": "Manual prepared-audio recovery",
+        }.get(profile.live_sequence_mode, profile.live_sequence_mode)
+        language = (
+            "English (eng)" if profile.ocr_language == "eng" else profile.ocr_language
+        )
         self.summary.setText(
-            f"Selected: {profile.name}"
-            f"{' (active)' if selected_is_active else ' (not active)'}\n"
-            "Activation applies:\n"
-            f"- Capture: {capture} with its calibrated dialogue area\n"
-            f"- Content: {content}; sequence mode {profile.live_sequence_mode}\n"
-            f"- Audio: {profile.audio_source_policy}; prepared tracks {prepared}\n"
-            f"- Voices: {voice_pack}; Narrator {narrator_routing}\n"
-            f"OCR language: {profile.ocr_language}\n"
+            f"{'Already active' if selected_is_active else 'Use selected profile to apply:'}\n"
+            f"Capture: {capture} with its calibrated dialogue area\n"
+            f"Content: {content}; story timing: {sequence}\n"
+            f"Audio: {audio_source}; prepared tracks: {prepared}\n"
+            f"Voices: {voice_pack}; narrator: {narrator_routing}\n"
+            f"OCR language: {language}"
         )
 
     def use_profile(self) -> None:

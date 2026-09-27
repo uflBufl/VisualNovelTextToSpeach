@@ -3,13 +3,13 @@ import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt, QTimer  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
+from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton  # noqa: E402
 
 from vntts.ocr import DialogRegion  # noqa: E402
 from vntts.ocr_corrections import OCRCorrectionStore  # noqa: E402
@@ -383,17 +383,19 @@ class GameProfilesDialogTest(unittest.TestCase):
             )
 
             self.assertEqual(dialog.active_status.text(), "Active game")
-            self.assertIn("(active)", dialog.summary.text())
+            self.assertIn("Already active", dialog.summary.text())
             self.assertFalse(dialog.use_button.isEnabled())
             self.assertEqual(dialog.use_button.text(), "Already active")
             self.assertFalse(dialog.remove_button.isEnabled())
             self.assertIn("Activate another", dialog.remove_button.toolTip())
+            with patch.object(QMessageBox, "exec") as prompt:
+                dialog.remove_profile()
+            prompt.assert_not_called()
 
             dialog.profiles.setCurrentIndex(dialog.profiles.findData(second.id))
 
             self.assertEqual(dialog.active_status.text(), "Active game")
-            self.assertIn("Other game (not active)", dialog.summary.text())
-            self.assertIn("Activation applies", dialog.summary.text())
+            self.assertIn("Use selected profile to apply", dialog.summary.text())
             self.assertIn("Capture:", dialog.summary.text())
             self.assertIn("Content:", dialog.summary.text())
             self.assertIn("Audio:", dialog.summary.text())
@@ -421,7 +423,13 @@ class GameProfilesDialogTest(unittest.TestCase):
             self.assertTrue(dialog.create_button.isEnabled())
             self.assertEqual(
                 dialog.create_button.text(),
-                "Save current setup as profile...",
+                "Save current setup...",
+            )
+            self.assertTrue(
+                any(
+                    button.text() == "Close"
+                    for button in dialog.findChildren(QPushButton)
+                )
             )
             self.assertFalse(dialog.duplicate_button.isEnabled())
             self.assertFalse(dialog.rename_button.isEnabled())
@@ -429,6 +437,22 @@ class GameProfilesDialogTest(unittest.TestCase):
             self.assertFalse(dialog.use_button.isEnabled())
             dialog.close()
             dialog.deleteLater()
+
+    def test_failed_correction_copy_removes_incomplete_duplicate(self):
+        with TemporaryDirectory() as temporary_directory:
+            store = GameProfileStore(Path(temporary_directory) / "profiles.json")
+            original = store.create("Original", AppSettings())
+            corrections = Mock(profile_entries={original.id: {"name": "Name"}})
+            corrections.copy_profile.side_effect = OSError("disk full")
+            dialog = GameProfilesDialog(AppSettings(), store, corrections)
+            with (
+                patch.object(dialog, "_ask_name", return_value="Copy"),
+                patch.object(QMessageBox, "warning") as warning,
+            ):
+                dialog.duplicate_profile()
+
+            self.assertEqual([profile.id for profile in store.profiles], [original.id])
+            self.assertIn("disk full", warning.call_args.args[-1])
 
     def test_remove_profile_escape_keeps_profile_and_corrections(self):
         with TemporaryDirectory() as temporary_directory:
@@ -516,6 +540,44 @@ class GameProfilesDialogTest(unittest.TestCase):
             self.assertNotIn(removable.id, correction_store.profile_entries)
             dialog.close()
             dialog.deleteLater()
+
+    def test_failed_correction_cleanup_restores_profile_for_retry(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            store = GameProfileStore(root / "profiles.json")
+            active = store.create("Active", AppSettings())
+            removable = store.create("Other", AppSettings())
+            corrections = OCRCorrectionStore(
+                root / "corrections.json",
+                profile_entries={removable.id: {"Vertln": "Vertin"}},
+            )
+            dialog = GameProfilesDialog(
+                AppSettings(active_profile_id=active.id), store, corrections
+            )
+            dialog.profiles.setCurrentIndex(dialog.profiles.findData(removable.id))
+
+            def confirm_prompt():
+                prompt = self.application.activeModalWidget()
+                next(
+                    button
+                    for button in prompt.buttons()
+                    if button.text() == "Remove profile"
+                ).click()
+
+            QTimer.singleShot(0, confirm_prompt)
+            with (
+                patch.object(
+                    corrections, "remove_profile", side_effect=OSError("disk full")
+                ),
+                patch.object(QMessageBox, "warning") as warning,
+            ):
+                dialog.remove_profile()
+
+            self.assertIsNotNone(store.get(removable.id))
+            self.assertEqual(
+                corrections.profile_entries[removable.id], {"Vertln": "Vertin"}
+            )
+            self.assertIn("retry removal", warning.call_args.args[-1])
 
 
 if __name__ == "__main__":

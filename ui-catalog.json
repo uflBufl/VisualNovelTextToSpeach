@@ -20,11 +20,20 @@
       "audience": "Player",
       "mission": "Move between story preparation, voice choices and live reading while seeing current application state.",
       "canonical_owner": "dashboard",
-      "related": ["compact-controller", "tray-menu", "voice-editor", "offline-preparation", "settings"],
+      "related": ["compact-controller", "tray-menu", "voice-editor", "offline-preparation", "story-match-recovery", "settings"],
       "contracts": ["app-shell", "single-mission", "runtime-controls"],
       "stories": [
         {"id": "dashboard.stories-ready", "title": "Stories ready", "state": "Ready to prepare or open reading"},
+        {"id": "dashboard.reading-loading", "title": "Reading engine loading", "state": "Loading blocks conflicting controls and names the next step"},
         {"id": "dashboard.reading-active", "title": "Reading active", "state": "Recognized dialogue with usable transport controls"},
+        {"id": "dashboard.reading-waiting", "title": "Waiting for dialogue", "state": "Live mode is active while no line is speaking"},
+        {"id": "dashboard.reading-paused", "title": "Reading paused", "state": "Paused speech is distinct from ordinary stopped reading"},
+        {"id": "dashboard.reading-stopped", "title": "Reading stopped", "state": "Capture is off while previous dialogue remains visible"},
+        {"id": "dashboard.reading-technical", "title": "Technical details open", "state": "Engine, model and compute information remain available on request"},
+        {"id": "dashboard.story-position-recovery", "title": "Story position recovery", "state": "A visible prompt points to stable manual story-position controls"},
+        {"id": "dashboard.reading-long-values", "title": "Long dialogue at compact size", "state": "Long speaker and dialogue remain readable at larger text size"},
+        {"id": "dashboard.reading-long-values-scrolled", "title": "Long source details after scrolling", "state": "Voice and audio source remain readable below long dialogue at compact size"},
+        {"id": "dashboard.story-position-manual", "title": "Manual story position available", "state": "The position override remains available before a mismatch in manual mode"},
         {"id": "dashboard.setup-expanded", "title": "Setup navigation expanded", "state": "Settings and other secondary destinations are visible"}
       ]
     },
@@ -40,6 +49,7 @@
       "stories": [
         {"id": "voice-editor.narrator", "title": "Narrator assignment", "state": "Normal entry from the Voices tab"},
         {"id": "voice-editor.live-recovery", "title": "Unknown speaker recovery", "state": "Same editor with the missing character preselected"},
+        {"id": "voice-editor.narrator-fallback", "title": "Character narrator fallback", "state": "A selected character can deliberately use the narrator's voice"},
         {"id": "voice-editor.preview-generating", "title": "Preview generation", "state": "Progress, cancellation and playback ownership are visible"},
         {"id": "voice-editor.preview-failure", "title": "Preview generation failure", "state": "Failure explains recovery without implying that a voice was assigned"},
         {"id": "voice-editor.long-values", "title": "Long content at compact width", "state": "Long roles, references and transcripts remain usable"},
@@ -57,6 +67,17 @@
       "contracts": ["single-mission", "responsive-form", "global-settings"],
       "stories": [
         {"id": "settings.speech-and-voices", "title": "Speech and voices", "state": "Global engine and voice defaults"},
+        {"id": "settings.shortcuts", "title": "Keyboard shortcuts", "state": "Global reading and playback hotkeys"},
+        {"id": "settings.capture", "title": "Capture and OCR", "state": "Game window, capture source and basic OCR setup"},
+        {"id": "settings.capture-window", "title": "Selected game window", "state": "Long game-window title has the available width and Refresh remains secondary"},
+        {"id": "settings.advanced-capture", "title": "Advanced capture and OCR", "state": "OCR language and diagnostic controls are available through the stable Advanced checkbox"},
+        {"id": "settings.playback", "title": "Playback and automation", "state": "Playback controls and auto advance policy"},
+        {"id": "settings.application", "title": "Application behavior", "state": "Startup and window behavior settings"},
+        {"id": "settings.checkbox-focus", "title": "Focused application checkbox", "state": "An unchecked checkbox remains distinguishable with keyboard focus"},
+        {"id": "settings.advanced-speech", "title": "Advanced speech and voices", "state": "Rare model and asset fields revealed on demand"},
+        {"id": "settings.compact-capture", "title": "Capture at compact large-text size", "state": "Global capture controls stay usable with enlarged text"},
+        {"id": "settings.compact-advanced-speech", "title": "Advanced speech at compact large-text size", "state": "Long advanced form scrolls while Save remains visible"},
+        {"id": "settings.compact-advanced-speech-scrolled", "title": "End of compact advanced speech", "state": "Final advanced fields and restart note remain reachable while Save stays visible"},
         {"id": "settings.validation-error", "title": "Invalid speech settings", "state": "Save is blocked with a focused actionable explanation"}
       ]
     },
@@ -68,7 +89,10 @@
       "mission": "Control live reading without covering the game.",
       "canonical_owner": "dashboard",
       "related": ["dashboard", "tray-menu"],
-      "contracts": ["single-mission", "runtime-controls"]
+      "contracts": ["single-mission", "runtime-controls"],
+      "stories": [
+        {"id": "compact-controller.sequence-recovery", "title": "Story position recovery", "state": "The compact control names the way to set story position without expanding its ordinary controls"}
+      ]
     },
     {
       "id": "tray-menu",
@@ -95,24 +119,39 @@
       ]
     },
     {
-      "id": "live-voice-preflight",
-      "title": "Live voice preflight",
+      "id": "story-match-recovery",
+      "title": "Story match recovery",
       "family": "Everyday playback",
       "audience": "Player",
-      "mission": "Confirm that live reading has usable voices before starting.",
+      "mission": "Help a player start reading when the current game line cannot be matched to the prepared story.",
       "canonical_owner": "dashboard",
-      "related": ["dashboard", "voice-editor", "readiness"],
-      "contracts": ["single-mission", "voice-selection"]
+      "related": ["dashboard", "offline-preparation", "unknown-speaker-prompt"],
+      "contracts": ["single-mission", "runtime-controls"],
+      "stories": [
+        {"id": "story-match-recovery.awaiting-choice", "title": "Unmatched current line", "state": "Start live reading from the visible dialogue, open Stories, or stay stopped"},
+        {"id": "story-match-recovery.larger-text", "title": "Larger text at compact width", "state": "Recovery explanation and all three choices remain readable with increased text size and a compact viewport"}
+      ]
     },
     {
       "id": "onboarding",
       "title": "First-run setup",
       "family": "Setup and recovery",
       "audience": "New player",
-      "mission": "Guide a first-time user from welcome through configuration, diagnostics, calibration and a complete test.",
+      "mission": "Set the game window, prepare required components, calibrate dialogue and test one line before Reading.",
       "canonical_owner": "onboarding",
       "related": ["readiness", "settings", "calibration", "asset-manager"],
-      "contracts": ["single-mission", "responsive-form", "global-settings"]
+      "contracts": ["single-mission", "responsive-form", "global-settings"],
+      "stories": [
+        {"id": "onboarding.game-window", "title": "Choose game window", "state": "First-run setup begins with a selected game and clear override"},
+        {"id": "onboarding.screen-region", "title": "Choose screen region", "state": "Screen capture remains selectable without asking for a game window or auto advance"},
+        {"id": "onboarding.game-window-error", "title": "Missing game window", "state": "An unavailable game has a visible next step"},
+        {"id": "onboarding.diagnostics-loading", "title": "Prepare and check", "state": "Runtime provisioning and checks are in progress"},
+        {"id": "onboarding.diagnostics-error", "title": "Component error", "state": "Blocking error and recovery are visible without hiding manual controls"},
+        {"id": "onboarding.calibration", "title": "Calibrate dialogue", "state": "Overlay instructions and progress are clear"},
+        {"id": "onboarding.test", "title": "Try one line", "state": "The test is pending and saving is gated"},
+        {"id": "onboarding.test-success", "title": "Test succeeded", "state": "The successful test leads to saving setup"},
+        {"id": "onboarding.compact-error", "title": "Compact error", "state": "Error and remediation remain reachable with larger text"}
+      ]
     },
     {
       "id": "readiness",
@@ -121,8 +160,18 @@
       "audience": "Player",
       "mission": "Explain what prevents reading and offer the exact next remediation.",
       "canonical_owner": "readiness",
-      "related": ["onboarding", "settings", "asset-manager", "macos-permissions", "diagnostics"],
-      "contracts": ["single-mission", "support-boundary"]
+      "related": ["dashboard", "onboarding", "settings", "macos-permissions", "calibration", "voice-editor"],
+      "contracts": ["single-mission", "support-boundary"],
+      "stories": [
+        {"id": "readiness.loading", "title": "Running checks", "state": "Progress is visible and stale fixes are unavailable"},
+        {"id": "readiness.blocked", "title": "OCR and audio unavailable", "state": "Blocking checks explain their specific next steps"},
+        {"id": "readiness.audio-error", "title": "Audio output unavailable", "state": "Selecting a second error shows its own external recovery"},
+        {"id": "readiness.warning-selected", "title": "Optional voice warning", "state": "A warning can be inspected without hiding the blocking errors"},
+        {"id": "readiness.warning-only", "title": "Ready with narrator fallback", "state": "Warnings alone permit a direct return to Reading"},
+        {"id": "readiness.non-english-ocr", "title": "Configured OCR language unavailable", "state": "External OCR guidance names the selected recognition language"},
+        {"id": "readiness.ready", "title": "Ready to read", "state": "Successful checks do not demand remediation"},
+        {"id": "readiness.long-error", "title": "Long error at compact size", "state": "Full details remain available with larger text and a compact window"}
+      ]
     },
     {
       "id": "calibration",
@@ -132,7 +181,16 @@
       "mission": "Select and verify the dialogue capture region.",
       "canonical_owner": "calibration",
       "related": ["onboarding", "settings", "readiness"],
-      "contracts": ["single-mission"]
+      "contracts": ["single-mission"],
+      "stories": [
+        {"id": "calibration.overlay-empty", "title": "Draw dialogue area", "state": "Mouse and keyboard ways to select a region are visible"},
+        {"id": "calibration.overlay-selected", "title": "Adjust selected area", "state": "Selection can be moved, resized, cleared or reviewed"},
+        {"id": "calibration.overlay-save-failure", "title": "Region save failure", "state": "Selection stays visible with a retryable save error"},
+        {"id": "calibration.review-loading", "title": "Recognizing selected area", "state": "Review remains readable while OCR runs and Save is gated"},
+        {"id": "calibration.review-recognized", "title": "Recognized dialogue", "state": "Preview, recognized speaker and full text can be checked before saving"},
+        {"id": "calibration.review-failure", "title": "OCR preview unavailable", "state": "Player can draw again or explicitly save the region without OCR evidence"},
+        {"id": "calibration.review-compact", "title": "Compact review", "state": "Preview, OCR evidence and actions remain reachable with larger text"}
+      ]
     },
     {
       "id": "game-profiles",
@@ -142,7 +200,13 @@
       "mission": "Save, activate and remove complete game-specific configurations.",
       "canonical_owner": "game-profiles",
       "related": ["settings", "ocr-corrections"],
-      "contracts": ["single-mission", "global-settings"]
+      "contracts": ["single-mission", "global-settings"],
+      "stories": [
+        {"id": "game-profiles.empty", "title": "No saved profiles", "state": "The only available step is to save current setup as a profile"},
+        {"id": "game-profiles.active", "title": "Current profile selected", "state": "An active profile is identified and cannot be activated twice"},
+        {"id": "game-profiles.other-selected", "title": "Different profile selected", "state": "Selection and activation are distinct; the resulting settings are previewed"},
+        {"id": "game-profiles.compact", "title": "Compact profile manager", "state": "Long names and all actions remain usable with larger text"}
+      ]
     },
     {
       "id": "asset-manager",
@@ -152,7 +216,19 @@
       "mission": "Install only the model assets required by the active speech engine.",
       "canonical_owner": "asset-manager",
       "related": ["readiness", "settings", "onboarding"],
-      "contracts": ["single-mission", "global-settings"]
+      "contracts": ["single-mission", "global-settings"],
+      "stories": [
+        {"id": "asset-manager.voices-empty", "title": "No external voice manifest", "state": "Character voices can be imported without mandatory model management"},
+        {"id": "asset-manager.voices-manifest", "title": "Selected voice manifest", "state": "A manually selected path and its validation action are visible"},
+        {"id": "asset-manager.voices-validation", "title": "Checking voice files", "state": "Validation progress prevents premature saving"},
+        {"id": "asset-manager.voices-error", "title": "Invalid voice manifest", "state": "Failure preserves the path and a retry action"},
+        {"id": "asset-manager.model-unchecked", "title": "XTTS model not checked", "state": "The selected model is not claimed ready before checksum verification"},
+        {"id": "asset-manager.model-verified", "title": "XTTS model verified", "state": "A passing checksum check explicitly confirms the model is ready"},
+        {"id": "asset-manager.model-download", "title": "Model download underway", "state": "Progress and cancellation have unambiguous ownership"},
+        {"id": "asset-manager.model-failure", "title": "Model download failure", "state": "Retry remains available without hiding the failure"},
+        {"id": "asset-manager.compact-voices", "title": "Compact voice import", "state": "Manifest controls and Save remain available with larger text"},
+        {"id": "asset-manager.compact-model", "title": "Compact model management", "state": "Long model and directory values remain readable with larger text"}
+      ]
     },
     {
       "id": "voice-import",
@@ -162,7 +238,13 @@
       "mission": "Add a verified external voice reference to the reusable voice library.",
       "canonical_owner": "voice-import",
       "related": ["voice-editor", "settings"],
-      "contracts": ["single-mission", "playback-evidence"]
+      "contracts": ["single-mission", "playback-evidence"],
+      "stories": [
+        {"id": "voice-import.empty", "title": "No audio selected", "state": "Character name and local audio selection are discoverable"},
+        {"id": "voice-import.selected", "title": "Two audio references", "state": "Selected files and optional aliases are visible before saving"},
+        {"id": "voice-import.long-values", "title": "Long selected filenames", "state": "Long audio filenames remain inspectable and replaceable"},
+        {"id": "voice-import.compact", "title": "Compact voice import", "state": "All controls fit with enlarged text"}
+      ]
     },
     {
       "id": "macos-permissions",
@@ -172,7 +254,13 @@
       "mission": "Show required permission state and route to the relevant system control.",
       "canonical_owner": "readiness",
       "related": ["readiness", "onboarding"],
-      "contracts": ["single-mission"]
+      "contracts": ["single-mission"],
+      "stories": [
+        {"id": "macos-permissions.denied", "title": "Permission missing", "state": "Screen Recording and Accessibility can be requested or managed independently"},
+        {"id": "macos-permissions.granted", "title": "Permissions granted", "state": "No unnecessary request actions remain"},
+        {"id": "macos-permissions.unavailable", "title": "Permission status unavailable", "state": "Uncertain system state is not shown as denial or success"},
+        {"id": "macos-permissions.compact", "title": "Compact permission recovery", "state": "Both permission paths remain usable with larger text"}
+      ]
     },
     {
       "id": "offline-preparation",
@@ -218,7 +306,20 @@
       "mission": "Correct one uncertain captured line and save a scoped rule only when content changed.",
       "canonical_owner": "ocr-review",
       "related": ["ocr-corrections", "diagnostics", "dashboard"],
-      "contracts": ["single-mission", "support-boundary"]
+      "contracts": ["single-mission", "support-boundary"],
+      "stories": [
+        {"id": "ocr-review.pending", "title": "Uncertain captured line", "state": "One screenshot and its detected speaker and text can be reviewed"},
+        {"id": "ocr-review.enlarged-screenshot", "title": "Enlarged captured dialogue", "state": "The captured screenshot can be inspected at double size in a scrollable view"},
+        {"id": "ocr-review.enlarged-long", "title": "Large captured screenshot", "state": "A wide and tall screenshot has horizontal and vertical scrolling plus a visible Close action"},
+        {"id": "ocr-review.corrected", "title": "Correction drafted", "state": "Changed speaker and text enable a profile-scoped correction"},
+        {"id": "ocr-review.all-games", "title": "All-games correction", "state": "Selecting the broader scope updates the future-effect explanation before saving"},
+        {"id": "ocr-review.shared-source-conflict", "title": "One OCR source in both fields", "state": "Different replacements for the same detected text are blocked with an explanation"},
+        {"id": "ocr-review.resolve-confirm", "title": "Resolve without rule", "state": "Player sees the consequence before dismissing the sample"},
+        {"id": "ocr-review.saving", "title": "Saving review", "state": "A pending write disables competing actions without hiding the draft"},
+        {"id": "ocr-review.save-failure", "title": "Review save failure", "state": "Failure keeps the draft and a retry path"},
+        {"id": "ocr-review.empty", "title": "No uncertain lines", "state": "The empty queue has no misleading save action"},
+        {"id": "ocr-review.compact", "title": "Compact OCR review", "state": "Screenshot, editable text and actions remain reachable with larger text"}
+      ]
     },
     {
       "id": "ocr-corrections",
@@ -228,17 +329,36 @@
       "mission": "Inspect and edit stored OCR correction rules and their scope.",
       "canonical_owner": "ocr-corrections",
       "related": ["ocr-review", "game-profiles"],
-      "contracts": ["single-mission"]
+      "contracts": ["single-mission"],
+      "stories": [
+        {"id": "ocr-corrections.profile-rules", "title": "Saved game corrections", "state": "Reusable speaker and phrase rules are edited for the current game profile"},
+        {"id": "ocr-corrections.empty", "title": "No saved rules", "state": "A first correction can be added for all games or the current profile"},
+        {"id": "ocr-corrections.validation", "title": "Invalid correction rows", "state": "Incomplete and duplicate rules identify exact rows before saving"},
+        {"id": "ocr-corrections.saving", "title": "Saving corrections", "state": "Tables and actions are unavailable until the write finishes"},
+        {"id": "ocr-corrections.save-failure", "title": "Save failed", "state": "The edited rules remain available for retry after a failed write"},
+        {"id": "ocr-corrections.unsaved-close", "title": "Unsaved corrections", "state": "Leaving with edits requires an explicit discard action"},
+        {"id": "ocr-corrections.long-values", "title": "Long rule values", "state": "Long source and replacement values can be inspected without changing the rule"},
+        {"id": "ocr-corrections.compact", "title": "Compact rule editor", "state": "Rules, scope and Save/Cancel remain reachable with larger text"}
+      ]
     },
     {
       "id": "dialogue-history",
       "title": "Dialogue history",
       "family": "Evidence and support",
       "audience": "Player",
-      "mission": "Find and replay a previously spoken line.",
+      "mission": "Find a captured line and speak its text again with the current voice assignment.",
       "canonical_owner": "dialogue-history",
       "related": ["dashboard"],
-      "contracts": ["single-mission", "playback-evidence"]
+      "contracts": ["single-mission", "playback-evidence"],
+      "stories": [
+        {"id": "dialogue-history.empty", "title": "No captured dialogue", "state": "The current session has no lines and no action can speak or export one"},
+        {"id": "dialogue-history.populated", "title": "Captured dialogue", "state": "Player can choose a line and hear its text with the current voice"},
+        {"id": "dialogue-history.filtered", "title": "Filtered dialogue", "state": "Search shows matching speaker or text with full selected detail"},
+        {"id": "dialogue-history.speaking", "title": "Speaking selected text", "state": "Stop is available while current-voice synthesis plays"},
+        {"id": "dialogue-history.failure", "title": "Speech preview failed", "state": "The selected text and a retry remain available after failure"},
+        {"id": "dialogue-history.long-text", "title": "Long dialogue", "state": "A long speaker and paragraph can be inspected and searched"},
+        {"id": "dialogue-history.compact", "title": "Compact dialogue history", "state": "Search, selected line and speech actions remain usable with larger text"}
+      ]
     },
     {
       "id": "diagnostics",
@@ -248,7 +368,16 @@
       "mission": "Inspect the latest capture and runtime evidence and take one contextual remediation action.",
       "canonical_owner": "support-center",
       "related": ["readiness", "support-center", "ocr-review"],
-      "contracts": ["support-boundary", "single-mission"]
+      "contracts": ["support-boundary", "single-mission"],
+      "stories": [
+        {"id": "diagnostics.empty", "title": "No captured snapshot", "state": "Inspection has not received a dialogue image yet"},
+        {"id": "diagnostics.snapshot", "title": "Captured dialogue evidence", "state": "Image, OCR output, voice and timing evidence are available"},
+        {"id": "diagnostics.technical", "title": "Capture and timing details", "state": "Advanced timing and capture fields remain available on request"},
+        {"id": "diagnostics.refreshing", "title": "Refreshing capture", "state": "A new snapshot is pending and refresh cannot be triggered twice"},
+        {"id": "diagnostics.warning", "title": "Capture warning", "state": "Specific recovery action is paired with a permission or window warning"},
+        {"id": "diagnostics.timeout", "title": "Refresh timed out", "state": "Previous evidence remains visible and a retry is available"},
+        {"id": "diagnostics.compact", "title": "Compact diagnostics", "state": "Latest evidence and recovery remain reachable with enlarged text"}
+      ]
     },
     {
       "id": "support-center",
@@ -258,7 +387,15 @@
       "mission": "Collect bounded diagnostics, export a support archive and open the settings location.",
       "canonical_owner": "support-center",
       "related": ["diagnostics", "readiness", "tray-menu"],
-      "contracts": ["support-boundary", "single-mission"]
+      "contracts": ["support-boundary", "single-mission"],
+      "stories": [
+        {"id": "support-center.empty", "title": "No runtime events", "state": "Support destination explains what a report contains before any event"},
+        {"id": "support-center.events", "title": "Runtime events", "state": "Recent event evidence and report actions are visible"},
+        {"id": "support-center.new-events", "title": "New events while reading", "state": "A reader's position is retained when more events arrive"},
+        {"id": "support-center.exporting", "title": "Export in progress", "state": "Report action is unavailable during export"},
+        {"id": "support-center.failure", "title": "Support export failed", "state": "Failure keeps an explicit retry"},
+        {"id": "support-center.compact", "title": "Compact support center", "state": "Logs, related diagnostics and export stay reachable at larger text"}
+      ]
     },
     {
       "id": "authoring-workbench",
@@ -268,7 +405,18 @@
       "mission": "Inspect generation state, run selected generation and repair individual outcomes.",
       "canonical_owner": "authoring-workbench",
       "related": ["cohort-review", "missing-voice-review", "failed-reference-review"],
-      "contracts": ["review-authority", "single-mission"]
+      "contracts": ["review-authority", "single-mission"],
+      "stories": [
+        {"id": "authoring-workbench.ready", "title": "Ready to generate", "state": "One queued line is ready; generation action and collection selection are visible"},
+        {"id": "authoring-workbench.review", "title": "Awaiting audio review", "state": "Generated audio must be played before approval or rejection"},
+        {"id": "authoring-workbench.approved", "title": "Approved outcome", "state": "An approved recording remains discoverable and replayable"},
+        {"id": "authoring-workbench.interrupted", "title": "Interrupted attempt", "state": "Preserved attempt and saved outcome remain distinguishable"},
+        {"id": "authoring-workbench.failed", "title": "Failed synthesis", "state": "The failed line and retry route remain visible"},
+        {"id": "authoring-workbench.running-elsewhere", "title": "Generation running elsewhere", "state": "Another process owns generation and this workbench cannot interrupt it"},
+        {"id": "authoring-workbench.filtered-empty", "title": "No filtered results", "state": "An explicit user filter hides an existing approved recording"},
+        {"id": "authoring-workbench.compact", "title": "Compact authoring", "state": "Primary generation and review actions remain reachable at enlarged text"},
+        {"id": "authoring-workbench.compact-actions", "title": "Compact review actions", "state": "Scrolling reveals the review action group without clipping"}
+      ]
     },
     {
       "id": "cohort-review",
@@ -278,7 +426,16 @@
       "mission": "Hear a checksum-bound sample set and make one cohort decision.",
       "canonical_owner": "cohort-review",
       "related": ["authoring-workbench", "blind-listening"],
-      "contracts": ["review-authority", "playback-evidence"]
+      "contracts": ["review-authority", "playback-evidence"],
+      "stories": [
+        {"id": "cohort-review.pending", "title": "Required samples", "state": "Two pending cohorts require exact-sample playback before a decision"},
+        {"id": "cohort-review.heard", "title": "Heard clean sample", "state": "Completed listening enables accepting the current exact cohort"},
+        {"id": "cohort-review.bad", "title": "Defective sample", "state": "A heard sample is marked bad and specific defect choices are visible"},
+        {"id": "cohort-review.preparing", "title": "Preparing playback", "state": "The selected recording is loading and cohort decisions wait"},
+        {"id": "cohort-review.saving", "title": "Saving decision", "state": "One exact cohort decision is saving and a second decision is blocked"},
+        {"id": "cohort-review.load-failure", "title": "Authority load failure", "state": "The exact review bundle cannot be loaded and all decisions remain blocked"},
+        {"id": "cohort-review.compact", "title": "Enlarged review text", "state": "Playback and decision remain reachable with enlarged text"}
+      ]
     },
     {
       "id": "missing-voice-review",
@@ -288,7 +445,14 @@
       "mission": "Choose explicit fallbacks for missing voices and exhausted generated lines.",
       "canonical_owner": "missing-voice-review",
       "related": ["authoring-workbench", "voice-editor"],
-      "contracts": ["review-authority", "voice-selection"]
+      "contracts": ["review-authority", "voice-selection"],
+      "stories": [
+        {"id": "missing-voice-review.available", "title": "One playable fallback", "state": "One opaque candidate has a playable sample; the other failed"},
+        {"id": "missing-voice-review.pair", "title": "Two playable candidates", "state": "Both blind candidates can be played and compared"},
+        {"id": "missing-voice-review.compared", "title": "Listening complete", "state": "Both blind candidates have been heard and a choice is available"},
+        {"id": "missing-voice-review.none", "title": "No viable fallback", "state": "Both candidate renders failed and the family remains unresolved"},
+        {"id": "missing-voice-review.compact", "title": "Enlarged fallback review", "state": "Available evidence and decisions remain reachable at enlarged text"}
+      ]
     },
     {
       "id": "failed-reference-review",
@@ -298,7 +462,13 @@
       "mission": "Select source audio suitable for cloning one failed speaker group.",
       "canonical_owner": "failed-reference-review",
       "related": ["authoring-workbench", "source-reference-review"],
-      "contracts": ["review-authority", "playback-evidence"]
+      "contracts": ["review-authority", "playback-evidence"],
+      "stories": [
+        {"id": "failed-reference-review.pending", "title": "Choose source recording", "state": "Blinded candidates must be heard before selecting a source"},
+        {"id": "failed-reference-review.heard", "title": "Candidates heard", "state": "Every source candidate has been heard and a decision is available"},
+        {"id": "failed-reference-review.preview", "title": "Optional generated sample", "state": "A user opens the generated-preview controls"},
+        {"id": "failed-reference-review.compact", "title": "Enlarged source audit", "state": "Reference playback and decisions remain reachable at enlarged text"}
+      ]
     },
     {
       "id": "source-reference-review",
@@ -308,7 +478,13 @@
       "mission": "Judge original and generated evidence for one source reference.",
       "canonical_owner": "source-reference-review",
       "related": ["failed-reference-review", "blind-listening"],
-      "contracts": ["review-authority", "playback-evidence"]
+      "contracts": ["review-authority", "playback-evidence"],
+      "stories": [
+        {"id": "source-reference-review.pending", "title": "Source evidence pending", "state": "Original and generated samples need complete listening before a decision"},
+        {"id": "source-reference-review.heard", "title": "Evidence heard", "state": "All required source and generated recordings have been heard"},
+        {"id": "source-reference-review.complete", "title": "Review complete", "state": "Every reference decision has been saved and no further action remains"},
+        {"id": "source-reference-review.compact", "title": "Enlarged source review", "state": "Original, generated evidence and decisions remain reachable at enlarged text"}
+      ]
     },
     {
       "id": "blind-listening",
@@ -318,7 +494,13 @@
       "mission": "Compare hidden A/B audio and record one blinded preference.",
       "canonical_owner": "blind-listening",
       "related": ["cohort-review", "source-reference-review", "terminal-conflict-review"],
-      "contracts": ["review-authority", "playback-evidence"]
+      "contracts": ["review-authority", "playback-evidence"],
+      "stories": [
+        {"id": "blind-listening.pending", "title": "A/B comparison pending", "state": "Both anonymous clips must be heard to their natural ends before preference"},
+        {"id": "blind-listening.heard", "title": "Both samples heard", "state": "A and B have both been heard and four blinded preference choices are available"},
+        {"id": "blind-listening.complete", "title": "Comparison complete", "state": "All blinded preferences are saved without revealing identities in the decision UI"},
+        {"id": "blind-listening.compact", "title": "Enlarged A/B comparison", "state": "Dialogue, playback and choices remain reachable with enlarged text"}
+      ]
     },
     {
       "id": "terminal-conflict-review",
@@ -328,7 +510,32 @@
       "mission": "Resolve two contradictory historical terminal decisions without guessing from metadata.",
       "canonical_owner": "terminal-conflict-review",
       "related": ["blind-listening", "authoring-workbench"],
-      "contracts": ["review-authority", "playback-evidence"]
+      "contracts": ["review-authority", "playback-evidence"],
+      "stories": [
+        {"id": "terminal-conflict-review.pending", "title": "Contradictory audio pending", "state": "Both historical candidate WAVs need complete listening before resolution"},
+        {"id": "terminal-conflict-review.heard", "title": "Both candidates heard", "state": "A or B can be kept, or both rejected for repair"},
+        {"id": "terminal-conflict-review.complete", "title": "All conflicts resolved", "state": "Every conflict has an explicit decision and source workspaces remain unchanged"},
+        {"id": "terminal-conflict-review.compact", "title": "Enlarged conflict review", "state": "Line text, original playback and decisions remain reachable with enlarged text"}
+      ]
+    },
+    {
+      "id": "legacy-reason-review",
+      "title": "Rejected recording reassessment",
+      "family": "Authoring review",
+      "audience": "Authoring reviewer",
+      "mission": "Reassess previously rejected recordings and save specific defect reasons or a current acceptable verdict.",
+      "canonical_owner": "legacy-reason-review",
+      "related": ["cohort-review", "source-reference-review"],
+      "contracts": ["review-authority", "playback-evidence"],
+      "stories": [
+        {"id": "legacy-reason-review.pending", "title": "Recording not yet heard", "state": "A rejected recording must play to the end before assessment"},
+        {"id": "legacy-reason-review.heard", "title": "Recording heard", "state": "Acceptable or a specific defect reason can be selected"},
+        {"id": "legacy-reason-review.selected", "title": "Assessment saved", "state": "A concrete defect is saved and the reassessment is ready to publish"},
+        {"id": "legacy-reason-review.save-error", "title": "Assessment could not be saved", "state": "The failed choice is visibly reverted and publication remains blocked"},
+        {"id": "legacy-reason-review.publish-error", "title": "Publication failed", "state": "Saved assessments remain visible and publication can be retried"},
+        {"id": "legacy-reason-review.compact", "title": "Enlarged reassessment", "state": "Long speaker and dialogue, playback and footer remain readable at enlarged text"},
+        {"id": "legacy-reason-review.compact-reasons", "title": "Enlarged lower assessment options", "state": "The final defect reason is reachable by keyboard while the footer remains visible"}
+      ]
     },
     {
       "id": "character-story-review",
@@ -338,7 +545,12 @@
       "mission": "Compare valid same-character source references and retain protected notes and decisions.",
       "canonical_owner": "character-story-review",
       "related": ["source-reference-review"],
-      "contracts": ["review-authority", "playback-evidence"]
+      "contracts": ["review-authority", "playback-evidence"],
+      "stories": [
+        {"id": "character-story-review.pending", "title": "Pending flagged source references", "state": "Synthetic non-voice clips are explicitly flagged with the recommendation filter off; identity, portrait and transcript evidence precede review actions"},
+        {"id": "character-story-review.compact", "title": "Enlarged reference review", "state": "Candidate filters and selection remain readable at enlarged text"},
+        {"id": "character-story-review.compact-actions", "title": "Enlarged reference actions", "state": "Playback, decisions and A/B controls remain reachable after scrolling"}
+      ]
     },
     {
       "id": "background-notification",

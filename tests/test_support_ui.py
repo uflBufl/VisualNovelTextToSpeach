@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QTextCursor  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QTabWidget  # noqa: E402
 
 from vntts.support import GameImportLog, NativeSpeechLog  # noqa: E402
 from vntts.support_ui import SupportCenterDialog  # noqa: E402
@@ -44,6 +44,22 @@ class SupportCenterDialogTest(unittest.TestCase):
         dialog = SupportCenterDialog(FakeEventLog())
         dialog.refresh()
         self.assertIn("MOSS native: gen_s=1.25", dialog.events.toPlainText())
+        dialog.close()
+        dialog.deleteLater()
+
+    def test_report_privacy_is_visible_beside_export_without_empty_report_tab(self):
+        dialog = SupportCenterDialog(FakeEventLog())
+
+        self.assertIn("excludes screenshots", dialog.privacy_note.text())
+        self.assertTrue(dialog.privacy_note.wordWrap())
+        self.assertEqual(dialog.findChildren(QTabWidget), [])
+        self.assertFalse(dialog.export_button.isDefault())
+        requested = []
+        dialog.export_requested.connect(lambda: requested.append(True))
+        dialog.show()
+        dialog.events.setFocus()
+        QTest.keyClick(dialog.events, Qt.Key.Key_Return)
+        self.assertEqual(requested, [])
         dialog.close()
         dialog.deleteLater()
 

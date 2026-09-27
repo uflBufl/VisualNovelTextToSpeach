@@ -272,6 +272,33 @@ def build_unknown_speaker_prompt(
     return prompt, choose, continue_button, cancel_button
 
 
+def build_story_match_recovery_prompt(
+    message: str, parent: QWidget | None = None
+) -> tuple[QMessageBox, QPushButton, QPushButton, QPushButton]:
+    """Offer the existing recovery routes when a live story line cannot match."""
+    prompt = QMessageBox(parent)
+    prompt.setIcon(QMessageBox.Icon.Warning)
+    prompt.setWindowTitle("Story line not matched")
+    prompt.setText(message)
+    prompt.setInformativeText(
+        "You can start reading the dialogue visible on screen now. Prepared "
+        "recordings remain available if a later line matches."
+    )
+    continue_button = prompt.addButton(
+        "Start live reading", QMessageBox.ButtonRole.AcceptRole
+    )
+    stories_button = prompt.addButton(
+        "Open Stories...", QMessageBox.ButtonRole.ActionRole
+    )
+    cancel_button = prompt.addButton("Stay stopped", QMessageBox.ButtonRole.RejectRole)
+    assert continue_button is not None
+    assert stories_button is not None
+    assert cancel_button is not None
+    prompt.setDefaultButton(continue_button)
+    prompt.setEscapeButton(cancel_button)
+    return prompt, continue_button, stories_button, cancel_button
+
+
 class SettingsDialog(QDialog):
     def __init__(
         self,
@@ -396,7 +423,10 @@ class SettingsDialog(QDialog):
         )
         refresh_windows_button.clicked.connect(self.refresh_windows)
         window_layout = QHBoxLayout()
-        window_layout.addWidget(self.game_window)
+        window_layout.addWidget(self.game_window, 1)
+        refresh_windows_button.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
         window_layout.addWidget(refresh_windows_button)
         self.refresh_windows_button = refresh_windows_button
         return window_layout
@@ -646,15 +676,15 @@ class SettingsDialog(QDialog):
 
     def _build_shortcuts_form(self) -> QFormLayout:
         shortcuts_form = QFormLayout()
-        shortcuts_form.addRow("Read once hotkey", self.read_hotkey)
+        if sys.platform == "darwin":
+            shortcuts_form.addRow(self.macos_hotkey_notice)
+        shortcuts_form.addRow("Read current dialogue hotkey", self.read_hotkey)
         shortcuts_form.addRow("Live reading hotkey", self.live_hotkey)
         shortcuts_form.addRow("Pause or resume hotkey", self.pause_hotkey)
         shortcuts_form.addRow("Skip speech hotkey", self.skip_hotkey)
-        shortcuts_form.addRow("Repeat speech hotkey", self.repeat_hotkey)
+        shortcuts_form.addRow("Replay last speech hotkey", self.repeat_hotkey)
         shortcuts_form.addRow("Clear queue hotkey", self.clear_queue_hotkey)
         shortcuts_form.addRow("Emergency stop hotkey", self.emergency_stop_hotkey)
-        if sys.platform == "darwin":
-            shortcuts_form.addRow(self.macos_hotkey_notice)
         return shortcuts_form
 
     def _build_capture_form(
@@ -880,9 +910,11 @@ class SettingsDialog(QDialog):
         )
         if sys.platform != "darwin":
             note_text = f"Hotkey changes take effect immediately. {note_text}"
-        note = QLabel(note_text)
-        note.setWordWrap(True)
-        settings_content_layout.insertWidget(settings_content_layout.count() - 1, note)
+        self.restart_note = QLabel(note_text)
+        self.restart_note.setWordWrap(True)
+        settings_content_layout.insertWidget(
+            settings_content_layout.count() - 1, self.restart_note
+        )
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
             | QDialogButtonBox.StandardButton.Cancel
@@ -893,10 +925,15 @@ class SettingsDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.addLayout(section_navigation_layout)
+        layout.addWidget(self.advanced_settings)
         layout.addWidget(self.validation_summary)
         layout.addWidget(self.settings_scroll, 1)
-        layout.addWidget(self.advanced_settings)
         layout.addWidget(buttons)
+        self.setStyleSheet(
+            "QCheckBox::indicator:unchecked:enabled { border: 1px solid #8b8b8b; }"
+            "QCheckBox::indicator:unchecked:disabled { border: 1px solid #777777; }"
+            "QCheckBox::indicator:unchecked:focus { border: 2px solid #2ab044; }"
+        )
         self._resize_for_available_screen()
 
     def _connect_controls(self) -> None:
@@ -1009,6 +1046,7 @@ class SettingsDialog(QDialog):
         if 0 <= index < len(self.settings_regions):
             for position, region in enumerate(self.settings_regions):
                 region.setVisible(position == index)
+            self.restart_note.setVisible(index == 2)
             self.settings_scroll.verticalScrollBar().setValue(0)
 
     def _connect_validation_updates(self) -> None:
@@ -1230,7 +1268,7 @@ class SettingsDialog(QDialog):
         available_height = max(320, available.height() - vertical_margin)
         self.resize(
             min(760, available_width),
-            min(800, available_height),
+            min(600, available_height),
         )
 
     def browse_screenshot_directory(self) -> None:
@@ -1324,6 +1362,7 @@ class SettingsDialog(QDialog):
     def update_capture_controls(self) -> None:
         window_capture = self.capture_mode.currentData() == "window"
         self.game_window.setEnabled(window_capture)
+        self.refresh_windows_button.setEnabled(window_capture)
         self.update_auto_advance_controls()
 
     def update_terms_control(self) -> None:
@@ -1685,7 +1724,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.correction_store = correction_store or OCRCorrectionStore.load()
         self.hotkey_listener = None
         self.calibration_overlay: DialogRegionOverlay | None = None
-        self.onboarding_wizard = self.diagnostics_dialog = None
+        self.onboarding_wizard: OnboardingWizard | None = None
+        self.diagnostics_dialog: DiagnosticsDialog | None = None
+        self._onboarding_voice_wizard: OnboardingWizard | None = None
         self.diagnostics_refresh_generation = 0
         self.readiness_dialog = None
         self.pregeneration_dialog: OfflineAudioPreparationDialog | None = None
@@ -2404,9 +2445,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 )
             elif failure == "story-line-no-match":
                 message = (
-                    "Live reading could not match this dialogue to the prepared "
-                    "story. Continue from OCR with live TTS, or choose the story "
-                    "currently shown in the game."
+                    "The visible dialogue does not match the prepared story "
+                    "at this point."
                 )
                 self._offer_story_match_recovery(message)
                 return
@@ -2423,37 +2463,18 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def _offer_story_match_recovery(self, message: str) -> bool:
         self.show_dashboard()
         self.dashboard.show_reading()
-        prompt = QMessageBox(self.dashboard)
-        prompt.setIcon(QMessageBox.Icon.Warning)
-        prompt.setWindowTitle("Prepared story not found")
-        prompt.setText(message)
-        prompt.setInformativeText(
-            "OCR + live TTS reads the visible dialogue without a story position. "
-            "Your prepared pack stays configured and can still supply audio when "
-            "a later line matches."
+        prompt, continue_button, stories_button, _cancel_button = (
+            build_story_match_recovery_prompt(message, self.dashboard)
         )
-        continue_button = prompt.addButton(
-            "Continue with OCR + live TTS",
-            QMessageBox.ButtonRole.AcceptRole,
-        )
-        stories_button = prompt.addButton(
-            "Choose stories...",
-            QMessageBox.ButtonRole.ActionRole,
-        )
-        cancel_button = prompt.addButton(
-            "Cancel",
-            QMessageBox.ButtonRole.RejectRole,
-        )
-        prompt.setDefaultButton(continue_button)
-        prompt.setEscapeButton(cancel_button)
         prompt.exec()
         if prompt.clickedButton() is continue_button:
             running = bool(self.controller.start_live_from_ocr())
             self.signals.live_changed.emit(running)
             self.set_status(
-                "Live reading started from OCR; unmatched dialogue uses live TTS."
+                "Reading visible dialogue. Prepared recordings remain available "
+                "for later matching lines."
                 if running
-                else "Live reading could not start from OCR."
+                else "Live reading could not start from the visible dialogue."
             )
             return running
         if prompt.clickedButton() is stories_button:
@@ -2463,7 +2484,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 "the game, then return to Reading and start again."
             )
         else:
-            self.set_status("Live reading cancelled: story position was not found.")
+            self.set_status(
+                "Live reading remains stopped: current story line was not matched."
+            )
         self.signals.live_changed.emit(False)
         return False
 
@@ -2541,11 +2564,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.diagnostics_dialog.remediation_requested.connect(
                 self._run_diagnostics_remediation
             )
-            self.diagnostics_dialog.finished.connect(
-                lambda _result, dialog=self.diagnostics_dialog: (
-                    self._diagnostics_closed(dialog)
-                )
+            self.diagnostics_dialog.closed.connect(
+                lambda dialog=self.diagnostics_dialog: self._diagnostics_closed(dialog)
             )
+        snapshot = self.controller.get_latest_diagnostic()
+        if snapshot is not None:
+            self.diagnostics_dialog.set_snapshot(snapshot)
         warnings = macos_permission_warnings()
         self.diagnostics_dialog.set_permission_warnings(
             warnings,
@@ -2553,9 +2577,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             if warnings
             else None,
         )
-        snapshot = self.controller.get_latest_diagnostic()
-        if snapshot is not None:
-            self.diagnostics_dialog.set_snapshot(snapshot)
         self.diagnostics_dialog.show()
         self.diagnostics_dialog.raise_()
         self.diagnostics_dialog.activateWindow()
@@ -2581,7 +2602,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
 
     def _capture_diagnostic_snapshot(self, generation: int) -> None:
-        if generation != self.diagnostics_refresh_generation:
+        if self._shutting_down or generation != self.diagnostics_refresh_generation:
             return
         self.diagnostics_refresh_runner.start(
             self.controller.inspect_current_dialog,
@@ -2615,11 +2636,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         elif snapshot is None:
             self.set_diagnostics_error("Diagnostic capture returned no result")
         else:
-            self.update_diagnostics_snapshot(snapshot)
+            self.update_diagnostics_snapshot(snapshot, manual=True)
 
-    def update_diagnostics_snapshot(self, snapshot: DiagnosticSnapshot) -> None:
+    def update_diagnostics_snapshot(
+        self, snapshot: DiagnosticSnapshot, *, manual: bool = False
+    ) -> None:
         self.dashboard.set_diagnostic(snapshot)
-        if self.diagnostics_dialog is not None:
+        if self.diagnostics_dialog is not None and (
+            manual or not self.diagnostics_dialog.refresh_in_flight
+        ):
             self.diagnostics_dialog.set_snapshot(snapshot)
             self.diagnostics_dialog.restore_after_capture()
 
@@ -2654,10 +2679,16 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.onboarding_wizard.activateWindow()
             return
 
-        wizard = OnboardingWizard(self.settings, reading_setup=True)
+        wizard = OnboardingWizard(
+            self.settings,
+            reading_setup=True,
+            save_region=self._save_calibration_region,
+        )
         self.onboarding_wizard = wizard
-        wizard.voices_requested.connect(self.open_voice_previews)
-        wizard.settings_requested.connect(self.open_settings)
+        wizard.voices_requested.connect(lambda: self._open_onboarding_voices(wizard))
+        wizard.settings_requested.connect(
+            lambda: self._open_onboarding_settings(wizard)
+        )
         wizard.test_requested.connect(self.run_onboarding_test)
         wizard.cancel_requested.connect(self.cancel_onboarding_download)
         self.signals.onboarding_test_finished.connect(wizard.test_page.set_result)
@@ -2671,6 +2702,23 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         wizard.show()
         wizard.raise_()
         wizard.activateWindow()
+
+    def _open_onboarding_voices(self, wizard: OnboardingWizard) -> None:
+        self._onboarding_voice_wizard = wizard
+        self.open_voice_previews()
+        if self.narrator_dialog is None:
+            self._resume_onboarding_after_voices()
+
+    def _resume_onboarding_after_voices(self) -> None:
+        wizard = self._onboarding_voice_wizard
+        self._onboarding_voice_wizard = None
+        if wizard is not None and wizard is self.onboarding_wizard:
+            wizard.resume_after_editor(self.settings)
+
+    def _open_onboarding_settings(self, wizard: OnboardingWizard) -> None:
+        self.open_settings()
+        if wizard is self.onboarding_wizard:
+            wizard.resume_after_editor(self.settings)
 
     def run_onboarding_test(self, settings: AppSettings) -> None:
         model_name = settings.tts_model
@@ -3115,11 +3163,18 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             )
             self.readiness_dialog.calibration_requested.connect(self.calibrate)
             self.readiness_dialog.voices_requested.connect(self.open_speaker_mapping)
+            self.readiness_dialog.reading_requested.connect(
+                self._open_reading_from_readiness
+            )
         else:
             self.readiness_dialog.update_settings(self.settings)
         self.readiness_dialog.show()
         self.readiness_dialog.raise_()
         self.readiness_dialog.activateWindow()
+
+    def _open_reading_from_readiness(self) -> None:
+        self.dashboard.show_reading()
+        self.show_dashboard()
 
     def open_profiles(self) -> None:
         if self._controller_busy or self._shutting_down:
@@ -3135,10 +3190,14 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         candidate = dialog.settings()
+        profile = self.profile_store.get(candidate.active_profile_id)
+        if profile is None:
+            self.show_error("The selected game profile is no longer available.")
+            return
         try:
             path = self._save_settings_candidate(candidate)
         except OSError as error:
-            self.show_error(f"Unable to save the selected profile: {error}")
+            self.show_error(f"Unable to apply the selected profile: {error}")
             return
         self.settings = candidate
         self.dashboard.set_configuration(self.settings)
@@ -3533,6 +3592,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 and not self.controller.is_live_running
             ):
                 self.toggle_live()
+            if self._onboarding_voice_wizard is not None:
+                self._resume_onboarding_after_voices()
 
     def _finish_unknown_speaker_mapping(
         self,
@@ -4127,7 +4188,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.live_action.setText("Stop reading" if running else "Start reading")
         self.dashboard.set_live(running)
         self.compact_controller.set_live(running)
-        self._apply_runtime_control_state(self._runtime_control_state())
+        if running:
+            self._apply_runtime_control_state(self._runtime_control_state())
+        else:
+            self.set_speech_paused(False)
         dialog = self.pregeneration_dialog
         if (
             not running

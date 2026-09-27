@@ -8,15 +8,18 @@ import sys
 from pathlib import Path
 from typing import Callable, Literal, Protocol, TypeAlias, TypedDict, TypeGuard
 
-from PySide6.QtCore import QObject, Qt, QThreadPool, QUrl
+from PySide6.QtCore import QEvent, QObject, Qt, QThreadPool, QUrl
 from PySide6.QtGui import QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QDialogButtonBox,
+    QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -24,7 +27,6 @@ from PySide6.QtWidgets import (
 from vntts.async_ui import LatestTaskRunner
 from vntts.authoring.review_context_ui import (
     ReviewDecisionContext,
-    review_form_layout,
     review_scroll_area,
 )
 from vntts.authoring.terminal_conflict_review import (
@@ -221,10 +223,24 @@ class TerminalConflictReviewDialog(QDialog):
         self._display_candidates: list[ReviewCandidate] = []
 
         self.setWindowTitle("Terminal audio conflict review")
-        self.setMinimumSize(760, 420)
+        self.setMinimumSize(760, 360)
         self.progress = QLabel()
         self.progress.setAccessibleName("Terminal conflict review progress")
         self.decision_context = ReviewDecisionContext()
+        self.context_toggle = QToolButton()
+        self.context_toggle.setText("Review context")
+        self.context_toggle.setCheckable(True)
+        self.context_toggle.setAccessibleName("Show conflict review context")
+        self.context_toggle.setAccessibleDescription(
+            "Reveal comparison rules and decision provenance"
+        )
+        self.context_toggle.toggled.connect(self.decision_context.setVisible)
+        self.context_toggle.toggled.connect(
+            lambda visible: self.context_toggle.setText(
+                "Hide review context" if visible else "Review context"
+            )
+        )
+        self.decision_context.hide()
         self.identity = QLabel()
         self.identity.setWordWrap(True)
         self.identity.setTextInteractionFlags(
@@ -243,9 +259,10 @@ class TerminalConflictReviewDialog(QDialog):
         self.status.setAccessibleName("Terminal conflict review status")
 
         self.play_buttons: list[QPushButton] = []
-        playback = review_form_layout()
+        playback = QVBoxLayout()
+        play_pair = QHBoxLayout()
         for index in range(2):
-            button = QPushButton(f"Play candidate {chr(65 + index)}")
+            button = QPushButton(f"Play {chr(65 + index)}")
             button.setAccessibleName(f"Play terminal conflict candidate {index + 1}")
             button.setAccessibleDescription(
                 "Play this checksum-distinct blind candidate through to the end"
@@ -255,19 +272,23 @@ class TerminalConflictReviewDialog(QDialog):
                 lambda _checked=False, value=index: self._play(value)
             )
             self.play_buttons.append(button)
-        playback.addRow(*self.play_buttons)
+        for button in self.play_buttons:
+            play_pair.addWidget(button, 1)
+        playback.addLayout(play_pair)
         self.stop = QPushButton("Stop audio")
         self.stop.setAccessibleName("Stop terminal conflict audio")
         self.stop.setAccessibleDescription("Stop blind candidate playback")
         self.stop.setShortcut(QKeySequence("Ctrl+Space"))
         self.stop.clicked.connect(self._stop)
         self.stop.setEnabled(False)
-        playback.addRow(self.stop)
+        self.stop.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        playback.addWidget(self.stop)
 
         self.choose_buttons: list[QPushButton] = []
-        decisions = review_form_layout()
+        decisions = QVBoxLayout()
+        choose_pair = QHBoxLayout()
         for index in range(2):
-            button = QPushButton(f"Choose candidate {chr(65 + index)}")
+            button = QPushButton(f"Choose {chr(65 + index)}")
             button.setAccessibleName(f"Choose terminal conflict candidate {index + 1}")
             button.setAccessibleDescription(
                 "Keep this candidate as the terminal authority after both are heard"
@@ -277,7 +298,9 @@ class TerminalConflictReviewDialog(QDialog):
                 lambda _checked=False, value=index: self._choose(value)
             )
             self.choose_buttons.append(button)
-        decisions.addRow(*self.choose_buttons)
+        for button in self.choose_buttons:
+            choose_pair.addWidget(button, 1)
+        decisions.addLayout(choose_pair)
         self.neither = QPushButton("Neither is acceptable")
         self.neither.setAccessibleName("Reject both terminal conflict candidates")
         self.neither.setAccessibleDescription(
@@ -285,7 +308,8 @@ class TerminalConflictReviewDialog(QDialog):
         )
         self.neither.setShortcut(QKeySequence("Alt+N"))
         self.neither.clicked.connect(self._choose_neither)
-        decisions.addRow(self.neither)
+        self.neither.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        decisions.addWidget(self.neither)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.close)
@@ -298,25 +322,31 @@ class TerminalConflictReviewDialog(QDialog):
         review_layout = QVBoxLayout(review_content)
         review_layout.setContentsMargins(0, 0, 0, 0)
         review_layout.addWidget(self.progress)
-        review_layout.addWidget(self.decision_context)
         review_layout.addWidget(self.identity)
         review_layout.addWidget(self.text)
         review_layout.addLayout(playback)
-        review_layout.addWidget(self.evidence)
         review_layout.addWidget(self.status)
-        review_layout.addLayout(decisions)
+        review_layout.addWidget(self.context_toggle)
+        review_layout.addWidget(self.decision_context)
+        review_layout.addStretch(1)
         self.review_scroll = review_scroll_area(
             review_content,
             "Scrollable terminal conflict review",
         )
+        for widget in review_content.findChildren(QWidget):
+            if widget.focusPolicy() != Qt.FocusPolicy.NoFocus:
+                widget.installEventFilter(self)
         layout = QVBoxLayout(self)
         layout.addWidget(self.review_scroll, 1)
+        layout.addWidget(self.evidence)
+        layout.addLayout(decisions)
         layout.addWidget(buttons)
 
-        self.setTabOrder(self.decision_context.technical_toggle, self.play_buttons[0])
         self.setTabOrder(self.play_buttons[0], self.play_buttons[1])
         self.setTabOrder(self.play_buttons[1], self.stop)
-        self.setTabOrder(self.stop, self.choose_buttons[0])
+        self.setTabOrder(self.stop, self.context_toggle)
+        self.setTabOrder(self.context_toggle, self.decision_context.technical_toggle)
+        self.setTabOrder(self.decision_context.technical_toggle, self.choose_buttons[0])
         self.setTabOrder(self.choose_buttons[0], self.choose_buttons[1])
         self.setTabOrder(self.choose_buttons[1], self.neither)
         self.setTabOrder(self.neither, self.close_button)
@@ -326,9 +356,14 @@ class TerminalConflictReviewDialog(QDialog):
         self.player.mediaStatusChanged.connect(self._media_status_changed)
         self._load_next()
 
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.FocusIn and isinstance(watched, QWidget):
+            self.review_scroll.ensureWidgetVisible(watched)
+        return super().eventFilter(watched, event)
+
     def _decisions(self) -> dict[str, str]:
         progress = self.directory / "progress.json"
-        if not progress.is_file():
+        if not progress.exists() and not progress.is_symlink():
             return {}
         document = _review_progress(_review_progress_loader(self.directory))
         return {value["case_id"]: value["decision"] for value in document["decisions"]}
@@ -338,7 +373,7 @@ class TerminalConflictReviewDialog(QDialog):
         self.document = _review_document(_review_document_loader(self.directory))
         decisions = self._decisions()
         total = len(self.document["cases"])
-        self.progress.setText(f"Progress: {len(decisions)}/{total}")
+        self.progress.setText(f"Decisions: {len(decisions)}/{total}")
         self._current = next(
             (
                 case
@@ -350,20 +385,41 @@ class TerminalConflictReviewDialog(QDialog):
         current = self._current
         self._heard.clear()
         if current is None:
-            self.decision_context.set_context(
-                {
-                    "purpose": "Resolve contradictory terminal WAV authorities",
-                    "effect": "Review complete; no further decision is required",
-                }
-            )
             self.identity.setText("All terminal conflicts have an explicit decision.")
             self.text.clear()
-            self.evidence.setText("No additional listening is required in this bundle.")
             self.status.setText(
                 "Decisions are saved as review evidence. Source workspaces remain unchanged."
             )
             self._set_actions(False)
+            review_widgets: list[QWidget] = [
+                self.text,
+                self.evidence,
+                *self.play_buttons,
+                self.stop,
+                *self.choose_buttons,
+                self.neither,
+                self.context_toggle,
+                self.decision_context,
+            ]
+            for widget in review_widgets:
+                widget.hide()
+            completion_height = max(200, self.fontMetrics().height() * 9)
+            self.setMinimumHeight(completion_height)
+            self.resize(760, completion_height)
+            self.close_button.setFocus()
             return
+        self.setMinimumHeight(360)
+        review_widgets = [
+            self.text,
+            self.evidence,
+            *self.play_buttons,
+            self.stop,
+            *self.choose_buttons,
+            self.neither,
+            self.context_toggle,
+        ]
+        for widget in review_widgets:
+            widget.show()
         candidates = current["candidates"]
         if len(candidates) != 2:
             raise TerminalConflictReviewError(
@@ -382,11 +438,10 @@ class TerminalConflictReviewDialog(QDialog):
             ).hexdigest(),
         )
         for index, button in enumerate(self.choose_buttons):
-            button.setText(f"Choose candidate {chr(65 + index)}")
+            button.setText(f"Choose {chr(65 + index)}")
             button.setAccessibleName(f"Choose terminal conflict candidate {index + 1}")
         self.identity.setText(
-            f"Line: {current['line_id']} | Speaker: {current['speaker']} | "
-            f"Voice: {current['voice_character']}"
+            f"Conflict for {current['speaker']} | Voice: {current['voice_character']}"
         )
         self.decision_context.set_context(
             {
@@ -412,7 +467,9 @@ class TerminalConflictReviewDialog(QDialog):
             ),
         )
         self.text.setText(current["text"])
-        self.evidence.setText("Listen to both blind candidates before choosing.")
+        self.evidence.setText(
+            "Decision locked: hear A and B completely before choosing."
+        )
         self.status.setText("No source workspace will be changed by this decision.")
         self._set_actions(True)
 
@@ -584,7 +641,7 @@ class TerminalConflictReviewDialog(QDialog):
             ):
                 authority = candidate["authority"]
                 label = chr(65 + index)
-                button.setText(f"Keep {authority.title()} candidate {label}")
+                button.setText(f"Keep {label}")
                 button.setAccessibleName(
                     f"Keep historically {authority} terminal candidate {index + 1}"
                 )

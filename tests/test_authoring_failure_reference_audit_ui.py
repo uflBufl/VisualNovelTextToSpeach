@@ -160,7 +160,7 @@ class FailureReferenceAuditUiTest(unittest.TestCase):
             dialog.show()
 
             self.assertFalse(dialog.cases.isVisibleTo(dialog))
-            self.assertIn("Candidate 1 of", dialog.candidate_heading.text())
+            self.assertIn("Candidate 1 of", dialog.candidate_choice.currentText())
             self.assertIn(
                 f"0/{len(dialog._current_group()['candidates'])}",
                 dialog.candidate_heard.text(),
@@ -168,7 +168,7 @@ class FailureReferenceAuditUiTest(unittest.TestCase):
             self.assertFalse(dialog.choose.isEnabled())
             self.assertFalse(dialog.neither.isEnabled())
             self.assertIn("listen through every candidate", dialog.action_reason.text())
-            self.assertTrue(dialog.progress.accessibleName())
+            self.assertIn("0/1 decided", dialog.summary.text())
             self.assertTrue(dialog.action_reason.accessibleName())
             self.assertIn(
                 "selects voice-cloning source audio", dialog.explanation.text()
@@ -183,6 +183,14 @@ class FailureReferenceAuditUiTest(unittest.TestCase):
                 dialog.decision_context.values["effect"].text(),
             )
             self.assertTrue(dialog.preview_text_choice.accessibleName())
+            self.assertTrue(dialog.affected_text.isVisibleTo(dialog))
+            self.assertEqual(
+                dialog.affected_text.text(), dialog.preview_text_choice.currentData()
+            )
+            self.assertTrue(
+                dialog.preview_text_choice.currentText().startswith("Line ")
+            )
+            self.assertNotIn("reverse1999", dialog.preview_text_choice.currentText())
             self.assertEqual(
                 dialog.decision_context.technical_toggle.text(),
                 "Decision provenance",
@@ -221,6 +229,10 @@ class FailureReferenceAuditUiTest(unittest.TestCase):
                 dialog.show()
                 self.application.processEvents()
                 self.assertEqual(
+                    dialog.affected_text.font().pointSizeF(),
+                    dialog.font().pointSizeF(),
+                )
+                self.assertEqual(
                     dialog.review_scroll.horizontalScrollBar().maximum(),
                     0,
                     (
@@ -247,11 +259,13 @@ class FailureReferenceAuditUiTest(unittest.TestCase):
             self.assertIs(dialog.preview_text_label.buddy(), dialog.preview_text_choice)
             self.assertIs(
                 dialog.decision_context.technical_toggle.nextInFocusChain(),
-                dialog.group_choice,
+                dialog.choose,
             )
             self.assertIs(
-                dialog.technical_details.nextInFocusChain(), dialog.close_button
+                dialog.technical_details.nextInFocusChain(),
+                dialog.decision_context.technical_toggle,
             )
+            self.assertIs(dialog.neither.nextInFocusChain(), dialog.close_button)
             for button in (
                 dialog.play,
                 dialog.stop,

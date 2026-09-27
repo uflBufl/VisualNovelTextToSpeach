@@ -177,14 +177,18 @@ class OnboardingDiagnostics:
         try:
             version = self.tesseract_probe()
         except Exception as error:
-            return DiagnosticResult("Tesseract OCR", "error", str(error))
+            return DiagnosticResult(
+                "Tesseract OCR", "error", str(error), "external-ocr"
+            )
         return DiagnosticResult("Tesseract OCR", "ok", f"Version {version}")
 
     def _check_audio(self) -> DiagnosticResult:
         try:
             device = self.audio_probe()
         except Exception as error:
-            return DiagnosticResult("Audio output", "error", str(error))
+            return DiagnosticResult(
+                "Audio output", "error", str(error), "external-audio"
+            )
         return DiagnosticResult("Audio output", "ok", str(device))
 
     def _check_model(self, settings: AppSettings) -> DiagnosticResult:

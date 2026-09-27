@@ -5,25 +5,25 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Literal, NotRequired, Protocol, TypedDict
+from typing import Literal, NotRequired, Protocol, TypedDict, cast
 
-from PySide6.QtCore import Qt, QThreadPool, QTimer, Signal
-from PySide6.QtGui import QCloseEvent, QKeySequence, QMouseEvent
+from PySide6.QtCore import QEvent, QObject, Qt, QThreadPool, QTimer, QUrl, Signal
+from PySide6.QtGui import QCloseEvent, QDesktopServices, QKeySequence, QMouseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QDialogButtonBox,
     QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPlainTextEdit,
-    QProgressBar,
     QPushButton,
+    QSizePolicy,
     QSlider,
     QStyle,
     QStyleOptionSlider,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -41,7 +41,7 @@ from vntts.authoring.pcm_playback import (
     PersistentPcmPlayer,
     PlaybackSnapshot,
 )
-from vntts.authoring.review_context_ui import ReviewDecisionContext
+from vntts.authoring.review_context_ui import ReviewDecisionContext, review_scroll_area
 
 Side = Literal["a", "b"]
 Preference = Literal["a", "b", "tie", "neither"]
@@ -67,8 +67,13 @@ class _ListeningSession(TypedDict):
     trials: list[_ListeningTrial]
 
 
+class _ReportPreference(TypedDict):
+    rate: float | None
+
+
 class _ReportModel(TypedDict):
     model_id: str
+    preference: _ReportPreference
 
 
 class _ListeningReport(TypedDict):
@@ -105,7 +110,7 @@ _load_session: SessionLoader = load_listening_session
 _listening_progress: ProgressReader = listening_progress
 _next_pending_trial: PendingTrialReader = next_pending_trial
 _record_preference: PreferenceRecorder = record_trial_preference
-_ensure_report: ReportBuilder = ensure_listening_report
+_ensure_report: ReportBuilder = cast(ReportBuilder, ensure_listening_report)
 _playback_factory: PlaybackFactory = PersistentPcmPlayer
 
 
@@ -172,19 +177,31 @@ class ModelListeningDialog(QDialog):
         self.active_started = False
         self.active_initial_natural = False
         self.completed_sides: set[Side] = set()
+        self.report_path: Path | None = None
         self.setWindowTitle("Blind voice-model listening workbench")
         self.setMinimumSize(640, 400)
-        self.resize(900, 520)
+        self.resize(760, 460)
 
         self.progress = QLabel()
         self.progress.setAccessibleName("Blind listening progress")
         self.progress.setAccessibleDescription(
             "Completed and remaining trials in the current blind session"
         )
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setTextVisible(False)
-        self.progress_bar.setAccessibleName("Completed blind listening trials")
         self.decision_context = ReviewDecisionContext()
+        self.context_toggle = QToolButton()
+        self.context_toggle.setText("Review context")
+        self.context_toggle.setCheckable(True)
+        self.context_toggle.setAccessibleName("Show blind comparison context")
+        self.context_toggle.setAccessibleDescription(
+            "Reveal comparison rules and technical provenance without unblinding A/B"
+        )
+        self.context_toggle.toggled.connect(self.decision_context.setVisible)
+        self.context_toggle.toggled.connect(
+            lambda visible: self.context_toggle.setText(
+                "Hide review context" if visible else "Review context"
+            )
+        )
+        self.decision_context.hide()
         self.trial_heading = QLabel()
         self.trial_heading.setWordWrap(True)
         self.trial_heading.setAccessibleName("Current blind trial")
@@ -195,13 +212,18 @@ class ModelListeningDialog(QDialog):
             "Exact dialogue text shared by anonymous samples A and B"
         )
         self.dialogue.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
-        self.dialogue.setMinimumHeight(90)
+        self.dialogue.setFixedHeight(max(64, self.fontMetrics().height() + 20))
         current_trial_layout = QVBoxLayout()
+        current_trial_layout.setContentsMargins(0, 0, 0, 0)
+        current_trial_layout.setSpacing(2)
         current_trial_layout.addWidget(self.trial_heading)
-        current_trial_layout.addWidget(self.dialogue, 1)
-        self.current_trial_card = QGroupBox("Current blind trial")
+        current_trial_layout.addWidget(self.dialogue)
+        self.current_trial_card = QWidget()
         self.current_trial_card.setAccessibleName("Current blind trial evidence")
         self.current_trial_card.setLayout(current_trial_layout)
+        self.current_trial_card.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum
+        )
         self.play_a = QPushButton("Play A")
         self.play_b = QPushButton("Play B")
         self.stop = QPushButton("Pause")
@@ -227,7 +249,7 @@ class ModelListeningDialog(QDialog):
 
         self.now_playing = QLabel()
         self.now_playing.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.now_playing.setMinimumHeight(46)
+        self.now_playing.setMinimumHeight(32)
         self.now_playing.setAccessibleName("Blind sample playback status")
         playback = QHBoxLayout()
         playback.addWidget(self.play_a)
@@ -296,20 +318,43 @@ class ModelListeningDialog(QDialog):
         self.status = QLabel()
         self.status.setWordWrap(True)
         self.status.setAccessibleName("Blind listening operation status")
+        self.open_report = QPushButton("Open aggregate report")
+        self.open_report.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
+        )
+        self.open_report.setAccessibleName("Open completed blind listening report")
+        self.open_report.setAccessibleDescription(
+            "Open the saved aggregate report in the default application"
+        )
+        self.open_report.clicked.connect(self._open_report)
+        self.open_report.hide()
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.close)
 
+        review_content = QWidget()
+        review_layout = QVBoxLayout(review_content)
+        review_layout.setContentsMargins(0, 0, 0, 0)
+        review_layout.setSpacing(3)
+        review_layout.addWidget(self.progress)
+        review_layout.addWidget(self.current_trial_card)
+        review_layout.addWidget(self.now_playing)
+        review_layout.addLayout(playback)
+        review_layout.addLayout(seek_controls)
+        review_layout.addWidget(self.status)
+        review_layout.addWidget(self.open_report)
+        review_layout.addWidget(self.context_toggle)
+        review_layout.addWidget(self.decision_context)
+        review_layout.addStretch(1)
+        self.review_scroll = review_scroll_area(
+            review_content, "Scrollable blind listening evidence"
+        )
+        for widget in review_content.findChildren(QWidget):
+            if widget.focusPolicy() != Qt.FocusPolicy.NoFocus:
+                widget.installEventFilter(self)
         layout = QVBoxLayout(self)
-        layout.addWidget(self.progress)
-        layout.addWidget(self.progress_bar)
-        layout.addWidget(self.decision_context)
-        layout.addWidget(self.current_trial_card, 1)
-        layout.addWidget(self.now_playing)
-        layout.addLayout(playback)
-        layout.addLayout(seek_controls)
+        layout.addWidget(self.review_scroll, 1)
         layout.addWidget(self.decision_reason)
         layout.addLayout(decisions)
-        layout.addWidget(self.status)
         layout.addWidget(buttons)
         self.setTabOrder(self.dialogue, self.play_a)
         self.setTabOrder(self.play_a, self.play_b)
@@ -317,7 +362,10 @@ class ModelListeningDialog(QDialog):
         self.setTabOrder(self.skip_back, self.seek)
         self.setTabOrder(self.seek, self.skip_forward)
         self.setTabOrder(self.skip_forward, self.stop)
-        self.setTabOrder(self.stop, self.prefer_a)
+        self.setTabOrder(self.stop, self.context_toggle)
+        self.setTabOrder(self.context_toggle, self.decision_context.technical_toggle)
+        self.setTabOrder(self.decision_context.technical_toggle, self.open_report)
+        self.setTabOrder(self.open_report, self.prefer_a)
         self.setTabOrder(self.prefer_a, self.tie)
         self.setTabOrder(self.tie, self.neither)
         self.setTabOrder(self.neither, self.prefer_b)
@@ -329,6 +377,16 @@ class ModelListeningDialog(QDialog):
         self.playback_timer.timeout.connect(self.poll_playback)
         self.playback_timer.start()
         self.load_next_trial()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.FocusIn and isinstance(watched, QWidget):
+            self.review_scroll.ensureWidgetVisible(watched)
+        return super().eventFilter(watched, event)
+
+    def changeEvent(self, event: QEvent) -> None:
+        if event.type() == QEvent.Type.FontChange and hasattr(self, "dialogue"):
+            self.dialogue.setFixedHeight(max(64, self.fontMetrics().height() + 20))
+        super().changeEvent(event)
 
     def set_preference_buttons_enabled(
         self, enabled: bool, reason: str | None = None
@@ -361,8 +419,6 @@ class ModelListeningDialog(QDialog):
         self.progress.setText(
             f"Completed {completed} of {total} | Remaining {remaining}"
         )
-        self.progress_bar.setRange(0, total)
-        self.progress_bar.setValue(completed)
         if self.current_trial is None:
             self.trial_heading.setText(f"All {total} trials reviewed")
             self.decision_context.set_context(
@@ -473,21 +529,65 @@ class ModelListeningDialog(QDialog):
             self.set_preference_buttons_enabled(False, "Session complete.")
             report_path = self.session_path.with_name("report.json")
             report = _ensure_report(self.session_path, report_path)
-            leader = report["models"][0]["model_id"] if report["models"] else "none"
+            self.report_path = report_path
+            models = report["models"]
+            if not models or models[0]["preference"]["rate"] is None:
+                result = "No preference leader."
+            elif (
+                len(models) > 1
+                and models[0]["preference"]["rate"] == models[1]["preference"]["rate"]
+            ):
+                result = "Top preference is tied."
+            else:
+                result = f"Preference leader: {models[0]['model_id']}."
             self.dialogue.setPlainText("Listening session complete.")
             self.status.setText(
-                f"Unblinded aggregate report: {report_path}. Current leader: {leader}. "
-                "Production selection still requires manual approval."
+                f"Aggregate report saved. {result} Production "
+                "selection still requires manual approval."
             )
             for widget in (
+                self.now_playing,
                 self.play_a,
                 self.play_b,
                 self.skip_back,
                 self.seek,
                 self.skip_forward,
+                self.time,
+                self.stop,
+                self.decision_reason,
+                self.prefer_a,
+                self.prefer_b,
+                self.tie,
+                self.neither,
+                self.context_toggle,
+                self.decision_context,
             ):
-                widget.setEnabled(False)
+                widget.hide()
+            self.open_report.show()
+            self.open_report.setFocus()
+            completion_height = max(220, self.fontMetrics().height() * 11)
+            self.setMinimumHeight(completion_height)
+            self.resize(640, completion_height)
             return
+        self.setMinimumHeight(400)
+        for widget in (
+            self.now_playing,
+            self.play_a,
+            self.play_b,
+            self.skip_back,
+            self.seek,
+            self.skip_forward,
+            self.time,
+            self.stop,
+            self.decision_reason,
+            self.prefer_a,
+            self.prefer_b,
+            self.tie,
+            self.neither,
+            self.context_toggle,
+        ):
+            widget.show()
+        self.open_report.hide()
         self.set_playback_indicator("ready")
         for widget in (
             self.play_a,
@@ -504,11 +604,18 @@ class ModelListeningDialog(QDialog):
             path = self.session_path.parent / self.current_trial["audio"][side]
             self.audio_clips[side] = self.playback.load(path)
         self.status.setText(
-            "Starting A, then B automatically. Shortcuts: Ctrl+1 plays A; "
-            "Ctrl+2 plays B; Ctrl+Space controls the active sample."
+            ("Starting A, then B automatically. " if self.auto_play else "Ready. ")
+            + "Shortcuts: Ctrl+1 plays A; Ctrl+2 plays B; Ctrl+Space controls "
+            "the active sample."
         )
         if self.auto_play:
             QTimer.singleShot(0, self.start_auto_playback)
+
+    def _open_report(self) -> None:
+        if self.report_path is not None and not QDesktopServices.openUrl(
+            QUrl.fromLocalFile(str(self.report_path))
+        ):
+            self.status.setText(f"Could not open report; saved at {self.report_path}.")
 
     def start_auto_playback(self) -> None:
         if self.current_trial is not None:

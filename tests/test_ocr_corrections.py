@@ -12,7 +12,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt, QTimer  # noqa: E402
 from PySide6.QtGui import QCloseEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QDialog,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+)
 
 from vntts.main import recognize_screenshot_result  # noqa: E402
 from vntts.ocr import OCRResult  # noqa: E402
@@ -233,6 +239,10 @@ class OCRCorrectionsDialogTest(unittest.TestCase):
             )
             dialog = OCRCorrectionsDialog("game", "Game", store)
             self.assertEqual(dialog.tabs.currentIndex(), 1)
+            self.assertFalse(dialog.save_button.isEnabled())
+            dialog.show()
+            self.application.processEvents()
+            self.assertGreater(dialog.profile_table.columnWidth(0), 200)
             dialog._append_row(dialog.global_table, " Mareus ", " Marcus ")
             dialog._append_row(dialog.global_table, " ", " ")
             dialog._append_row(dialog.profile_table, " Vertln ", " Vertin ")
@@ -280,16 +290,22 @@ class OCRCorrectionsDialogTest(unittest.TestCase):
 
     def test_save_failure_restores_controls_for_retry(self):
         store = Mock(global_entries={}, profile_entries={})
-        store.replace_entries.side_effect = OSError("temporary disk failure")
+        store.replace_entries.side_effect = [OSError("temporary disk failure"), None]
         dialog = OCRCorrectionsDialog("game", "Game", store)
         dialog._append_row(dialog.global_table, "Mareus", "Marcus")
+        dialog._append_row(dialog.profile_table, "Vertln", "Vertin")
 
         dialog.save()
         self.wait_for(lambda: not dialog._save_active)
 
-        self.assertIn("Select Save to retry", dialog.status.text())
+        self.assertIn("select Save again", dialog.status.text())
         self.assertTrue(dialog.buttons.isEnabled())
+        self.assertEqual(dialog.profile_table.item(0, 1).text(), "Vertin")
         self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
+        dialog.save()
+        self.wait_for(lambda: not dialog._save_active)
+        self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+        self.assertEqual(store.replace_entries.call_count, 2)
 
     def test_row_errors_are_inline_and_all_scopes_are_reported(self):
         store = Mock(global_entries={}, profile_entries={})
@@ -301,8 +317,9 @@ class OCRCorrectionsDialogTest(unittest.TestCase):
         dialog.save()
 
         self.assertFalse(dialog._save_active)
-        self.assertIn("Global row 1", dialog.status.text())
+        self.assertIn("All games row 1", dialog.status.text())
         self.assertIn("Profile row 2", dialog.status.text())
+        self.assertEqual(dialog.tabs.currentIndex(), 0)
         self.assertTrue(dialog.global_table.item(0, 1).toolTip())
         self.assertTrue(dialog.profile_table.item(1, 0).toolTip())
         store.replace_entries.assert_not_called()
@@ -316,7 +333,12 @@ class OCRCorrectionsDialogTest(unittest.TestCase):
         QTest.keyClick(dialog.global_table, Qt.Key.Key_Insert)
         self.application.processEvents()
         self.assertEqual(dialog.global_table.rowCount(), 1)
-        QTest.keyClick(dialog.global_table, Qt.Key.Key_Escape)
+        with patch.object(
+            QMessageBox,
+            "exec",
+            return_value=QMessageBox.StandardButton.Cancel,
+        ):
+            QTest.keyClick(dialog.global_table, Qt.Key.Key_Escape)
         dialog.global_table.selectRow(0)
         QTest.keyClick(
             dialog.global_table,
@@ -333,15 +355,103 @@ class OCRCorrectionsDialogTest(unittest.TestCase):
         dialog._append_row(dialog.global_table, "Mareus", "Marcus")
 
         first_close = QCloseEvent()
-        dialog.closeEvent(first_close)
+        with patch.object(
+            QMessageBox,
+            "exec",
+            return_value=QMessageBox.StandardButton.Cancel,
+        ):
+            dialog.closeEvent(first_close)
 
         self.assertFalse(first_close.isAccepted())
-        self.assertEqual(dialog.cancel_button.text(), "Discard changes")
-        self.assertIn("Unsaved", dialog.status.text())
+        self.assertEqual(dialog.cancel_button.text(), "Cancel")
+        self.assertEqual(
+            dialog._discard_dialog().button(QMessageBox.StandardButton.Cancel).text(),
+            "Keep editing",
+        )
 
         second_close = QCloseEvent()
-        dialog.closeEvent(second_close)
+        with patch.object(
+            QMessageBox,
+            "exec",
+            return_value=QMessageBox.StandardButton.Discard,
+        ):
+            dialog.closeEvent(second_close)
         self.assertTrue(second_close.isAccepted())
+        dialog.deleteLater()
+
+    def test_empty_editor_and_full_value_inspection(self):
+        dialog = OCRCorrectionsDialog("game", "Game", OCRCorrectionStore())
+        self.assertFalse(dialog.save_button.isEnabled())
+        self.assertTrue(
+            any(
+                "No rules in this scope" in label.text()
+                for label in dialog.findChildren(QLabel)
+            )
+        )
+        source = "The unknowable chronology of the distant island's memories"
+        replacement = "The hidden chronology of the distant island's memories"
+        dialog._append_row(dialog.profile_table, source, replacement)
+        self.assertTrue(dialog.save_button.isEnabled())
+        self.assertEqual(dialog.profile_table.item(0, 0).toolTip(), source)
+        self.assertEqual(dialog.profile_table.item(0, 1).toolTip(), replacement)
+        dialog.deleteLater()
+
+    def test_blank_added_row_does_not_enable_save_or_discard_prompt(self):
+        dialog = OCRCorrectionsDialog("game", "Game", OCRCorrectionStore())
+        dialog._append_row(dialog.profile_table)
+
+        self.assertFalse(dialog.save_button.isEnabled())
+        self.assertFalse(dialog._has_unsaved_changes())
+        close_event = QCloseEvent()
+        with patch.object(QMessageBox, "exec") as confirmation:
+            dialog.closeEvent(close_event)
+        self.assertTrue(close_event.isAccepted())
+        confirmation.assert_not_called()
+        dialog.deleteLater()
+
+    def test_uncommitted_cell_text_is_not_discarded_on_close(self):
+        dialog = OCRCorrectionsDialog("game", "Game", OCRCorrectionStore())
+        dialog.show()
+        dialog._append_row(dialog.profile_table)
+        editor = dialog.profile_table.findChild(QLineEdit)
+        self.assertIsNotNone(editor)
+        QTest.keyClicks(editor, "Mareus")
+        self.assertEqual(editor.text(), "Mareus")
+        self.assertEqual(dialog.profile_table.item(0, 0).text(), "")
+        close_event = QCloseEvent()
+        with patch.object(
+            QMessageBox,
+            "exec",
+            return_value=QMessageBox.StandardButton.Cancel,
+        ) as confirmation:
+            dialog.closeEvent(close_event)
+        self.assertFalse(close_event.isAccepted())
+        confirmation.assert_called_once()
+        dialog.deleteLater()
+
+    def test_keyboard_can_inspect_long_value_without_changing_it(self):
+        source = "The unknowable chronology of the distant island's memories"
+        store = OCRCorrectionStore(profile_entries={"game": {source: "Known"}})
+        dialog = OCRCorrectionsDialog("game", "Game", store)
+        dialog.show()
+        dialog.profile_table.setCurrentCell(0, 0)
+        dialog.profile_table.editItem(dialog.profile_table.item(0, 0))
+        self.application.processEvents()
+        editor = dialog.profile_table.findChild(QLineEdit)
+        self.assertIsNotNone(editor)
+        self.assertEqual(editor.text(), source)
+        QTest.keyClick(editor, Qt.Key.Key_Escape)
+        self.assertFalse(dialog.save_button.isEnabled())
+        dialog.deleteLater()
+
+    def test_unchanged_replacement_is_reported_inline(self):
+        dialog = OCRCorrectionsDialog("game", "Game", OCRCorrectionStore())
+        dialog._append_row(dialog.profile_table, "Mareus", "Mareus")
+        dialog.save()
+
+        self.assertFalse(dialog._save_active)
+        self.assertIn("replacement must differ", dialog.status.text())
+        self.assertTrue(dialog.profile_table.item(0, 0).toolTip())
         dialog.deleteLater()
 
 

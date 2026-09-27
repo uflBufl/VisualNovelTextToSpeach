@@ -8,7 +8,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -42,36 +41,13 @@ class SupportCenterDialog(QDialog):
         self.new_events_button.setAccessibleName("Show new runtime log events")
         self.new_events_button.clicked.connect(self.show_new_events)
         self.new_events_button.hide()
-        log_page = QWidget()
-        log_layout = QVBoxLayout(log_page)
-        log_layout.addWidget(
-            QLabel(
-                "Usernames and secrets are redacted in exported reports; game folder "
-                "structure is retained for diagnosis."
-            )
+        self.privacy_note = QLabel(
+            "The support report excludes screenshots, recognized dialogue, voice "
+            "recordings and model files. Usernames in local paths and known secret "
+            "fields are redacted; game folder structure remains. Review the archive "
+            "before sharing."
         )
-        log_layout.addWidget(self.events)
-        log_layout.addWidget(self.new_events_button)
-
-        help_text = QTextEdit()
-        help_text.setReadOnly(True)
-        help_text.setPlainText(
-            "Use Live diagnostics to inspect the latest captured region, OCR result, "
-            "selected voice, and latency. Export a support report after a crash, "
-            "audio artifact, missed speaker, or incorrect capture. The report excludes "
-            "screenshots, recognized dialogue, voice recordings, models, and secret values."
-            " MOSS native timings are included in Runtime log and the support report. "
-            "A bounded local history of native operations survives an application "
-            "restart. Generate different texts with the same reference to "
-            "compare fresh and reused reference encoding; Replay may only play a cached WAV."
-        )
-        help_page = QWidget()
-        help_layout = QVBoxLayout(help_page)
-        help_layout.addWidget(help_text)
-
-        tabs = QTabWidget()
-        tabs.addTab(log_page, "Runtime log")
-        tabs.addTab(help_page, "Problem report")
+        self.privacy_note.setWordWrap(True)
         actions = QHBoxLayout()
         self.diagnostics_button = QPushButton("Live diagnostics")
         self.export_button = QPushButton("Export support report")
@@ -91,24 +67,27 @@ class SupportCenterDialog(QDialog):
         self.diagnostics_button.clicked.connect(self.request_diagnostics)
         self.export_button.clicked.connect(self.request_export)
         self.settings_button.clicked.connect(self.request_settings_folder)
-        actions.addWidget(self.diagnostics_button)
         actions.addWidget(self.export_button)
+        actions.addWidget(self.diagnostics_button)
         actions.addWidget(self.settings_button)
         actions.addStretch()
-        self.operation_status = QLabel("Support actions are ready.")
+        self.operation_status = QLabel()
         self.operation_status.setAccessibleName("Support operation status")
         self.operation_status.setWordWrap(True)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.close)
         layout = QVBoxLayout(self)
-        layout.addWidget(tabs)
+        layout.addWidget(QLabel("Runtime events"))
+        layout.addWidget(self.events, 1)
+        layout.addWidget(self.new_events_button)
+        layout.addWidget(self.privacy_note)
         layout.addLayout(actions)
         layout.addWidget(self.operation_status)
         layout.addWidget(buttons)
         self.setTabOrder(self.events, self.new_events_button)
-        self.setTabOrder(self.new_events_button, self.diagnostics_button)
-        self.setTabOrder(self.diagnostics_button, self.export_button)
-        self.setTabOrder(self.export_button, self.settings_button)
+        self.setTabOrder(self.new_events_button, self.export_button)
+        self.setTabOrder(self.export_button, self.diagnostics_button)
+        self.setTabOrder(self.diagnostics_button, self.settings_button)
         self.timer = QTimer(self)
         self.timer.setInterval(1000)
         self.timer.timeout.connect(self.refresh)
@@ -247,7 +226,8 @@ class SupportCenterDialog(QDialog):
             self.operation_status.setText(f"Support report saved to {message}")
         elif successful is False:
             self.operation_status.setText(
-                f"Support report export failed: {message}. Select Export to retry."
+                f"Support report export failed: {message}. Choose a writable folder "
+                "or free space, then select Export to retry."
             )
         else:
             self.operation_status.setText(message or "Support report export cancelled.")

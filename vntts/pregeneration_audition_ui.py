@@ -27,7 +27,14 @@ from vntts.pregeneration_audition import (
     VoiceAuditionError,
     VoiceAuditionPreviewService,
 )
-from vntts.pregeneration_voices import VoiceCandidate, VoiceGroup, VoicePlan
+from vntts.pregeneration_voices import (
+    UNLINKED_BANK_LABEL,
+    UNLINKED_BANK_MEDIA,
+    VoiceCandidate,
+    VoiceGroup,
+    VoicePlan,
+    is_playable_main_voice_source,
+)
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.speech_presentation import speech_runtime_label
 from vntts.voices import default_voice_choice_id
@@ -270,7 +277,10 @@ class VoiceAuditionPanel(QGroupBox):
         if not groups:
             raise VoiceAuditionUIError("Voice plan has no matching character")
         if any(
-            not group.candidates and group.narrator_candidate is None
+            not (
+                group.candidate_inventory if group_id is not None else group.candidates
+            )
+            and group.narrator_candidate is None
             for group in groups
         ):
             raise VoiceAuditionUIError("This character has no voice to inspect")
@@ -439,20 +449,33 @@ class VoiceAuditionPanel(QGroupBox):
             for index, (candidate, _choice, narrator) in enumerate(
                 self._candidate_entries, 1
             ):
+                source_name = candidate.source_character
+                if source_name.startswith("Player candidate "):
+                    source_name = "Game voice"
                 duration = (
                     f"{candidate.reference_duration_seconds:.1f} s"
                     if candidate.reference_duration_seconds is not None
                     else "duration unavailable"
                 )
                 excerpt = (
-                    candidate.source_excerpts[0]
+                    UNLINKED_BANK_LABEL
+                    if candidate.candidate_origin == UNLINKED_BANK_MEDIA
+                    else candidate.source_excerpts[0]
                     if candidate.source_excerpts
                     else "text unavailable"
+                )
+                source = (
+                    "Playable line - "
+                    if is_playable_main_voice_source(
+                        candidate.source_bank, candidate.source_line_ids
+                    )
+                    else ""
                 )
                 label = (
                     f"Narrator fallback - {duration}"
                     if narrator
-                    else f"Reference {index} - {duration} - {excerpt[:65]}"
+                    else f"{source_name} - Reference {index} - "
+                    f"{duration} - {source}{excerpt[:65]}"
                 )
                 self.voice_reference.addItem(label)
                 self.voice_reference.setItemData(
@@ -547,7 +570,11 @@ class VoiceAuditionPanel(QGroupBox):
             if reference_count
             else "No original reference"
         )
-        transcript = "\n".join(candidate.source_excerpts) or "Text unavailable."
+        transcript = "\n".join(candidate.source_excerpts) or (
+            UNLINKED_BANK_LABEL
+            if candidate.candidate_origin == UNLINKED_BANK_MEDIA
+            else "Text unavailable."
+        )
         self.a_reason.setText(
             f"{reference_summary}\nOriginal spoken text: {transcript}\n"
             f"{candidate.recommendation}"

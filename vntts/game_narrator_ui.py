@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from vntts_artifacts.file_integrity import sha256_file
+from vntts_artifacts.voice_manifest import VoiceManifestError
 
 from vntts.async_ui import LatestTaskRunner
 from vntts.game_audio_decoder import DecoderSetupRequired, confirm_decoder_setup
@@ -49,9 +50,13 @@ from vntts.pregeneration_audition import (
 )
 from vntts.pregeneration_setup import GameContent, PregenerationJobStore
 from vntts.pregeneration_voices import (
+    UNLINKED_BANK_LABEL,
+    UNLINKED_BANK_MEDIA,
+    PregenerationVoiceError,
     VoiceDecisionStore,
     VoiceGroup,
     VoicePlan,
+    is_playable_main_voice_source,
     pregeneration_narrator_source_id,
     resolve_pregeneration_settings,
     validated_player_voice_candidates,
@@ -1468,8 +1473,11 @@ class GameNarratorDialog(QDialog):
                     {
                         "voice_character": candidate.source_character,
                         "duration_seconds": candidate.reference_duration_seconds,
+                        "source_bank": candidate.source_bank,
+                        "source_line_ids": list(candidate.source_line_ids),
                         "source_voice_ids": list(candidate.source_voice_ids),
                         "source_excerpts": list(candidate.source_excerpts),
+                        "candidate_origin": candidate.candidate_origin,
                     },
                 )
             )
@@ -1514,11 +1522,7 @@ class GameNarratorDialog(QDialog):
             excerpts = variant.get("source_excerpts")
             spoken_text = (
                 [
-                    (
-                        f"{value['title']}: {value.get('text') or ''}"
-                        if value.get("title")
-                        else str(value.get("text") or "").strip()
-                    )
+                    str(value.get("text") or "").strip()
                     if isinstance(value, dict)
                     else str(value).strip()
                     for value in excerpts
@@ -1526,14 +1530,28 @@ class GameNarratorDialog(QDialog):
                 if isinstance(excerpts, list)
                 else []
             )
-            transcript = "\n".join(value for value in spoken_text if value)
-            excerpt = transcript.replace("\n", " ")[:65] or "text unavailable"
+            transcript = "\n".join(
+                dict.fromkeys(value for value in spoken_text if value)
+            )
+            bank_only = variant.get("candidate_origin") == UNLINKED_BANK_MEDIA
+            excerpt = (
+                UNLINKED_BANK_LABEL
+                if bank_only
+                else transcript.replace("\n", " ")[:65] or "text unavailable"
+            )
+            playable = is_playable_main_voice_source(
+                variant.get("source_bank"), variant.get("source_line_ids")
+            )
             self.references.addItem(
-                f"Reference {index} - {duration_label} - {excerpt}", source_id
+                f"Reference {index} - {duration_label} - "
+                + ("Playable line - " if playable else "")
+                + excerpt,
+                source_id,
             )
             self.references.setItemData(
                 index - 1,
-                transcript or "Transcript unavailable.",
+                transcript
+                or (UNLINKED_BANK_LABEL if bank_only else "Transcript unavailable."),
                 Qt.ItemDataRole.ToolTipRole,
             )
             self._candidate_source_ids.add(source_id)
@@ -1927,7 +1945,27 @@ class GameNarratorDialog(QDialog):
         elif operation == "prepare":
             if not isinstance(result, (Path, str)):
                 raise TypeError("Game importer returned an invalid voice manifest")
-            self._show_character_candidates(result)
+            try:
+                self._show_character_candidates(result)
+            except (
+                OSError,
+                ValueError,
+                VoiceManifestError,
+                PregenerationVoiceError,
+            ) as error:
+                from vntts.support import record_game_import
+
+                record_game_import(
+                    "voice-dialog",
+                    outcome="failed",
+                    command_kind=operation,
+                    exception_type=type(error).__name__,
+                    reason=str(error),
+                )
+                self.status.setText(
+                    f"{error}\nRetry, choose a game folder, or cancel. "
+                    "Nothing was assigned."
+                )
         elif operation in {"audio", "preview"}:
             preview_path: object | None = None
             if operation == "preview":

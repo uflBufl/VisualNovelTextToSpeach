@@ -649,6 +649,7 @@ class AuthoringListeningDialogTest(unittest.TestCase):
     def test_requires_both_samples_then_saves_and_completes(self):
         with TemporaryDirectory() as directory:
             session, dialog = self.create_dialog(Path(directory))
+            dialog.show()
             dialog.play("a")
             dialog.playback.finish()
             dialog.poll_playback()
@@ -667,6 +668,19 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             self.assertEqual(dialog.progress.text(), "Completed 1 of 1 | Remaining 0")
             self.assertEqual(dialog.trial_heading.text(), "All 1 trials reviewed")
             self.assertTrue(session.with_name("report.json").is_file())
+            self.assertTrue(dialog.play_a.isHidden())
+            self.assertTrue(dialog.prefer_a.isHidden())
+            self.assertFalse(dialog.open_report.isHidden())
+            self.assertTrue(dialog.open_report.hasFocus())
+            with patch(
+                "vntts.authoring.listening_ui.QDesktopServices.openUrl",
+                return_value=True,
+            ) as open_url:
+                dialog.open_report.click()
+            self.assertEqual(
+                open_url.call_args.args[0].toLocalFile(),
+                str(session.with_name("report.json")),
+            )
             dialog.deleteLater()
 
     def test_trial_hierarchy_keyboard_accessibility_and_compact_layout(self):
@@ -678,8 +692,6 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             self.application.processEvents()
 
             self.assertEqual(dialog.progress.text(), "Completed 0 of 3 | Remaining 3")
-            self.assertEqual(dialog.progress_bar.maximum(), 3)
-            self.assertEqual(dialog.progress_bar.value(), 0)
             self.assertEqual(dialog.trial_heading.text(), "Trial 1 of 3 | line-0")
             self.assertIn(
                 "blind comparison",
@@ -698,7 +710,8 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             self.assertEqual(dialog.neither.shortcut().toString(), "Ctrl+Shift+N")
             for widget in (
                 dialog.progress,
-                dialog.progress_bar,
+                dialog.context_toggle,
+                dialog.review_scroll,
                 dialog.trial_heading,
                 dialog.dialogue,
                 dialog.current_trial_card,
@@ -739,6 +752,69 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             )
             dialog.deleteLater()
 
+    def test_enlarged_text_keeps_dialogue_playback_and_decisions_reachable(self):
+        with TemporaryDirectory() as directory:
+            _session, dialog = self.create_dialog(Path(directory))
+            font = dialog.font()
+            font.setPointSize(16)
+            dialog.setFont(font)
+            dialog.resize(640, 400)
+            dialog.show()
+            self.application.processEvents()
+
+            self.assertTrue(dialog.dialogue.isVisibleTo(dialog))
+            self.assertTrue(dialog.play_a.isVisibleTo(dialog))
+            self.assertTrue(dialog.play_b.isVisibleTo(dialog))
+            self.assertLessEqual(
+                dialog.play_a.mapTo(dialog.review_scroll.viewport(), QPoint(0, 0)).y()
+                + dialog.play_a.height(),
+                dialog.review_scroll.viewport().height(),
+            )
+            self.assertGreaterEqual(
+                dialog.neither.height(), dialog.neither.sizeHint().height()
+            )
+            dialog.dialogue.setPlainText("Long blind dialogue. " * 80)
+            self.assertGreater(dialog.dialogue.verticalScrollBar().maximum(), 0)
+            dialog.context_toggle.setFocus()
+            self.application.processEvents()
+            toggle_top = dialog.context_toggle.mapTo(
+                dialog.review_scroll.viewport(), QPoint(0, 0)
+            ).y()
+            self.assertGreaterEqual(toggle_top, 0)
+            self.assertLessEqual(
+                toggle_top + dialog.context_toggle.height(),
+                dialog.review_scroll.viewport().height(),
+            )
+            dialog.context_toggle.setChecked(True)
+            self.assertTrue(dialog.decision_context.isVisibleTo(dialog))
+            large_font = dialog.font()
+            large_font.setPixelSize(48)
+            dialog.setFont(large_font)
+            self.assertGreaterEqual(
+                dialog.dialogue.viewport().height(), dialog.fontMetrics().height()
+            )
+            dialog.close()
+
+    def test_complete_report_stays_visible_with_large_text(self):
+        with TemporaryDirectory() as directory:
+            session, dialog = self.create_dialog(Path(directory))
+            record_trial_preference(session, dialog.current_trial["trial_id"], "a")
+            font = dialog.font()
+            font.setPixelSize(48)
+            dialog.setFont(font)
+            dialog.load_next_trial()
+            dialog.show()
+            self.application.processEvents()
+
+            viewport = dialog.review_scroll.viewport()
+            status_bottom = dialog.status.mapTo(viewport, QPoint(0, 0)).y()
+            status_bottom += dialog.status.height()
+            report_bottom = dialog.open_report.mapTo(viewport, QPoint(0, 0)).y()
+            report_bottom += dialog.open_report.height()
+            self.assertLessEqual(status_bottom, viewport.height())
+            self.assertLessEqual(report_bottom, viewport.height())
+            dialog.close()
+
     def test_neither_acceptable_button_persists_distinct_verdict(self):
         with TemporaryDirectory() as directory:
             session, dialog = self.create_dialog(Path(directory))
@@ -748,9 +824,19 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             self.wait_for(lambda: not dialog._preference_active)
 
             rating = load_listening_session(session)["trials"][0]["rating"]
+            self.assertIn("No preference leader", dialog.status.text())
 
         self.assertEqual(rating["preference"], "tie")
         self.assertEqual(rating["acceptability"], "neither")
+
+    def test_equal_preference_result_does_not_claim_single_leader(self):
+        with TemporaryDirectory() as directory:
+            session, dialog = self.create_dialog(Path(directory))
+            record_trial_preference(session, dialog.current_trial["trial_id"], "tie")
+            dialog.load_next_trial()
+
+            self.assertIn("Top preference is tied", dialog.status.text())
+            dialog.close()
 
     def test_irreversible_preference_can_be_cancelled(self):
         with TemporaryDirectory() as directory:

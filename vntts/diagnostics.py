@@ -1,6 +1,7 @@
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Protocol
 
 from PIL import Image
@@ -33,6 +34,7 @@ class DiagnosticSnapshot:
     last_first_audio_ms: float | None = None
     cache_source: str | None = None
     audio_source: str = "Not selected"
+    captured_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 def resolve_voice_label(

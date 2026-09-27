@@ -8,7 +8,7 @@ from threading import Event
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PIL import Image  # noqa: E402
-from PySide6.QtCore import QRect, Qt, QTimer  # noqa: E402
+from PySide6.QtCore import QPoint, QRect, Qt, QTimer  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog, QTextEdit  # noqa: E402
 
@@ -72,6 +72,7 @@ class DialogRegionOverlayTest(unittest.TestCase):
         self.assertIn("Selone", rendered)
         self.assertIn("94.5%", rendered)
         self.assertTrue(dialog.save_button.isEnabled())
+        self.assertTrue(dialog.progress.isHidden())
         dialog.deleteLater()
 
     def test_slow_calibration_ocr_keeps_qt_responsive(self):
@@ -105,6 +106,33 @@ class DialogRegionOverlayTest(unittest.TestCase):
         self.assertIn("Selone", dialog.result_text.toPlainText())
         dialog.deleteLater()
 
+    def test_cancel_and_draw_again_invalidate_pending_ocr(self):
+        for outcome in ("cancel", "draw-again"):
+            with self.subTest(outcome=outcome):
+                started = Event()
+                release = Event()
+
+                def slow_recognizer(_image):
+                    started.set()
+                    release.wait(3)
+                    return OCRResult("Selone", "Late text", 94.5, "gray", 1)
+
+                dialog = CalibrationReviewDialog(
+                    Image.new("RGB", (640, 180), "black"),
+                    recognizer=slow_recognizer,
+                )
+                self.wait_for(started.is_set)
+                if outcome == "cancel":
+                    dialog.reject()
+                else:
+                    dialog.done(CalibrationReviewDialog.DrawAgain)
+                self.assertFalse(dialog.runner.active)
+                release.set()
+                self.assertTrue(dialog.runner.thread_pool.waitForDone(3_000))
+                self.application.processEvents()
+                self.assertNotIn("Late text", dialog.result_text.toPlainText())
+                dialog.deleteLater()
+
     def test_failed_ocr_requires_explicit_capture_only_save(self):
         dialog = CalibrationReviewDialog(
             Image.new("RGB", (640, 180), "black"),
@@ -115,6 +143,7 @@ class DialogRegionOverlayTest(unittest.TestCase):
         self.assertIn("OCR preview failed", dialog.result_text.toPlainText())
         self.assertEqual(dialog.save_button.text(), "Save region without OCR preview")
         self.assertTrue(dialog.save_button.isEnabled())
+        self.assertTrue(dialog.progress.isHidden())
         dialog.deleteLater()
 
     def test_review_actions_have_keyboard_and_accessibility_contract(self):
@@ -226,6 +255,42 @@ class DialogRegionOverlayTest(unittest.TestCase):
             self.assertEqual(closed, [True])
             self.assertFalse(overlay.isVisible())
             overlay.deleteLater()
+
+    def test_region_save_failure_keeps_selection_visible_and_retryable(self):
+        class Reviewer:
+            def __init__(self, _image):
+                pass
+
+            def exec(self):
+                return QDialog.DialogCode.Accepted
+
+        overlay = DialogRegionOverlay(
+            background=Image.new("RGB", (800, 450), "black"),
+            reviewer=Reviewer,
+            save_region=lambda _region: (_ for _ in ()).throw(OSError("disk full")),
+        )
+        selected = []
+        failures = []
+        overlay.selected.connect(selected.append)
+        overlay.save_failed.connect(failures.append)
+        overlay.resize(800, 450)
+        overlay.origin = QPoint(80, 270)
+        overlay.current = QPoint(720, 414)
+        overlay.show()
+        overlay._review_rectangle(QRect(80, 270, 640, 144))
+        self.application.processEvents()
+
+        self.assertTrue(overlay.isVisible())
+        self.assertEqual(selected, [])
+        self.assertIn("disk full", overlay.save_error)
+        self.assertIn("disk full", failures[0])
+        self.assertIsNotNone(overlay.origin)
+        overlay.save_region = lambda _region: None
+        overlay._review_rectangle(QRect(80, 270, 640, 144))
+        self.application.processEvents()
+        self.assertEqual(len(selected), 1)
+        self.assertFalse(overlay.isVisible())
+        overlay.deleteLater()
 
     def test_negative_monitor_and_scaled_pixels_keep_normalized_geometry(self):
         background = Image.new("RGB", (1600, 900), "black")

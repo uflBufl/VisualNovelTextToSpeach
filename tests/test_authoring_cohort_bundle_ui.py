@@ -140,16 +140,18 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             dialog.show()
             self.wait_for(lambda: dialog.table.rowCount() == 1)
 
-            self.assertTrue(dialog.cohort_choice.itemText(0).startswith("Required 1/2"))
+            self.assertTrue(
+                dialog.cohort_choice.itemText(0).startswith("Cohort 1 of 2")
+            )
             self.assertIn("Review every listed cohort", dialog.operation.text())
             self.assertEqual(
                 dialog.overall_progress.format(),
                 "0 of 2 cohorts completed in this review session",
             )
-            self.assertIn("Play 1 remaining sample", dialog.decision_help.text())
+            self.assertIn("Listen to 1 remaining sample", dialog.decision_help.text())
             self.assertTrue(dialog.table.isColumnHidden(5))
             self.assertTrue(dialog.table.isColumnHidden(6))
-            self.assertIn("Generated role", dialog.sample_identity.text())
+            self.assertIn("Voice used", dialog.sample_identity.text())
             self.assertEqual(
                 dialog.decision_context.values["game_speaker"].text(),
                 dialog._selected_sample().item.speaker,
@@ -162,8 +164,8 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
                 "checksum-bound WAV",
                 dialog.decision_context.values["effect"].text(),
             )
-            self.assertIn("listening decides", dialog.sample_identity.text())
-            self.assertIn("not a rejection verdict", dialog.guide.text())
+            self.assertIn("listening decides", dialog.sample_identity.toolTip())
+            self.assertIn("not a rejection verdict", dialog.guide.toolTip())
             self.assertNotIn("technical-attention", dialog.table.item(0, 4).text())
             self.assertEqual(
                 dialog.sample_text.text(), dialog._selected_sample().item.text
@@ -204,6 +206,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertTrue(dialog.mark_bad.isEnabled())
             self.assertTrue(dialog.leave_undecided.isVisible())
             self.assertEqual(dialog.table.item(0, 0).text(), "Heard")
+            self.assertEqual(dialog.status.text(), "Ready to decide this cohort")
             self.assertIn("All 1 required samples", dialog.decision_help.text())
 
     def test_navigation_during_playback_credits_target_and_keeps_new_selection(self):
@@ -263,6 +266,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             key = dialog._current_key()
             dialog.heard[key].add(sample.item.queue_id)
             dialog._show_current_cohort()
+            self.assertEqual(dialog.status.text(), "Ready to decide this cohort")
 
             dialog.defect_checks["pause_or_pacing"].setChecked(True)
             dialog.defect_checks["repetition"].setChecked(True)
@@ -270,6 +274,9 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertFalse(dialog.accept_button.isEnabled())
             self.assertTrue(dialog.reject_button.isEnabled())
             self.assertFalse(dialog.need_another.isEnabled())
+            self.assertIn(
+                "No additional sample is available", dialog.decision_help.text()
+            )
             self.assertIn("Pause or pacing", dialog.table.item(0, 1).text())
             self.assertEqual(
                 dialog.bad_reasons[key][sample.item.queue_id],
@@ -278,7 +285,6 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertIn("marked bad", dialog.decision_help.text())
             dialog.apply_decision("rejected")
             self.wait_for(lambda: bool(calls) and not dialog._decision_active)
-
         self.assertEqual(
             calls[0][5][sample.item.queue_id],
             {
@@ -286,6 +292,25 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
                 "defect_reasons": ["pause_or_pacing", "repetition"],
             },
         )
+
+    def test_specific_defect_replaces_unclear_quick_mark(self):
+        with TemporaryDirectory() as directory:
+            dialog = CohortReviewBundleDialog(self.create_bundle(Path(directory)))
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+            sample = dialog._selected_sample()
+            key = dialog._current_key()
+            dialog.heard[key].add(sample.item.queue_id)
+            dialog._show_current_cohort()
+
+            dialog.toggle_bad()
+            self.assertEqual(
+                dialog.bad_reasons[key][sample.item.queue_id], {"other_or_unclear"}
+            )
+            dialog.defect_checks["pause_or_pacing"].setChecked(True)
+            self.assertEqual(
+                dialog.bad_reasons[key][sample.item.queue_id], {"pause_or_pacing"}
+            )
 
     def test_mixed_action_projects_only_individually_heard_marked_scope(self):
         calls = []
@@ -456,31 +481,19 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             first_row_bottom = max(
                 widget.mapTo(dialog, QPoint(0, widget.height())).y()
                 for widget in (
-                    dialog.mark_bad,
                     dialog.need_another,
+                    dialog.repair_marked,
                     dialog.leave_undecided,
                 )
             )
             second_row_top = min(
                 widget.mapTo(dialog, QPoint(0, 0)).y()
                 for widget in (
-                    dialog.repair_marked,
                     dialog.accept_button,
                     dialog.reject_button,
                 )
             )
-            second_row_bottom = max(
-                widget.mapTo(dialog, QPoint(0, widget.height())).y()
-                for widget in (
-                    dialog.repair_marked,
-                    dialog.accept_button,
-                    dialog.reject_button,
-                )
-            )
-            shortcut_top = dialog.shortcuts_help.mapTo(dialog, QPoint(0, 0)).y()
-
             self.assertLessEqual(first_row_bottom, second_row_top)
-            self.assertLessEqual(second_row_bottom, shortcut_top)
             self.assertTrue(dialog.review_scroll.isVisible())
             self.assertTrue(dialog.accept_button.isVisible())
             self.assertTrue(dialog.reject_button.isVisible())
@@ -636,7 +649,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             )
             self.assertEqual(dialog.cohort_choice.currentIndex(), 0)
             self.assertTrue(
-                dialog.cohort_choice.currentText().startswith("Required 1/1")
+                dialog.cohort_choice.currentText().startswith("Cohort 1 of 1")
             )
             self.assertNotEqual(
                 dialog._selected_sample().workspace_id, first.workspace_id
@@ -878,6 +891,9 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             dialog.show()
             self.wait_for(lambda: dialog.retry_load.isEnabled())
             self.assertIn("BLOCKED", dialog.status.text())
+            self.assertEqual(
+                dialog.sample_text.text(), "Retry loading the samples to begin."
+            )
 
             dialog.retry_load.click()
             self.wait_for(lambda: dialog.table.rowCount() == 1)

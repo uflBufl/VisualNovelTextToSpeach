@@ -275,7 +275,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertIn("INTERRUPTED", dialog.status.text())
             self.assertIn("Resolve source audio:", dialog.outcome_details_text.text())
             self.assertIn("Other actions:", dialog.outcome_details_text.text())
-            self.assertEqual(dialog.counts.text().count("<br>"), 2)
+            self.assertEqual(dialog.counts.text().count("<br>"), 0)
             dialog.status.setStyleSheet("")
             self.assertIn("INTERRUPTED", dialog.status.text())
             with patch(
@@ -294,7 +294,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 self.assertTrue(button.accessibleDescription(), button.text())
 
             self.assertFalse(dialog.technical.isChecked())
-            dialog.review_status.setCurrentText("All statuses")
+            dialog.review_status.setCurrentText("Approved")
             dialog.review_character.setCurrentText("Rhiannon")
             dialog.review_collection.setCurrentText("main")
             dialog.review_search.setText("dialogue")
@@ -309,7 +309,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertFalse(replacement.review_table.isColumnHidden(6))
             self.assertFalse(replacement.review_table.isColumnHidden(8))
             self.assertGreater(replacement.splitter.sizes()[0], 0)
-            self.assertEqual(replacement.review_status.currentText(), "All statuses")
+            self.assertEqual(replacement.review_status.currentText(), "Approved")
             self.assertEqual(replacement.review_character.currentText(), "Rhiannon")
             self.assertEqual(replacement.review_collection.currentText(), "main")
             self.assertEqual(replacement.review_search.text(), "dialogue")
@@ -342,7 +342,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertEqual(dialog.reset_layout.text(), "Reset layout")
             self.assertEqual(dialog.approve.text(), "Approve")
             self.assertEqual(dialog.reject_button.text(), "Reject")
-            self.assertEqual(dialog.review_play.text(), "Replay")
+            self.assertEqual(dialog.review_play.text(), "Play recording")
             for label, control in zip(
                 dialog.review_filter_labels,
                 (
@@ -380,6 +380,175 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             dialog.show_technical_columns.setChecked(True)
             self.assertFalse(dialog.review_table.isColumnHidden(6))
             self.assertFalse(dialog.review_table.isColumnHidden(8))
+
+    def test_generation_and_saved_outcomes_have_discoverable_entry_points(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
+            dialog.show()
+            self.application.processEvents()
+
+            self.assertEqual(dialog.review_status.currentText(), "All statuses")
+            self.assertEqual(dialog.review_table.rowCount(), 1)
+            self.assertEqual(dialog.review_table.item(0, 3).text(), "Approved")
+            self.assertTrue(dialog.review_play.isEnabled())
+            self.assertIn("Approved recording", dialog.review_action_reason.text())
+            self.assertIn(
+                "Preserve this generated line exactly.", dialog.review_text.text()
+            )
+            self.assertFalse(dialog.specialist_section.isChecked())
+            self.assertTrue(dialog.choose_collections.isVisible())
+            self.assertTrue(dialog.generate.isVisible())
+            dialog.choose_collections.click()
+            self.application.processEvents()
+            self.assertTrue(dialog.generation_section.isChecked())
+            self.assertTrue(dialog.collection_tree.hasFocus())
+            self.assertTrue(dialog.collection_tree.isVisibleTo(dialog))
+
+    def test_enlarged_text_scrolls_without_clipping_review_actions(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            self.mark_fixture_pending_review(workspace)
+            dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
+            font = dialog.font()
+            font.setPointSize(max(font.pointSize() + 3, 16))
+            dialog.setFont(font)
+            dialog.resize(dialog.minimumSize())
+            dialog.show()
+            self.application.processEvents()
+
+            scrollbar = dialog.workbench_scroll.verticalScrollBar()
+            self.assertGreater(scrollbar.maximum(), 0)
+            dialog.workbench_scroll.ensureWidgetVisible(dialog.review_play)
+            self.application.processEvents()
+            top = dialog.review_play.mapTo(
+                dialog.workbench_scroll.viewport(), QPoint()
+            ).y()
+            self.assertGreaterEqual(top, 0)
+            self.assertLessEqual(
+                top + dialog.review_play.height(),
+                dialog.workbench_scroll.viewport().height(),
+            )
+            self.assertTrue(dialog.review_text.isVisible())
+            self.assertIn(
+                "Preserve this generated line exactly.", dialog.review_text.text()
+            )
+
+    def test_failed_only_has_one_retry_action(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            state_path = workspace / "generated-audio/generation-state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            queue_id = next(iter(state["items"]))
+            state["active"] = None
+            state["items"][queue_id] = {
+                "status": "failed",
+                "attempts": 3,
+                "seed": 2,
+                "last_error": "synthesis failed",
+                "updated_at": "2026-08-17T00:00:00+00:00",
+            }
+            atomic_write_json(state_path, state, sort_keys=True)
+
+            dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
+
+            self.assertFalse(dialog.generate.isEnabled())
+            self.assertTrue(dialog.retry_failed.isEnabled())
+            self.assertIn("Only failed lines remain", dialog.generate.toolTip())
+            self.assertIn("1 failed", dialog.generation_summary.text())
+
+    def test_generate_excludes_failed_lines_from_mixed_selection(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
+            failed = replace(
+                dialog._all_reviews[0],
+                queue_id="failed-id",
+                status="failed",
+                review_status=None,
+                audio=None,
+                authority=None,
+            )
+            dialog._all_reviews = (failed,)
+            dialog.collection_selection = replace(
+                dialog.collection_selection,
+                readiness=replace(
+                    dialog.collection_selection.readiness,
+                    pending=1,
+                    failed=1,
+                    ready=2,
+                    queue_ids=("pending-id", "failed-id"),
+                ),
+            )
+            dialog._start_child = Mock()
+
+            dialog.start_generation()
+
+            dialog._start_child.assert_called_once_with(("pending-id",))
+
+    def test_large_terminal_history_defaults_to_pending_filter(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+
+            def large_projection(*args):
+                projection = _load_workbench_projection(*args)
+                original = projection.reviews[0]
+                return replace(
+                    projection,
+                    reviews=tuple(
+                        replace(
+                            original,
+                            queue_id=f"approved-{index:03d}",
+                            line_id=f"line-{index:03d}",
+                        )
+                        for index in range(501)
+                    ),
+                )
+
+            dialog = AuthoringWorkbenchDialog(
+                workspace,
+                settings=self.settings(root),
+                projection_loader=large_projection,
+                synchronous_projection=True,
+            )
+
+            self.assertEqual(dialog.review_status.currentText(), "Awaiting review")
+            self.assertEqual(dialog.review_table.rowCount(), 0)
+            self.assertIn("501 saved outcome", dialog.review_scope.text())
+
+    def test_approved_recording_can_play_while_another_process_generates(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            atomic_write_json(
+                workspace / "generated-audio/.generation-lease.json",
+                {
+                    "schema": "vntts.authoring-generation-lease",
+                    "schema_version": 1,
+                    "queue_sha256": sha256_file(workspace / "queue.jsonl"),
+                    "pid": os.getpid(),
+                    "hostname": socket.gethostname(),
+                    "process_started_at": process_started_at(os.getpid()),
+                    "lease_id": "other-generation-window",
+                    "started_at": "2026-08-17T00:00:00+00:00",
+                },
+                sort_keys=True,
+            )
+
+            dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
+
+            self.assertIn("RUNNING ELSEWHERE", dialog.status.text())
+            self.assertTrue(dialog.review_play.isEnabled())
+            self.assertFalse(dialog.approve.isEnabled())
+            self.assertFalse(dialog.reject_button.isEnabled())
+            self.assertIn(
+                "You can play this recording", dialog.review_action_reason.text()
+            )
 
     def test_escape_rejects_dialog(self):
         with TemporaryDirectory() as directory:
@@ -612,7 +781,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             before = process.start_calls
             dialog.start_generation()
             self.assertEqual(process.start_calls, before)
-            self.assertIn("no ready queue IDs", dialog.status.text())
+            self.assertIn("no ready pending lines", dialog.status.text())
             dialog.close()
 
             reopened = AuthoringWorkbenchDialog(workspace, settings=settings)
@@ -646,7 +815,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertIn(
                 "review remains independently available", dialog.status.text()
             )
-            self.assertIn("showing 1 of 1", dialog.review_scope.text())
+            self.assertIn("Showing 1 of 1", dialog.review_scope.text())
 
     def test_successful_empty_review_uses_refresh_not_retry_language(self):
         with TemporaryDirectory() as directory:
@@ -659,8 +828,10 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertIsNotNone(dialog.summary)
             self.assertEqual(dialog.review_table.rowCount(), 0)
             self.assertEqual(dialog.reload_authority.text(), "Reload workspace")
-            self.assertIn("Review complete", dialog.review_scope.text())
-            self.assertIn("no review outcomes", dialog.review_action_reason.text())
+            self.assertIn("No generated audio yet", dialog.review_scope.text())
+            self.assertIn(
+                "No generated audio to review yet", dialog.review_action_reason.text()
+            )
 
     def test_review_filters_are_explicit_and_empty_result_never_means_all(self):
         with TemporaryDirectory() as directory:
@@ -846,7 +1017,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 dialog.review_table.editTriggers(),
                 QAbstractItemView.EditTrigger.NoEditTriggers,
             )
-            self.assertEqual(dialog.review_play.text(), "Replay")
+            self.assertEqual(dialog.review_play.text(), "Play recording")
             self.assertEqual(dialog.approve.text(), "Approve")
             self.assertEqual(dialog.reject_button.text(), "Reject")
             self.assertIn("Ctrl+R", dialog.review_play.accessibleDescription())
@@ -1109,7 +1280,8 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             )
             self.application.processEvents()
 
-            self.assertEqual(dialog.review_table.rowCount(), 0)
+            self.assertEqual(dialog.review_table.rowCount(), 1)
+            self.assertEqual(dialog._selected_review_item().review_status, "approved")
             self.assertIn("Approved: 1", dialog.counts.text())
 
     def test_592_item_approve_and_reject_keep_qt_heartbeat_responsive(self):

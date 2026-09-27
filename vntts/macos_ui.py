@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -104,26 +105,40 @@ class MacOSPermissionsDialog(QDialog):
         accessibility_actions.addStretch()
         accessibility_actions.addWidget(self.request_accessibility_button)
         accessibility_actions.addWidget(self.open_accessibility_button)
+        screen_row = QVBoxLayout()
+        screen_row.addLayout(screen_actions)
+        screen_row.addWidget(QLabel("Required for text capture."))
+        accessibility_row = QVBoxLayout()
+        accessibility_row.addLayout(accessibility_actions)
+        accessibility_row.addWidget(QLabel("Optional; only for auto advance."))
         form = QFormLayout()
-        form.addRow("Screen recording", screen_actions)
-        form.addRow("Accessibility", accessibility_actions)
+        form.addRow("Screen Recording", screen_row)
+        form.addRow("Accessibility", accessibility_row)
 
-        self.note = QLabel(
-            "After granting a permission, quit and reopen the application. "
-            "Screen recording is required for OCR capture; Accessibility is "
-            "required only for auto advance. Global hotkeys are unavailable in "
-            "the current macOS build; use the control window or compact controls."
-        )
+        self.note = QLabel()
         self.note.setWordWrap(True)
+        self.hotkey_note = QLabel(
+            "Global hotkeys are unavailable on this macOS build; use the control "
+            "window or compact controls."
+        )
+        self.hotkey_note.setWordWrap(True)
         self.refresh_button = QPushButton("Refresh status")
+        self.refresh_button.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
         self.refresh_button.clicked.connect(self.refresh)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.close)
+        footer = QHBoxLayout()
+        footer.addWidget(self.refresh_button)
+        footer.addStretch()
+        footer.addWidget(buttons)
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         layout.addWidget(self.note)
-        layout.addWidget(self.refresh_button)
-        layout.addWidget(buttons)
+        layout.addWidget(self.hotkey_note)
+        layout.addStretch()
+        layout.addLayout(footer)
         self.refresh()
 
     def refresh(self) -> None:
@@ -133,9 +148,28 @@ class MacOSPermissionsDialog(QDialog):
             message = f"Status check failed: {error}"
             self.screen_status.setText(message)
             self.accessibility_status.setText(message)
+            self.note.setText(
+                "Could not check permissions. Verify Screen Recording in System "
+                "Settings, then refresh status."
+            )
+            self._set_permission_actions(
+                None, self.request_screen_button, self.open_screen_button
+            )
+            self._set_permission_actions(
+                None, self.request_accessibility_button, self.open_accessibility_button
+            )
             return
         self.screen_status.setText(self._status_text(status["screen_capture"]))
         self.accessibility_status.setText(self._status_text(status["accessibility"]))
+        self.note.setText(
+            "Screen Recording is granted. If you just changed permissions, restart "
+            "VNTTS before reading."
+            if status["screen_capture"] is True
+            else "Grant Screen Recording, then restart VNTTS before reading."
+            if status["screen_capture"] is False
+            else "Could not check Screen Recording. Verify it in System Settings, "
+            "then refresh status."
+        )
         self._set_permission_actions(
             status["screen_capture"],
             self.request_screen_button,
@@ -153,7 +187,7 @@ class MacOSPermissionsDialog(QDialog):
         request_button: QPushButton,
         settings_button: QPushButton,
     ) -> None:
-        request_button.setVisible(granted is not True)
+        request_button.setVisible(granted is False)
         settings_button.setText(
             "Manage in Settings" if granted is True else "Open Settings"
         )
@@ -216,5 +250,5 @@ class MacOSPermissionsDialog(QDialog):
     @staticmethod
     def _status_text(value: PermissionGranted) -> str:
         if value is None:
-            return "Status unavailable"
+            return "Could not check"
         return "Granted" if value else "Not granted"

@@ -10,6 +10,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
+    from PySide6.QtCore import QPoint
     from PySide6.QtGui import QCloseEvent
     from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtWidgets import QApplication
@@ -81,6 +82,13 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
             )
             dialog.show()
             self.application.processEvents()
+            self.assertTrue(dialog.text.isVisibleTo(dialog))
+            self.assertTrue(
+                all(button.isVisibleTo(dialog) for button in dialog.play_buttons)
+            )
+            self.assertTrue(
+                all(button.isVisibleTo(dialog) for button in dialog.choose_buttons)
+            )
 
             self.assertFalse(dialog.neither.isEnabled())
             self.assertFalse(dialog.stop.isEnabled())
@@ -117,6 +125,59 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
             progress = load_terminal_conflict_review_progress(review)
             self.assertEqual(progress["decisions"][0]["decision"], "neither_acceptable")
             self.assertIn("All terminal conflicts", dialog.identity.text())
+            self.assertTrue(dialog.decision_context.isHidden())
+            self.assertTrue(all(button.isHidden() for button in dialog.play_buttons))
+            self.assertTrue(all(button.isHidden() for button in dialog.choose_buttons))
+            self.assertTrue(dialog.close_button.hasFocus())
+            dialog.close()
+
+    def test_stopped_audio_does_not_unlock_conflict_decision(self):
+        with TemporaryDirectory() as directory:
+            review = self.create_review(Path(directory))
+            dialog = TerminalConflictReviewDialog(review)
+            dialog._playing_candidate = dialog._display_candidates[0]["candidate_id"]
+
+            dialog._stop()
+            dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+
+            self.assertEqual(dialog._heard, set())
+            self.assertFalse(dialog.neither.isEnabled())
+            dialog.close()
+
+    def test_dangling_progress_link_blocks_review_on_open(self):
+        with TemporaryDirectory() as directory:
+            review = self.create_review(Path(directory))
+            (review / "progress.json").symlink_to("missing-progress.json")
+
+            with self.assertRaises(TerminalConflictReviewError):
+                TerminalConflictReviewDialog(review)
+
+    def test_enlarged_text_keeps_line_playback_and_decisions_visible(self):
+        with TemporaryDirectory() as directory:
+            review = self.create_review(Path(directory))
+            dialog = TerminalConflictReviewDialog(review)
+            font = dialog.font()
+            font.setPointSize(16)
+            dialog.setFont(font)
+            dialog.resize(dialog.minimumSize())
+            dialog.show()
+            self.application.processEvents()
+
+            viewport = dialog.review_scroll.viewport()
+            for widget in (dialog.text, *dialog.play_buttons):
+                bottom = widget.mapTo(viewport, QPoint(0, 0)).y() + widget.height()
+                self.assertLessEqual(bottom, viewport.height())
+            self.assertGreaterEqual(
+                dialog.neither.height(), dialog.neither.sizeHint().height()
+            )
+            dialog.text.setText("Long affected dialogue. " * 50)
+            self.application.processEvents()
+            self.assertGreater(dialog.review_scroll.verticalScrollBar().maximum(), 0)
+            dialog.context_toggle.setFocus()
+            self.application.processEvents()
+            context_bottom = dialog.context_toggle.mapTo(viewport, QPoint(0, 0)).y()
+            context_bottom += dialog.context_toggle.height()
+            self.assertLessEqual(context_bottom, viewport.height())
             dialog.close()
 
     def test_scaled_font_keeps_keyboard_journey_scroll_reachable(self):
@@ -159,7 +220,7 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
             self.assertTrue(dialog.close_button.isVisible())
             self.assertIs(
                 dialog.decision_context.technical_toggle.nextInFocusChain(),
-                dialog.play_buttons[0],
+                dialog.choose_buttons[0],
             )
             self.assertIs(dialog.neither.nextInFocusChain(), dialog.close_button)
             for button in (

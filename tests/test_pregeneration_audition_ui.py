@@ -128,7 +128,9 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             candidate = replace(
                 group.candidates[0],
                 source_character="Player candidate Rhiannon abcdef123456",
-                source_excerpts=("Greeting: Good morning, traveller.",),
+                source_excerpts=("Good morning, traveller.",),
+                source_bank="hero3146_mainvoc.bnk",
+                source_line_ids=("playable-voice:3146:main:1",),
             )
             group = replace(
                 group,
@@ -144,8 +146,39 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.start(plan, group_id=group.group_id)
 
             self.assertIn("Good morning", panel.voice_reference.currentText())
+            self.assertIn("Playable line", panel.voice_reference.currentText())
             self.assertNotIn("abcdef123456", panel.voice_reference.currentText())
-            self.assertIn("Greeting: Good morning", panel.a_reason.text())
+            self.assertIn("Original spoken text: Good morning", panel.a_reason.text())
+            self.assertNotIn("Greeting:", panel.a_reason.text())
+            panel.cancel()
+
+    def test_unlinked_game_bank_reference_is_labelled_without_a_transcript(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            candidate = replace(
+                group.candidates[0],
+                source_excerpts=(),
+                source_line_ids=(),
+                candidate_origin="exact_bank_unrouted_media",
+            )
+            group = replace(
+                group,
+                candidates=(),
+                candidate_inventory=(candidate,),
+            )
+            plan = replace(plan, groups=(group,))
+            panel = VoiceAuditionPanel(
+                VoiceDecisionStore(root / "decisions.json"),
+                preview_service=Mock(),
+            )
+            self.addCleanup(panel.deleteLater)
+            panel.start(plan, group_id=group.group_id)
+
+            self.assertIn(
+                "Unlinked game-bank audio", panel.voice_reference.currentText()
+            )
+            self.assertIn("spoken text unknown", panel.a_reason.text())
             panel.cancel()
 
     def test_retry_after_shutdown_gets_a_usable_preview_service(self):
