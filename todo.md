@@ -1,11 +1,8 @@
 # TODO
 
-## Active - Finish and remove stale Git branches
+## Active - Resolve the archived typing branch
 
-- [ ] Compare local and remote branch tips with current `origin/main`; remove branches whose changes are integrated only after confirming no worktree has uncommitted work or an active owner.
-- [ ] Ask the owners of `codex/remove-obsolete-audition-ui` and `codex/refactor-debt-typing` to finish their unique changes, verify them, integrate into current `main`, and remove their branches. Coordinate the shared checkout before any merge or deletion.
-- [ ] Resolve the uncommitted UI catalog files in the `codex/refactor-debt-catalog` worktree with its owner before removing that already-merged branch.
-- [ ] Recheck local/remote branch inventory and `main` after integration; keep only branches with unfinished, explicitly owned work.
+- [ ] Confirm whether to publish the local `archive/refactor-debt-typing-20260923` tag before deleting the last remote feature branch, `origin/codex/refactor-debt-typing`. Its useful remaining change is in `main`; the tag preserves obsolete draft history. After the choice, verify local and remote branch inventories.
 
 ## Active - Review remaining source-extraction UI
 
