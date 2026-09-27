@@ -659,6 +659,56 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
         self._voice_library_patch.stop()
         self._voice_library_directory.cleanup()
 
+    def test_inaccessible_saved_voice_returns_to_stories_without_loading(self):
+        from tests.test_pregeneration_voices import write_manifest
+        from vntts.pregeneration_voices import VoicePlanStore
+        from vntts.voices import CharacterVoiceRegistry, remember_voice_binding
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            jobs = PregenerationJobStore(root / "jobs")
+            manifest = write_manifest(root / "voices")
+            library = VoiceLibrary(root / "library")
+            remember_voice_binding(
+                library,
+                CharacterVoiceRegistry.from_file(manifest),
+                "Rhiannon",
+                "character:centurion",
+            )
+            importer = Mock()
+            importer.availability.return_value = ImporterAvailability(True, "Ready")
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(voice_manifest=str(manifest)),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=jobs,
+                voice_plan_store=VoicePlanStore(jobs, voice_library=library),
+                voice_library=library,
+                importer=importer,
+                thread_pool=pool,
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog.show()
+            dialog.select_all_button.click()
+            self.assertEqual(dialog.selected_story_ids(), ("main-1", "rhiannon"))
+            self.assertTrue(dialog.continue_button.isEnabled(), dialog.summary.text())
+            dialog.continue_button.click()
+            self.assertTrue(pool.tasks, dialog.selection_status.text())
+            self.run_next_task(pool)
+
+            importer.prepare_voice_candidates.assert_not_called()
+            self.assertEqual(dialog.step.text(), "Step 1 of 4 - Choose stories")
+            self.assertTrue(dialog.selection_panel.isVisible())
+            self.assertFalse(dialog.content_scroll.isVisible())
+            self.assertFalse(dialog.progress_panel.isVisible())
+            self.assertTrue(dialog.selection_status.isVisible())
+            self.assertTrue(dialog.copy_resume_error.isVisible())
+            self.assertIn(
+                "Rhiannon' requires Pocket voice cloning access",
+                dialog.selection_status.text(),
+            )
+
     def test_worker_callbacks_fail_closed_on_malformed_success_payloads(self):
         dialog = OfflineAudioPreparationDialog(
             AppSettings(),

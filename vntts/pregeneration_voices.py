@@ -538,6 +538,32 @@ class VoicePlanStore:
                         )
             raise
 
+    def validate_saved_voice_access(
+        self, job: PregenerationJob, settings: AppSettings
+    ) -> None:
+        """Reject unusable saved choices before expensive candidate extraction."""
+        library = self.voice_library
+        if library is None or not _public_pocket_mode(settings):
+            return
+        document = _load_bound_story(job)
+        selected = set(job.selected_line_ids)
+        source_lines = _validated_source_audio_line_ids(job.story_index, document)
+        completion = document.metadata.get("source_audio_completion")
+        roles = {
+            synthesis_character_for_line(record.speaker, record.voice_character)
+            for record in document.records
+            if record.line_id in selected
+            and record.speakable
+            and not _has_authoritative_source_audio(record, completion, source_lines)
+        }
+        for role in sorted(roles):
+            _effective_assignment_source(
+                settings,
+                library.canonical_role(role),
+                library=library,
+                variant_key=library.linked_variant_key(role),
+            )
+
     def _create(
         self,
         job: PregenerationJob,
@@ -1515,8 +1541,9 @@ def _effective_assignment_source(
         ):
             raise PregenerationVoiceError(
                 f"The saved game voice for {character!r} requires Pocket voice "
-                "cloning access. Accept the model terms in Voices or choose an "
-                "available engine."
+                "cloning access, which is currently disabled. After accepting "
+                "the Pocket model terms, enable game voice cloning, choose a "
+                "built-in Pocket voice, or select another engine."
             )
         return source_id
     return None

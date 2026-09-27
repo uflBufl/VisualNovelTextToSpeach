@@ -535,6 +535,9 @@ class OfflineAudioPreparationDialog(QDialog):
         self.prepare_again.hide()
         self.selection_status = QLabel()
         self.selection_status.setWordWrap(True)
+        self.selection_status.setTextFormat(Qt.TextFormat.PlainText)
+        self.selection_status.setAccessibleName("Preparation error")
+        self.selection_status.setStyleSheet("font-weight: 600;")
         self.selection_status.hide()
         self.resume_status = QLabel()
         self.resume_status.setWordWrap(True)
@@ -822,6 +825,7 @@ class OfflineAudioPreparationDialog(QDialog):
         selection_layout.setContentsMargins(0, 0, 0, 0)
         selection_layout.setSpacing(4)
         selection_layout.addLayout(narrator_row)
+        selection_layout.addWidget(self.selection_status)
         selection_layout.addWidget(self.pocket_voice_cloning)
         selection_layout.addWidget(self.pocket_terms)
         selection_layout.addWidget(self.engine_controls)
@@ -838,7 +842,6 @@ class OfflineAudioPreparationDialog(QDialog):
         selection_layout.addLayout(selection_actions)
         selection_layout.addWidget(self.story_audio_status)
         selection_layout.addWidget(self.prepare_again)
-        selection_layout.addWidget(self.selection_status)
 
         content = QWidget()
         layout = QVBoxLayout(content)
@@ -849,7 +852,6 @@ class OfflineAudioPreparationDialog(QDialog):
         layout.addWidget(self.voice_panel)
         layout.addWidget(self.voice_confirmation, 1)
         layout.addWidget(self.progress_panel)
-        layout.addWidget(self.copy_resume_error)
         layout.addStretch()
         self.content_scroll = QScrollArea()
         self.content_scroll.setWidgetResizable(True)
@@ -861,6 +863,7 @@ class OfflineAudioPreparationDialog(QDialog):
         shell.addWidget(self.step)
         shell.addWidget(self.selection_panel, 1)
         shell.addWidget(self.content_scroll, 1)
+        shell.addWidget(self.copy_resume_error)
         shell.addWidget(self.buttons)
         make_text_copyable(self)
 
@@ -3460,6 +3463,8 @@ class OfflineAudioPreparationDialog(QDialog):
         self, job: PregenerationJob, ignore_decisions: bool = False
     ) -> VoicePlan:
         started, cpu_started = monotonic(), process_time()
+        settings = resolve_pregeneration_settings(self.settings)
+        self.voice_plan_store.validate_saved_voice_access(job, settings)
         if self._prepared_voice_job != job.job_id:
             self._prepared_voice_manifest = None
             self._prepared_voice_job = job.job_id
@@ -3493,7 +3498,7 @@ class OfflineAudioPreparationDialog(QDialog):
         started, cpu_started = monotonic(), process_time()
         plan = self.voice_plan_store.create(
             job,
-            resolve_pregeneration_settings(self.settings),
+            settings,
             manifest_path=manifest,
             cancellation=self.voice_cancel_event,
             ignore_decisions=ignore_decisions,
@@ -3581,8 +3586,11 @@ class OfflineAudioPreparationDialog(QDialog):
             return False
         self.cancel_button.setText("Cancel")
         self.cancel_button.setEnabled(True)
-        self._set_import_controls(True)
+        self.progress_panel.hide()
+        self.content_scroll.hide()
         self.selection_panel.setVisible(True)
+        self.step.setText("Step 1 of 4 - Choose stories")
+        self._set_import_controls(True)
         self._preparation_paused("Voice matching paused", error)
         self.progress_cancel_consequence.setText(
             "Change the selection or choose Continue to retry."
