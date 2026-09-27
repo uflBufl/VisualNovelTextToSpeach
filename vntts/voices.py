@@ -20,7 +20,7 @@ from vntts_artifacts.voice_manifest import (
 )
 
 from vntts.application_directories import get_local_data_directory
-from vntts.voice_library import VoiceBinding, VoiceLibrary
+from vntts.voice_library import VoiceBinding, VoiceBindingRollback, VoiceLibrary
 
 default_voice_choice_id = "default"
 pocket_tts_preset_voices = (
@@ -320,6 +320,7 @@ def discover_voice_source(
     method: Literal["automatic", "manual"] = "automatic",
     evidence: object | None = None,
     algorithm: str | None = None,
+    rollback: VoiceBindingRollback | None = None,
 ) -> tuple[str, ...]:
     voice = registry.resolve_source(source_id)
     if voice is None or not voice.references:
@@ -338,6 +339,7 @@ def discover_voice_source(
             method=method,
             evidence=source_evidence,
             algorithm=algorithm,
+            rollback=rollback,
         ).sha256
         for reference in voice.references
     )
@@ -354,6 +356,7 @@ def remember_voice_binding(
     evidence: object | None = None,
     algorithm: str | None = None,
     only_if_unbound: bool = False,
+    rollback: VoiceBindingRollback | None = None,
 ) -> VoiceBinding:
     """Persist one role decision, copying game references into the library."""
     if source_id == default_voice_choice_id:
@@ -365,6 +368,7 @@ def remember_voice_binding(
             evidence=evidence,
             algorithm=algorithm,
             only_if_unbound=only_if_unbound,
+            rollback=rollback,
         )
     voice = registry.resolve_source(source_id)
     if voice is None:
@@ -379,6 +383,7 @@ def remember_voice_binding(
             evidence=evidence,
             algorithm=algorithm,
             only_if_unbound=only_if_unbound,
+            rollback=rollback,
         )
     selected_checksums = discover_voice_source(
         library,
@@ -389,6 +394,7 @@ def remember_voice_binding(
         method=method,
         evidence=evidence,
         algorithm=algorithm,
+        rollback=rollback,
     )
     source_evidence = {
         "source_id": source_id,
@@ -405,6 +411,7 @@ def remember_voice_binding(
         evidence=source_evidence,
         algorithm=algorithm,
         only_if_unbound=only_if_unbound,
+        rollback=rollback,
     )
 
 
