@@ -1182,6 +1182,24 @@ class VoicePlanStoreTest(unittest.TestCase):
             remember_voice_binding(
                 library, registry, "Rhiannon", source_id, method="automatic"
             )
+            original_binding = library.binding("Rhiannon")
+
+            class CancelAtFinalGate:
+                calls = 0
+
+                def is_set(self):
+                    self.calls += 1
+                    return self.calls >= 3
+
+            with self.assertRaises(PregenerationVoiceCancelled):
+                VoicePlanStore(jobs, voice_library=library).create(
+                    job,
+                    settings,
+                    manifest_path=manifest,
+                    cancellation=CancelAtFinalGate(),
+                )
+            self.assertEqual(library.binding("Rhiannon"), original_binding)
+
             repeated = VoicePlanStore(jobs, voice_library=library).create(
                 job, settings, manifest_path=manifest
             )

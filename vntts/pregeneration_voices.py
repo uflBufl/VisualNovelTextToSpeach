@@ -918,7 +918,9 @@ class VoicePlanStore:
             )
             and self.voice_library is not None
         ):
-            self.voice_library.clear(binding.role, variant_key=binding.variant_key)
+            self.voice_library.clear(
+                binding.role, variant_key=binding.variant_key, rollback=rollback
+            )
             if bound_source == assignment_source:
                 bound_source = None
             assignment_source = None
