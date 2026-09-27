@@ -782,6 +782,7 @@ class MainTest(unittest.TestCase):
     def test_saved_speech_controls_configure_synthesis_and_playback(self):
         configuration = get_tts_configuration(
             AppSettings(
+                speech_backend="coqui-xtts",
                 tts_model="tts_models/multilingual/multi-dataset/xtts_v2",
                 output_volume_percent=65,
                 speech_rate_percent=115,
@@ -789,6 +790,37 @@ class MainTest(unittest.TestCase):
         )
 
         self.assertEqual(configuration["volume"], 0.65)
+        self.assertEqual(configuration["synthesis_options"]["speed"], 1.15)
+
+    def test_xtts_configuration_requires_an_explicit_model(self):
+        with self.assertRaisesRegex(ValueError, "requires a configured model"):
+            get_tts_configuration(AppSettings(speech_backend="coqui-xtts"))
+
+        factory = Mock()
+        errors = []
+        controller = AppController(
+            AppSettings(speech_backend="coqui-xtts"),
+            tts_factory=factory,
+            error_handler=errors.append,
+            model_asset_manager_factory=Mock(return_value=Mock()),
+        )
+        self.assertFalse(controller.start())
+        factory.assert_not_called()
+        self.assertIn("requires a configured model", str(errors[0]))
+        controller.shutdown()
+
+    def test_xtts_profile_applies_to_custom_model_path(self):
+        configuration = get_tts_configuration(
+            AppSettings(
+                speech_backend="coqui-xtts",
+                tts_model="/models/current",
+                tts_profile="expressive",
+                speech_rate_percent=115,
+            )
+        )
+
+        self.assertEqual(configuration["model_name"], "/models/current")
+        self.assertEqual(configuration["synthesis_options"]["temperature"], 0.95)
         self.assertEqual(configuration["synthesis_options"]["speed"], 1.15)
 
     def test_invalid_tts_profile_uses_stable_profile(self):
@@ -860,7 +892,10 @@ class MainTest(unittest.TestCase):
             redirect_stderr(errors),
             patch(
                 "vntts.main.load_app_settings",
-                return_value=AppSettings(speech_backend="coqui-xtts"),
+                return_value=AppSettings(
+                    speech_backend="coqui-xtts",
+                    tts_model="tts_models/multilingual/multi-dataset/xtts_v2",
+                ),
             ),
             patch("vntts.main.listen_for_hotkeys") as listen_for_hotkeys,
         ):
@@ -1028,6 +1063,7 @@ class MainTest(unittest.TestCase):
             screenshot_directory=str(screenshot_directory),
             warm_up_voices=True,
             speech_backend="coqui-xtts",
+            tts_model="tts_models/multilingual/multi-dataset/xtts_v2",
         )
 
         with (
@@ -1103,6 +1139,7 @@ class MainTest(unittest.TestCase):
             controller = AppController(
                 AppSettings(
                     speech_backend="coqui-xtts",
+                    tts_model="tts_models/multilingual/multi-dataset/xtts_v2",
                     warm_up_voices=False,
                 ),
                 tts_factory=Mock(return_value=tts),
@@ -1473,6 +1510,7 @@ class MainTest(unittest.TestCase):
                 AppSettings(
                     warm_up_voices=True,
                     speech_backend="coqui-xtts",
+                    tts_model="tts_models/multilingual/multi-dataset/xtts_v2",
                 ),
                 tts_factory=Mock(return_value=tts),
                 status_handler=statuses.append,

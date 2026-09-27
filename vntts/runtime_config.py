@@ -198,6 +198,10 @@ def get_live_configuration(
 
 def get_tts_configuration(settings: AppSettings | None = None) -> dict[str, object]:
     if settings is not None:
+        if settings.speech_backend == "coqui-xtts" and not (
+            settings.tts_model and settings.tts_model.strip()
+        ):
+            raise ValueError("Coqui XTTS requires a configured model")
         configuration: dict[str, object] = {
             name: value
             for name, value in {
@@ -210,7 +214,7 @@ def get_tts_configuration(settings: AppSettings | None = None) -> dict[str, obje
             if value
         }
         configuration["volume"] = settings.output_volume_percent / 100
-        if settings.tts_model and "xtts" in settings.tts_model.casefold():
+        if settings.speech_backend == "coqui-xtts":
             profile_name = settings.tts_profile
             try:
                 configuration["synthesis_options"] = get_tts_profile(profile_name)
