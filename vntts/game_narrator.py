@@ -9,7 +9,7 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts.pregeneration_voices import VoiceCandidate, VoiceGroup, VoicePlan
 from vntts.reference_quality import analyze_reference_bytes
 from vntts.settings import AppSettings
-from vntts.voice_library import VoiceLibrary
+from vntts.voice_library import VoiceBindingRollback, VoiceLibrary
 from vntts.voices import (
     CharacterVoiceRegistry,
     application_voice_library,
@@ -148,6 +148,7 @@ def bind_voice_library_selection(
     root: str | Path | None = None,
     additional_manifest: str | Path | None = None,
     target_character: str = "Narrator",
+    rollback: VoiceBindingRollback | None = None,
 ) -> AppSettings:
     """Save a role once in the authoritative library, not another manifest."""
     del additional_manifest
@@ -182,6 +183,7 @@ def bind_voice_library_selection(
         method="manual",
         evidence={"selected_character": character},
         algorithm="voice-picker-v1",
+        rollback=rollback,
     )
     return settings.updated(
         voice_manifest=settings.voice_manifest or str(manifest),

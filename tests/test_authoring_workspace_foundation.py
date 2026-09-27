@@ -32,6 +32,12 @@ class AuthoringWorkspaceFoundationTest(unittest.TestCase):
             )
             with self.assertRaisesRegex(FoundationError, "stay inside"):
                 safe_relative_path("../escape", "Artifact", error_type=FoundationError)
+            for drive_path in ("C:/escape", "C:escape"):
+                with self.subTest(path=drive_path):
+                    with self.assertRaisesRegex(FoundationError, "stay inside"):
+                        safe_relative_path(
+                            drive_path, "Artifact", error_type=FoundationError
+                        )
             with self.assertRaisesRegex(FoundationError, "leaves its owning"):
                 contained_path(
                     root,

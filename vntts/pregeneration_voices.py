@@ -57,7 +57,7 @@ from vntts.services.tts_engine import default_tts_profile, get_tts_profile
 from vntts.settings import AppSettings
 from vntts.support import record_background_operation
 from vntts.versioned_json import read_versioned_json, write_versioned_json
-from vntts.voice_library import VoiceLibrary, VoiceSelection
+from vntts.voice_library import VoiceBindingRollback, VoiceLibrary, VoiceSelection
 from vntts.voices import (
     CharacterVoice,
     CharacterVoiceRegistry,
@@ -340,13 +340,13 @@ class VoiceDecisionStore:
                     "source_id": source_id,
                     "decided_at": decided_at,
                 }
-            previous_bindings = (
-                self.voice_library.bindings()
+            rollback = (
+                self.voice_library.binding_rollback()
                 if self.voice_library is not None
                 else None
             )
             if self.voice_library is not None:
-                self.voice_library.select_many(library_selections)
+                self.voice_library.select_many(library_selections, rollback=rollback)
             try:
                 write_versioned_json(
                     self.path,
@@ -354,14 +354,19 @@ class VoiceDecisionStore:
                     {"decisions": decisions},
                 )
             except Exception as error:
-                if self.voice_library is not None and previous_bindings is not None:
+                if self.voice_library is not None and rollback is not None:
                     try:
-                        self.voice_library.replace_bindings(previous_bindings)
+                        restored = self.voice_library.rollback_bindings(rollback)
                     except Exception as rollback_error:
                         error.add_note(
                             "Unable to restore the previous voice bindings: "
                             f"{rollback_error}"
                         )
+                    else:
+                        if not restored:
+                            error.add_note(
+                                "Voice bindings changed concurrently; rollback was skipped"
+                            )
                 raise
 
     def _library_selections(
@@ -503,8 +508,10 @@ class VoicePlanStore:
         cancellation: Cancellation | None = None,
         ignore_decisions: bool = False,
     ) -> VoicePlan:
-        previous_bindings = (
-            self.voice_library.bindings() if self.voice_library is not None else None
+        rollback = (
+            self.voice_library.binding_rollback()
+            if self.voice_library is not None
+            else None
         )
         try:
             return self._create(
@@ -513,16 +520,22 @@ class VoicePlanStore:
                 manifest_path=manifest_path,
                 cancellation=cancellation,
                 ignore_decisions=ignore_decisions,
+                rollback=rollback,
             )
         except Exception as error:
-            if self.voice_library is not None and previous_bindings is not None:
+            if self.voice_library is not None and rollback is not None:
                 try:
-                    self.voice_library.replace_bindings(previous_bindings)
+                    restored = self.voice_library.rollback_bindings(rollback)
                 except Exception as rollback_error:
                     error.add_note(
                         "Unable to restore the previous voice bindings: "
                         f"{rollback_error}"
                     )
+                else:
+                    if not restored:
+                        error.add_note(
+                            "Voice bindings changed concurrently; rollback was skipped"
+                        )
             raise
 
     def _create(
@@ -533,6 +546,7 @@ class VoicePlanStore:
         manifest_path: str | Path | None = None,
         cancellation: Cancellation | None = None,
         ignore_decisions: bool = False,
+        rollback: VoiceBindingRollback | None = None,
     ) -> VoicePlan:
         _raise_if_cancelled(cancellation)
         phase_started, cpu_started = perf_counter(), process_time()
@@ -569,6 +583,7 @@ class VoicePlanStore:
             source_completion,
             authoritative_source_lines,
             ignore_decisions,
+            rollback,
         )
         queue_bindings = _manifest_queue_bindings(manifest_document, registry)
         candidate_variants = _manifest_candidate_variants(
@@ -621,6 +636,7 @@ class VoicePlanStore:
                     ignore_decisions,
                     saved_groups,
                     person_aliases,
+                    rollback,
                 )
             )
             if self.voice_library is not None:
@@ -740,6 +756,7 @@ class VoicePlanStore:
         source_completion: str | None,
         authoritative_source_lines: frozenset[str],
         ignore_decisions: bool,
+        rollback: VoiceBindingRollback | None,
     ) -> CharacterVoiceRegistry:
         if self.voice_library is None:
             return registry
@@ -764,14 +781,18 @@ class VoicePlanStore:
                     and normalize_character_name(binding.role) in reset_roles
                 ):
                     self.voice_library.clear(
-                        binding.role, variant_key=binding.variant_key
+                        binding.role,
+                        variant_key=binding.variant_key,
+                        rollback=rollback,
                     )
         for binding in self.voice_library.bindings():
             if (
                 binding.route == "narrator"
                 and binding.provenance.get("method") == "automatic"
             ):
-                self.voice_library.clear(binding.role, variant_key=binding.variant_key)
+                self.voice_library.clear(
+                    binding.role, variant_key=binding.variant_key, rollback=rollback
+                )
         return registry_with_voice_library(registry, self.voice_library)
 
     def path_for(self, job: PregenerationJob) -> Path:
@@ -822,6 +843,7 @@ class VoicePlanStore:
         ignore_decisions: bool,
         saved_groups: Sequence[JsonObject],
         person_aliases: Mapping[str, str],
+        rollback: VoiceBindingRollback | None,
     ) -> VoiceGroup:
         records = tuple(value[0] for value in values)
         character = values[0][1]
@@ -922,6 +944,7 @@ class VoicePlanStore:
                     method="automatic",
                     evidence={"recommendation": available.recommendation},
                     algorithm="voice-plan-v1",
+                    rollback=rollback,
                 )
         eligible_candidates = _eligible_candidates(
             candidate_inventory,
@@ -1081,6 +1104,7 @@ class VoicePlanStore:
                     evidence={"resolution": resolution},
                     algorithm="voice-plan-v1",
                     only_if_unbound=True,
+                    rollback=rollback,
                 )
             elif route == "narrator" and is_narrator(character):
                 if narrator_candidate is not None:
@@ -1094,6 +1118,7 @@ class VoicePlanStore:
                         evidence={"resolution": resolution},
                         algorithm="voice-plan-v1",
                         only_if_unbound=True,
+                        rollback=rollback,
                     )
         selected_identity = _candidate_identity(
             (source_id, candidate) if candidate is not None else None

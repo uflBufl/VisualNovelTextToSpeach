@@ -72,7 +72,7 @@ from vntts.speech_presentation import (
 from vntts.tts_benchmark import create_backend
 from vntts.ui_text import copy_text_button, make_text_copyable
 from vntts.voice_default_impact import StoryVoiceImpact, inspect_voice_default_impact
-from vntts.voice_library import VoiceBinding, VoiceLibrary
+from vntts.voice_library import VoiceBinding, VoiceBindingRollback, VoiceLibrary
 from vntts.voices import (
     CharacterVoiceRegistry,
     application_voice_library,
@@ -168,7 +168,7 @@ class GameNarratorDialog(QDialog):
         )
         self.binder = binder
         self.voice_library = voice_library or application_voice_library()
-        self._initial_voice_bindings = self.voice_library.bindings()
+        self._voice_binding_rollback: VoiceBindingRollback | None = None
         self.player = player or QtPcmPlayer(self)
         self.runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.runner.finished.connect(self._finished)
@@ -584,7 +584,11 @@ class GameNarratorDialog(QDialog):
 
     def restore_initial_voice_bindings(self) -> None:
         """Restore bindings when the enclosing settings transaction fails."""
-        self.voice_library.replace_bindings(self._initial_voice_bindings)
+        rollback = self._voice_binding_rollback
+        if rollback is not None and not self.voice_library.rollback_bindings(rollback):
+            raise ValueError(
+                "Voice bindings changed concurrently; rollback was skipped"
+            )
 
     def set_voice_context(
         self,
@@ -1753,13 +1757,18 @@ class GameNarratorDialog(QDialog):
         root: Path | str | None = None,
     ) -> AppSettings:
         role = self._saving_role
-        context: dict[str, str | Path] = (
+        context: dict[str, object] = (
             {"additional_manifest": self._voice_context.voice_manifest}
             if self._voice_context is not None and self._voice_context.voice_manifest
             else {}
         )
         if root is not None:
             context["root"] = root
+        if (
+            self.binder is bind_voice_library_selection
+            or getattr(self.binder, "func", None) is bind_voice_library_selection
+        ):
+            context["rollback"] = self._voice_binding_rollback
         if normalize_character_name(role) == "narrator":
             return self.binder(settings, manifest, source_id, character, **context)
         return self.binder(
@@ -1801,7 +1810,9 @@ class GameNarratorDialog(QDialog):
         policy = self.source.currentData()
         if policy == "automatic":
             self.voice_library.clear(
-                role, variant_key=self.voice_library.linked_variant_key(role)
+                role,
+                variant_key=self.voice_library.linked_variant_key(role),
+                rollback=self._voice_binding_rollback,
             )
         else:
             remember_voice_binding(
@@ -1813,6 +1824,7 @@ class GameNarratorDialog(QDialog):
                 method="manual",
                 evidence={"selected_in": "voice-picker"},
                 algorithm="voice-picker-v1",
+                rollback=self._voice_binding_rollback,
             )
         return settings.updated(
             tts_speaker_wav=None if narrator else settings.tts_speaker_wav,
@@ -1822,6 +1834,7 @@ class GameNarratorDialog(QDialog):
         if not self.save_button.isEnabled():
             return
         self._saving_role = self.role.currentText().strip()
+        self._voice_binding_rollback = self.voice_library.binding_rollback()
         if self.source.currentData() in {"preset", "automatic", "narrator"}:
             self.result_settings = self._policy_settings(self._settings())
             self._cleanup()

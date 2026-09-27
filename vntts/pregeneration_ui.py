@@ -109,10 +109,9 @@ from vntts.ui_text import (
 )
 from vntts.voice_candidate_cache import prune_obsolete_voice_candidate_caches
 from vntts.voice_default_impact import StoryVoiceImpact
-from vntts.voice_library import VoiceLibrary, VoiceLibraryError
+from vntts.voice_library import VoiceBindingRollback, VoiceLibrary, VoiceLibraryError
 from vntts.voices import (
     CharacterVoiceRegistry,
-    VoiceBinding,
     VoiceChoice,
     application_voice_library,
     find_default_voice_manifest,
@@ -302,7 +301,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._pending_voice_rematch = False
         self._stale_job_retry_attempted = False
         self._recovering_stale_job = False
-        self._provisional_binding_snapshot: tuple[VoiceBinding, ...] | None = None
+        self._provisional_binding_rollback: VoiceBindingRollback | None = None
         self._changes_rows: tuple[tuple[str, str], ...] = ()
         self._resume_error_details = ""
         self._narrator_player = preview_player
@@ -1648,7 +1647,7 @@ class OfflineAudioPreparationDialog(QDialog):
         narrator_changed = source_id is not None and source_id != current
         if controls_changed or narrator_changed:
             if narrator_changed:
-                previous_bindings = self.voice_library.bindings()
+                rollback = self.voice_library.binding_rollback()
                 registry = (
                     CharacterVoiceRegistry.from_file(self._voice_plan.voice_manifest)
                     if self._voice_plan.voice_manifest
@@ -1663,13 +1662,14 @@ class OfflineAudioPreparationDialog(QDialog):
                         method="manual",
                         evidence={"selected_in": "story-preparation"},
                         algorithm="story-preparation-v1",
+                        rollback=rollback,
                     )
                 except Exception as error:
                     self.voice_confirmation_status.setText(
                         f"Unable to save the narrator choice: {error}"
                     )
                     return
-                self._provisional_binding_snapshot = previous_bindings
+                self._provisional_binding_rollback = rollback
                 self._refresh_narrator_status()
             self._awaiting_voice_confirmation = False
             self.pocket_voice_cloning.setEnabled(False)
@@ -1787,7 +1787,7 @@ class OfflineAudioPreparationDialog(QDialog):
         ):
             reason = error or PregenerationVoiceError("Invalid story refresh result")
             self.planning_voices = False
-            self._provisional_binding_snapshot = None
+            self._provisional_binding_rollback = None
             self._show_voice_plan_error(self._voice_plan_completion_error(None, reason))
             return
         discovery, content, job, reason = result
@@ -1810,7 +1810,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 self.source.setCurrentIndex(index)
         if not isinstance(job, PregenerationJob):
             self.planning_voices = False
-            self._provisional_binding_snapshot = None
+            self._provisional_binding_rollback = None
             self._show_voice_plan_error(
                 self._voice_plan_completion_error(
                     None,
@@ -3566,7 +3566,7 @@ class OfflineAudioPreparationDialog(QDialog):
                     f"not be restored: {restore_error}"
                 )
         else:
-            self._provisional_binding_snapshot = None
+            self._provisional_binding_rollback = None
             if self._pending_voice_rematch:
                 with QSignalBlocker(self.change_voices):
                     self.change_voices.setChecked(False)
@@ -3599,12 +3599,15 @@ class OfflineAudioPreparationDialog(QDialog):
         return True
 
     def _restore_provisional_bindings(self) -> Exception | None:
-        snapshot = self._provisional_binding_snapshot
-        self._provisional_binding_snapshot = None
-        if snapshot is None:
+        rollback = self._provisional_binding_rollback
+        self._provisional_binding_rollback = None
+        if rollback is None:
             return None
         try:
-            self.voice_library.replace_bindings(snapshot)
+            if not self.voice_library.rollback_bindings(rollback):
+                return VoiceLibraryError(
+                    "Voice bindings changed concurrently; rollback was skipped"
+                )
             self._refresh_narrator_status()
         except Exception as error:
             return error

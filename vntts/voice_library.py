@@ -11,7 +11,8 @@ import stat
 import wave
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from copy import deepcopy
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock, RLock
@@ -118,6 +119,14 @@ class VoiceSelection:
     only_if_unbound: bool = False
 
 
+@dataclass
+class VoiceBindingRollback:
+    """One guarded rollback of bindings changed by a failed outer operation."""
+
+    _before: dict[str, _BindingDocument | None] = field(default_factory=dict)
+    _expected: dict[str, _BindingDocument | None] = field(default_factory=dict)
+
+
 class VoiceLibrary:
     """Durable voice choices at a caller-selected fixed directory or JSON path."""
 
@@ -142,6 +151,7 @@ class VoiceLibrary:
         algorithm: str | None = None,
         timestamp: str | None = None,
         bind_if_missing: bool = False,
+        rollback: VoiceBindingRollback | None = None,
     ) -> VoiceAlternative:
         """Store a WAV alternative; optionally bind it only when no choice exists."""
         payload = _read_wav(reference)
@@ -151,6 +161,9 @@ class VoiceLibrary:
             identity, display_role, display_variant = self._role_identity(
                 role, variant_key, document
             )
+            binding_added = bind_if_missing and identity not in document["bindings"]
+            if binding_added:
+                self._rollback_before(rollback, document, (identity,))
             self._store_blob(checksum, payload)
             group = document["alternatives"].setdefault(
                 identity,
@@ -166,7 +179,7 @@ class VoiceLibrary:
                     }
                 )
                 group["items"].sort(key=lambda item: item["sha256"])
-            if bind_if_missing and identity not in document["bindings"]:
+            if binding_added:
                 document["bindings"][identity] = _binding_document(
                     display_role,
                     display_variant,
@@ -176,6 +189,8 @@ class VoiceLibrary:
                     _provenance(method, evidence, algorithm, timestamp),
                 )
             self._write(document)
+            if binding_added:
+                self._rollback_after(rollback, document, (identity,))
         return VoiceAlternative(
             display_role,
             display_variant,
@@ -202,6 +217,7 @@ class VoiceLibrary:
         algorithm: str | None = None,
         timestamp: str | None = None,
         only_if_unbound: bool = False,
+        rollback: VoiceBindingRollback | None = None,
     ) -> VoiceBinding:
         """Atomically replace one choice, or leave it intact when requested."""
         selected_checksums = _selected_checksums(source_sha256, source_sha256s)
@@ -219,11 +235,15 @@ class VoiceLibrary:
                     timestamp=timestamp,
                     only_if_unbound=only_if_unbound,
                 ),
-            )
+            ),
+            rollback=rollback,
         )[0]
 
     def select_many(
-        self, selections: Iterable[VoiceSelection]
+        self,
+        selections: Iterable[VoiceSelection],
+        *,
+        rollback: VoiceBindingRollback | None = None,
     ) -> tuple[VoiceBinding, ...]:
         """Validate and persist a group of choices in one atomic write."""
         selections = tuple(selections)
@@ -233,6 +253,7 @@ class VoiceLibrary:
             document = self._load()
             results: list[VoiceBinding] = []
             changed = False
+            changed_identities: list[str] = []
             for selection in selections:
                 identity, display_role, display_variant = self._role_identity(
                     selection.role, selection.variant_key, document
@@ -241,6 +262,7 @@ class VoiceLibrary:
                 if selection.only_if_unbound and current is not None:
                     results.append(_to_binding(current))
                     continue
+                self._rollback_before(rollback, document, (identity,))
                 selected_checksums = tuple(selection.source_sha256s)
                 _validate_route_source(
                     selection.route, selected_checksums, selection.source_id
@@ -268,46 +290,39 @@ class VoiceLibrary:
                     ),
                 )
                 document["bindings"][identity] = binding
+                changed_identities.append(identity)
                 results.append(_to_binding(binding))
                 changed = True
             if changed:
                 self._write(document)
+                self._rollback_after(rollback, document, changed_identities)
         return tuple(results)
 
-    def replace_bindings(self, bindings: Iterable[VoiceBinding]) -> None:
-        """Atomically restore an exact binding snapshot, retaining alternatives."""
-        bindings = tuple(bindings)
+    def binding_rollback(self) -> VoiceBindingRollback:
+        """Create a token for rolling back later writes without erasing a peer."""
+        return VoiceBindingRollback()
+
+    def rollback_bindings(self, rollback: VoiceBindingRollback) -> bool:
+        """Restore only roles still holding this operation's last write."""
+        if not rollback._before:
+            return True
         with self._write_transaction():
             document = self._load()
-            replacement: dict[str, _BindingDocument] = {}
-            for binding in bindings:
-                identity, display_role, display_variant = self._role_identity(
-                    binding.role, binding.variant_key, document
-                )
-                raw = _binding_document(
-                    display_role,
-                    display_variant,
-                    binding.route,
-                    tuple(binding.source_sha256s),
-                    binding.source_id,
-                    _validated_provenance(binding.provenance),
-                )
-                group = document["alternatives"].get(identity)
-                available = {
-                    item["sha256"]
-                    for item in (group["items"] if group is not None else [])
-                }
-                if any(
-                    checksum not in available for checksum in binding.source_sha256s
-                ):
-                    raise VoiceLibraryError(
-                        "Voice binding source is not an alternative for its role"
-                    )
-                for checksum in binding.source_sha256s:
-                    self._validate_blob(checksum)
-                replacement[identity] = raw
-            document["bindings"] = replacement
-            self._write(document)
+            restored = True
+            changed = False
+            for identity, expected in rollback._expected.items():
+                if document["bindings"].get(identity) != expected:
+                    restored = False
+                    continue
+                previous = rollback._before[identity]
+                if previous is None:
+                    document["bindings"].pop(identity, None)
+                else:
+                    document["bindings"][identity] = deepcopy(previous)
+                changed = True
+            if changed:
+                self._write(document)
+        return restored
 
     def binding(
         self, role: str, *, variant_key: str | None = None
@@ -326,15 +341,52 @@ class VoiceLibrary:
             for _identity, item in sorted(self._load()["bindings"].items())
         )
 
-    def clear(self, role: str, *, variant_key: str | None = None) -> bool:
+    def clear(
+        self,
+        role: str,
+        *,
+        variant_key: str | None = None,
+        rollback: VoiceBindingRollback | None = None,
+    ) -> bool:
         """Remove one explicit decision while keeping its alternatives."""
         with self._write_transaction():
             document = self._load()
             identity, _role, _variant = self._role_identity(role, variant_key, document)
-            if document["bindings"].pop(identity, None) is None:
+            if identity not in document["bindings"]:
                 return False
+            self._rollback_before(rollback, document, (identity,))
+            document["bindings"].pop(identity)
             self._write(document)
+            self._rollback_after(rollback, document, (identity,))
         return True
+
+    @staticmethod
+    def _rollback_before(
+        rollback: VoiceBindingRollback | None,
+        document: _VoiceLibraryDocument,
+        identities: Iterable[str],
+    ) -> None:
+        if rollback is None:
+            return
+        for identity in identities:
+            current = document["bindings"].get(identity)
+            if identity not in rollback._before or (
+                identity in rollback._expected
+                and rollback._expected[identity] != current
+            ):
+                rollback._before[identity] = deepcopy(current)
+
+    @staticmethod
+    def _rollback_after(
+        rollback: VoiceBindingRollback | None,
+        document: _VoiceLibraryDocument,
+        identities: Iterable[str],
+    ) -> None:
+        if rollback is not None:
+            for identity in identities:
+                rollback._expected[identity] = deepcopy(
+                    document["bindings"].get(identity)
+                )
 
     @contextmanager
     def _write_transaction(self) -> Iterator[None]:
@@ -979,16 +1031,11 @@ def _validate_provenance(value: object) -> TypeGuard[_ProvenanceDocument]:
     return True
 
 
-def _validated_provenance(value: object) -> _ProvenanceDocument:
-    if _validate_provenance(value):
-        return value
-    raise VoiceLibraryError("Voice provenance is invalid")
-
-
 __all__ = [
     "VOICE_LIBRARY_VERSION",
     "VoiceAlternative",
     "VoiceBinding",
+    "VoiceBindingRollback",
     "VoiceLibrary",
     "VoiceLibraryError",
     "VoiceSelection",

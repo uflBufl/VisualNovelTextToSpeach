@@ -973,8 +973,15 @@ class VoicePlanStoreTest(unittest.TestCase):
         class CancelAtFinalGate:
             calls = 0
 
+            def __init__(self, library):
+                self.library = library
+
             def is_set(self):
                 self.calls += 1
+                if self.calls == 3:
+                    VoiceLibrary(self.library.root).select(
+                        "Concurrent", route="live-fallback"
+                    )
                 return self.calls >= 3
 
         with TemporaryDirectory() as temporary_directory:
@@ -989,11 +996,12 @@ class VoicePlanStoreTest(unittest.TestCase):
                     job,
                     AppSettings(pocket_gated_model_accepted=True),
                     manifest_path=write_manifest(root / "voices"),
-                    cancellation=CancelAtFinalGate(),
+                    cancellation=CancelAtFinalGate(library),
                     ignore_decisions=True,
                 )
 
             self.assertEqual(library.binding("Rhiannon").route, "narrator")
+            self.assertEqual(library.binding("Concurrent").route, "live-fallback")
             self.assertFalse(store.path_for(job).exists())
 
     def test_character_defaults_apply_to_future_audio_with_manual_override_priority(
@@ -1852,10 +1860,14 @@ class VoicePlanStoreTest(unittest.TestCase):
                 voice_library=library,
             )
 
+            def failed_decision_write(*_args, **_kwargs):
+                VoiceLibrary(library.root).select("Concurrent", route="live-fallback")
+                raise OSError("disk unavailable")
+
             with (
                 patch(
                     "vntts.pregeneration_voices.write_versioned_json",
-                    side_effect=OSError("disk unavailable"),
+                    side_effect=failed_decision_write,
                 ),
                 self.assertRaisesRegex(OSError, "disk unavailable"),
             ):
@@ -1863,7 +1875,15 @@ class VoicePlanStoreTest(unittest.TestCase):
                     tuple((group, "default") for group in plan.groups[:2])
                 )
 
-            self.assertEqual(library.bindings(), original)
+            self.assertEqual(
+                tuple(
+                    binding
+                    for binding in library.bindings()
+                    if binding.role != "Concurrent"
+                ),
+                original,
+            )
+            self.assertEqual(library.binding("Concurrent").route, "live-fallback")
             self.assertFalse(decisions.path.exists())
 
     def test_simultaneous_decisions_preserve_both_voice_groups(self):

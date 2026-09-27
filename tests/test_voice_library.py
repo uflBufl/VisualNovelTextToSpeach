@@ -94,6 +94,60 @@ class VoiceLibraryTest(unittest.TestCase):
                 {"Alice", "Bob"},
             )
 
+    def test_rollback_restores_only_unchanged_roles(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "library"
+            library = VoiceLibrary(root)
+            rollback = library.binding_rollback()
+
+            library.select("Alice", route="narrator", rollback=rollback)
+            VoiceLibrary(root).select("Bob", route="live-fallback")
+
+            self.assertTrue(library.rollback_bindings(rollback))
+            self.assertIsNone(library.binding("Alice"))
+            self.assertEqual(library.binding("Bob").route, "live-fallback")
+
+    def test_rollback_does_not_overwrite_a_newer_choice_for_the_same_role(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "library"
+            library = VoiceLibrary(root)
+            rollback = library.binding_rollback()
+
+            library.select("Alice", route="narrator", rollback=rollback)
+            VoiceLibrary(root).select("Alice", route="live-fallback")
+
+            self.assertFalse(library.rollback_bindings(rollback))
+            self.assertEqual(library.binding("Alice").route, "live-fallback")
+
+    def test_rollback_preserves_a_peer_choice_between_own_writes(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "library"
+            library = VoiceLibrary(root)
+            rollback = library.binding_rollback()
+
+            library.select("Alice", route="narrator", rollback=rollback)
+            VoiceLibrary(root).select("Alice", route="live-fallback")
+            library.select("Alice", route="narrator", rollback=rollback)
+
+            self.assertTrue(library.rollback_bindings(rollback))
+            self.assertEqual(library.binding("Alice").route, "live-fallback")
+
+    def test_rollback_tracks_a_duplicate_role_batch_once(self) -> None:
+        with TemporaryDirectory() as directory:
+            library = VoiceLibrary(Path(directory) / "library")
+            rollback = library.binding_rollback()
+
+            library.select_many(
+                (
+                    VoiceSelection("Alice", "narrator"),
+                    VoiceSelection("Alice", "live-fallback"),
+                ),
+                rollback=rollback,
+            )
+
+            self.assertTrue(library.rollback_bindings(rollback))
+            self.assertIsNone(library.binding("Alice"))
+
     def test_windows_reference_is_opened_in_binary_mode(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
