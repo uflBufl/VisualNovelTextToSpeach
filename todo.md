@@ -1,5 +1,12 @@
 # TODO
 
+## Active - Finish and remove stale Git branches
+
+- [ ] Compare local and remote branch tips with current `origin/main`; remove branches whose changes are integrated only after confirming no worktree has uncommitted work or an active owner.
+- [ ] Ask the owners of `codex/remove-obsolete-audition-ui` and `codex/refactor-debt-typing` to finish their unique changes, verify them, integrate into current `main`, and remove their branches. Coordinate the shared checkout before any merge or deletion.
+- [ ] Resolve the uncommitted UI catalog files in the `codex/refactor-debt-catalog` worktree with its owner before removing that already-merged branch.
+- [ ] Recheck local/remote branch inventory and `main` after integration; keep only branches with unfinished, explicitly owned work.
+
 ## Active - Review remaining source-extraction UI
 
 - [ ] In `reverse1999-extractor`, reduce empty Character Story table/portrait space so review and A/B actions are easier to reach, and scale table headers with enlarged text.
