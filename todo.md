@@ -1,11 +1,5 @@
 # TODO
 
-## Active - Merge story discovery into main
-
-- [ ] Check current origin/main and isolate only story grouping and search changes from the dirty checkout.
-- [ ] Apply and verify the isolated change against current main, then commit it in English.
-- [ ] Fast-forward local main and merge the feature commit without including unrelated working-tree changes.
-
 ## Active - Review remaining source-extraction UI
 
 - [ ] In `reverse1999-extractor`, reduce empty Character Story table/portrait space so review and A/B actions are easier to reach, and scale table headers with enlarged text.
