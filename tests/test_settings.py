@@ -129,6 +129,32 @@ class SettingsTest(unittest.TestCase):
 
         self.assertEqual(settings.speech_backend, "chatterbox-nano")
 
+    def test_invalid_environment_overrides_preserve_saved_settings(self):
+        saved = AppSettings(
+            live_interval_ms=350,
+            output_volume_percent=65,
+            speech_backend="moss-tts",
+            capture_mode="window",
+            live_sequence_mode="audio-manual",
+            read_hotkey="<ctrl>+j",
+        )
+        warnings = []
+
+        effective = saved.with_environment_overrides(
+            {
+                "VNTTS_LIVE_INTERVAL_MS": "0",
+                "VNTTS_OUTPUT_VOLUME_PERCENT": "150",
+                "VNTTS_SPEECH_BACKEND": "unknown",
+                "VNTTS_CAPTURE_MODE": "unknown",
+                "VNTTS_LIVE_SEQUENCE_MODE": "unknown",
+                "VNTTS_HOTKEY": "<bad>",
+            },
+            warn=warnings.append,
+        )
+
+        self.assertEqual(effective, saved)
+        self.assertEqual(len(warnings), 6)
+
     def test_pocket_tts_backend_can_be_selected(self):
         settings = AppSettings.from_mapping({"speech_backend": "pocket-tts"})
 

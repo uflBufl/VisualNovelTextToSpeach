@@ -5,6 +5,8 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Self, TypeAlias, TypedDict, Unpack
 
+from pynput import keyboard
+
 from vntts.application_directories import (
     application_directory_name as application_directory_name,
 )
@@ -214,9 +216,10 @@ class AppSettings:
         values: Mapping[str, object],
         *,
         warn: WarningHandler | None = None,
+        fallback: Self | None = None,
     ) -> Self:
         report: WarningHandler = (lambda _message: None) if warn is None else warn
-        defaults = cls()
+        defaults = cls() if fallback is None else fallback
         parsed: dict[str, object] = {}
         source_schema = values.get("schema_version", 0)
         if isinstance(source_schema, bool) or not isinstance(source_schema, int):
@@ -369,8 +372,14 @@ class AppSettings:
             report("Invalid 'speaker_announcement_mode' setting; using its default")
             parsed["speaker_announcement_mode"] = defaults.speaker_announcement_mode
         if parsed["live_sequence_mode"] not in live_sequence_modes:
-            report("Invalid 'live_sequence_mode' setting; disabling sequence control")
-            parsed["live_sequence_mode"] = "off"
+            report(
+                "Invalid 'live_sequence_mode' setting; using saved/default value"
+                if fallback is not None
+                else "Invalid 'live_sequence_mode' setting; disabling sequence control"
+            )
+            parsed["live_sequence_mode"] = (
+                defaults.live_sequence_mode if fallback is not None else "off"
+            )
         if (
             "speaker_announcement_mode" not in values
             and parsed["announce_speaker_changes"]
@@ -443,6 +452,15 @@ class AppSettings:
         }
         for environment_name, setting_name in string_overrides.items():
             if configured := environment.get(environment_name):
+                if setting_name.endswith("_hotkey"):
+                    try:
+                        keyboard.HotKey.parse(configured)
+                    except TypeError, ValueError:
+                        report(
+                            f"Invalid {environment_name} {configured!r}; "
+                            "using saved/default value"
+                        )
+                        continue
                 values[setting_name] = configured
 
         for environment_name, setting_name in numeric_overrides.items():
@@ -456,7 +474,7 @@ class AppSettings:
                     f"Invalid {environment_name} {configured!r}; using saved/default value"
                 )
 
-        return self.from_mapping(values, warn=report)
+        return self.from_mapping(values, warn=report, fallback=self)
 
     def save(self, path: PathInput | None = None) -> Path:
         path = get_settings_path() if path is None else Path(path).expanduser()
