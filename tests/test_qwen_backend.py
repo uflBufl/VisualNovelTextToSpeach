@@ -43,6 +43,17 @@ class QwenBackendTest(unittest.TestCase):
         self.assertEqual(construct.call_args.args, ("qwen-tts", registry))
         self.assertEqual(construct.call_args.kwargs["runtime_directory"], root)
 
+    def test_qwen_rejects_invalid_startup_callbacks_before_runtime_install(self):
+        registry = CharacterVoiceRegistry()
+        for option in ("startup_cancellation", "startup_progress"):
+            with self.subTest(option=option):
+                with patch(
+                    "vntts.runtime_installation.ensure_speech_runtime"
+                ) as prepare:
+                    with self.assertRaises(TTSConfigurationError):
+                        create_qwen_worker_backend(registry, **{option: 42})
+                prepare.assert_not_called()
+
     def test_reference_text_reaches_model_and_is_required(self):
         with TemporaryDirectory() as directory:
             reference = Path(directory) / "reference.wav"

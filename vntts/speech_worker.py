@@ -1808,10 +1808,16 @@ def create_qwen_worker_backend(
     if "runtime_directory" not in options:
         from vntts.runtime_installation import ensure_speech_runtime
 
+        cancellation = options.get("startup_cancellation")
+        if not _is_cancellation(cancellation):
+            raise TTSConfigurationError(
+                "Speech worker startup cancellation must be callable or Event-like"
+            )
+        progress = options.get("startup_progress")
+        if not _is_startup_progress(progress):
+            raise TTSConfigurationError("Speech worker startup progress is invalid")
         options["runtime_directory"] = ensure_speech_runtime(
-            "moss-tts",
-            cancellation=options.get("startup_cancellation"),
-            progress=options.get("startup_progress"),
+            "moss-tts", cancellation=cancellation, progress=progress
         )[0]
     return _isolated_backend_constructor("qwen-tts", registry, **options)
 
