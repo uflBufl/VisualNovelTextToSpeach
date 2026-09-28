@@ -513,12 +513,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/pregeneration_generation.py",
-      "scope": "OfflineGenerationWorker._execute",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/pregeneration_pack.py",
       "scope": "OfflinePackPublisher.publish",
       "count": 1
@@ -953,12 +947,6 @@
       "code": "PLR0912",
       "path": "vntts/onboarding_ui.py",
       "scope": "ConfigurationPage.validation_errors",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/pregeneration_generation.py",
-      "scope": "OfflineGenerationWorker._execute",
       "count": 1
     },
     {

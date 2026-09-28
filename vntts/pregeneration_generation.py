@@ -391,6 +391,12 @@ class OfflineGenerationWorker:
                     "Offline speech generation was cancelled"
                 )
             return _load_result(output, generation_input)
+        self._run_subprocess(arguments, cancel_event)
+        return _load_result(output, generation_input)
+
+    def _run_subprocess(
+        self, arguments: list[str], cancel_event: _Cancellation | None
+    ) -> None:
         with self._progress_lock:
             self._memory_progress_enabled = False
         try:
@@ -427,7 +433,6 @@ class OfflineGenerationWorker:
                 "Offline speech could not be generated"
                 + (f": {detail}" if detail else ".")
             )
-        return _load_result(output, generation_input)
 
     def _set_startup_status(self, message: object) -> None:
         if isinstance(message, str) and message.strip():
