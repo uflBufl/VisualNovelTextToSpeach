@@ -42,7 +42,7 @@ def capture_authority_file(
     """Read one non-symlink regular file once and retain its exact identity."""
     candidate = Path(path).expanduser()
     if not candidate.is_absolute():
-        candidate = candidate.resolve()
+        candidate = candidate.parent.resolve() / candidate.name
     if candidate.is_symlink() or not candidate.is_file():
         raise AuthoringAuthorityError(
             f"{label.capitalize()} is unavailable: {candidate}"

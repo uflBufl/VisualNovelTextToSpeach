@@ -1,16 +1,33 @@
 import json
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from tests.symlink_support import symlink_or_skip
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
+    capture_authority_file,
     write_json_document_no_replace,
 )
 
 
 class AuthoringAuthorityTest(unittest.TestCase):
+    def test_capture_rejects_relative_symlink(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "target.json"
+            target.write_text("{}", encoding="utf-8")
+            symlink_or_skip(root / "alias.json", target)
+            previous_directory = Path.cwd()
+            try:
+                os.chdir(root)
+                with self.assertRaisesRegex(AuthoringAuthorityError, "unavailable"):
+                    capture_authority_file("alias.json", "test authority")
+            finally:
+                os.chdir(previous_directory)
+
     def test_temp_cleanup_failure_preserves_publication_outcome(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

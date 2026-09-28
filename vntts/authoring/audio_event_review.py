@@ -85,9 +85,9 @@ def publish_source_audio_event_review(
     source_audio_id: str | None = None,
 ) -> AudioEventReview:
     """Snapshot one exact source clip without changing generation authority."""
-    queue_path = Path(queue_path).expanduser().resolve()
-    source_story_index = Path(source_story_index).expanduser().resolve()
-    source_audio = Path(source_audio).expanduser().resolve()
+    queue_path = Path(queue_path).expanduser()
+    source_story_index = Path(source_story_index).expanduser()
+    source_audio = Path(source_audio).expanduser()
     output = no_replace_destination(output)
     if output.exists() or output.is_symlink():
         raise AudioEventReviewError(f"Audio-event review output exists: {output}")

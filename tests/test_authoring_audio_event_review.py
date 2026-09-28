@@ -92,6 +92,39 @@ def publish(root, *, text="Tsk!", sample_count=1_200):
 
 
 class AudioEventReviewTest(unittest.TestCase):
+    def test_publication_rejects_symlinked_authority_inputs(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue = root / "queue.jsonl"
+            queue_id = write_queue(queue)
+            story = write_source_story(root / "story-index.jsonl")
+            audio = root / "source.wav"
+            samples = np.zeros(1_200, dtype=np.float32)
+            samples[300:340] = 0.4
+            write_pcm16_wav(audio, samples, 24_000)
+
+            inputs = {
+                "queue_path": queue,
+                "source_story_index": story,
+                "source_audio": audio,
+            }
+            for field, source in inputs.items():
+                with self.subTest(input=field):
+                    alias = root / f"{field}-alias"
+                    symlink_or_skip(alias, source)
+                    with self.assertRaisesRegex(AudioEventReviewError, "unavailable"):
+                        publish_source_audio_event_review(
+                            output=root / f"review-{field}",
+                            queue_id=queue_id,
+                            source_line_id="reverse1999:200308:6",
+                            source_speaker="Kanjira",
+                            source_event="play_activityvoc_hero3071_660",
+                            source_bank="activityvoc_hero3071molu1_3_part02.bnk",
+                            source_media_id=410389900,
+                            source_audio_id="610008734",
+                            **(inputs | {field: alias}),
+                        )
+
     def test_publication_rejects_dangling_symlink_output(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
