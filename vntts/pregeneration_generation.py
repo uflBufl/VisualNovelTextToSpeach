@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -91,11 +92,8 @@ class OfflineGenerationWorker:
         queue_ids: object = None,
     ) -> OfflineGenerationResult:
         if queue_ids is None:
-            try:
+            with suppress(OfflineGenerationError):
                 current = self.inspect(generation_input)
-            except OfflineGenerationError:
-                pass
-            else:
                 if current.total == generation_input.ready_items:
                     return current
         if generation_input.identity not in self._disk_checked_inputs:
