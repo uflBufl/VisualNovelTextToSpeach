@@ -420,3 +420,7 @@ Planned implementation order after approval:
       exercise deferred activation after settings change. Verify audio continuity,
       that completed lines are not regenerated, keyboard and screen-reader status,
       and the minimum-width layout with increased text scaling.
+
+## Investigate intermittent macOS Qt test crash
+
+- [ ] A macOS changed-test run intermittently terminated with `shiboken6` `mainThreadDeletionHandler` SIGSEGV during pure-Python `test_player_session` after UI tests. The exact final 10-test sequence passed 10 times, the full onboarding/person/player sequence passed five times, and a later 2734-test selector passed. Reproduce and bisect an earlier Qt owner in the remainder shard with faulthandler before changing cleanup; retain the crash log in `.codex/investigations/` if it becomes repeatable. Gate: a narrowed failing sequence and a deterministic cleanup check.
