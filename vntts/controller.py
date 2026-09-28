@@ -103,6 +103,7 @@ from vntts.speech_worker import (
     create_chatterbox_worker_backend,
     create_moss_worker_backend,
     create_pocket_worker_backend,
+    create_qwen_worker_backend,
 )
 from vntts.voice_library import VoiceLibrary
 from vntts.voices import (
@@ -439,6 +440,7 @@ class AppController:
             ..., object
         ] = create_chatterbox_worker_backend,
         moss_backend_factory: Callable[..., object] = create_moss_worker_backend,
+        qwen_backend_factory: Callable[..., object] = create_qwen_worker_backend,
         pocket_backend_factory: Callable[..., object] = create_pocket_worker_backend,
         speech_backpressure_factory: Callable[
             ..., _SpeechBackpressure
@@ -467,6 +469,7 @@ class AppController:
         self.model_assets = model_asset_manager_factory()
         self.chatterbox_backend_factory = chatterbox_backend_factory
         self.moss_backend_factory = moss_backend_factory
+        self.qwen_backend_factory = qwen_backend_factory
         self.pocket_backend_factory = pocket_backend_factory
         self.speech_backpressure_factory = speech_backpressure_factory
         self.dialog_read_scheduler_factory = create_dialog_read_scheduler

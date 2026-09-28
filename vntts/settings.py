@@ -361,6 +361,7 @@ class AppSettings:
             "coqui-xtts",
             "chatterbox-nano",
             "moss-tts",
+            "qwen-tts",
             "pocket-tts",
         }:
             report("Invalid 'speech_backend' setting; using its default")
@@ -371,6 +372,7 @@ class AppSettings:
             "coqui-xtts",
             "chatterbox-nano",
             "moss-tts",
+            "qwen-tts",
             "pocket-tts",
         }:
             parsed["offline_speech_backend"] = offline_backend

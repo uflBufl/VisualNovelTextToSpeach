@@ -1168,14 +1168,15 @@ class SettingsDialog(QDialog):
             )
         narrator_binding = self.voice_library.binding("Narrator")
         if (
-            self.speech_backend.currentData() == "moss-tts"
+            self.speech_backend.currentData() in {"moss-tts", "qwen-tts"}
             and not self.narrator_reference.text().strip()
             and narrator_binding is None
         ):
             add(
                 2,
                 self.choose_narrator_button,
-                "Narrator voice: choose a game voice for MOSS-TTS. "
+                "Narrator voice: choose a game voice for "
+                f"{'MOSS-TTS' if self.speech_backend.currentData() == 'moss-tts' else 'Qwen3-TTS'}. "
                 "You can listen before choosing.",
             )
         game_pack = self.game_pack.text().strip()

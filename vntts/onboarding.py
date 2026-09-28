@@ -100,12 +100,14 @@ class OnboardingDiagnostics:
                 allow_download=allow_moss_download,
             )
 
-        if settings.speech_backend in {"pocket-tts", "moss-tts"} and not (
+        if settings.speech_backend in {"pocket-tts", "moss-tts", "qwen-tts"} and not (
             settings.speech_backend == "moss-tts"
             and moss_cpp_requested(settings.tts_model)
         ):
             ensure_speech_runtime(
-                settings.speech_backend,
+                "moss-tts"
+                if settings.speech_backend == "qwen-tts"
+                else settings.speech_backend,
                 cancellation=cancellation,
                 progress=progress,
             )
@@ -220,12 +222,15 @@ class OnboardingDiagnostics:
             "pocket-tts": "Pocket TTS runtime",
             "chatterbox-nano": "Chatterbox Nano runtime",
             "moss-tts": "MOSS-TTS runtime",
+            "qwen-tts": "Qwen3-TTS runtime",
         }.get(settings.speech_backend)
         if isolated_runtime is not None:
             name = isolated_runtime
             try:
                 runtime, _interpreter, _site = resolve_speech_runtime_paths(
-                    settings.speech_backend
+                    "moss-tts"
+                    if settings.speech_backend == "qwen-tts"
+                    else settings.speech_backend
                 )
             except Exception as error:
                 return DiagnosticResult(name, "error", str(error), "settings")

@@ -26,6 +26,7 @@ class VoiceDocument(TypedDict):
     aliases: list[str]
     references: list[str]
     reference_root: str | None
+    reference_transcript: str | None
 
 
 class RegistryDocument(TypedDict):

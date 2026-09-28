@@ -16,8 +16,17 @@ class ReleaseBackendsTest(unittest.TestCase):
 
         self.assertEqual(
             [backend for _label, backend, _available in options],
-            ["pocket-tts", "coqui-xtts", "chatterbox-nano", "moss-tts"],
+            ["pocket-tts", "coqui-xtts", "chatterbox-nano", "moss-tts", "qwen-tts"],
         )
+
+    def test_qwen_requires_source_apple_silicon(self):
+        with (
+            patch("vntts.release_backends.sys.platform", "darwin"),
+            patch("vntts.release_backends.platform.machine", return_value="arm64"),
+        ):
+            self.assertTrue(packaged_speech_backend_available("qwen-tts"))
+        with patch("vntts.release_backends.sys.platform", "win32"):
+            self.assertFalse(packaged_speech_backend_available("qwen-tts"))
 
     def test_frozen_options_only_advertise_supplied_backends(self):
         with TemporaryDirectory() as directory:

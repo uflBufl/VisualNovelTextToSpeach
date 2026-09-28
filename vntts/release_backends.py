@@ -15,6 +15,7 @@ SPEECH_BACKEND_LABELS = {
     "coqui-xtts": "XTTS",
     "chatterbox-nano": "Chatterbox Nano",
     "moss-tts": "MOSS-TTS Local v1.5",
+    "qwen-tts": "Qwen3-TTS 1.7B (experimental, Mac)",
 }
 _SOURCE_BACKENDS = tuple(SPEECH_BACKEND_LABELS)
 
@@ -30,7 +31,11 @@ def packaged_speech_backend_available(
 ) -> bool:
     bundle_root = get_bundle_root() if bundle_root is None else bundle_root
     if bundle_root is None:
-        return backend in _SOURCE_BACKENDS
+        return backend in _SOURCE_BACKENDS and (
+            backend != "qwen-tts"
+            or sys.platform == "darwin"
+            and platform.machine().casefold() == "arm64"
+        )
     if backend == "coqui-xtts":
         return True
     if backend == "moss-tts":
@@ -46,7 +51,8 @@ def speech_backend_options(
     bundle_root = get_bundle_root() if bundle_root is None else bundle_root
     if bundle_root is None:
         return tuple(
-            (label, backend, True) for backend, label in SPEECH_BACKEND_LABELS.items()
+            (label, backend, packaged_speech_backend_available(backend))
+            for backend, label in SPEECH_BACKEND_LABELS.items()
         )
     options = [
         (label, backend, True)

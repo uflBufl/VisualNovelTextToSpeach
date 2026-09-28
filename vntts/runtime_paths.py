@@ -16,6 +16,7 @@ RUNTIME_ENVIRONMENT_VARIABLES = {
     "pocket-tts": "VNTTS_POCKET_TTS_RUNTIME",
     "chatterbox-nano": "VNTTS_CHATTERBOX_RUNTIME",
     "moss-tts": "VNTTS_MOSS_RUNTIME",
+    "qwen-tts": "VNTTS_MOSS_RUNTIME",
     "moss-tts-delay": "VNTTS_MOSS_DELAY_RUNTIME",
 }
 

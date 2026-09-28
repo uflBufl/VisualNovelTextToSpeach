@@ -32,6 +32,7 @@ from vntts.playback import (
     PreparedPlayback,
     outcome_for_prepared,
 )
+from vntts.qwen_backend import QWEN_MODEL, QwenTTSVoiceRouterBackend
 from vntts.runtime_paths import (
     RUNTIME_ENVIRONMENT_VARIABLES,
     default_source_speech_runtime,
@@ -111,6 +112,8 @@ _REQUIRED_MODULES = {
         "tokenizers",
         "safetensors",
     ),
+    "qwen-tts": _COMMON_REQUIRED_MODULES
+    + ("mlx.core", "mlx_audio", "transformers", "tokenizers", "safetensors"),
     "moss-tts-delay": _COMMON_REQUIRED_MODULES
     + ("torch", "transformers", "tokenizers", "safetensors"),
 }
@@ -118,12 +121,14 @@ _BACKEND_CLASSES = {
     "pocket-tts": PocketTTSVoiceRouterBackend,
     "chatterbox-nano": ChatterboxNanoVoiceRouterBackend,
     "moss-tts": MossTTSVoiceRouterBackend,
+    "qwen-tts": QwenTTSVoiceRouterBackend,
     "moss-tts-delay": MossTTSDelayVoiceRouterBackend,
 }
 _CAPABILITIES = {
     "pocket-tts": PocketTTSVoiceRouterBackend.capabilities,
     "chatterbox-nano": ChatterboxNanoVoiceRouterBackend.capabilities,
     "moss-tts": MossTTSVoiceRouterBackend.capabilities,
+    "qwen-tts": QwenTTSVoiceRouterBackend.capabilities,
     "moss-tts-delay": MossTTSDelayVoiceRouterBackend.capabilities,
 }
 
@@ -309,6 +314,11 @@ def _voice_document(value: object) -> VoiceDocument:
         "aliases": aliases,
         "references": references,
         "reference_root": reference_root,
+        "reference_transcript": (
+            _required_text(document, "reference_transcript")
+            if document.get("reference_transcript") is not None
+            else None
+        ),
     }
 
 
@@ -606,6 +616,7 @@ def _serialize_registry(registry: CharacterVoiceRegistry) -> RegistryDocument:
                 "speaker": voice.speaker,
                 "aliases": list(voice.aliases),
                 "references": [str(value) for value in voice.references],
+                "reference_transcript": voice.reference_transcript,
                 "reference_root": (
                     None if voice.reference_root is None else str(voice.reference_root)
                 ),
@@ -621,6 +632,7 @@ def _serialize_registry(registry: CharacterVoiceRegistry) -> RegistryDocument:
                 "speaker": assignment_voice.speaker,
                 "aliases": list(assignment_voice.aliases),
                 "references": [str(value) for value in assignment_voice.references],
+                "reference_transcript": assignment_voice.reference_transcript,
                 "reference_root": (
                     None
                     if assignment_voice.reference_root is None
@@ -640,6 +652,7 @@ def _voice_from_document(value: VoiceDocument) -> CharacterVoice:
         speaker=value["speaker"],
         aliases=tuple(value.get("aliases", ())),
         references=references,
+        reference_transcript=value.get("reference_transcript"),
         reference_root=(
             None
             if value.get("reference_root") is None
@@ -966,6 +979,7 @@ class IsolatedSpeechBackend:
             "pocket-tts": "Pocket TTS default",
             "chatterbox-nano": "Chatterbox default",
             "moss-tts": "MOSS reference voice",
+            "qwen-tts": "Qwen reference voice",
             "moss-tts-delay": "MOSS Delay reference voice",
         }[backend]
         self.capabilities = _CAPABILITIES[backend]
@@ -973,7 +987,7 @@ class IsolatedSpeechBackend:
             "expressive"
             if backend == "moss-tts-delay"
             else "stable"
-            if backend == "moss-tts"
+            if backend in {"moss-tts", "qwen-tts"}
             else "default"
         )
         self.model_name = str(worker_options.get("model_name") or backend)
@@ -1173,7 +1187,7 @@ class IsolatedSpeechBackend:
         values: WorkerOptions = {}
         for key, value in self.worker_options.items():
             values[key] = str(value) if isinstance(value, Path) else value
-        if self.name in {"moss-tts", "moss-tts-delay"}:
+        if self.name in {"moss-tts", "moss-tts-delay", "qwen-tts"}:
             values["generation_profile"] = self.generation_profile
         if self.name != "moss-tts-delay":
             values["runtime_directory"] = str(self.runtime_root)
@@ -1557,7 +1571,7 @@ class IsolatedSpeechBackend:
     def set_generation_profile(self, profile: object) -> bool:
         profile = (
             str(profile).strip().casefold()
-            if self.name in {"moss-tts", "moss-tts-delay"}
+            if self.name in {"moss-tts", "moss-tts-delay", "qwen-tts"}
             else "default"
         )
         changed = profile != self.generation_profile
@@ -1786,6 +1800,22 @@ def create_moss_worker_backend(
     return _isolated_backend_constructor("moss-tts", registry, **options)
 
 
+def create_qwen_worker_backend(
+    registry: CharacterVoiceRegistry, **options: object
+) -> IsolatedSpeechBackend:
+    # The locked MOSS MLX environment already contains Qwen's MLX dependencies.
+    options["model_name"] = QWEN_MODEL
+    if "runtime_directory" not in options:
+        from vntts.runtime_installation import ensure_speech_runtime
+
+        options["runtime_directory"] = ensure_speech_runtime(
+            "moss-tts",
+            cancellation=options.get("startup_cancellation"),
+            progress=options.get("startup_progress"),
+        )[0]
+    return _isolated_backend_constructor("qwen-tts", registry, **options)
+
+
 def create_moss_delay_worker_backend(
     registry: CharacterVoiceRegistry, **options: object
 ) -> IsolatedSpeechBackend:
@@ -1796,6 +1826,7 @@ for _factory in (
     create_pocket_worker_backend,
     create_chatterbox_worker_backend,
     create_moss_worker_backend,
+    create_qwen_worker_backend,
     create_moss_delay_worker_backend,
 ):
     setattr(_factory, "supports_startup_cancellation", True)

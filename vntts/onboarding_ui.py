@@ -771,13 +771,14 @@ class ConfigurationPage(QWizardPage):
                 "Narrator reference: the selected file does not exist.",
             )
         if (
-            backend == "moss-tts"
+            backend in {"moss-tts", "qwen-tts"}
             and not narrator_reference
             and narrator_binding is None
         ):
             add(
                 self.choose_narrator_button,
-                "Narrator voice: choose a game voice for MOSS-TTS. "
+                "Narrator voice: choose a game voice for "
+                f"{'MOSS-TTS' if backend == 'moss-tts' else 'Qwen3-TTS'}. "
                 "You can listen before choosing.",
             )
         game_pack = self.game_pack.text().strip()

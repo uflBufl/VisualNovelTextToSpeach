@@ -25,6 +25,7 @@ from vntts.speech_worker import (
     create_moss_delay_worker_backend,
     create_moss_worker_backend,
     create_pocket_worker_backend,
+    create_qwen_worker_backend,
 )
 from vntts.synthesis import (
     SynthesisCachePolicy,
@@ -312,6 +313,19 @@ def create_backend(
                 registry,
                 **({"model_name": str(model_name)} if model_name is not None else {}),
                 **streaming_options,
+                prompt_cache_directory=cache_root / "prompt-codes",
+                **common,
+            ),
+            name,
+        )
+    if name == "qwen-tts":
+        from vntts.qwen_backend import QWEN_MODEL
+
+        if model_name not in {None, QWEN_MODEL}:
+            raise ValueError("Qwen experimental backend uses a pinned 1.7B model")
+        return _require_benchmark_backend(
+            create_qwen_worker_backend(
+                registry,
                 prompt_cache_directory=cache_root / "prompt-codes",
                 **common,
             ),
@@ -805,7 +819,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--backend",
         required=True,
-        choices=("pocket-tts", "chatterbox-nano", "moss-tts", "coqui-xtts"),
+        choices=("pocket-tts", "chatterbox-nano", "moss-tts", "qwen-tts", "coqui-xtts"),
     )
     parser.add_argument("--character", action="append", dest="characters")
     parser.add_argument("--text", default=default_text)

@@ -181,6 +181,7 @@ class GameNarratorDialog(QDialog):
         self.decoderProgress.connect(self._decoder_progress)
         self._prepared: dict[str, Path] = {}
         self._candidate_source_ids: set[str] = set()
+        self._exact_transcripts: dict[str, str] = {}
         self._prepared_role: str | None = None
         self._character: str | None = None
         self._operation: str | None = None
@@ -368,6 +369,13 @@ class GameNarratorDialog(QDialog):
         self.reference_text.setTextFormat(Qt.TextFormat.PlainText)
         self.reference_text.setAccessibleName("Original reference transcript")
         game_form.addRow("Original transcript", self.reference_text)
+        self.exact_transcript = QLineEdit()
+        self.exact_transcript.setAccessibleName("Exact reference transcript for Qwen")
+        self.exact_transcript.setPlaceholderText(
+            "Enter the exact words in this recording"
+        )
+        if self.settings_value.speech_backend == "qwen-tts":
+            self.form.addRow("Qwen reference text", self.exact_transcript)
 
     def _build_preview_controls(self) -> None:
         form = self.form
@@ -526,6 +534,7 @@ class GameNarratorDialog(QDialog):
         self.source.currentIndexChanged.connect(self._settings_choice_changed)
         self.presets.currentIndexChanged.connect(self._settings_choice_changed)
         self.catalog_choice.currentIndexChanged.connect(self._settings_choice_changed)
+        self.catalog_choice.currentIndexChanged.connect(self._catalog_reference_changed)
         self.consent.toggled.connect(self._settings_choice_changed)
         self.references.currentIndexChanged.connect(self._reference_choice_changed)
         tab_order = (
@@ -1081,6 +1090,13 @@ class GameNarratorDialog(QDialog):
         self.form.setRowVisible(self.presets, preset)
         self.form.setRowVisible(self.catalog_row, catalog)
         self.form.setRowVisible(self.game_controls, self.source.currentData() == "game")
+        if self.settings_value.speech_backend == "qwen-tts":
+            self.form.setRowVisible(
+                self.exact_transcript,
+                self.source.currentData() in {"game", "catalog"},
+            )
+        if catalog and self.settings_value.speech_backend == "qwen-tts":
+            self._catalog_reference_changed()
         self.form.setRowVisible(self.preview_row, not policy)
         self.status.setText(
             "Save to restore automatic character matching. Existing recordings keep priority."
@@ -1520,7 +1536,9 @@ class GameNarratorDialog(QDialog):
         self.references.blockSignals(True)
         self.references.clear()
         self._candidate_source_ids.clear()
+        self._exact_transcripts = {}
         self._prepared.clear()
+        registry = CharacterVoiceRegistry.from_file(manifest_path)
         for index, (source_id, variant) in enumerate(candidate_details, 1):
             duration = variant.get("duration_seconds")
             duration_label = (
@@ -1542,6 +1560,14 @@ class GameNarratorDialog(QDialog):
             transcript = "\n".join(
                 dict.fromkeys(value for value in spoken_text if value)
             )
+            voice = registry.resolve_source(source_id)
+            if (
+                voice is not None
+                and len(voice.references) == 1
+                and len(spoken_text) == 1
+                and len(variant.get("source_line_ids") or ()) == 1
+            ):
+                self._exact_transcripts[source_id] = spoken_text[0]
             bank_only = variant.get("candidate_origin") == UNLINKED_BANK_MEDIA
             excerpt = (
                 UNLINKED_BANK_LABEL
@@ -1601,7 +1627,27 @@ class GameNarratorDialog(QDialog):
             self.references.currentData(Qt.ItemDataRole.ToolTipRole)
             or ("Transcript unavailable." if self.references.count() else "")
         )
+        self.exact_transcript.setText(
+            self._exact_transcripts.get(self.references.currentData(), "")
+        )
         self._warm_selected()
+
+    def _catalog_reference_changed(self, *_args: object) -> None:
+        if (
+            self.source.currentData() != "catalog"
+            or self.settings_value.speech_backend != "qwen-tts"
+        ):
+            return
+        source_id = self.catalog_choice.currentData()
+        try:
+            voice = (
+                self._catalog_registry.resolve_source(source_id) if source_id else None
+            )
+        except ValueError:
+            voice = None
+        self.exact_transcript.setText(
+            (voice.reference_transcript or "") if voice is not None else ""
+        )
 
     def _stop_audio(self) -> None:
         self.player.stop()
@@ -1659,6 +1705,16 @@ class GameNarratorDialog(QDialog):
         self._candidate_action("preview")
 
     def _candidate_action(self, operation: str) -> None:
+        reference_transcript = self.exact_transcript.text().strip()
+        if (
+            operation in {"preview", "save"}
+            and self.settings_value.speech_backend == "qwen-tts"
+            and not reference_transcript
+        ):
+            self.status.setText(
+                "Qwen needs the exact words spoken in the selected original recording."
+            )
+            return
         if operation != "audio" and (
             not self._engine_available()
             or self.source.currentData() == "preset"
@@ -1686,6 +1742,7 @@ class GameNarratorDialog(QDialog):
                 self._settings(),
                 self.catalog_choice.currentData(),
                 self.text.toPlainText().strip(),
+                reference_transcript,
             )
             return
         self._playback_requested = operation in {"audio", "preview"}
@@ -1716,6 +1773,7 @@ class GameNarratorDialog(QDialog):
             if self.source.currentData() == "preset"
             else self.references.currentData(),
             self.text.toPlainText().strip(),
+            reference_transcript,
         )
 
     def _perform_candidate_action(
@@ -1725,6 +1783,7 @@ class GameNarratorDialog(QDialog):
         character: str | None,
         reference: str,
         text: str,
+        reference_transcript: str = "",
     ) -> AppSettings | OriginalReference | Path | VoiceAuditionPreview | None:
         manifest = None
         source_id = reference
@@ -1740,10 +1799,18 @@ class GameNarratorDialog(QDialog):
         if operation == "warm":
             return manifest
         if operation == "save":
-            return self._bind_selected_voice(settings, manifest, source_id, character)
+            return self._bind_selected_voice(
+                settings,
+                manifest,
+                source_id,
+                character,
+                reference_transcript=reference_transcript,
+            )
         if operation == "audio":
             return load_original_reference(manifest, source_id)
-        plan = narrator_preview_plan(settings, manifest, source_id, text)
+        plan = narrator_preview_plan(
+            settings, manifest, source_id, text, reference_transcript
+        )
         return self.previews.generate(
             plan,
             plan.groups[0],
@@ -1760,6 +1827,7 @@ class GameNarratorDialog(QDialog):
         character: str | None,
         *,
         root: Path | str | None = None,
+        reference_transcript: str = "",
     ) -> AppSettings:
         role = self._saving_role
         context: dict[str, object] = (
@@ -1774,6 +1842,8 @@ class GameNarratorDialog(QDialog):
             or getattr(self.binder, "func", None) is bind_voice_library_selection
         ):
             context["rollback"] = self._voice_binding_rollback
+            if reference_transcript:
+                context["reference_transcript"] = reference_transcript
         if normalize_character_name(role) == "narrator":
             return self.binder(settings, manifest, source_id, character, **context)
         return self.binder(
@@ -1786,7 +1856,12 @@ class GameNarratorDialog(QDialog):
         )
 
     def _perform_catalog_action(
-        self, operation: str, settings: AppSettings, source_id: str, text: str
+        self,
+        operation: str,
+        settings: AppSettings,
+        source_id: str,
+        text: str,
+        reference_transcript: str = "",
     ) -> AppSettings | OriginalReference | VoiceAuditionPreview:
         voice = self._catalog_registry.resolve_source(source_id)
         if voice is None:
@@ -1797,10 +1872,13 @@ class GameNarratorDialog(QDialog):
                 self._catalog_manifest,
                 source_id,
                 voice.source_character or voice.character,
+                reference_transcript=reference_transcript,
             )
         if operation == "audio":
             return load_original_reference(self._catalog_manifest, source_id)
-        plan = narrator_preview_plan(settings, self._catalog_manifest, source_id, text)
+        plan = narrator_preview_plan(
+            settings, self._catalog_manifest, source_id, text, reference_transcript
+        )
         return self.previews.generate(
             plan,
             plan.groups[0],

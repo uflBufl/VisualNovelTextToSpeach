@@ -59,6 +59,10 @@ def _engine_model_identity(
             from vntts.speech_backend import default_moss_tts_model
 
             model = default_moss_tts_model
+    elif backend == "qwen-tts":
+        from vntts.qwen_backend import QWEN_MODEL
+
+        model = QWEN_MODEL
     elif not model:
         model = {
             "coqui-xtts": "tts_models/multilingual/multi-dataset/xtts_v2",

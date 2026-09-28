@@ -69,6 +69,7 @@ def narrator_preview_plan(
     manifest: str | Path | None,
     source_id: str,
     text: str,
+    reference_transcript: str | None = None,
 ) -> VoicePlan:
     preset = isinstance(source_id, str) and source_id.startswith("preset:")
     if preset and (
@@ -92,6 +93,7 @@ def narrator_preview_plan(
         source_character=voice.character,
         source_speaker=voice.speaker,
         reference_sha256s=tuple(sha256_file(path) for path in voice.references),
+        reference_transcript=reference_transcript or voice.reference_transcript,
     )
     controls = hashlib.sha256(
         repr(
@@ -150,6 +152,7 @@ def bind_voice_library_selection(
     additional_manifest: str | Path | None = None,
     target_character: str = "Narrator",
     rollback: VoiceBindingRollback | None = None,
+    reference_transcript: str | None = None,
 ) -> AppSettings:
     """Save a role once in the authoritative library, not another manifest."""
     del additional_manifest
@@ -183,6 +186,7 @@ def bind_voice_library_selection(
         variant_key=library.linked_variant_key(target_character),
         method="manual",
         evidence={"selected_character": character},
+        reference_transcript=reference_transcript,
         algorithm="voice-picker-v1",
         rollback=rollback,
     )

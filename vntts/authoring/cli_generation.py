@@ -103,7 +103,7 @@ def _configure_generate_parser(
     generate.add_argument(
         "--backend",
         required=True,
-        choices=("pocket-tts", "chatterbox-nano", "moss-tts", "coqui-xtts"),
+        choices=("pocket-tts", "chatterbox-nano", "moss-tts", "qwen-tts", "coqui-xtts"),
     )
     generate.add_argument("--model")
     generate.add_argument("--language")
@@ -549,7 +549,7 @@ def _narrator_reference(
             narrator_reference_path,
             sha256_control_path(narrator_reference_path),
         )
-    if arguments.backend == "moss-tts" and reference is None:
+    if arguments.backend in {"moss-tts", "qwen-tts"} and reference is None:
         raise BulkGenerationError(
             f"Narrator voice {arguments.narrator_character!r} has no reference"
         )
@@ -588,7 +588,7 @@ def _generation_text_transform(
 ) -> tuple[Callable[[str], str] | None, str | None]:
     if projection_ids:
         return audio_event_spoken_projection, "audio-event-spoken-projection-v1"
-    if backend == "moss-tts":
+    if backend in {"moss-tts", "qwen-tts"}:
         return normalize_short_trailing_ellipsis, "short-trailing-ellipsis-v1"
     return None, None
 

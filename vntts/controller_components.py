@@ -259,6 +259,7 @@ class RuntimeLifecycleComponent:
                 "coqui-xtts": "Loading TTS model...",
                 "chatterbox-nano": "Loading Chatterbox Nano...",
                 "moss-tts": "Loading MOSS-TTS...",
+                "qwen-tts": "Loading Qwen3-TTS...",
                 "pocket-tts": "Loading Pocket TTS...",
             }[controller.settings.speech_backend]
         )
@@ -301,6 +302,7 @@ class RuntimeLifecycleComponent:
             if controller.settings.speech_backend in {
                 "chatterbox-nano",
                 "moss-tts",
+                "qwen-tts",
                 "pocket-tts",
             }:
                 controller.model_assets.configure_huggingface_environment()
@@ -324,6 +326,7 @@ class RuntimeLifecycleComponent:
             backend_factory = {
                 "chatterbox-nano": controller.chatterbox_backend_factory,
                 "moss-tts": controller.moss_backend_factory,
+                "qwen-tts": controller.qwen_backend_factory,
                 "pocket-tts": controller.pocket_backend_factory,
             }[controller.settings.speech_backend]
             narrator_reference: str | Path | None = controller.settings.tts_speaker_wav
@@ -374,6 +377,8 @@ class RuntimeLifecycleComponent:
                     language=controller.settings.tts_language or "English",
                     generation_profile=controller.settings.tts_profile,
                 )
+            elif controller.settings.speech_backend == "qwen-tts":
+                backend_options["generation_profile"] = "stable"
             backend = backend_factory(registry, **backend_options)
             if not _is_live_voice_router(backend):
                 raise TypeError("Speech backend does not implement typed voice routing")
@@ -1072,6 +1077,16 @@ class VoiceAssignmentComponent:
         )
         if choice is None:
             raise ValueError("The selected voice is no longer available")
+        if (
+            controller.settings.speech_backend == "qwen-tts"
+            and source_id != default_voice_choice_id
+        ):
+            voice = voice_router.registry.resolve_source(source_id)
+            if voice is None or not voice.reference_transcript:
+                raise ValueError(
+                    "Qwen needs an exact reference transcript. "
+                    "Choose this voice in Voices and enter its original words."
+                )
         character_key = normalize_character_name(character)
         updated_settings = controller.settings
         if commit_settings is not None:

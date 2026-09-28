@@ -1411,7 +1411,7 @@ def generation_command(
     manifest = summary.voice_manifest
     if manifest is None:
         raise AuthoringWorkbenchError("Select an existing voice manifest")
-    if backend not in {"pocket-tts", "chatterbox-nano", "moss-tts"}:
+    if backend not in {"pocket-tts", "chatterbox-nano", "moss-tts", "qwen-tts"}:
         raise AuthoringWorkbenchError(f"Unsupported generation backend: {backend!r}")
     configured_narrator = _configured_narrator(workspace, narrator_character)
     command = _base_generation_command(

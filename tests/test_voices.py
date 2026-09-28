@@ -45,11 +45,18 @@ class CharacterVoiceRegistryTest(unittest.TestCase):
             )
             library = VoiceLibrary(root / "library")
 
-            remember_voice_binding(library, registry, "Narrator", "character:centurion")
+            remember_voice_binding(
+                library,
+                registry,
+                "Narrator",
+                "character:centurion",
+                reference_transcript="The exact original line.",
+            )
             projected = registry_with_voice_library(registry, library)
 
             narrator = projected.resolve("Narrator")
             self.assertEqual(narrator.source_character, "Centurion")
+            self.assertEqual(narrator.reference_transcript, "The exact original line.")
             self.assertEqual(
                 tuple(path.read_bytes() for path in narrator.references),
                 (reference.read_bytes(),),

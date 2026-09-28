@@ -2351,7 +2351,7 @@ def _validate_full_carry_forward_item(
             )
         synthesis_text = plan["spoken_text"]
         text_transform = "audio-event-spoken-projection-v1"
-    elif run_config.get("backend") == "moss-tts":
+    elif run_config.get("backend") in {"moss-tts", "qwen-tts"}:
         synthesis_text = normalize_short_trailing_ellipsis(synthesis_text)
         text_transform = "short-trailing-ellipsis-v1"
     expected["synthesis_text_sha256"] = hashlib.sha256(
@@ -2429,7 +2429,11 @@ def _workspace_generation_provenance(
             "text_transform": (
                 "audio-event-spoken-projection-v1"
                 if projection_ids
-                else ("short-trailing-ellipsis-v1" if backend == "moss-tts" else None)
+                else (
+                    "short-trailing-ellipsis-v1"
+                    if backend in {"moss-tts", "qwen-tts"}
+                    else None
+                )
             ),
             **synthesis_configuration,
             "controls": [

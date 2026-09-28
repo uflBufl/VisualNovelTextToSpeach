@@ -147,6 +147,8 @@ def resolve_pregeneration_settings(settings: AppSettings) -> AppSettings:
     backend = settings.speech_backend
     if backend == "pocket-tts":
         return settings.updated(tts_model=None, tts_profile="default")
+    if backend == "qwen-tts":
+        return settings.updated(tts_model=None, tts_profile="stable")
     if backend == "moss-tts":
         from vntts.moss_cpp_backend import moss_cpp_requested
 
@@ -199,9 +201,12 @@ class VoiceCandidate:
     reference_duration_seconds: float | None = None
     source_excerpts: tuple[str, ...] = ()
     candidate_origin: str | None = None
+    reference_transcript: str | None = None
 
     def to_document(self) -> JsonObject:
         value = asdict(self)
+        if value["reference_transcript"] is None:
+            del value["reference_transcript"]
         for field in (
             "reference_sha256s",
             "source_voice_ids",
@@ -1385,7 +1390,7 @@ def _materialize_voice_catalog(
 ) -> Path:
     voices: list[JsonObject] = []
     payloads: dict[str, bytes] = {}
-    identity: list[tuple[str, str, list[str]]] = []
+    identity: list[tuple[str, str, list[str]] | tuple[str, str, list[str], str]] = []
     for voice in sorted(
         registry.unique_voices(), key=lambda value: value.character.casefold()
     ):
@@ -1407,8 +1412,14 @@ def _materialize_voice_catalog(
         }
         if voice.source_character:
             entry["vntts.source_character"] = voice.source_character
+        if voice.reference_transcript:
+            entry["vntts.reference_transcript"] = voice.reference_transcript
         voices.append(entry)
-        identity.append((voice.character, voice.speaker, checksums))
+        identity.append(
+            (voice.character, voice.speaker, checksums, voice.reference_transcript)
+            if voice.reference_transcript
+            else (voice.character, voice.speaker, checksums)
+        )
     digest = _digest(identity)
     root = Path(job_store.path_for(job.job_id)).parent
     destination = root / f"voice-catalog-{digest[:16]}"
@@ -1757,6 +1768,7 @@ def _ranked_candidate(
         reference_duration_seconds=_reference_duration_seconds(voice.references),
         source_excerpts=_source_excerpt_transcripts(variant.get("source_excerpts", ())),
         candidate_origin=_optional_variant(variant.get("candidate_origin")),
+        reference_transcript=voice.reference_transcript,
     )
 
 

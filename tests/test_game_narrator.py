@@ -1309,6 +1309,54 @@ class GameNarratorTest(unittest.TestCase):
             dialog.reject()
             self.run_task(pool)
 
+    def test_qwen_candidate_shows_editable_exact_reference_text(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "matilda.wav").write_bytes(clean_wav_bytes())
+            manifest = root / "voices.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "voices": [
+                            {
+                                "character": "Matilda",
+                                "speaker": "Matilda",
+                                "references": ["matilda.wav"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            dialog = GameNarratorDialog(
+                AppSettings(speech_backend="qwen-tts"),
+                importer=Mock(),
+                preview_service=Mock(),
+                player=Mock(),
+            )
+            try:
+                dialog.source.setCurrentIndex(dialog.source.findData("game"))
+                dialog._display_game_candidates(
+                    manifest,
+                    [
+                        (
+                            "character:matilda",
+                            {
+                                "source_excerpts": [{"text": "The original line."}],
+                                "source_line_ids": ["line-1"],
+                                "duration_seconds": 1.0,
+                            },
+                        )
+                    ],
+                )
+                self.assertEqual(dialog.exact_transcript.text(), "The original line.")
+                self.assertGreaterEqual(
+                    dialog.form.getWidgetPosition(dialog.exact_transcript)[0], 0
+                )
+            finally:
+                dialog.reject()
+
     def test_live_recovery_explains_role_and_save_consequence(self):
         pool = ManualThreadPool()
         importer = Mock()

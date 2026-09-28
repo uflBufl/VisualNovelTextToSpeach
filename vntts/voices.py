@@ -83,6 +83,7 @@ class CharacterVoice:
     references: tuple[Path, ...] = ()
     reference_root: Path | None = None
     source_character: str | None = None
+    reference_transcript: str | None = None
 
     def __post_init__(self) -> None:
         references = self.references
@@ -134,8 +135,16 @@ class CharacterVoiceRegistry:
                 ),
                 reference_root=manifest_path.parent.resolve(),
                 source_character=source_character,
+                reference_transcript=(
+                    str(raw["vntts.reference_transcript"]).strip()
+                    if isinstance(raw.get("vntts.reference_transcript"), str)
+                    and raw["vntts.reference_transcript"].strip()
+                    else None
+                ),
             )
-            for entry, source_character in zip(entries, source_characters, strict=True)
+            for entry, source_character, raw in zip(
+                entries, source_characters, manifest["voices"], strict=True
+            )
         ]
         return cls(voices)
 
@@ -354,6 +363,7 @@ def remember_voice_binding(
     variant_key: str | None = None,
     method: Literal["automatic", "manual"] = "manual",
     evidence: object | None = None,
+    reference_transcript: str | None = None,
     algorithm: str | None = None,
     only_if_unbound: bool = False,
     rollback: VoiceBindingRollback | None = None,
@@ -402,6 +412,10 @@ def remember_voice_binding(
         "speaker": voice.speaker,
         "evidence": evidence,
     }
+    if reference_transcript:
+        source_evidence["reference_transcript"] = reference_transcript.strip()
+    elif voice.reference_transcript:
+        source_evidence["reference_transcript"] = voice.reference_transcript
     return library.select(
         role,
         variant_key=variant_key,
@@ -494,6 +508,12 @@ def _project_library_voices(
                 references=references,
                 reference_root=library.root,
                 source_character=str(metadata.get("source_character") or binding.role),
+                reference_transcript=(
+                    str(metadata["reference_transcript"]).strip()
+                    if isinstance(metadata.get("reference_transcript"), str)
+                    and metadata["reference_transcript"].strip()
+                    else None
+                ),
             )
         )
         sources[key] = source_id

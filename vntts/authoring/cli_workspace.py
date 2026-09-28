@@ -60,7 +60,7 @@ def configure_parsers(
     )
     workspace.add_argument("--narrator-character")
     workspace.add_argument(
-        "--backend", choices=("pocket-tts", "chatterbox-nano", "moss-tts")
+        "--backend", choices=("pocket-tts", "chatterbox-nano", "moss-tts", "qwen-tts")
     )
     workspace.add_argument("--model")
     workspace.add_argument("--generation-profile")

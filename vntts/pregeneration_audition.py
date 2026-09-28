@@ -10,7 +10,7 @@ import secrets
 import tempfile
 import threading
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from time import monotonic
 from types import EllipsisType
@@ -702,6 +702,8 @@ def _load_candidate_registry(
         raise VoiceAuditionError("Voice candidate changed after planning")
     if manifest is not None and sha256_file(manifest) != plan.voice_manifest_sha256:
         raise VoiceAuditionError("Character voices changed while they were read")
+    if candidate.reference_transcript:
+        voice = replace(voice, reference_transcript=candidate.reference_transcript)
     return CharacterVoiceRegistry((voice,))
 
 
@@ -711,7 +713,7 @@ def _preview_identity(
     document = {
         "group_id": group.group_id,
         "decision_context_sha256": group.decision_context_sha256,
-        "candidate": asdict(candidate),
+        "candidate": candidate.to_document(),
         "text": text,
         "backend": plan.synthesis_backend,
         "model": plan.synthesis_model,
