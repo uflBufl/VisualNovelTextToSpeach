@@ -164,7 +164,6 @@ class VoiceLibrary:
             binding_added = bind_if_missing and identity not in document["bindings"]
             if binding_added:
                 self._rollback_before(rollback, document, (identity,))
-            self._store_blob(checksum, payload)
             group = document["alternatives"].setdefault(
                 identity,
                 {"role": display_role, "variant_key": display_variant, "items": []},
@@ -172,27 +171,29 @@ class VoiceLibrary:
             alternative_added = not any(
                 item["sha256"] == checksum for item in group["items"]
             )
-            if alternative_added:
-                group["items"].append(
-                    {
-                        "sha256": checksum,
-                        "discovery": _provenance(
-                            method, evidence, algorithm, timestamp
-                        ),
-                    }
-                )
-                group["items"].sort(key=lambda item: item["sha256"])
-            if binding_added:
-                document["bindings"][identity] = _binding_document(
-                    display_role,
-                    display_variant,
-                    "voice",
-                    (checksum,),
-                    None,
-                    _provenance(method, evidence, algorithm, timestamp),
-                )
-            if alternative_added or binding_added:
-                self._write(document)
+            provenance = _provenance(method, evidence, algorithm, timestamp)
+            blob_path = self._blob_path(checksum)
+            blob_preexisting = blob_path.exists()
+            try:
+                self._store_blob(checksum, payload)
+                if alternative_added:
+                    group["items"].append({"sha256": checksum, "discovery": provenance})
+                    group["items"].sort(key=lambda item: item["sha256"])
+                if binding_added:
+                    document["bindings"][identity] = _binding_document(
+                        display_role,
+                        display_variant,
+                        "voice",
+                        (checksum,),
+                        None,
+                        provenance,
+                    )
+                if alternative_added or binding_added:
+                    self._write(document)
+            except Exception:
+                if not blob_preexisting:
+                    self._discard_unpublished_blob(blob_path, checksum)
+                raise
             if binding_added:
                 self._rollback_after(rollback, document, (identity,))
         return VoiceAlternative(
@@ -595,6 +596,20 @@ class VoiceLibrary:
         with atomic_output_path(destination) as staged:
             staged.write_bytes(payload)
         return self._validate_blob(checksum)
+
+    def _discard_unpublished_blob(self, path: Path, checksum: str) -> None:
+        try:
+            published = self._load()
+            if not any(
+                item["sha256"] == checksum
+                for group in published["alternatives"].values()
+                for item in group["items"]
+            ):
+                path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        except VoiceLibraryError:
+            pass
 
     def _validate_blob(self, checksum: str) -> Path:
         if not _is_sha256(checksum):

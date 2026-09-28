@@ -232,6 +232,57 @@ class VoiceLibraryTest(unittest.TestCase):
             self.assertEqual(library.resolve_source_path("Mrs Owen"), selected.path)
             self.assertEqual(len(list(library.blobs_path.glob("*.wav"))), 2)
 
+    def test_failed_discovery_publication_removes_only_unreferenced_blob(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            old, new = root / "old.wav", root / "new.wav"
+            write_wav(old, b"\x00\x00")
+            write_wav(new, b"\x01\x00")
+            library = VoiceLibrary(root / "library")
+            original = library.discover("Ada", old)
+            prior_index = library.path.read_bytes()
+
+            with self.assertRaisesRegex(VoiceLibraryError, "JSON data"):
+                library.discover("Ada", new, evidence=object())
+            self.assertEqual(list(library.blobs_path.glob("*.wav")), [original.path])
+
+            original_store = library._store_blob
+
+            def store_then_fail(checksum, payload):
+                original_store(checksum, payload)
+                raise OSError("post-store failure")
+
+            with (
+                patch.object(library, "_store_blob", side_effect=store_then_fail),
+                self.assertRaisesRegex(OSError, "post-store failure"),
+            ):
+                library.discover("Ada", new)
+            self.assertEqual(list(library.blobs_path.glob("*.wav")), [original.path])
+
+            with (
+                patch.object(library, "_write", side_effect=OSError("disk full")),
+                self.assertRaisesRegex(OSError, "disk full"),
+            ):
+                library.discover("Ada", new)
+
+            self.assertEqual(library.path.read_bytes(), prior_index)
+            self.assertEqual(list(library.blobs_path.glob("*.wav")), [original.path])
+
+            original_write = library._write
+
+            def publish_then_fail(document):
+                original_write(document)
+                raise OSError("post-publish failure")
+
+            with (
+                patch.object(library, "_write", side_effect=publish_then_fail),
+                self.assertRaisesRegex(OSError, "post-publish failure"),
+            ):
+                library.discover("Ada", new)
+
+            self.assertEqual(len(library.alternatives("Ada")), 2)
+            self.assertEqual(len(list(library.blobs_path.glob("*.wav"))), 2)
+
     def test_existing_alternative_can_be_bound_without_rediscovery(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
