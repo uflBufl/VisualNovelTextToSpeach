@@ -539,6 +539,39 @@ class Reverse1999GameImporter:
         semantic_story.unlink(missing_ok=True)
         evidence.unlink(missing_ok=True)
         root.mkdir(parents=True, exist_ok=True)
+        decoder, bank_index = self._prepare_timed_source_audio(
+            source, timed_story, chapters, cancel_event, progress=progress
+        )
+        if not self._timed_story_requires_asr(timed_story, selected):
+            return inspect_story_index(timed_story, provider_id=self.provider_id)
+        self._publish_source_audio_semantics(
+            timed_story,
+            semantic_story,
+            evidence,
+            bank_index,
+            decoder,
+            chapters,
+            cancel_event,
+            progress=progress,
+            provision_model=provision_model,
+        )
+        self._raise_if_cancelled(cancel_event)
+        if not self._semantic_success_is_current(semantic_story, evidence, selected):
+            raise GameContentImportError(
+                "Source-audio semantic publisher produced unverifiable evidence."
+            )
+        timed_story.unlink(missing_ok=True)
+        return inspect_story_index(semantic_story, provider_id=self.provider_id)
+
+    def _prepare_timed_source_audio(
+        self,
+        source: Path,
+        timed_story: Path,
+        chapters: tuple[str, ...],
+        cancel_event: Cancellation | None,
+        *,
+        progress: ProgressCallback | None,
+    ) -> tuple[Path, Path]:
         decoder = ensure_game_decoder(
             cancellation=cancel_event,
             progress=progress,
@@ -575,22 +608,36 @@ class Reverse1999GameImporter:
                 duration_arguments.extend(("--chapter", chapter))
             self._run(duration_arguments, cancel_event)
         self._raise_if_cancelled(cancel_event)
+        return decoder, bank_index
 
+    def _timed_story_requires_asr(self, timed_story: Path, selected: set[str]) -> bool:
         try:
             timed_document = load_story_index_document(timed_story)
         except (OSError, StoryIndexError, ValueError) as error:
             raise GameContentImportError(
                 f"Source-audio timing publisher produced an invalid story index: {error}"
             ) from error
-        requires_asr = any(
+        return any(
             record.line_id in selected
             and record.source_audio_status == "available"
             and self._has_exact_source_audio_timing(record)
             and record.document.get("source_audio_completeness") == "unknown"
             for record in timed_document.records
         )
-        if not requires_asr:
-            return inspect_story_index(timed_story, provider_id=self.provider_id)
+
+    def _publish_source_audio_semantics(
+        self,
+        timed_story: Path,
+        semantic_story: Path,
+        evidence: Path,
+        bank_index: Path,
+        decoder: Path,
+        chapters: tuple[str, ...],
+        cancel_event: Cancellation | None,
+        *,
+        progress: ProgressCallback | None,
+        provision_model: bool,
+    ) -> None:
         model = self._resolve_asr_model(
             cancel_event, progress=progress, provision_model=provision_model
         )
@@ -621,13 +668,6 @@ class Reverse1999GameImporter:
         for chapter in chapters:
             semantic_arguments.extend(("--chapter", chapter))
         self._run(semantic_arguments, cancel_event)
-        self._raise_if_cancelled(cancel_event)
-        if not self._semantic_success_is_current(semantic_story, evidence, selected):
-            raise GameContentImportError(
-                "Source-audio semantic publisher produced unverifiable evidence."
-            )
-        timed_story.unlink(missing_ok=True)
-        return inspect_story_index(semantic_story, provider_id=self.provider_id)
 
     def _resolve_asr_model(
         self,
