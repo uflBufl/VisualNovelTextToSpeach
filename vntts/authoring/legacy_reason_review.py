@@ -163,7 +163,10 @@ def load_reason_review_progress(
             "defect_reasons",
         }:
             raise LegacyReasonReviewError("Reason-review progress item is malformed")
-        item = expected.get(row["item_id"])
+        item_id = row["item_id"]
+        if not isinstance(item_id, str):
+            raise LegacyReasonReviewError("Reason-review progress item is malformed")
+        item = expected.get(item_id)
         reasons = row["defect_reasons"]
         if item is None or row["audio_sha256"] != item.audio_sha256:
             raise LegacyReasonReviewError(
@@ -361,6 +364,8 @@ def _optional_integer(value: object, label: str) -> int | None:
 def _validated_reasons(values: object) -> ReasonSelection:
     if not isinstance(values, (list, tuple, set, frozenset)):
         raise LegacyReasonReviewError("Defect reasons must be a list")
+    if not all(isinstance(value, str) for value in values):
+        raise LegacyReasonReviewError("Choose only supported defect reasons")
     reasons = tuple(sorted(set(values)))
     if not set(reasons).issubset(_ALLOWED_REASONS):
         raise LegacyReasonReviewError("Choose only supported defect reasons")

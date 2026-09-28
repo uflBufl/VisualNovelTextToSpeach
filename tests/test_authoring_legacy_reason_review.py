@@ -120,6 +120,48 @@ class LegacyReasonReviewTest(unittest.TestCase):
             ):
                 load_reason_review_progress(review, progress)
 
+    def test_progress_rejects_unhashable_item_id(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _workspace, _queue_id, _decision, corpus = _legacy_bad_fixture(root)
+            review = build_legacy_reason_review(corpus, root)
+            progress = root / "reason-progress.json"
+            write_reason_review_progress(review, progress, {})
+            document = json.loads(progress.read_text(encoding="utf-8"))
+            document["items"] = [
+                {
+                    "item_id": [],
+                    "audio_sha256": review.items[0].audio_sha256,
+                    "defect_reasons": [],
+                }
+            ]
+            progress.write_text(json.dumps(document), encoding="utf-8")
+
+            with self.assertRaisesRegex(LegacyReasonReviewError, "item is malformed"):
+                load_reason_review_progress(review, progress)
+
+    def test_progress_rejects_unhashable_defect_reason(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _workspace, _queue_id, _decision, corpus = _legacy_bad_fixture(root)
+            review = build_legacy_reason_review(corpus, root)
+            progress = root / "reason-progress.json"
+            write_reason_review_progress(review, progress, {})
+            document = json.loads(progress.read_text(encoding="utf-8"))
+            document["items"] = [
+                {
+                    "item_id": review.items[0].item_id,
+                    "audio_sha256": review.items[0].audio_sha256,
+                    "defect_reasons": [[]],
+                }
+            ]
+            progress.write_text(json.dumps(document), encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                LegacyReasonReviewError, "only supported defect reasons"
+            ):
+                load_reason_review_progress(review, progress)
+
 
 if __name__ == "__main__":
     unittest.main()
