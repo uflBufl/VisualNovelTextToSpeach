@@ -127,6 +127,30 @@ class GenerationTimelineLogTest(unittest.TestCase):
         self.assertIsNone(timelines.snapshot()[0]["events"][0]["from_text_visible_ms"])
         json.dumps(persisted, allow_nan=False)
 
+    def test_summarizes_unstable_frame_gate_without_retaining_dialogue(self):
+        timelines = GenerationTimelineLog()
+        for timestamp, fingerprint, frames, ready in (
+            (1.0, "first", 1, False),
+            (1.1, "second", 1, False),
+            (1.2, "second", 2, True),
+        ):
+            timelines.record(
+                "stable-frame-gate",
+                1,
+                timestamp,
+                fingerprint=fingerprint,
+                candidate_frames=frames,
+                ready=ready,
+                private_text="not retained",
+            )
+
+        gate = timelines.snapshot()[0]["events"][0]
+        self.assertEqual(gate["observations"], 3)
+        self.assertEqual(gate["candidate_restarts"], 1)
+        self.assertEqual(gate["fingerprint_changes"], 1)
+        self.assertEqual(gate["ready_observations"], 1)
+        self.assertNotIn("private_text", gate)
+
     def test_keeps_restarted_reader_generations_in_separate_timelines(self):
         timelines = GenerationTimelineLog()
         first_session, second_session = uuid4().hex, uuid4().hex

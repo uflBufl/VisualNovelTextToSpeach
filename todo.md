@@ -75,13 +75,17 @@ Planned implementation order after approval:
       did not start the next prepared line. Reproduce the actual cursor/OCR/focus
       transition before fixing it. Preserve the one-key-per-dialogue safety rule;
       never blindly resend an advance key. The archive contains 21
-      `story-line-no-match` routes; identify which are OCR/nameplate errors.
-- [ ] **Stabilize unknown speaker OCR:** collect frames where `???` became `22`
-      or merged with dialogue; test speaker-band segmentation and consistent
-      unknown-role normalization across adjacent frames. The spoken dialogue
-      must not include the misread nameplate or become Narrator by accident.
-      Do not globally classify numeric names as unknown: `6`, `37`, and numbered
-      NPCs can be legitimate speakers.
+      `story-line-no-match` routes and seven dispatched keys with no confirmed
+      successor. Its timeline retains only the last stable-frame observation per
+      line; record bounded counts of candidate resets and stable confirmations
+      so one validation archive can separate unstable pixels from a missed key.
+      Identify which unmatched routes are OCR/nameplate errors.
+- [ ] **Validate unknown speaker OCR in the affected stage:** the isolated `22`
+      nameplate alias now resolves to `???` and is removed from dialogue, while
+      legitimate numeric names and numeral-led narration remain intact. Capture
+      real frames to verify this alias and identify any other OCR variants;
+      inspect unstable nameplate pixels separately if the visual-successor gate
+      still resets to one candidate frame.
 - [ ] **Validate Start/Stop on Windows:** the button now changes to `Cancel start`
       while chapter identification runs, then `Stopping reading...` and disabled
       while capture/speech quiesces; all launch surfaces share the transition.
@@ -94,13 +98,31 @@ Planned implementation order after approval:
 - [ ] **Honor matching game speech:** investigate why the voiced line `We should
       all stay on our island.` was also synthesized. Compare the exact on-screen
       text, configured audio-source policy, bound game audio, its authoritative/
-      full-coverage flags and match evidence; skip generated playback only
-      when the existing game recording truly covers the visible dialogue.
+      full-coverage flags and match evidence. Current import runs only
+      `r1999-bootstrap`; the standalone `r1999-source-audio-semantics` ASR publisher
+      is not integrated, so exact available source clips remain non-authoritative
+      (`source-audio-authority-unavailable` for four exact lines in the archive).
+      Integrate this check in offline preparation for selected stages only, using
+      a managed local model and the existing evidence/index pair. Never decode or
+      transcribe game audio during live reading; never treat `available` alone as
+      full coverage. Gate: one exact ASR match uses game audio without synthetic
+      overlap, one partial cue still uses TTS, and the quoted line is identified
+      against its actual indexed media before claiming it is fixed.
 - [ ] **Reduce prepared-line startup latency:** measure capture, OCR, sequence
       matching, queueing, decoding and audio-output time in a fully prepared
       stage. Design sequence-led playback with OCR as a position check, not a
       full recognition gate for every known line; retain resync and mismatched
-      dialogue safety. Discuss the measured design before changing routing.
+      dialogue safety. The September 29 support archive has `live_sequence_mode=off`
+      and no plan, while self-service pack publication does not currently include
+      a sequence plan, so its existing fast path cannot run. Verify whether the
+      source story steps can prove unique successors; the extracted
+      `previous_text`/`next_text` links are synthetic neighbors, not a control-flow
+      graph. Publish a checksum-bound plan only for proven spans and
+      terminate uncertain branches for manual/OCR recovery. Activate the safe
+      plan by default for self-service packs, without enabling blind key presses.
+      Gate: deterministic replay proves no wrong-line/wrong-speaker/duplicate
+      dispatches across gaps, branches and short/unknown-speaker dialogue;
+      discuss measured playback latency before changing capture cadence.
 - [ ] **Expose stages as preparation units:** verify stage boundaries and line
       ownership in the story index. Current selections are whole collections;
       only indexes without collections fall back to chapter groups. Split a

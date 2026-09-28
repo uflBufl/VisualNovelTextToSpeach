@@ -273,6 +273,22 @@ class GenerationTimelineLog:
                     if key in details and details[key] is not None
                 },
             }
+            if stage == "stable-frame-gate":
+                observations = int(existing.get("observations", 0))
+                candidate_frames = event.get("candidate_frames")
+                event["observations"] = observations + 1
+                event["candidate_restarts"] = int(
+                    existing.get("candidate_restarts", 0)
+                ) + int(observations > 0 and candidate_frames == 1)
+                event["fingerprint_changes"] = int(
+                    existing.get("fingerprint_changes", 0)
+                ) + int(
+                    observations > 0
+                    and event.get("fingerprint") != existing.get("fingerprint")
+                )
+                event["ready_observations"] = int(
+                    existing.get("ready_observations", 0)
+                ) + int(event.get("ready") is True)
             # A stage can be reported by both the controller and the reader.
             # Preserve richer source-specific details while updating its time.
             timeline["events"][event_key] = {**existing, **event}
