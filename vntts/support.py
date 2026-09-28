@@ -1385,7 +1385,10 @@ def _support_mapping(value: object) -> SupportDocument:
 
 def _loaded_pregeneration_support(document: object) -> SupportDocument | None:
     source = _support_mapping(document)
-    if source.get("schema_version") != 1:
+    if (
+        type(source.get("schema_version")) is not int
+        or source.get("schema_version") != 1
+    ):
         return None
     return {
         "schema_version": 1,

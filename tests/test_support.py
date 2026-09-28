@@ -1028,6 +1028,18 @@ class SupportBundleBuilderTest(unittest.TestCase):
         self.assertNotIn("secret", json.dumps(report))
         self.assertNotIn(str(Path.home()), json.dumps(report))
 
+    def test_persisted_pregeneration_support_rejects_noninteger_schema_version(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "pregeneration.json"
+            for version in (True, 1.0):
+                with self.subTest(version=version):
+                    path.write_text(
+                        json.dumps({"schema_version": version}), encoding="utf-8"
+                    )
+                    report = PregenerationSupportState(path).report()
+
+                    self.assertEqual(report, {"available": False})
+
     def test_persisted_pregeneration_support_read_is_bounded(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "pregeneration.json"
