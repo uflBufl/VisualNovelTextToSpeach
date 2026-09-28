@@ -573,7 +573,14 @@ def recognize_speaker_from_data(
     if not candidates:
         return None
     _score, speaker_line = max(candidates, key=lambda candidate: candidate[0])
-    return speaker_line.text.strip(), speaker_line
+    character = _normalize_unknown_nameplate(speaker_line.text)
+    # The game's ``???`` nameplate is consistently read as ``22``. Keep this
+    # normalization local to the geometrically isolated label; other numbers pass.
+    return character, speaker_line
+
+
+def _normalize_unknown_nameplate(text: str) -> str:
+    return "???" if text.strip() == "22" else text.strip()
 
 
 def _has_dialog_below(speaker_line: OCRLine, lines: Sequence[OCRLine]) -> bool:
@@ -803,6 +810,11 @@ def parse_recognized_dialog(
             dialog_lines = clean_dialog_lines("\n".join(lines[position + 1 :]))
             if dialog_lines:
                 return character, " ".join(dialog_lines)
+
+    if lines and _normalize_unknown_nameplate(lines[0]) == "???":
+        dialog_lines = clean_dialog_lines("\n".join(lines[1:]))
+        if dialog_lines:
+            return "???", " ".join(dialog_lines)
 
     if len(lines) >= 2 and is_probable_character_name(lines[0]):
         dialog_lines = clean_dialog_lines("\n".join(lines[1:]))

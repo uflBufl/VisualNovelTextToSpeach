@@ -196,6 +196,18 @@ class RecognizedDialogTest(unittest.TestCase):
         self.assertEqual(character, "Policeman 2")
         self.assertEqual(text, "You need to leave this area now.")
 
+    def test_unknown_nameplate_ocr_alias_is_removed_from_text_fallback(self):
+        self.assertEqual(
+            parse_recognized_dialog("22\nWho are you?\n", self.registry),
+            ("???", "Who are you?"),
+        )
+
+    def test_numeral_led_narration_is_not_an_unknown_nameplate(self):
+        self.assertEqual(
+            parse_recognized_dialog("22 people were there.\n", self.registry),
+            ("Narrator", "22 people were there."),
+        )
+
     def test_unknown_multiword_speaker_is_detected_from_ocr_geometry(self):
         data = {
             "text": [
@@ -256,6 +268,8 @@ class RecognizedDialogTest(unittest.TestCase):
     def test_unknown_speaker_geometry_accepts_complete_short_dialogue(self):
         for speaker_name, dialogue in (
             ("Hotelier", "This ..."),
+            ("6", "No."),
+            ("Policeman 1", "No."),
             ("Policeman 2", "No."),
             ("37", "..."),
         ):
@@ -277,6 +291,40 @@ class RecognizedDialogTest(unittest.TestCase):
                 )
 
                 self.assertEqual(speaker[0], speaker_name)
+
+    def test_unknown_nameplate_ocr_alias_is_normalized_and_removed_from_dialogue(self):
+        merged_data = {
+            "text": ["22", "Who", "are", "you?"],
+            "conf": [95, 96, 96, 96],
+            "block_num": [1, 1, 1, 1],
+            "par_num": [1, 1, 1, 1],
+            "line_num": [1, 1, 1, 1],
+            "left": [80, 75, 180, 250],
+            "top": [30, 150, 150, 150],
+            "width": [50, 80, 55, 90],
+            "height": [45, 40, 40, 40],
+        }
+        sparse_data = {
+            "text": ["22", "Who", "are", "you?"],
+            "conf": [95, 96, 96, 96],
+            "block_num": [1, 2, 2, 2],
+            "par_num": [1, 1, 1, 1],
+            "line_num": [1, 1, 1, 1],
+            "left": [80, 75, 180, 250],
+            "top": [30, 150, 150, 150],
+            "width": [50, 80, 55, 90],
+            "height": [45, 40, 40, 40],
+        }
+        dialog_data = {"text": ["Who", "are", "you?"], "conf": [96, 96, 96]}
+
+        result = recognize_dialog_image_result(
+            Image.new("RGB", (1000, 300), "black"),
+            recognize_text=Mock(return_value="Who are you?\n"),
+            recognize_data=Mock(side_effect=[merged_data, sparse_data, dialog_data]),
+            profiles=(OCRPreprocessingProfile("balanced", 1.8, 180),),
+        )
+
+        self.assertEqual((result.character, result.text), ("???", "Who are you?"))
 
     def test_confident_orphaned_nameplate_does_not_hide_short_dialogue(self):
         orphaned_nameplate = {
