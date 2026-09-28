@@ -123,11 +123,6 @@ class CharacterVoiceRegistry:
             CharacterVoice(
                 character=entry.character,
                 speaker=entry.speaker,
-                reference=_contained_manifest_reference(
-                    manifest_path, entry.references[0]
-                )
-                if entry.references
-                else None,
                 aliases=entry.aliases,
                 references=tuple(
                     _contained_manifest_reference(manifest_path, reference)
