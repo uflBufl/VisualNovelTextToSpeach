@@ -59,6 +59,23 @@ def write_manifest(root):
 
 
 class AuthoringReferenceSelectionTest(unittest.TestCase):
+    def test_provenance_rejects_non_integer_schema_version(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = write_manifest(root)
+            output = root / "selected.json"
+            select_voice_reference(manifest, "Hero", 2, output)
+            selected = json.loads(output.read_text(encoding="utf-8"))
+            for version in (True, 1.0):
+                with self.subTest(version=version):
+                    selected["vntts.authoring.reference_selection"][
+                        "schema_version"
+                    ] = version
+                    with self.assertRaisesRegex(
+                        ReferenceSelectionError, "provenance is malformed"
+                    ):
+                        validate_reference_selection_provenance(output, selected)
+
     def test_temp_cleanup_failure_does_not_hide_published_selection(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -169,6 +169,7 @@ def validate_reference_selection_provenance(
     if (
         not isinstance(provenance, dict)
         or set(provenance) != expected_fields
+        or type(provenance.get("schema_version")) is not int
         or provenance.get("schema_version") != REFERENCE_SELECTION_SCHEMA_VERSION
         or provenance.get("manual_review_required") is not True
     ):
