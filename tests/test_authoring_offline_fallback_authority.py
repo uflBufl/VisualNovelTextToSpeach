@@ -52,6 +52,52 @@ def write_authority(path, queue_id, source_item_sha256, *, kind="voice", origin=
 
 
 class AuthoringOfflineFallbackAuthorityTest(unittest.TestCase):
+    def test_rejects_noninteger_authority_and_snapshot_versions(self):
+        queue_id = "queue:1"
+        source_item = {"status": "failed", "attempts": 1}
+        source_hash = _canonical_sha256(source_item)
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            for kind in ("voice", "prompt"):
+                path = write_authority(
+                    root / f"{kind}.json", queue_id, source_hash, kind=kind
+                )
+                original = json.loads(path.read_text(encoding="utf-8"))
+                id_field = "decision_id" if kind == "voice" else "selection_id"
+                for version in (True, 1.0):
+                    with self.subTest(kind=kind, version=version):
+                        forged = {**original, "schema_version": version}
+                        forged[id_field] = _canonical_sha256(
+                            {
+                                key: value
+                                for key, value in forged.items()
+                                if key != id_field
+                            }
+                        )
+                        path.write_text(json.dumps(forged), encoding="utf-8")
+                        with self.assertRaises(OfflineFallbackAuthorityError):
+                            load_offline_fallback_authorities(
+                                (path,), {queue_id: source_item}, (queue_id,)
+                            )
+                path.write_text(json.dumps(original), encoding="utf-8")
+
+            authority = load_offline_fallback_authorities(
+                (root / "voice.json",), {queue_id: source_item}, (queue_id,)
+            )[0]
+            snapshot = root / "snapshot.json"
+            snapshot.write_bytes(authority.payload)
+            record = authority.snapshot_record(snapshot.name)
+            for version in (True, 1.0):
+                with self.subTest(snapshot_version=version):
+                    with self.assertRaisesRegex(
+                        OfflineFallbackAuthorityError, "schema is unsupported"
+                    ):
+                        validate_offline_fallback_authority_records(
+                            [{**record, "schema_version": version}],
+                            root,
+                            {queue_id: source_hash},
+                        )
+
     def test_accepts_both_canonical_automatic_unresolved_artifacts(self):
         queue_ids = ("queue:1", "queue:2")
         source_items = {

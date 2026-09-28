@@ -226,6 +226,7 @@ def _snapshot_authority(
         )
     if (
         record.get("schema") != OFFLINE_FALLBACK_AUTHORITY_SCHEMA
+        or type(record.get("schema_version")) is not int
         or record.get("schema_version") != OFFLINE_FALLBACK_AUTHORITY_VERSION
     ):
         raise OfflineFallbackAuthorityError(
@@ -336,7 +337,8 @@ def _failed_voice_authority_definition(
     authority_id = _canonical_id(document, "decision_id")
     binding = document.get("binding")
     if (
-        document.get("schema_version") != 1
+        type(document.get("schema_version")) is not int
+        or document.get("schema_version") != 1
         or not isinstance(binding, dict)
         or binding.get("target_mode") != "failed"
         or binding.get("queue_voice_overrides") != {}
@@ -358,7 +360,10 @@ def _failed_prompt_authority_definition(
     document: dict[str, object],
 ) -> _AuthorityDefinition:
     authority_id = _canonical_id(document, "selection_id")
-    if document.get("schema_version") != 1:
+    if (
+        type(document.get("schema_version")) is not int
+        or document.get("schema_version") != 1
+    ):
         raise OfflineFallbackAuthorityError(
             "Failed-prompt fallback authority schema is unsupported"
         )
