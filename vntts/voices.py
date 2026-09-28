@@ -602,7 +602,7 @@ def find_default_voice_manifest(
     except VoiceManifestError:
         return None
 
-    voices = tuple({id(voice): voice for voice in registry.voices.values()}.values())
+    voices = registry.unique_voices()
     if not voices or any(
         not reference.is_file() for voice in voices for reference in voice.references
     ):

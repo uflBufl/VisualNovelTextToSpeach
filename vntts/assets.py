@@ -498,9 +498,7 @@ class VoicePackManager:
             references_path = pack_path / "references"
             references_path.mkdir(parents=True, exist_ok=True)
 
-            unique_voices = {
-                id(voice): voice for voice in registry.voices.values()
-            }.values()
+            unique_voices = registry.unique_voices()
             entries = []
             for voice in unique_voices:
                 copied_references = []
@@ -538,9 +536,7 @@ class VoicePackManager:
         references_path = pack_path / "references"
         referenced = {
             reference.resolve()
-            for voice in {
-                id(voice): voice for voice in registry.voices.values()
-            }.values()
+            for voice in registry.unique_voices()
             for reference in voice.references
         }
         for path in references_path.iterdir():
@@ -569,9 +565,7 @@ class VoicePackManager:
             raise ModelIntegrityError("Voice checksum file inventory is malformed")
         expected_files = {
             str(reference.relative_to(manifest_path.parent))
-            for voice in {
-                id(voice): voice for voice in registry.voices.values()
-            }.values()
+            for voice in registry.unique_voices()
             for reference in voice.references
         }
         if set(files) != expected_files:
@@ -605,7 +599,7 @@ class VoicePackManager:
     @staticmethod
     def _write_voice_checksums(pack_path: Path, manifest_path: Path) -> None:
         registry = CharacterVoiceRegistry.from_file(manifest_path)
-        voices = {id(voice): voice for voice in registry.voices.values()}.values()
+        voices = registry.unique_voices()
         files = {
             str(reference.relative_to(pack_path)): sha256_file(reference)
             for voice in voices

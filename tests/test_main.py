@@ -1877,13 +1877,12 @@ class MainTest(unittest.TestCase):
         controller.live_reader.is_running = False
         controller.speech_executor = Mock()
         controller.voice_router = Mock()
-        marcus = Mock(character="Marcus")
-        lucy = Mock(character="Lucy")
-        controller.voice_router.registry.voices = {
-            "marcus": marcus,
-            "marcus-alias": marcus,
-            "lucy": lucy,
-        }
+        controller.voice_router.registry = CharacterVoiceRegistry(
+            (
+                CharacterVoice("Marcus", "marcus", aliases=("marcus-alias",)),
+                CharacterVoice("Lucy", "lucy"),
+            )
+        )
 
         result = controller.preview_voice("Marcus", "  Hello.  ")
 

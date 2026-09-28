@@ -974,14 +974,12 @@ class VoiceAssignmentComponent:
         router = self.controller.voice_router
         if router is None:
             return ["Narrator"]
-        voices = {id(voice): voice for voice in router.registry.voices.values()}
+        voices = router.registry.unique_voices()
         return [
             "Narrator",
             *(
                 voice.character
-                for voice in sorted(
-                    voices.values(), key=lambda item: item.character.casefold()
-                )
+                for voice in sorted(voices, key=lambda item: item.character.casefold())
             ),
         ]
 

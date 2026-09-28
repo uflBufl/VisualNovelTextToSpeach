@@ -283,7 +283,7 @@ class OnboardingDiagnostics:
         except VoiceManifestError as error:
             return DiagnosticResult("Character voices", "error", str(error), "settings")
 
-        voices = {id(voice): voice for voice in registry.voices.values()}.values()
+        voices = registry.unique_voices()
         missing = [
             reference
             for voice in voices
@@ -300,7 +300,7 @@ class OnboardingDiagnostics:
         return DiagnosticResult(
             "Character voices",
             "ok",
-            f"Loaded {len(list(voices))} character voices",
+            f"Loaded {len(voices)} character voices",
         )
 
 
