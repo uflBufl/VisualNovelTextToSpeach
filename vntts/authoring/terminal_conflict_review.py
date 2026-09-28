@@ -818,8 +818,8 @@ def _validate_candidate_sources(candidate: object) -> None:
     if (
         not isinstance(workspace_ids, list)
         or not workspace_ids
-        or workspace_ids != sorted(set(workspace_ids))
         or any(not isinstance(item, str) or not item for item in workspace_ids)
+        or workspace_ids != sorted(set(workspace_ids))
     ):
         raise TerminalConflictReviewError(
             "Terminal conflict candidate workspaces changed"
@@ -1446,6 +1446,7 @@ def _validate_progress_carry(
     if (
         not isinstance(case_ids, list)
         or not case_ids
+        or any(not isinstance(case_id, str) or not case_id for case_id in case_ids)
         or case_ids != sorted(set(case_ids))
         or not set(case_ids).issubset(seen)
     ):

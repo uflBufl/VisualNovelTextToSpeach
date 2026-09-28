@@ -504,7 +504,11 @@ def _validate_decision_reviewed(
     decision: str, cohort: JsonObject, reviewed: Sequence[str]
 ) -> list[object]:
     sampled = cohort.get("sample_queue_ids")
-    if not isinstance(sampled, list) or not sampled:
+    if (
+        not isinstance(sampled, list)
+        or not sampled
+        or any(not isinstance(queue_id, str) or not queue_id for queue_id in sampled)
+    ):
         raise CohortReviewError("Cohort has no review sample")
     unexpected = sorted(set(reviewed) - set(sampled))
     if unexpected:
@@ -1336,8 +1340,9 @@ def _validated_document_assessments(
             reasons = value.get("defect_reasons")
             if (
                 not isinstance(reasons, list)
-                or reasons != sorted(set(reasons))
+                or any(not isinstance(reason, str) for reason in reasons)
                 or any(reason not in COHORT_REVIEW_DEFECT_REASONS for reason in reasons)
+                or reasons != sorted(set(reasons))
                 or (value.get("assessment") == "bad" and not reasons)
                 or (value.get("assessment") != "bad" and reasons)
             ):

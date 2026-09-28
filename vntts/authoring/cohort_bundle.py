@@ -887,8 +887,9 @@ def _validated_observation_entry(
     reasons = entry.get("defect_reasons", [])
     if (
         not isinstance(reasons, list)
-        or reasons != sorted(set(reasons))
+        or any(not isinstance(reason, str) for reason in reasons)
         or any(reason not in COHORT_REVIEW_DEFECT_REASONS for reason in reasons)
+        or reasons != sorted(set(reasons))
         or (assessment == "bad" and version == 2 and not reasons)
         or (assessment != "bad" and reasons)
     ):
@@ -934,6 +935,7 @@ def write_cohort_review_observations(
             if (
                 not isinstance(reasons, (set, frozenset, list, tuple))
                 or not reasons
+                or any(not isinstance(reason, str) for reason in reasons)
                 or any(reason not in COHORT_REVIEW_DEFECT_REASONS for reason in reasons)
             ):
                 raise CohortReviewError("Cohort defect reasons are unsupported")

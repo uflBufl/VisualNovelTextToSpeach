@@ -1287,7 +1287,7 @@ def _validate_rebase_record_references(
 ) -> None:
     for field in ("source_reference_sha256s", "target_reference_sha256s"):
         values = record.get(field)
-        if not isinstance(values, list) or values != sorted(set(values)):
+        if not isinstance(values, list):
             raise AuthoringWorkbenchError(
                 f"Config rebase item {field} is not canonical"
             )
@@ -1297,6 +1297,10 @@ def _validate_rebase_record_references(
             )
         for value in values:
             require_workspace_sha256(value, f"Config rebase item {field}")
+        if values != sorted(set(values)):
+            raise AuthoringWorkbenchError(
+                f"Config rebase item {field} is not canonical"
+            )
     source = record["source_reference_sha256s"]
     if not isinstance(source, list):
         raise AuthoringWorkbenchError(
@@ -1995,7 +1999,7 @@ def _prior_config_rebase_target_route(result: object) -> Route | None:
         raise AuthoringWorkbenchError(
             "Prior config rebase target character is malformed"
         )
-    if not isinstance(values, list) or not values or values != sorted(set(values)):
+    if not isinstance(values, list) or not values:
         raise AuthoringWorkbenchError(
             "Prior config rebase target references are malformed"
         )
@@ -2003,6 +2007,10 @@ def _prior_config_rebase_target_route(result: object) -> Route | None:
         require_workspace_sha256(value, "Prior config rebase target reference SHA-256")
         for value in values
     )
+    if values != sorted(set(values)):
+        raise AuthoringWorkbenchError(
+            "Prior config rebase target references are malformed"
+        )
     return character, digests
 
 

@@ -765,9 +765,9 @@ def _validate_carry_forward_header(
     if (
         not isinstance(characters, list)
         or (version == 1 and not characters)
-        or characters != sorted(set(characters))
         or "Narrator" in characters
         or any(not isinstance(value, str) or not value.strip() for value in characters)
+        or characters != sorted(set(characters))
     ):
         raise AuthoringWorkbenchError("Workspace carry-forward characters are invalid")
     failed_queue_ids, repair_policy = _validate_carry_forward_failure_policy(
@@ -785,11 +785,11 @@ def _validate_carry_forward_failure_policy(
     if (
         not isinstance(failed_queue_ids, list)
         or not failed_queue_ids
-        or failed_queue_ids != sorted(set(failed_queue_ids))
         or any(
             not isinstance(value, str) or not value.strip()
             for value in failed_queue_ids
         )
+        or failed_queue_ids != sorted(set(failed_queue_ids))
     ):
         raise AuthoringWorkbenchError(
             "Workspace carry-forward failure selection is invalid"

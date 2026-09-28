@@ -1251,8 +1251,9 @@ def _validate_sample_reasons(sample: JsonDocument, version: int) -> None:
     reasons = sample["human_defect_reasons"]
     if (
         not isinstance(reasons, list)
-        or reasons != sorted(set(reasons))
+        or any(not isinstance(reason, str) for reason in reasons)
         or any(reason not in COHORT_REVIEW_DEFECT_REASONS for reason in reasons)
+        or reasons != sorted(set(reasons))
         or (sample["human_label"] == "acceptable" and reasons)
     ):
         raise SpeechRobustnessCorpusError(
@@ -1263,12 +1264,13 @@ def _validate_sample_reasons(sample: JsonDocument, version: int) -> None:
 def _validate_sample_evidence(sample: JsonDocument) -> None:
     if (
         not isinstance(sample["technical_flags"], list)
-        or sample["technical_flags"] != sorted(set(sample["technical_flags"]))
         or not all(isinstance(flag, str) and flag for flag in sample["technical_flags"])
+        or sample["technical_flags"] != sorted(set(sample["technical_flags"]))
         or not isinstance(sample["synthesis"], dict)
         or not isinstance(sample["analysis"], dict)
         or not isinstance(sample["decision_ids"], list)
         or not sample["decision_ids"]
+        or not all(isinstance(value, str) for value in sample["decision_ids"])
         or sample["decision_ids"] != sorted(set(sample["decision_ids"]))
     ):
         raise SpeechRobustnessCorpusError(
