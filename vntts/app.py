@@ -2655,7 +2655,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self.restore_diagnostics_after_calibration:
             self.restore_diagnostics_after_calibration = False
             self.open_diagnostics()
-            self.diagnostics_dialog.request_refresh()
+            dialog = self.diagnostics_dialog
+            if dialog is not None:
+                dialog.request_refresh()
 
     def open_diagnostics(self) -> None:
         if self.diagnostics_dialog is None:
