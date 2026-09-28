@@ -768,8 +768,8 @@ class AuthoringWorkbenchDialog(QDialog):
         self.review_table.horizontalHeader().setSectionResizeMode(
             7, QHeaderView.ResizeMode.Stretch
         )
-        self.review_table.setColumnHidden(6, True)
-        self.review_table.setColumnHidden(8, True)
+        self.review_table.horizontalHeader().moveSection(7, 0)
+        self._show_technical_review_columns(False)
         return review_filters
 
     def _build_action_controls(self) -> tuple[QGridLayout, QHBoxLayout]:
@@ -2743,6 +2743,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.copy_diagnostics.setVisible(checked)
 
     def _show_technical_review_columns(self, checked: bool) -> None:
+        self.review_table.setColumnHidden(0, not checked)
         self.review_table.setColumnHidden(6, not checked)
         self.review_table.setColumnHidden(8, not checked)
 

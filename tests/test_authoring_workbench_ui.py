@@ -332,8 +332,10 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertFalse(hasattr(dialog, "narrator_only"))
             self.assertFalse(hasattr(dialog, "exclude_narrator"))
             self.assertEqual(dialog.review_character.currentText(), "All speakers")
+            self.assertTrue(dialog.review_table.isColumnHidden(0))
             self.assertTrue(dialog.review_table.isColumnHidden(6))
             self.assertTrue(dialog.review_table.isColumnHidden(8))
+            self.assertEqual(dialog.review_table.horizontalHeader().visualIndex(7), 0)
             self.assertEqual(
                 dialog.review_actions_layout.indexOf(dialog.reload_authority), -1
             )
@@ -378,6 +380,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
 
             dialog.technical.setChecked(True)
             dialog.show_technical_columns.setChecked(True)
+            self.assertFalse(dialog.review_table.isColumnHidden(0))
             self.assertFalse(dialog.review_table.isColumnHidden(6))
             self.assertFalse(dialog.review_table.isColumnHidden(8))
 

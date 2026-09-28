@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QPixmap  # noqa: E402
-from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel, QMessageBox  # noqa: E402
 from vntts_artifacts.file_integrity import sha256_file  # noqa: E402
 
 from tests.test_pregeneration_audition import (  # noqa: E402
@@ -1217,6 +1217,28 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             self.assertEqual(dialog.voice_plan(), plan)
             self.assertIsNone(
                 decisions.choice_for(group.group_id, group.decision_context_sha256)
+            )
+
+    def test_voice_plan_separates_role_voice_status_and_coverage(self):
+        with TemporaryDirectory() as temporary_directory:
+            dialog, _pool, plan, group, _decisions, _store = (
+                self._inspected_voice_dialog(Path(temporary_directory))
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog._voice_plan = plan
+            dialog._show_voice_confirmation(plan)
+            item = dialog.voice_routes.item(0)
+            card = dialog.voice_routes.itemWidget(item)
+            assert card is not None
+            labels = [label.text() for label in card.findChildren(QLabel)]
+            self.assertEqual(labels[0], group.character)
+            self.assertIn("Rhiannon", labels[1])
+            self.assertIn("review", labels[2])
+            self.assertIn("lines", labels[3])
+            self.assertEqual(item.text(), "")
+            self.assertIn(
+                group.character,
+                item.data(Qt.ItemDataRole.AccessibleTextRole),
             )
 
     def test_inspector_back_during_preview_returns_after_worker_stops(self):

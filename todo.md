@@ -5,6 +5,11 @@
 - [ ] Resolve the official `qwen-tts==0.1.1` dependency audit findings without silently suppressing known vulnerabilities.
 - [ ] Render and time one Matilda reference on the RTX 2070 Super 8 GB. Check that the UI reports CUDA and the correct GPU.
 
+## Active - Finish repeated UI scanability rollout
+
+- [ ] Revisit the new story tree after that integration: story title, readiness, line count, and diagnostics are still concatenated in one cell. Separate primary identity from state and detail without overwriting the in-progress grouping work.
+- [ ] Validate the integrated voice-route layout on Windows at normal and enlarged text sizes; confirm clicking or double-clicking a row still selects and inspects the intended character.
+
 ## Active - Review remaining source-extraction UI
 
 - [ ] In `reverse1999-extractor`, reduce empty Character Story table/portrait space so review and A/B actions are easier to reach, and scale table headers with enlarged text.

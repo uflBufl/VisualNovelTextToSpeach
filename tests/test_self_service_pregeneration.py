@@ -737,7 +737,9 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertFalse(dialog.show_all_voice_routes.isChecked())
             self.assertTrue(
                 all(
-                    not dialog.voice_routes.item(index).text().startswith("Narrator ->")
+                    not dialog.voice_routes.item(index)
+                    .data(Qt.ItemDataRole.AccessibleTextRole)
+                    .startswith("Narrator ->")
                     for index in range(dialog.voice_routes.count())
                 )
             )
@@ -794,7 +796,9 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertIn(
                 "Rhiannon",
                 " ".join(
-                    dialog.voice_routes.item(index).text()
+                    dialog.voice_routes.item(index).data(
+                        Qt.ItemDataRole.AccessibleTextRole
+                    )
                     for index in range(dialog.voice_routes.count())
                 ),
             )
