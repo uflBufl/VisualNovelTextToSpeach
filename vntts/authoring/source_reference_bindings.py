@@ -156,6 +156,7 @@ def _known_role_reuse_overrides_from_manifest(
     approved = value.get("preserved_approved_queue_ids")
     if (
         not isinstance(approved, list)
+        or any(not isinstance(item, str) for item in approved)
         or approved != sorted(set(approved))
         or set(approved).intersection(target_ids)
     ):
@@ -231,16 +232,16 @@ def _known_role_reuse_header(value: object) -> tuple[JsonObject, str, str]:
             "Known-role reuse source and selected voice must differ"
         )
     references = binding.get("reuse_reference_sha256s")
-    if (
-        not isinstance(references, list)
-        or not references
-        or references != sorted(set(references))
-    ):
+    if not isinstance(references, list) or not references:
         raise SourceReferenceBindingError(
             "Known-role reuse reference hashes are not canonical"
         )
     for digest in references:
         _required_sha256(digest, "Known-role reuse reference SHA-256")
+    if references != sorted(set(references)):
+        raise SourceReferenceBindingError(
+            "Known-role reuse reference hashes are not canonical"
+        )
     return binding, source_character, reuse_character
 
 
@@ -272,10 +273,11 @@ def _known_role_reuse_unresolved_ids(value: JsonObject) -> list[object]:
     if (
         not isinstance(cohort_ids, list)
         or not cohort_ids
-        or cohort_ids != sorted(set(cohort_ids))
         or any(not is_lowercase_sha256(item) for item in cohort_ids)
+        or cohort_ids != sorted(set(cohort_ids))
         or not isinstance(unresolved_ids, list)
         or not unresolved_ids
+        or any(not isinstance(item, str) for item in unresolved_ids)
         or unresolved_ids != sorted(set(unresolved_ids))
     ):
         raise SourceReferenceBindingError(
@@ -378,6 +380,7 @@ def _known_role_reuse_retired_queue_ids(value: JsonObject) -> set[object]:
         if (
             not isinstance(queue_scope, list)
             or not queue_scope
+            or any(not isinstance(item, str) for item in queue_scope)
             or queue_scope != sorted(set(queue_scope))
         ):
             raise SourceReferenceBindingError(
@@ -686,8 +689,8 @@ def _missing_voice_reuse_overrides_from_manifest(
     if (
         not isinstance(cohort_ids, list)
         or not cohort_ids
-        or cohort_ids != sorted(set(cohort_ids))
         or any(not is_lowercase_sha256(cohort_id) for cohort_id in cohort_ids)
+        or cohort_ids != sorted(set(cohort_ids))
     ):
         raise SourceReferenceBindingError(
             "Missing-voice reuse cohort IDs are not canonical"
@@ -928,6 +931,7 @@ def _approved_reuse_decision_scope(
     if (
         not isinstance(queue_ids, list)
         or not queue_ids
+        or any(not isinstance(item, str) for item in queue_ids)
         or queue_ids != sorted(set(queue_ids))
     ):
         raise SourceReferenceBindingError(
@@ -1091,6 +1095,7 @@ def _validate_retired_variants(records: object, plan_sha256s: set[str]) -> None:
         if (
             not isinstance(queue_ids, list)
             or not queue_ids
+            or any(not isinstance(item, str) for item in queue_ids)
             or queue_ids != sorted(set(queue_ids))
         ):
             raise SourceReferenceBindingError(

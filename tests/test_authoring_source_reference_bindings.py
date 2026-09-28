@@ -96,6 +96,15 @@ class AuthoringSourceReferenceBindingsTest(unittest.TestCase):
                 ),
             )
 
+    def test_malformed_reuse_cohort_id_uses_binding_error(self):
+        document = self.document()
+        document[MISSING_VOICE_REUSE_BINDING_FIELD]["cohort_ids"] = [{}]
+
+        with self.assertRaisesRegex(
+            SourceReferenceBindingError, "cohort IDs are not canonical"
+        ):
+            queue_voice_overrides_from_manifest(document)
+
     def test_exact_failed_control_can_be_superseded_by_review_candidate(self):
         document = copy.deepcopy(self.document())
         reuse = document[MISSING_VOICE_REUSE_BINDING_FIELD]
