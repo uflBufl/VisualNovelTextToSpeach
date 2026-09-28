@@ -78,6 +78,20 @@ class PersistentAudioCacheTest(unittest.TestCase):
         self.assertIsNotNone(path)
         np.testing.assert_allclose(audio, [0.1, -0.1])
 
+    def test_recency_update_failure_does_not_hide_valid_audio(self):
+        with TemporaryDirectory() as temporary_directory:
+            cache = PersistentAudioCache(temporary_directory)
+            expected = np.array([0.1, -0.1], dtype=np.float32)
+            cache.put("cached", expected)
+
+            with patch("vntts.audio_cache.os.utime", side_effect=PermissionError):
+                cached = cache.get("cached")
+                written = cache.put("new", expected)
+
+            np.testing.assert_allclose(cached, expected)
+            self.assertEqual(written, cache.directory / "new.npy")
+            np.testing.assert_allclose(cache.get("new"), expected)
+
     def test_prunes_oldest_entries_and_ignores_corruption(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

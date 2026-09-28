@@ -126,9 +126,9 @@ class PersistentAudioCache:
         timestamp = max(time_ns(), newest + 1_000_000)
         try:
             os.utime(path, ns=(timestamp, timestamp), follow_symlinks=False)
-        except NotImplementedError:
-            # Windows cannot update this timestamp without following symlinks.
-            # Keep the cache entry and use its creation time for pruning.
+        except (OSError, NotImplementedError):
+            # Recency metadata must not turn a valid cache entry into a miss.
+            # Pruning can fall back to its existing timestamps.
             pass
 
     def _prune(self) -> None:
