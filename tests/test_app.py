@@ -922,6 +922,23 @@ class TrayApplicationTest(unittest.TestCase):
         tray.pregeneration_dialog = None
         tray.shutdown()
 
+    def test_live_reading_keeps_background_preparation_controls_available(self):
+        controller = Mock(is_ready=True, is_live_running=True)
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        preparation = Mock()
+        preparation.has_pending_work.return_value = True
+        tray.pregeneration_dialog = preparation
+
+        tray._apply_controller_action_state()
+
+        preparation.setEnabled.assert_called_with(True)
+        tray.pregeneration_dialog = None
+        tray.shutdown()
+
     def test_capture_controls_remain_available_during_preparation(self):
         tray = TrayApplication(
             self.application,
@@ -1681,11 +1698,12 @@ class TrayApplicationTest(unittest.TestCase):
         tray_application.live_scope_runner = runner
 
         self.assertFalse(tray_application.toggle_live())
-        self.assertEqual(tray_application.live_action.text(), "Stop reading")
+        self.assertEqual(tray_application.live_action.text(), "Cancel start")
         self.assertFalse(tray_application.toggle_live())
 
         runner.start.assert_called_once_with(controller.identify_live_scope)
         runner.cancel.assert_called_once_with()
+        self.wait_until(lambda: controller.emergency_stop.called)
         controller.emergency_stop.assert_called_once_with()
         controller.toggle_live.assert_not_called()
         tray_application.shutdown()
@@ -1727,7 +1745,7 @@ class TrayApplicationTest(unittest.TestCase):
         controller.toggle_live.assert_not_called()
         tray_application.shutdown()
 
-    def test_stop_reading_uses_immediate_stop_for_live_and_one_time_speech(self):
+    def test_stop_reading_cancels_live_and_one_time_speech(self):
         controller = Mock(is_live_running=True)
         controller.live_reader.runtime_control_snapshot.return_value = {}
         tray_application = TrayApplication(
@@ -1737,6 +1755,7 @@ class TrayApplicationTest(unittest.TestCase):
         )
 
         self.assertFalse(tray_application.toggle_live())
+        self.wait_until(lambda: not tray_application.live_stop_runner.active)
         controller.emergency_stop.assert_called_once_with()
         controller.toggle_live.assert_not_called()
 
@@ -1747,6 +1766,7 @@ class TrayApplicationTest(unittest.TestCase):
             "queued": True,
         }
         self.assertFalse(tray_application.toggle_live())
+        self.wait_until(lambda: not tray_application.live_stop_runner.active)
         controller.emergency_stop.assert_called_once_with()
         controller.toggle_live.assert_not_called()
 
@@ -1755,9 +1775,50 @@ class TrayApplicationTest(unittest.TestCase):
         controller.is_one_shot_read_running = True
         self.assertEqual(tray_application._runtime_control_state().active, True)
         self.assertFalse(tray_application.toggle_live())
+        self.wait_until(lambda: not tray_application.live_stop_runner.active)
         controller.emergency_stop.assert_called_once_with()
         controller.toggle_live.assert_not_called()
         tray_application.shutdown()
+
+    def test_stop_disables_all_start_stop_controls_until_reader_quiesces(self):
+        release = Event()
+        controller = Mock(is_ready=True, is_live_running=True)
+
+        def stop_reader():
+            controller.is_live_running = False
+            return True
+
+        controller.emergency_stop.side_effect = stop_reader
+        controller.live_reader.wait.side_effect = lambda **_kwargs: release.wait(2)
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray.set_ready(True)
+
+        self.assertFalse(tray.toggle_live())
+        self.assertTrue(tray.live_stop_runner.active)
+        self.assertEqual(tray.dashboard.live_button.text(), "Stopping reading...")
+        for control in (
+            tray.live_action,
+            tray.dashboard.live_button,
+            tray.compact_controller.live_button,
+        ):
+            self.assertFalse(control.isEnabled())
+        heartbeat = []
+        QTimer.singleShot(0, lambda: heartbeat.append(True))
+        self.application.processEvents()
+        self.assertEqual(heartbeat, [True])
+        self.assertFalse(tray.toggle_live())
+        self.wait_until(lambda: controller.emergency_stop.called)
+        controller.emergency_stop.assert_called_once_with()
+
+        release.set()
+        self.wait_until(lambda: not tray.live_stop_runner.active)
+        self.assertTrue(tray.dashboard.live_button.isEnabled())
+        self.assertEqual(tray.dashboard.live_button.text(), "Start reading")
+        tray.shutdown()
 
     def test_voice_mapping_resumes_live_mode_after_assignment(self):
         controller = Mock()

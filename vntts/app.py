@@ -2288,8 +2288,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def toggle_live(self) -> bool:
         state = self._runtime_control_state()
-        if state.active:
-            self.emergency_stop()
+        if state.transition == "stopping":
+            return False
+        if state.active or state.transition == "starting":
+            self._request_stop_reading()
             return False
         if self.narrator_dialog is not None:
             return False
@@ -2519,6 +2521,50 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.controller.emergency_stop()
         self.signals.live_changed.emit(False)
         self.signals.speech_paused_changed.emit(False)
+
+    def _request_stop_reading(self) -> None:
+        if self.narrator_dialog is not None:
+            self._resume_live_after_narrator = False
+            self.narrator_dialog.reject()
+        self._live_scope_generation = None
+        self.live_scope_runner.cancel()
+        reader = self.controller.live_reader
+        if reader is not None:
+            reader.stop()
+        self._live_stop_generation = self._lifecycle_generation
+        self._live_stop_continuation = None
+        self.live_stop_runner.start(
+            self.session_owner.run,
+            self._lifecycle_generation,
+            lambda _cancellation: self._stop_reader_and_wait(reader),
+            False,
+        )
+        self.signals.live_changed.emit(False)
+        self.signals.speech_paused_changed.emit(False)
+        self._apply_controller_action_state()
+        self.set_status("Stopping reading and speech...")
+
+    def _stop_reader_and_wait(self, reader: LiveDialogReader | None) -> bool:
+        started = perf_counter()
+        outcome = "failed"
+        try:
+            self.controller.emergency_stop()
+            outcome = "complete"
+        finally:
+            record_background_operation(
+                "live-stop-interrupt", (perf_counter() - started) * 1000, outcome
+            )
+        if reader is not None:
+            started = perf_counter()
+            outcome = "failed"
+            try:
+                reader.wait(timeout_seconds=5.0)
+                outcome = "complete"
+            finally:
+                record_background_operation(
+                    "live-stop-quiescence", (perf_counter() - started) * 1000, outcome
+                )
+        return True
 
     def calibrate(self) -> None:
         if self._calibration_capture_pending:
@@ -3344,6 +3390,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._live_stop_generation = None
         continuation = self._live_stop_continuation
         self._live_stop_continuation = None
+        if not self._shutting_down:
+            self._apply_controller_action_state()
         if self._shutting_down or generation != self._lifecycle_generation:
             return
         if self.diagnostics_dialog is not None:
@@ -3357,6 +3405,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return
         if continuation is not None:
             QTimer.singleShot(0, continuation)
+        else:
+            self.signals.live_changed.emit(False)
+            self.set_status("Reading and speech stopped")
 
     def open_corrections(self) -> None:
         profile_id = self.settings.active_profile_id
@@ -4142,6 +4193,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             speaking=bool(snapshot.get("speaking", False)),
             queued=bool(snapshot.get("queued", False)),
             replayable=bool(snapshot.get("replayable", False)),
+            transition=(
+                "stopping"
+                if self.live_stop_runner.active
+                else "starting"
+                if self._live_scope_generation is not None
+                else None
+            ),
             unavailable_reason=(
                 unavailable_reason
                 or "Speech model and voices are loading. Controls will unlock "
@@ -4156,11 +4214,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def _apply_runtime_control_state(self, state: RuntimeControlState) -> None:
         if self.pregeneration_dialog is not None:
             self.pregeneration_dialog.setEnabled(
-                not (
-                    self._controller_busy
-                    or state.live
-                    or self.narrator_dialog is not None
-                )
+                not (self._controller_busy or self.narrator_dialog is not None)
             )
         controls = (
             (self.read_action, state.can_read, "read"),
@@ -4169,7 +4223,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         for action, enabled, control in controls:
             action.setEnabled(enabled)
             action.setToolTip("" if enabled else state.reason_for(control))
-        self.live_action.setText("Stop reading" if state.active else "Start reading")
+        self.live_action.setText(
+            "Cancel start"
+            if state.transition == "starting"
+            else "Stopping reading..."
+            if state.transition == "stopping"
+            else "Stop reading"
+            if state.active
+            else "Start reading"
+        )
         self.sequence_resync_action.setEnabled(state.ready)
         self.dashboard.set_runtime_controls(state)
         self.compact_controller.set_runtime_controls(state)
@@ -4311,6 +4373,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         dialog = self.pregeneration_dialog
         if (
             not running
+            and not self.live_stop_runner.active
             and dialog is not None
             and isinstance(dialog.pack_result(), OfflinePackResult)
         ):

@@ -57,11 +57,12 @@ class RuntimeControlState:
     speaking: bool = False
     queued: bool = False
     replayable: bool = False
+    transition: str | None = None
     unavailable_reason: str | None = None
 
     @property
     def can_read(self) -> bool:
-        return self.ready and not self.active
+        return self.ready and not self.active and self.transition is None
 
     @property
     def active(self) -> bool:
@@ -69,9 +70,15 @@ class RuntimeControlState:
 
     @property
     def can_toggle_live(self) -> bool:
-        return self.ready or self.active
+        return (self.ready or self.active) and self.transition != "stopping"
 
     def reason_for(self, control: str) -> str:
+        if self.transition == "stopping":
+            return (
+                "Reading and speech are stopping; controls will unlock automatically."
+            )
+        if self.transition == "starting":
+            return "Reading is starting; choose Cancel start to stop."
         if not self.ready:
             return (
                 self.unavailable_reason or "VNTTS is not ready. Select Check readiness."
@@ -91,6 +98,20 @@ def _apply_reading_capabilities(
     read_button.setEnabled(state.can_read)
     live_button.setEnabled(state.can_toggle_live)
     _set_live_button_presentation(live_button, state.active)
+    if state.transition is not None:
+        live_button.setText(
+            "Cancel start" if state.transition == "starting" else "Stopping reading..."
+        )
+        live_button.setAccessibleDescription(
+            "Cancel the pending start"
+            if state.transition == "starting"
+            else "Reading and speech are stopping; controls will unlock automatically"
+        )
+        live_button.setToolTip(
+            "Cancel the pending start"
+            if state.transition == "starting"
+            else "Wait for reading and speech to stop"
+        )
     read_button.setToolTip("" if state.can_read else state.reason_for("read"))
 
 

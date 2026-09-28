@@ -71,6 +71,46 @@ Planned implementation order after approval:
 
 ## P0 - Play while offline audio is still preparing
 
+- [ ] **Diagnose Stage 1 of `A Fledgling's Brave Fall` from the September 29
+      support archive:** classify each auto-advance stall and manual advance that
+      did not start the next prepared line. Reproduce the actual cursor/OCR/focus
+      transition before fixing it. Preserve the one-key-per-dialogue safety rule;
+      never blindly resend an advance key. The archive contains 21
+      `story-line-no-match` routes; identify which are OCR/nameplate errors.
+- [ ] **Stabilize unknown speaker OCR:** collect frames where `???` became `22`
+      or merged with dialogue; test speaker-band segmentation and consistent
+      unknown-role normalization across adjacent frames. The spoken dialogue
+      must not include the misread nameplate or become Narrator by accident.
+      Do not globally classify numeric names as unknown: `6`, `37`, and numbered
+      NPCs can be legitimate speakers.
+- [ ] **Validate Start/Stop on Windows:** the button now changes to `Cancel start`
+      while chapter identification runs, then `Stopping reading...` and disabled
+      while capture/speech quiesces; all launch surfaces share the transition.
+      Verify a rapid double-click cannot restart reading or duplicate Stop, and
+      that returning to Stories during reading leaves preparation progress and
+      Cancel usable. Compare `live-stop-interrupt` with `live-stop-quiescence`
+      in the next support log to isolate any remaining multi-second delay; the
+      earlier archive recorded `_wait_for_live_reader` at 5021 ms. Keep a
+      stalled start, and investigate any stop timeout before changing limits.
+- [ ] **Honor matching game speech:** investigate why the voiced line `We should
+      all stay on our island.` was also synthesized. Compare the exact on-screen
+      text, configured audio-source policy, bound game audio, its authoritative/
+      full-coverage flags and match evidence; skip generated playback only
+      when the existing game recording truly covers the visible dialogue.
+- [ ] **Reduce prepared-line startup latency:** measure capture, OCR, sequence
+      matching, queueing, decoding and audio-output time in a fully prepared
+      stage. Design sequence-led playback with OCR as a position check, not a
+      full recognition gate for every known line; retain resync and mismatched
+      dialogue safety. Discuss the measured design before changing routing.
+- [ ] **Expose stages as preparation units:** verify stage boundaries and line
+      ownership in the story index. Current selections are whole collections;
+      only indexes without collections fall back to chapter groups. Split a
+      collection into stable stage selections where the source provides stage
+      IDs, then show per-stage playable/offline-complete/remaining coverage
+      instead of treating any saved job as ready. Allow selecting only unread
+      stages and publish partial-stage audio safely so Stage 1 is playable while
+      later stages generate. Bind saved selection to the source-index checksum,
+      preserve completed work, and make stage choice editable on restart.
 - [ ] **Validate in a sustained chapter:** an occurrence is now claimed as soon as
       its first PCM is emitted, even if playback is later interrupted. Sequence
       leases and non-sequence generation sealing suppress a second route without
