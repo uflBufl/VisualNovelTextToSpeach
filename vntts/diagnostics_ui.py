@@ -160,6 +160,17 @@ class DiagnosticsDialog(QDialog):
         layout.addWidget(buttons)
         make_text_copyable(self)
 
+    def set_calibration_pending(self, pending: bool) -> None:
+        self.calibrate_button.setEnabled(not pending)
+        self.calibrate_button.setText(
+            "Stopping reading..." if pending else "Change capture region..."
+        )
+        self.calibrate_button.setAccessibleName(
+            "Stopping reading before capture calibration"
+            if pending
+            else "Change captured dialogue region"
+        )
+
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         QTimer.singleShot(0, self._scale_preview)

@@ -139,6 +139,10 @@ class _MossBackendLease:
         backend = self._runtime._backend
         return backend.stop() if backend is not None else False
 
+    def set_live_mode_active(self, active: object) -> bool:
+        # Native OpenMOSS has no live-mode state to update during an offline render.
+        return bool(active)
+
     def play_prepared(
         self, prepared: PreparedPlayback, *, playback_guard: PlaybackGuard = None
     ) -> object:

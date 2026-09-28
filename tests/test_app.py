@@ -985,6 +985,11 @@ class TrayApplicationTest(unittest.TestCase):
                 with (
                     patch.object(tray, "_create_settings_dialog") as settings_dialog,
                     patch.object(tray, "_open_calibration_overlay") as overlay,
+                    patch.object(
+                        tray,
+                        "_capture_calibration_background",
+                        return_value=(None, object()),
+                    ),
                 ):
                     settings_dialog.return_value.exec.return_value = (
                         QDialog.DialogCode.Rejected
@@ -1001,6 +1006,14 @@ class TrayApplicationTest(unittest.TestCase):
                     else:
                         self.wait_until(lambda: settings_dialog.called)
                 controller.toggle_live.assert_called_once_with()
+                if action == "calibrate":
+                    controller.live_reader.wait.assert_called_once_with(
+                        timeout_seconds=5.0, include_speech=False
+                    )
+                else:
+                    controller.live_reader.wait.assert_called_once_with(
+                        timeout_seconds=5.0
+                    )
                 preparation._cancel_or_reject.assert_not_called()
                 preparation.reject.assert_not_called()
                 self.assertIs(tray.pregeneration_dialog, preparation)
@@ -4074,20 +4087,116 @@ class TrayApplicationTest(unittest.TestCase):
             ),
             controller_factory=Mock(return_value=controller),
         )
+        background = object()
 
         with (
             patch("vntts.app.show_calibration_overlay") as show_overlay,
+            patch(
+                "vntts.app.capture_calibration_background",
+                return_value=background,
+            ),
             patch(
                 "vntts.app.QTimer.singleShot",
                 side_effect=lambda _delay, callback: callback(),
             ),
         ):
             tray_application.calibrate()
+            self.wait_until(lambda: show_overlay.called)
 
         show_overlay.assert_called_once_with(
-            geometry, save_region=tray_application._save_calibration_region
+            geometry,
+            background=background,
+            save_region=tray_application._save_calibration_region,
         )
         tray_application.shutdown()
+
+    def test_slow_calibration_capture_keeps_ui_responsive(self):
+        started = Event()
+        release = Event()
+        heartbeat = []
+        controller = Mock(is_live_running=False)
+        controller.get_capture_geometry.return_value = None
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+
+        def slow_capture(_geometry):
+            started.set()
+            release.wait(2)
+            return object()
+
+        with (
+            patch("vntts.app.capture_calibration_background", side_effect=slow_capture),
+            patch("vntts.app.show_calibration_overlay") as show_overlay,
+        ):
+            try:
+                tray.calibrate()
+                self.wait_until(started.is_set)
+                self.assertTrue(tray.calibration_capture_runner.active)
+                QTimer.singleShot(0, lambda: heartbeat.append(True))
+                self.wait_until(lambda: bool(heartbeat))
+                show_overlay.assert_not_called()
+            finally:
+                release.set()
+            self.wait_until(lambda: show_overlay.called)
+
+        tray.shutdown()
+
+    def test_diagnostics_region_button_shows_pending_live_stop(self):
+        release = Event()
+        controller = Mock(is_live_running=True)
+        controller.get_latest_diagnostic.return_value = None
+
+        def stop_live():
+            controller.is_live_running = False
+            return False
+
+        controller.toggle_live.side_effect = stop_live
+        controller.live_reader.wait.side_effect = lambda **_kwargs: release.wait(2)
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray.open_diagnostics()
+        dialog = tray.diagnostics_dialog
+
+        with (
+            patch.object(
+                tray, "_capture_calibration_background", return_value=(None, object())
+            ),
+            patch.object(tray, "_open_calibration_overlay") as overlay,
+        ):
+            dialog.calibrate_button.click()
+            self.assertFalse(dialog.calibrate_button.isEnabled())
+            self.assertEqual(dialog.calibrate_button.text(), "Stopping reading...")
+            release.set()
+            self.wait_until(lambda: overlay.called)
+
+        self.assertFalse(dialog.isVisible())
+        tray.shutdown()
+
+    def test_diagnostics_region_stop_timeout_allows_retry(self):
+        controller = Mock(is_live_running=True)
+        controller.get_latest_diagnostic.return_value = None
+        controller.toggle_live.side_effect = lambda: False
+        controller.live_reader.wait.side_effect = TimeoutError("reader stuck")
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray.open_diagnostics()
+        dialog = tray.diagnostics_dialog
+
+        dialog.calibrate_button.click()
+        self.wait_until(lambda: not tray.live_stop_runner.active)
+
+        self.assertTrue(dialog.calibrate_button.isEnabled())
+        self.assertIn("reader stuck", dialog.warning.text())
+        tray.shutdown()
 
     def test_diagnostics_can_change_region_and_refresh_after_calibration(self):
         controller = Mock()
@@ -4107,9 +4216,14 @@ class TrayApplicationTest(unittest.TestCase):
             "Change captured dialogue region",
         )
         overlay = Mock()
+        background = object()
 
         with (
             patch("vntts.app.show_calibration_overlay", return_value=overlay) as show,
+            patch(
+                "vntts.app.capture_calibration_background",
+                return_value=background,
+            ),
             patch(
                 "vntts.app.QTimer.singleShot",
                 side_effect=lambda _delay, callback: callback(),
@@ -4118,8 +4232,11 @@ class TrayApplicationTest(unittest.TestCase):
         ):
             dialog.calibrate_button.click()
             self.assertFalse(dialog.isVisible())
+            self.wait_until(lambda: show.called)
             show.assert_called_once_with(
-                geometry, save_region=tray_application._save_calibration_region
+                geometry,
+                background=background,
+                save_region=tray_application._save_calibration_region,
             )
 
             overlay.closed.connect.call_args.args[0]()

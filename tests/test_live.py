@@ -1449,6 +1449,27 @@ class LiveDialogReaderTest(unittest.TestCase):
         self.assertFalse(worker.is_alive())
         self.assertTrue(completed.is_set())
 
+    def test_calibration_waits_for_capture_but_not_active_speech(self):
+        reader = self.create_reader()
+        capture = Future()
+        reader.capture_future = capture
+        pending_speech = Future()
+        reader.speech_futures[pending_speech] = SpeechChunk(1, "Alice", "Hello.")
+        finished = Event()
+        worker = Thread(
+            target=lambda: (
+                reader.wait(timeout_seconds=1, include_speech=False),
+                finished.set(),
+            )
+        )
+        worker.start()
+        self.assertFalse(finished.wait(0.02))
+        capture.set_result(None)
+        worker.join(1)
+
+        self.assertTrue(finished.is_set())
+        self.assertFalse(pending_speech.done())
+
     def test_restart_waits_for_previous_playback_to_quiesce(self):
         reader = self.create_reader()
         reader.capture_future = Future()

@@ -36,6 +36,9 @@ class _Backend:
         self.stops += 1
         return False
 
+    def set_live_mode_active(self, active):
+        return bool(active)
+
     def shutdown(self):
         self.shutdowns += 1
         self.runtime_status = None
@@ -144,6 +147,30 @@ class RetainedMossRuntimeTests(unittest.TestCase):
         playback.join(1)
         probe.join(1)
         runtime.shutdown()
+
+    @patch("vntts.moss_runtime.moss_cpp_requested", return_value=True)
+    def test_live_stop_does_not_wait_for_offline_render(self, _):
+        runtime = RetainedMossRuntime(
+            "/tmp/vntts-moss-runtime-test", backend_factory=_Backend
+        )
+        lease = runtime.backend_for("first", model_name="model-a")
+        stream = lease.render(None)
+        finished = Event()
+        result = []
+
+        def change_mode():
+            result.append(lease.set_live_mode_active(False))
+            finished.set()
+
+        probe = Thread(target=change_mode, daemon=True)
+        probe.start()
+        try:
+            self.assertTrue(finished.wait(0.5))
+            self.assertEqual(result, [False])
+        finally:
+            stream.close()
+            probe.join(1)
+            runtime.shutdown()
 
     @patch("vntts.moss_runtime.moss_cpp_requested", return_value=True)
     def test_offline_openmoss_installs_and_loads_without_manual_preload(self, _):

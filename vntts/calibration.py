@@ -71,7 +71,8 @@ def capture_calibration_background(
 
 
 def pixmap_from_pil(image: Image.Image) -> QPixmap:
-    image = image.convert("RGB")
+    if image.mode != "RGB":
+        image = image.convert("RGB")
     qimage = QImage(
         image.tobytes("raw", "RGB"),
         image.width,

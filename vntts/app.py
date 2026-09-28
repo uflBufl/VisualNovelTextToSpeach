@@ -7,6 +7,7 @@ from pathlib import Path
 from threading import Event, Lock, Thread
 from time import perf_counter
 
+from PIL import Image
 from pynput import keyboard
 from PySide6.QtCore import (
     QObject,
@@ -60,7 +61,11 @@ from vntts.auto_advance_policy import (
     auto_advance_control_state,
     guard_auto_advance_settings,
 )
-from vntts.calibration import DialogRegionOverlay, show_calibration_overlay
+from vntts.calibration import (
+    DialogRegionOverlay,
+    capture_calibration_background,
+    show_calibration_overlay,
+)
 from vntts.configuration_apply import ConfigurationApplyMixin
 from vntts.controller import AppController, LiveSequenceStatus
 from vntts.dashboard_ui import (
@@ -1712,6 +1717,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.live_stop_runner.finished.connect(self._live_stop_finished)
         self._live_stop_continuation: Callable[[], object] | None = None
         self._live_stop_generation: int | None = None
+        self.calibration_capture_runner = LatestTaskRunner(self)
+        self.calibration_capture_runner.finished.connect(
+            self._calibration_capture_finished
+        )
         self.profile_restart_runner = LatestTaskRunner(self)
         self.profile_restart_runner.finished.connect(self._profile_restart_finished)
         self.initial_start_runner = LatestTaskRunner(self)
@@ -1783,6 +1792,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.onboarding_cancel_event = Event()
         self.restore_compact_after_calibration = False
         self.restore_diagnostics_after_calibration = False
+        self._calibration_capture_pending = False
         self._notification_recovery: str | None = None
         self._background_notification_shown = False
         self.dashboard = ControlDashboard(self.settings)
@@ -2511,6 +2521,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.signals.speech_paused_changed.emit(False)
 
     def calibrate(self) -> None:
+        if self._calibration_capture_pending:
+            return
         if self._controller_busy or self._shutting_down:
             self.set_status("Controller reconfiguration is already in progress")
             return
@@ -2518,15 +2530,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.set_status("Live capture is already stopping; please wait")
             return
         if self.controller.is_live_running is True:
-            self._stop_live_then(
-                self.calibrate, "Stopping reading before capture calibration..."
+            started = self._stop_live_then(
+                self.calibrate,
+                "Stopping reading before capture calibration...",
+                wait_for_speech=False,
             )
+            if started and self.diagnostics_dialog is not None:
+                self.diagnostics_dialog.set_calibration_pending(True)
             return
-        try:
-            geometry = self.controller.get_capture_geometry()
-        except WindowCaptureError as error:
-            self.show_error(str(error))
-            return
+        self._calibration_capture_pending = True
         self.restore_compact_after_calibration = self.compact_controller.isVisible()
         if self.diagnostics_dialog is not None and self.diagnostics_dialog.isVisible():
             self.restore_diagnostics_after_calibration = True
@@ -2535,12 +2547,42 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.compact_controller.hide()
         if self.readiness_dialog is not None:
             self.readiness_dialog.hide()
-        QTimer.singleShot(200, lambda: self._open_calibration_overlay(geometry))
+        self.set_status("Capturing game window for calibration...")
+        QTimer.singleShot(200, self._start_calibration_capture)
 
-    def _open_calibration_overlay(self, geometry: WindowGeometry | None) -> None:
+    def _start_calibration_capture(self) -> None:
+        if self._shutting_down or not self._calibration_capture_pending:
+            return
+        self.calibration_capture_runner.start(self._capture_calibration_background)
+
+    def _capture_calibration_background(
+        self,
+    ) -> tuple[WindowGeometry | None, Image.Image]:
+        geometry = self.controller.get_capture_geometry()
+        return geometry, capture_calibration_background(geometry)
+
+    def _calibration_capture_finished(
+        self,
+        result: tuple[WindowGeometry | None, Image.Image] | None,
+        error: Exception | None,
+    ) -> None:
+        self._calibration_capture_pending = False
+        if self._shutting_down:
+            return
+        if error is not None or result is None:
+            self.restore_control_window()
+            self.show_error(f"Unable to capture a calibration preview: {error}")
+            return
+        self._open_calibration_overlay(*result)
+
+    def _open_calibration_overlay(
+        self, geometry: WindowGeometry | None, background: Image.Image
+    ) -> None:
         try:
             overlay = show_calibration_overlay(
-                geometry, save_region=self._save_calibration_region
+                geometry,
+                background=background,
+                save_region=self._save_calibration_region,
             )
         except Exception as error:
             self.restore_control_window()
@@ -3256,7 +3298,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.signals.hotkeys_requested.emit()
         self.set_status(f"Profile {profile_name!r} selected")
 
-    def _stop_live_then(self, continuation: Callable[[], object], status: str) -> bool:
+    def _stop_live_then(
+        self,
+        continuation: Callable[[], object],
+        status: str,
+        *,
+        wait_for_speech: bool = True,
+    ) -> bool:
         if self._shutting_down:
             return False
         if self.live_stop_runner.active:
@@ -3276,12 +3324,19 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if reader is None:
             QTimer.singleShot(0, lambda: self._live_stop_finished(True, None))
         else:
-            self.live_stop_runner.start(self._wait_for_live_reader, reader)
+            self.live_stop_runner.start(
+                self._wait_for_live_reader, reader, wait_for_speech
+            )
         return True
 
     @staticmethod
-    def _wait_for_live_reader(reader: LiveDialogReader) -> bool:
-        reader.wait(timeout_seconds=5.0)
+    def _wait_for_live_reader(
+        reader: LiveDialogReader, wait_for_speech: bool = True
+    ) -> bool:
+        if wait_for_speech:
+            reader.wait(timeout_seconds=5.0)
+        else:
+            reader.wait(timeout_seconds=5.0, include_speech=False)
         return True
 
     def _live_stop_finished(self, _result: object, error: Exception | None) -> None:
@@ -3291,9 +3346,14 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._live_stop_continuation = None
         if self._shutting_down or generation != self._lifecycle_generation:
             return
+        if self.diagnostics_dialog is not None:
+            self.diagnostics_dialog.set_calibration_pending(False)
         self._set_modal_launchers_enabled(self._controller_ready)
         if error is not None:
-            self.set_status(f"Unable to stop live capture: {error}")
+            message = f"Unable to stop live capture: {error}"
+            self.set_status(message)
+            if continuation == self.calibrate and self.diagnostics_dialog is not None:
+                self.diagnostics_dialog.set_warning(message)
             return
         if continuation is not None:
             QTimer.singleShot(0, continuation)
@@ -4292,6 +4352,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._live_stop_continuation = None
         self._live_stop_generation = None
         self.live_stop_runner.cancel()
+        self._calibration_capture_pending = False
+        self.calibration_capture_runner.cancel()
         self._live_scope_generation = None
         self.live_scope_runner.cancel()
         self._cancel_diagnostics_refresh()

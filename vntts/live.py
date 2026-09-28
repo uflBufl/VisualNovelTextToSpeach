@@ -716,7 +716,9 @@ class LiveDialogReader:
             future.cancel()
         return True
 
-    def wait(self, *, timeout_seconds: float | None = None) -> None:
+    def wait(
+        self, *, timeout_seconds: float | None = None, include_speech: bool = True
+    ) -> None:
         deadline = (
             None
             if timeout_seconds is None
@@ -741,6 +743,8 @@ class LiveDialogReader:
             wait_for(capture_future)
         if ocr_future is not None:
             wait_for(ocr_future)
+        if not include_speech:
+            return
         while True:
             with self.state_lock:
                 speech_futures = tuple(self.speech_futures)
