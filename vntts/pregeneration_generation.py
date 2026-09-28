@@ -13,6 +13,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from threading import Lock
 from typing import Protocol
 
 from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
@@ -74,6 +75,9 @@ class OfflineGenerationWorker:
         self._process: subprocess.Popen[str] | None = None
         self._in_process_active = False
         self._startup_status: str | None = None
+        self._progress_lock = Lock()
+        self._memory_progress_enabled = backend_factory is not None
+        self._live_progress: tuple[str, OfflineGenerationProgress] | None = None
         self._disk_checked_inputs: set[str] = set()
 
     def command(self) -> tuple[str, ...]:
@@ -194,22 +198,32 @@ class OfflineGenerationWorker:
     def inspect_progress(
         self, generation_input: PregenerationInput
     ) -> OfflineGenerationProgress:
-        """Reload durable per-item progress while generation is still running."""
+        """Inspect in-memory OpenMOSS progress or a subprocess's durable state."""
+        with self._progress_lock:
+            if self._memory_progress_enabled:
+                if (
+                    self._live_progress is not None
+                    and self._live_progress[0] == generation_input.identity
+                ):
+                    return self._live_progress[1]
+                return OfflineGenerationProgress(
+                    available=False, runtime_status=self._startup_status
+                )
         output = _generation_output(generation_input)
         state_path = output / "generation-state.json"
         if not state_path.is_file():
-            return OfflineGenerationProgress(
-                available=False,
-                runtime_status=self._startup_status
-                if self._in_process_active
-                else None,
-            )
+            return OfflineGenerationProgress(available=False)
         try:
             state = json.loads(state_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError, UnicodeError) as error:
             raise OfflineGenerationError(
                 f"Unable to inspect offline generation progress: {error}"
             ) from error
+        return self._progress_from_state(state, generation_input)
+
+    def _progress_from_state(
+        self, state: object, generation_input: PregenerationInput
+    ) -> OfflineGenerationProgress:
         if (
             not isinstance(state, dict)
             or state.get("queue_sha256") != generation_input.queue_sha256
@@ -341,14 +355,24 @@ class OfflineGenerationWorker:
         else:
             parsed = None
         if parsed is not None:
-            self._in_process_active = True
-            self._startup_status = "Starting OpenMOSS..."
+            with self._progress_lock:
+                self._memory_progress_enabled = True
+                self._in_process_active = True
+                self._startup_status = "Starting OpenMOSS..."
+                if (
+                    self._live_progress is not None
+                    and self._live_progress[0] != generation_input.identity
+                ):
+                    self._live_progress = None
             try:
                 run_generation(
                     parsed,
                     backend_factory=self.backend_factory,
                     cancellation=cancel_event,
                     startup_progress=self._set_startup_status,
+                    progress_callback=lambda state: self._record_progress(
+                        state, generation_input
+                    ),
                 )
             except Exception as error:
                 if cancel_event is not None and cancel_event.is_set():
@@ -359,13 +383,16 @@ class OfflineGenerationWorker:
                     f"Offline speech could not be generated: {error}"
                 ) from error
             finally:
-                self._in_process_active = False
-                self._startup_status = None
+                with self._progress_lock:
+                    self._in_process_active = False
+                    self._startup_status = None
             if cancel_event is not None and cancel_event.is_set():
                 raise OfflineGenerationCancelled(
                     "Offline speech generation was cancelled"
                 )
             return _load_result(output, generation_input)
+        with self._progress_lock:
+            self._memory_progress_enabled = False
         try:
             process = self.popen_factory(
                 tuple(arguments),
@@ -404,7 +431,27 @@ class OfflineGenerationWorker:
 
     def _set_startup_status(self, message: object) -> None:
         if isinstance(message, str) and message.strip():
-            self._startup_status = message.strip()[:2000]
+            with self._progress_lock:
+                self._startup_status = message.strip()[:2000]
+
+    def _record_progress(
+        self, state: dict[str, object], generation_input: PregenerationInput
+    ) -> None:
+        progress = self._progress_from_state(state, generation_input)
+        with self._progress_lock:
+            self._live_progress = generation_input.identity, progress
+
+    def refresh_progress(self, generation_input: PregenerationInput) -> None:
+        """Refresh memory after a recovery decision committed outside generation."""
+        with self._progress_lock:
+            if not self._memory_progress_enabled:
+                return
+        state_path = _generation_output(generation_input) / "generation-state.json"
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            self._record_progress(state, generation_input)
+        except OSError, UnicodeError, json.JSONDecodeError, OfflineGenerationError:
+            pass
 
 
 def _ensure_remaining_disk_space(generation_input: PregenerationInput) -> None:

@@ -598,6 +598,9 @@ def _terminalize_exhausted_failures(
                 reason=LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED,
                 model="pocket-tts",
             )
+            refresh_progress = getattr(generator, "refresh_progress", None)
+            if callable(refresh_progress):
+                refresh_progress(generation_input)
         except (BulkGenerationError, OSError, ValueError) as error:
             raise OfflineRecoveryError(
                 f"Unable to preserve live fallback for {queue_id!r}: {error}"

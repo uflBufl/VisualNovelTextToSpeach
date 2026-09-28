@@ -487,6 +487,7 @@ class _GenerationExecutionContext:
     evidence_directory: Path | None
     regenerate_existing: bool
     approve_validated_audio: bool
+    progress_callback: Callable[[JsonDocument], None] | None
 
 
 @dataclass(frozen=True)
@@ -2390,6 +2391,7 @@ def _begin_generation_attempt(
         started_at=_now(),
         last_error=last_error,
     )
+    _notify_progress(run)
     return _GenerationAttempt(
         attempts=attempts,
         provider_attempts=provider_attempts,
@@ -2469,6 +2471,7 @@ def _render_and_publish_generation_attempt(
         )
     run.lease.assert_owned()
     _write_active_phase(run.state_path, run.state, "validating")
+    _notify_progress(run)
     if pipeline_enabled:
         prefetched_render = _prefetch_next_generation(
             run, item_index, prefetched_render
@@ -2491,6 +2494,7 @@ def _render_and_publish_generation_attempt(
     speech_quality = inspect_generated_speech(attempt.partial, text=plan.synthesis_text)
     file_sha256 = sha256_file(attempt.partial)
     _write_active_phase(run.state_path, run.state, "publishing")
+    _notify_progress(run)
     if run.workspace_output_identity is not None:
         _assert_workspace_output_identity(
             run.output_argument, run.workspace_output_identity
@@ -2522,6 +2526,12 @@ def _publish_runtime_progress(run: _GenerationExecutionContext) -> None:
         # Playback independently verifies the file hash before use.
         validate_files=False,
     )
+    _notify_progress(run)
+
+
+def _notify_progress(run: _GenerationExecutionContext) -> None:
+    if run.progress_callback is not None:
+        run.progress_callback(run.state)
 
 
 def _execute_generation_item(
@@ -3020,6 +3030,7 @@ def run_bulk_generation(
     audio_event_spoken_projection_queue_ids: Sequence[object] | None = None,
     synthesis_cache_policy: object = SynthesisCachePolicy.BYPASS,
     approve_validated_audio: bool = False,
+    progress_callback: Callable[[JsonDocument], None] | None = None,
 ) -> BulkGenerationResult:
     """Render selected queue items with no device playback and resumable state."""
     configuration = _prepare_generation_configuration(
@@ -3151,6 +3162,7 @@ def run_bulk_generation(
         evidence_directory=evidence_directory,
         manifest_path=manifest_path,
         approve_validated_audio=approve_validated_audio,
+        progress_callback=progress_callback,
     )
 
 
@@ -3194,6 +3206,7 @@ def _run_generation_execution(
     evidence_directory: Path | None,
     manifest_path: Path,
     approve_validated_audio: bool,
+    progress_callback: Callable[[JsonDocument], None] | None,
 ) -> BulkGenerationResult:
     with (
         _GenerationLease(
@@ -3220,6 +3233,8 @@ def _run_generation_execution(
         )
         _record_interrupted_generation_job(state, state_path, interrupted_job)
         _reconcile_interrupted_attempt(state_path, state, queue)
+        if progress_callback is not None:
+            progress_callback(state)
         state.setdefault("game", queue.metadata.get("game"))
         state.setdefault("language", queue.metadata.get("language"))
         candidates, skipped_actions, skipped_characters, skipped_items = (
@@ -3267,6 +3282,7 @@ def _run_generation_execution(
                 evidence_directory=evidence_directory,
                 regenerate_existing=regenerate_existing,
                 approve_validated_audio=approve_validated_audio,
+                progress_callback=progress_callback,
             )
         )
         return _finalize_generation_run(

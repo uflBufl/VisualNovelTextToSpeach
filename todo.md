@@ -1,5 +1,9 @@
 # TODO
 
+## Validate OpenMOSS progress on Windows
+
+- [ ] During a sustained offline story preparation, confirm progress updates without frequent reads of `generation-state.json`, cancellation and Continue retain completed lines, and no state replacement access error recurs.
+
 ## Validate capture changes during background preparation on Windows
 
 - [ ] While a story is preparing and reading is active, confirm Settings and Calibrate capture remain available. Opening either stops only reading, and story preparation continues; after saving a region, restart reading and confirm capture uses the new area.

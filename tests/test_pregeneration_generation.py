@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 import unittest
@@ -256,7 +257,7 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
     def test_in_process_startup_progress_is_visible_before_generation_state(self):
         with TemporaryDirectory() as directory:
             inputs, _plan = generation_inputs(Path(directory))
-            worker = OfflineGenerationWorker()
+            worker = OfflineGenerationWorker(backend_factory=Mock())
             worker._in_process_active = True
             worker._set_startup_status("Downloading OpenMOSS: 12%")
 
@@ -419,20 +420,59 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 backend_factory=backend_factory,
             )
             cancellation = Event()
+            snapshots = []
+            calls = 0
+            read_text = Path.read_text
+
+            def reject_state_poll(path, *args, **kwargs):
+                if path.name == "generation-state.json":
+                    raise AssertionError("disk poll")
+                return read_text(path, *args, **kwargs)
+
+            def generate_with_progress(_parsed, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    snapshots.append(worker.inspect_progress(generation_input))
+                    return
+                progress = kwargs["progress_callback"]
+                state = {
+                    "queue_sha256": generation_input.queue_sha256,
+                    "items": {"one": {"status": "approved", "line_id": "first"}},
+                    "active": {
+                        "phase": "publishing",
+                        "runtime_status": "GPU: RTX 2070 SUPER",
+                        "runtime_worker_pid": os.getpid(),
+                    },
+                }
+                progress(state)
+                snapshots.append(worker.inspect_progress(generation_input))
+                state["items"]["two"] = {"status": "approved", "line_id": "second"}
+                snapshots.append(worker.inspect_progress(generation_input))
+                progress(state)
+                snapshots.append(worker.inspect_progress(generation_input))
 
             with (
                 patch(
-                    "vntts.authoring.cli_generation.run_generation"
+                    "vntts.authoring.cli_generation.run_generation",
+                    side_effect=generate_with_progress,
                 ) as run_generation,
                 patch(
                     "vntts.pregeneration_generation._load_result",
                     return_value=expected,
                 ),
                 patch.object(worker, "inspect", side_effect=OfflineGenerationError),
+                patch(
+                    "vntts.pregeneration_generation._static_ready_line_ids",
+                    return_value=(),
+                ),
+                patch.object(Path, "read_text", reject_state_poll),
             ):
                 result = worker.generate(
                     generation_input, plan, cancel_event=cancellation
                 )
+                snapshots.append(worker.inspect_progress(generation_input))
+                worker.generate(generation_input, plan, cancel_event=cancellation)
 
         popen.assert_not_called()
         self.assertIs(result, expected)
@@ -441,6 +481,9 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
         )
         self.assertIsNotNone(run_generation.call_args.kwargs["startup_progress"])
         self.assertIs(run_generation.call_args.kwargs["cancellation"], cancellation)
+        self.assertEqual([value.generated for value in snapshots], [1, 1, 2, 2, 2])
+        self.assertEqual(snapshots[0].active_phase, "publishing")
+        self.assertIn("RTX 2070 SUPER", snapshots[0].runtime_status)
 
     def test_pocket_cloning_opt_in_reaches_isolated_worker(self):
         with TemporaryDirectory() as temporary_directory:

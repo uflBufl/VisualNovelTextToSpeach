@@ -18,6 +18,7 @@ from vntts.pregeneration_recovery import (
     OfflineRecoveryResult,
     OfflineRecoveryWorker,
     _ordered_generation_queue_ids,
+    _terminalize_exhausted_failures,
     plan_automatic_recovery,
 )
 from vntts.pregeneration_voices import VoicePlan
@@ -70,6 +71,38 @@ def inputs(root):
 
 
 class OfflineRecoveryPlanTest(unittest.TestCase):
+    def test_terminal_fallback_refreshes_in_memory_progress_after_commit(self):
+        with TemporaryDirectory() as temporary_directory:
+            generation_input, result, _voice_plan = inputs(Path(temporary_directory))
+            generator = Mock()
+            generator.inspect.return_value = result
+            events = []
+            generator.refresh_progress.side_effect = lambda _input: events.append(
+                "refresh"
+            )
+            with (
+                patch(
+                    "vntts.pregeneration_recovery.validate_offline_generation_result"
+                ),
+                patch(
+                    "vntts.pregeneration_recovery.authorize_live_fallback",
+                    side_effect=lambda _state, _queue, queue_id, **_options: (
+                        events.append(queue_id)
+                    ),
+                ),
+            ):
+                self.assertIs(
+                    _terminalize_exhausted_failures(
+                        generation_input,
+                        result,
+                        ("b", "a"),
+                        None,
+                        generator=generator,
+                    ),
+                    result,
+                )
+            self.assertEqual(events, ["a", "refresh", "b", "refresh"])
+
     def test_recovery_rejects_a_changed_voice_manifest_before_loading_the_queue(self):
         with TemporaryDirectory() as temporary_directory:
             generation_input, _result, voice_plan = inputs(Path(temporary_directory))

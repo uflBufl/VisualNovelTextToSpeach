@@ -608,6 +608,7 @@ def _run_bulk_generation(
     queue_overrides: dict[str, str],
     missing_policy: MissingVoicePolicy,
     repair_policy: FailureRepairPolicy,
+    progress_callback: Callable[[dict[str, object]], None] | None,
 ) -> BulkGenerationResult:
     cache_context = (
         nullcontext(arguments.cache_directory.expanduser().resolve())
@@ -685,6 +686,7 @@ def _run_bulk_generation(
                 ),
                 cancellation=cancellation,
                 approve_validated_audio=arguments.approve_validated_audio,
+                progress_callback=progress_callback,
             )
         finally:
             shutdown_speech_backend(backend)
@@ -696,6 +698,7 @@ def run_generation(
     backend_factory: Callable[..., object] | None = None,
     cancellation: SynthesisCancellation = None,
     startup_progress: object = None,
+    progress_callback: Callable[[dict[str, object]], None] | None = None,
 ) -> BulkGenerationResult:
     missing_policy = missing_voice_policy(arguments)
     repair_policy = failure_repair_policy(arguments)
@@ -742,6 +745,7 @@ def run_generation(
         queue_overrides,
         missing_policy,
         repair_policy,
+        progress_callback,
     )
 
 

@@ -211,6 +211,41 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             **options,
         )
 
+    def test_progress_callback_follows_each_state_commit(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue = write_queue(root / "queue.jsonl", [queue_item()])
+            output = root / "output"
+            snapshots = []
+
+            def observe(state):
+                self.assertEqual(
+                    json.loads((output / "generation-state.json").read_text()),
+                    state,
+                )
+                if any(
+                    item["status"] == "generated" for item in state["items"].values()
+                ):
+                    self.assertTrue((output / RUNTIME_PROGRESS_MANIFEST_NAME).is_file())
+                snapshots.append(
+                    (
+                        state["active"]["phase"] if state["active"] else None,
+                        sum(
+                            item["status"] == "generated"
+                            for item in state["items"].values()
+                        ),
+                    )
+                )
+
+            self.run_generation(
+                queue, output, SyntheticRenderer(), progress_callback=observe
+            )
+
+        self.assertIn(("generating", 0), snapshots)
+        self.assertIn(("validating", 0), snapshots)
+        self.assertIn(("publishing", 0), snapshots)
+        self.assertIn((None, 1), snapshots)
+
     def test_persists_active_before_render_and_resumes_exact_wav(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
