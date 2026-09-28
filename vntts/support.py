@@ -707,10 +707,11 @@ class GameImportLog(RuntimeSupportLog):
                 ),
             }
             restored.update(
-                (key, _sanitize_game_import_value(key, entry[key]))
+                (key, safe_value)
                 for key in game_import_fields
                 if key in entry
-                and _sanitize_game_import_value(key, entry[key]) is not None
+                and (safe_value := _sanitize_game_import_value(key, entry[key]))
+                is not None
             )
             self.entries.append(restored)
 
@@ -1882,9 +1883,10 @@ def sanitize_event(entry: SupportDetails) -> SupportDocument:
     )
     if entry.get("level") == "game-import":
         sanitized.update(
-            (key, _sanitize_game_import_value(key, entry[key]))
+            (key, safe_value)
             for key in game_import_fields
-            if key in entry and _sanitize_game_import_value(key, entry[key]) is not None
+            if key in entry
+            and (safe_value := _sanitize_game_import_value(key, entry[key])) is not None
         )
     if entry.get("level") == "performance":
         sanitized.update(
