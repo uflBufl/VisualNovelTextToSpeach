@@ -51,8 +51,13 @@ class RenderHypothesisRecord:
 
 def load_render_hypothesis_record(directory: str | Path) -> RenderHypothesisRecord:
     """Load and fully validate one review without importing publication code."""
-    root = Path(directory).expanduser().resolve()
-    if root.is_symlink() or not root.is_dir():
+    supplied = Path(directory).expanduser()
+    if supplied.is_symlink():
+        raise RenderHypothesisRecordError(
+            f"Render hypothesis review is unavailable: {supplied}"
+        )
+    root = supplied.resolve()
+    if not root.is_dir():
         raise RenderHypothesisRecordError(
             f"Render hypothesis review is unavailable: {root}"
         )
@@ -153,6 +158,7 @@ def _validate_review(
         not isinstance(review, dict)
         or set(review) != required
         or review.get("schema") != "vntts.authoring-render-hypothesis-review"
+        or type(review.get("schema_version")) is not int
         or review.get("schema_version") != 1
     ):
         raise RenderHypothesisRecordError("Render hypothesis review is malformed")
@@ -257,6 +263,7 @@ def _validate_decision(
             "reviewed_at",
         }
         or decision.get("schema") != "vntts.authoring-render-hypothesis-decision"
+        or type(decision.get("schema_version")) is not int
         or decision.get("schema_version") != 1
         or decision.get("review_id") != review["review_id"]
         or decision.get("review_sha256") != review_sha256

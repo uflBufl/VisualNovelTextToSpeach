@@ -11,6 +11,7 @@ from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 
+from tests.symlink_support import symlink_or_skip
 from tests.test_authoring_failure_reference_audit import (
     _PreviewBackendFactory,
     create_failed_reference_workspace,
@@ -29,6 +30,10 @@ from vntts.authoring.reference_render_comparison import (
     REFERENCE_RENDER_INPUT_VERSION,
     load_reference_render_plan,
     publish_reference_render_comparison,
+)
+from vntts.authoring.render_hypothesis_records import (
+    RenderHypothesisRecordError,
+    load_render_hypothesis_record,
 )
 from vntts.authoring.render_hypothesis_review import (
     RenderHypothesisReviewError,
@@ -325,6 +330,53 @@ class RenderHypothesisReviewTest(unittest.TestCase):
                 RenderHypothesisReviewError, "artifact changed"
             ):
                 load_render_hypothesis_review(output)
+
+    def test_public_record_rejects_symlink_directory(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            comparison = root / "comparison"
+            queue_id = write_comparison(comparison)
+            output = root / "review"
+            publish_render_hypothesis_review(
+                comparison, queue_id, "reference-02", output
+            )
+            link = root / "review-link"
+            symlink_or_skip(link, output, target_is_directory=True)
+            with self.assertRaisesRegex(RenderHypothesisRecordError, "unavailable"):
+                load_render_hypothesis_record(link)
+
+    def test_public_record_rejects_noninteger_versions(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            comparison = root / "comparison"
+            queue_id = write_comparison(comparison)
+            output = root / "review"
+            publish_render_hypothesis_review(
+                comparison, queue_id, "reference-02", output
+            )
+
+            review_path = output / "review.json"
+            review = json.loads(review_path.read_text(encoding="utf-8"))
+            for version in (True, 1.0):
+                review["schema_version"] = version
+                atomic_write_json(review_path, review)
+                with self.assertRaisesRegex(
+                    RenderHypothesisRecordError, "review is malformed"
+                ):
+                    load_render_hypothesis_record(output)
+
+            review["schema_version"] = 1
+            atomic_write_json(review_path, review)
+            record_render_hypothesis_decision(output, "accept_hypothesis")
+            decision_path = output / "decision.json"
+            decision = json.loads(decision_path.read_text(encoding="utf-8"))
+            for version in (True, 1.0):
+                decision["schema_version"] = version
+                atomic_write_json(decision_path, decision)
+                with self.assertRaisesRegex(
+                    RenderHypothesisRecordError, "decision is malformed"
+                ):
+                    load_render_hypothesis_record(output)
 
     def test_reference_keeps_its_original_reviewable_format(self):
         with TemporaryDirectory() as directory:
