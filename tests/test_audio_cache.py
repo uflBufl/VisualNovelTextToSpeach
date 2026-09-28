@@ -57,6 +57,17 @@ class PersistentAudioCacheTest(unittest.TestCase):
 
         np.testing.assert_allclose(audio, expected)
 
+    def test_single_stereo_frame_keeps_its_channel_shape(self):
+        with TemporaryDirectory() as temporary_directory:
+            cache = PersistentAudioCache(temporary_directory)
+            expected = np.array([[0.1, -0.1]], dtype=np.float32)
+            cache.put("stereo", expected)
+
+            restored = PersistentAudioCache(temporary_directory).get("stereo")
+
+        self.assertEqual(restored.shape, (1, 2))
+        np.testing.assert_array_equal(restored, expected)
+
     def test_invalid_audio_is_rejected_on_write_and_read(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

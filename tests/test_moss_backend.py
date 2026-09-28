@@ -546,6 +546,20 @@ class MossTTSBackendTest(unittest.TestCase):
         self.assertEqual(len(output.streams), 2)
         self.assertEqual(backend.last_synthesis_ms, 0.0)
 
+    def test_single_stereo_frame_from_persistent_cache_keeps_two_channels(self):
+        backend, model, output = self.create_backend()
+        first = backend.prepare("Narrator", "One stereo frame.")
+        expected = np.array([[0.1, -0.1]], dtype=np.float32)
+        backend.persistent_audio_cache.put(first.persistent_cache_key, expected)
+
+        cached = backend.prepare("Narrator", "One stereo frame.")
+        self.assertEqual(cached.cache_source, "persistent-cache")
+        self.assertTrue(backend.play(cached))
+
+        self.assertEqual(model.generate_calls, [])
+        self.assertEqual(output.streams[0].options["channels"], 2)
+        np.testing.assert_array_equal(output.streams[0].writes[0], expected)
+
     def test_complete_audio_cache_survives_backend_restart(self):
         first_backend, first_model, _output = self.create_backend()
         first = first_backend.prepare("Narrator", "Persistent line.")

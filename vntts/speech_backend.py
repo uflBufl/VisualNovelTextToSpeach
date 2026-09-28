@@ -1998,7 +1998,6 @@ class MossTTSVoiceRouterBackend:
                 if cancelled():
                     completion = SynthesisCompletion.CANCELLED
                     break
-                audio = self._to_numpy_audio(audio)
                 if not audio.size:
                     continue
                 if prepared.cached_audio is None:
@@ -2438,7 +2437,9 @@ class MossTTSVoiceRouterBackend:
             return True
         return False
 
-    def _write_stream_chunk(self, stream: StreamingAudioStream, audio: object) -> bool:
+    def _write_stream_chunk(
+        self, stream: StreamingAudioStream, audio: AudioArray
+    ) -> bool:
         underflowed = stream.write(self._prepare_audio(audio))
         return bool(underflowed)
 
@@ -2529,7 +2530,11 @@ class MossTTSVoiceRouterBackend:
         )
 
     def _cached_chunks(self, audio: AudioArray) -> Iterator[AudioArray]:
-        prepared = self._to_numpy_audio(audio)
+        prepared = (
+            audio
+            if audio.ndim == 2 and audio.shape[1] in {1, 2}
+            else self._to_numpy_audio(audio)
+        )
         for start in range(0, len(prepared), self.cached_stream_chunk_samples):
             yield prepared[start : start + self.cached_stream_chunk_samples]
 
@@ -2550,8 +2555,8 @@ class MossTTSVoiceRouterBackend:
             )
         return prepared
 
-    def _prepare_audio(self, audio: object) -> AudioArray:
-        prepared = self._to_numpy_audio(audio).copy()
+    def _prepare_audio(self, audio: AudioArray) -> AudioArray:
+        prepared = np.asarray(audio, dtype=np.float32).copy()
         np.nan_to_num(prepared, copy=False)
         prepared *= self.volume
         np.clip(prepared, -0.95, 0.95, out=prepared)

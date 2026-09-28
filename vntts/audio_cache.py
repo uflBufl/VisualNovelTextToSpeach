@@ -18,7 +18,9 @@ CacheValue = TypeVar("CacheValue")
 
 
 def _prepared_audio(value: object) -> AudioArray | None:
-    audio: AudioArray = np.atleast_1d(np.asarray(value, dtype=np.float32).squeeze())
+    audio: AudioArray = np.asarray(value, dtype=np.float32)
+    if audio.ndim not in {1, 2}:
+        audio = np.atleast_1d(audio.squeeze())
     if audio.ndim not in {1, 2} or audio.size == 0 or not np.all(np.isfinite(audio)):
         return None
     return audio
@@ -126,7 +128,7 @@ class PersistentAudioCache:
         timestamp = max(time_ns(), newest + 1_000_000)
         try:
             os.utime(path, ns=(timestamp, timestamp), follow_symlinks=False)
-        except (OSError, NotImplementedError):
+        except OSError, NotImplementedError:
             # Recency metadata must not turn a valid cache entry into a miss.
             # Pruning can fall back to its existing timestamps.
             pass
