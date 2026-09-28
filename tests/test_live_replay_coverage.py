@@ -155,6 +155,23 @@ class LiveReplayCoverageTest(unittest.TestCase):
                 ["event-2"],
             )
 
+            original_review = first.read_bytes()
+            for version in (True, 1.0):
+                with self.subTest(version=version):
+                    forged = json.loads(original_review)
+                    forged["schema_version"] = version
+                    first.write_text(json.dumps(forged), encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        LiveReplayCoverageError, "not successful sealed replay"
+                    ):
+                        audit_live_replay_coverage(
+                            root / f"invalid-{type(version).__name__}.json",
+                            story_index=story,
+                            sequence_plan=plan,
+                            reviews=(first, second),
+                        )
+            first.write_bytes(original_review)
+
             for competitor in ("file", "symlink"):
                 with self.subTest(competitor=competitor):
                     destination = root / f"coverage-{competitor}.json"

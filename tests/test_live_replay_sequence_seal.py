@@ -261,6 +261,40 @@ class LiveReplaySequenceSealTest(unittest.TestCase):
                     ("Cora", "This line needs live speech."),
                 ),
             )
+            raw_payload = captured.corpus.read_bytes()
+            for version in (True, 1.0):
+                with self.subTest(version=version):
+                    forged = json.loads(raw_payload)
+                    forged["schema_version"] = version
+                    captured.corpus.write_text(json.dumps(forged), encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        SequenceReplaySealError, "raw schema-v1"
+                    ):
+                        seal_sequence_replay(
+                            captured.corpus,
+                            root / f"invalid-{type(version).__name__}",
+                            story_index=story,
+                            sequence_plan=plan,
+                            recognizer=recognize,
+                        )
+            captured.corpus.write_bytes(raw_payload)
+            report_payload = captured.report.read_bytes()
+            forged = json.loads(raw_payload)
+            forged_report = json.loads(report_payload)
+            forged["capture"]["frame_count"] = 4.0
+            forged_report["frame_count"] = 4.0
+            captured.corpus.write_text(json.dumps(forged), encoding="utf-8")
+            captured.report.write_text(json.dumps(forged_report), encoding="utf-8")
+            with self.assertRaisesRegex(SequenceReplaySealError, "review counts"):
+                seal_sequence_replay(
+                    captured.corpus,
+                    root / "invalid-count",
+                    story_index=story,
+                    sequence_plan=plan,
+                    recognizer=recognize,
+                )
+            captured.corpus.write_bytes(raw_payload)
+            captured.report.write_bytes(report_payload)
             raw_sha256 = sha256_file(captured.corpus)
             manifest = self.generated_manifest(root, lines[1])
 

@@ -172,6 +172,22 @@ class LiveReplayCaptureRecoverTest(unittest.TestCase):
                     ((255, 255, 0), "Bea", "Second line."),
                 ),
             )
+            raw_payload = captured.corpus.read_bytes()
+            for version in (True, 1.0):
+                with self.subTest(version=version):
+                    forged = json.loads(raw_payload)
+                    forged["schema_version"] = version
+                    captured.corpus.write_text(json.dumps(forged), encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        LiveReplayCaptureRecoveryError, "requires raw"
+                    ):
+                        recover_live_replay_capture(
+                            captured.corpus,
+                            root / f"invalid-{type(version).__name__}",
+                            story_index=story,
+                            sequence_plan=plan,
+                        )
+            captured.corpus.write_bytes(raw_payload)
             raw_sha256 = sha256_file(captured.corpus)
             with self.assertRaisesRegex(
                 SequenceReplaySealError, "recover one explicit sequence"

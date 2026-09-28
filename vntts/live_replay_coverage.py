@@ -69,6 +69,7 @@ def audit_live_replay_coverage(
         review_document = _decode_json(payload, "Sealed sequence review")
         if (
             review_document.get("schema") != "vntts.sequence-replay-seal-review"
+            or type(review_document.get("schema_version")) is not int
             or review_document.get("schema_version") != 1
             or review_document.get("sealed_replay_successful") is not True
         ):

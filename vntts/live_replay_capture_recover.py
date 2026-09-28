@@ -117,7 +117,8 @@ def recover_live_replay_capture(
     capture: JSONDocument = _decode_json(capture_payload, "Raw replay corpus")
     capture_binding = capture.get("capture")
     if (
-        capture.get("schema_version") != 1
+        type(capture.get("schema_version")) is not int
+        or capture.get("schema_version") != 1
         or capture.get("fixture_kind") != "saved-frame-ocr-replay-capture"
         or not isinstance(capture_binding, dict)
     ):
@@ -429,11 +430,14 @@ def _load_ledger_observations(
     entries = document.get("observations")
     if (
         document.get("schema") != "vntts.live-replay-capture-observations"
+        or type(document.get("schema_version")) is not int
         or document.get("schema_version") != 1
         or document.get("story_index_sha256")
         != capture_binding.get("story_index_sha256")
         or not isinstance(entries, list)
+        or type(binding.get("observation_count")) is not int
         or len(entries) != binding.get("observation_count")
+        or type(document.get("observation_count")) is not int
         or document.get("observation_count") != len(entries)
     ):
         raise LiveReplayCaptureRecoveryError(
@@ -442,7 +446,11 @@ def _load_ledger_observations(
     observations = []
     visual_ellipses: list[JSONDocument] = []
     for index, entry in enumerate(entries, start=1):
-        if not isinstance(entry, dict) or entry.get("observation_index") != index:
+        if (
+            not isinstance(entry, dict)
+            or type(entry.get("observation_index")) is not int
+            or entry.get("observation_index") != index
+        ):
             raise LiveReplayCaptureRecoveryError(
                 "Capture observation ledger order is invalid"
             )

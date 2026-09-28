@@ -89,7 +89,8 @@ def seal_sequence_replay(
     )
     capture = _decode_json(capture_payload, "Raw replay corpus")
     if (
-        capture.get("schema_version") != 1
+        type(capture.get("schema_version")) is not int
+        or capture.get("schema_version") != 1
         or capture.get("fixture_kind") != "saved-frame-ocr-replay-capture"
         or not isinstance(capture_binding := capture.get("capture"), dict)
     ):
@@ -749,10 +750,21 @@ def _validate_probe(
 def _validate_capture_report(capture: JSONDocument, report: JSONDocument) -> None:
     if (
         report.get("schema") != "vntts.live-replay-capture-report"
+        or type(report.get("schema_version")) is not int
         or report.get("schema_version") != 1
     ):
         raise SequenceReplaySealError("Capture review report has an unsupported schema")
     authority = _required_document(capture.get("capture"), "Raw replay corpus capture")
+    if (
+        any(
+            type(source.get(field)) is not int
+            for source in (authority, report)
+            for field in ("frame_count", "dialogue_count", "boundary_review_count")
+        )
+        or type(authority.get("boundary_review_required")) is not bool
+        or type(report.get("boundary_review_required")) is not bool
+    ):
+        raise SequenceReplaySealError("Capture review counts or flag are invalid")
     for field in (
         "frame_count",
         "dialogue_count",
@@ -831,6 +843,7 @@ def _validate_capture_observation_ledger(
         isinstance(unresolved, bool)
         or not isinstance(unresolved, int)
         or unresolved < 0
+        or type(report.get("unresolved_observation_count")) is not int
         or report.get("unresolved_observation_count") != unresolved
     ):
         raise SequenceReplaySealError("Capture unresolved-observation count is invalid")
@@ -848,10 +861,13 @@ def _validate_capture_observation_ledger(
     observations = document.get("observations")
     if (
         document.get("schema") != "vntts.live-replay-capture-observations"
+        or type(document.get("schema_version")) is not int
         or document.get("schema_version") != 1
         or document.get("story_index_sha256") != authority.get("story_index_sha256")
         or not isinstance(observations, list)
+        or type(document.get("observation_count")) is not int
         or document.get("observation_count") != len(observations)
+        or type(binding.get("observation_count")) is not int
         or binding.get("observation_count") != len(observations)
     ):
         raise SequenceReplaySealError("Capture observation ledger is invalid")
@@ -860,6 +876,7 @@ def _validate_capture_observation_ledger(
     for index, observation in enumerate(observations, start=1):
         if (
             not isinstance(observation, dict)
+            or type(observation.get("observation_index")) is not int
             or observation.get("observation_index") != index
         ):
             raise SequenceReplaySealError("Capture observation ledger order is invalid")
@@ -914,6 +931,7 @@ def _validate_capture_observation_ledger(
         or uncertain < 0
         or statuses.count("unresolved") != unresolved
         or statuses.count("uncertain") != uncertain
+        or type(authority.get("frame_count")) is not int
         or len(observations) != authority.get("frame_count")
     ):
         raise SequenceReplaySealError(
@@ -945,6 +963,7 @@ def _validate_recovery_authority(
             "sequence_plan_sha256",
             "mapping_policy",
         }
+        or type(recovery.get("schema_version")) is not int
         or recovery.get("schema_version") != 1
         or recovery.get("mapping_policy") != "exact-explicit-sequence-run"
         or report.get("recovery") != recovery
