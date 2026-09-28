@@ -155,6 +155,65 @@ def write_listening_fixture(root):
 
 
 class ListeningImportTest(unittest.TestCase):
+    def test_rejects_non_integer_schema_versions_and_session_counts(self):
+        mutations = (
+            ("session.json", "schema_version", True),
+            (".blind-key.json", "schema_version", 1.0),
+            ("report.json", "schema_version", True),
+            ("report.json", "completed_trials", True),
+            ("report.json", "completed_trials", 1.0),
+            ("session.json", "completed_count", True),
+            ("session.json", "completed_count", 1.0),
+            ("session.json", "trial_count", True),
+            ("session.json", "trial_count", 1.0),
+        )
+        for filename, field, value in mutations:
+            with (
+                self.subTest(filename=filename, field=field, value=value),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                source = write_listening_fixture(root)
+                path = source / filename
+                document = json.loads(path.read_text(encoding="utf-8"))
+                document[field] = value
+                path.write_text(json.dumps(document, sort_keys=True), encoding="utf-8")
+                if field == "trial_count":
+                    (source / "report.json").unlink()
+
+                with self.assertRaises(ListeningImportError):
+                    inspect_listening_session(source)
+
+    def test_reimport_rejects_non_integer_manifest_counts(self):
+        mutations = (
+            ("schema_version", True),
+            ("schema_version", 1.0),
+            ("summary.completed_count", True),
+            ("summary.trial_count", 1.0),
+        )
+        for field, value in mutations:
+            with (
+                self.subTest(field=field, value=value),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                source = write_listening_fixture(root)
+                destination = import_listening_session(
+                    source, root / "app-data"
+                ).destination
+                path = destination / "import.json"
+                manifest = json.loads(path.read_text(encoding="utf-8"))
+                target = (
+                    manifest["summary"] if field.startswith("summary.") else manifest
+                )
+                target[field.removeprefix("summary.")] = value
+                path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+
+                with self.assertRaisesRegex(
+                    ListeningImportError, "manifest was modified"
+                ):
+                    import_listening_session(source, root / "app-data")
+
     def test_reimport_rejects_forged_manifest_and_modified_hidden_key_mode(self):
         mutations = ("artifacts", "summary")
         if os.name != "nt":

@@ -229,7 +229,7 @@ def _validate_session(
             raise ListeningImportError(f"Listening trial {index} must be an object")
         completed += _validate_session_trial(root, trial, trial_ids, audio)
         validated_trials.append(trial)
-    if session.get("completed_count") != completed:
+    if _int_field(session, "completed_count") != completed:
         raise ListeningImportError("Listening session completed_count is inconsistent")
     return validated_trials, audio
 
@@ -243,7 +243,9 @@ def _validate_session_header(session: JsonObject) -> list[object]:
     _require_sha256(session.get("source_sha256"), "session source_sha256")
     _require_sha256(session.get("blind_key_sha256"), "session blind_key_sha256")
     trials = session.get("trials")
-    if not isinstance(trials, list) or session.get("trial_count") != len(trials):
+    if not isinstance(trials, list) or _int_field(session, "trial_count") != len(
+        trials
+    ):
         raise ListeningImportError("Listening session trial count is inconsistent")
     if session.get("decision_mode") != "preference-only" and session.get(
         "dimensions"
@@ -508,7 +510,7 @@ def _validate_report(
         raise ListeningImportError("Listening report points to a different session")
     expected = _expected_report(session, key)
     for field, value in expected.items():
-        if report.get(field) != value:
+        if _canonical(report.get(field)) != _canonical(value):
             raise ListeningImportError(
                 f"Listening report {field} is inconsistent with session ratings/key"
             )
@@ -665,7 +667,7 @@ def _validate_existing(
         )
     expected = _manifest(inspection, f"listening-{inspection.logical_identity[:24]}")
     expected["imported_at"] = manifest.get("imported_at")
-    if manifest != expected:
+    if _canonical(manifest) != _canonical(expected):
         raise ListeningImportError(
             f"Existing listening import manifest was modified: {manifest_path}"
         )
@@ -727,7 +729,11 @@ def _load_schema_snapshot(
         ) from error
     if not _is_json_object(value):
         raise ListeningImportError(f"{description.title()} must be a JSON object")
-    if value.get("schema") != schema or value.get("schema_version") != SCHEMA_VERSION:
+    if (
+        value.get("schema") != schema
+        or type(value.get("schema_version")) is not int
+        or value["schema_version"] != SCHEMA_VERSION
+    ):
         raise ListeningImportError(
             f"Unsupported {description} schema; expected {schema!r} version {SCHEMA_VERSION}"
         )
@@ -794,7 +800,7 @@ def _text_field(document: JsonObject, field: str) -> str:
 
 def _int_field(document: JsonObject, field: str) -> int:
     value = document.get(field)
-    if not isinstance(value, int):
+    if type(value) is not int:
         raise ListeningImportError(f"Listening {field} is invalid")
     return value
 

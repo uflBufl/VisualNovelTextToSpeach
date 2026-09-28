@@ -551,7 +551,11 @@ def load_listening_session(path: PathInput) -> ListeningSession:
 
 def _session_trials(session: dict[str, object]) -> list[object]:
     trials = _object_list(session.get("trials"))
-    if trials is None or session.get("trial_count") != len(trials):
+    if (
+        trials is None
+        or type(session.get("trial_count")) is not int
+        or session["trial_count"] != len(trials)
+    ):
         raise ModelListeningError("Listening session trial count is invalid")
     if session.get("decision_mode") != "preference-only" and session.get(
         "dimensions"
@@ -583,7 +587,10 @@ def _validate_listening_progress(
     session: Mapping[str, object], trials: Sequence[_ValidatedListeningTrial]
 ) -> None:
     completed = sum(trial["rating"] is not None for trial in trials)
-    if session.get("completed_count") != completed:
+    if (
+        type(session.get("completed_count")) is not int
+        or session["completed_count"] != completed
+    ):
         raise ModelListeningError("Listening session progress is inconsistent")
 
 
@@ -906,7 +913,9 @@ def ensure_listening_report(
         except ModelListeningError:
             current = None
         if current is not None and all(
-            current.get(field) == value for field, value in expected.items()
+            json.dumps(current.get(field), sort_keys=True)
+            == json.dumps(value, sort_keys=True)
+            for field, value in expected.items()
         ):
             if session.get("schema") == LEGACY_SESSION_SCHEMA or current.get(
                 "session"
@@ -1267,7 +1276,8 @@ def _legacy_import_audio_hashes(root: PathInput) -> dict[str, str]:
     manifest = _load_json(manifest_path, "listening import manifest")
     if (
         manifest.get("schema") != "vntts.authoring-listening-import"
-        or manifest.get("schema_version") != 1
+        or type(manifest.get("schema_version")) is not int
+        or manifest["schema_version"] != 1
         or _object_list(manifest.get("artifacts")) is None
     ):
         raise ModelListeningError("Unsupported listening import manifest schema")
@@ -1328,7 +1338,8 @@ def _load_schema(
     value = _load_json(path, description)
     if (
         value.get("schema") not in schemas
-        or value.get("schema_version") != SCHEMA_VERSION
+        or type(value.get("schema_version")) is not int
+        or value["schema_version"] != SCHEMA_VERSION
     ):
         raise ModelListeningError(f"Unsupported {description} schema")
     return value
@@ -1386,13 +1397,13 @@ def _is_listening_session(
     trials = _object_list(value.get("trials"))
     return (
         isinstance(value.get("schema"), str)
-        and isinstance(value.get("schema_version"), int)
+        and type(value.get("schema_version")) is int
         and isinstance(value.get("source_kind"), str)
         and isinstance(value.get("source_sha256"), str)
         and isinstance(value.get("blind_key_sha256"), str)
         and isinstance(value.get("decision_mode"), str)
-        and isinstance(value.get("trial_count"), int)
-        and isinstance(value.get("completed_count"), int)
+        and type(value.get("trial_count")) is int
+        and type(value.get("completed_count")) is int
         and isinstance(value.get("updated_at"), str)
         and trials is not None
         and all(_is_listening_trial(trial) for trial in trials)

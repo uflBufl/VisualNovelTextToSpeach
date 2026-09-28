@@ -492,6 +492,49 @@ class AuthoringListeningTest(unittest.TestCase):
             with self.assertRaisesRegex(ModelListeningError, "checksum changed"):
                 load_listening_session(imported / "session.json")
 
+    def test_imported_legacy_session_rejects_non_integer_versions_and_counts(self):
+        mutations = (
+            ("import.json", "schema_version", True),
+            ("import.json", "schema_version", 1.0),
+            ("session.json", "schema_version", True),
+            ("session.json", "schema_version", 1.0),
+            ("session.json", "completed_count", True),
+            ("session.json", "completed_count", 1.0),
+            ("session.json", "trial_count", True),
+            ("session.json", "trial_count", 1.0),
+        )
+        for filename, field, value in mutations:
+            with (
+                self.subTest(filename=filename, field=field, value=value),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                imported = import_listening_session(
+                    write_listening_fixture(root), root / "app-data"
+                ).destination
+                path = imported / filename
+                document = json.loads(path.read_text(encoding="utf-8"))
+                document[field] = value
+                path.write_text(json.dumps(document, sort_keys=True), encoding="utf-8")
+
+                with self.assertRaises(ModelListeningError):
+                    load_listening_session(imported / "session.json")
+
+    def test_imported_legacy_report_rejects_boolean_counts(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            imported = import_listening_session(
+                write_listening_fixture(root), root / "app-data"
+            ).destination
+            path = imported / "report.json"
+            report = json.loads(path.read_text(encoding="utf-8"))
+            report["completed_trials"] = True
+            path.write_text(json.dumps(report, sort_keys=True), encoding="utf-8")
+
+            regenerated = ensure_listening_report(imported / "session.json")
+
+        self.assertIs(type(regenerated["completed_trials"]), int)
+
     def test_current_report_requires_current_schema_and_session_binding(self):
         for mutation in ("schema", "session"):
             with self.subTest(mutation=mutation), TemporaryDirectory() as directory:
