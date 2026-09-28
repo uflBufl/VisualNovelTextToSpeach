@@ -67,6 +67,7 @@ class QwenBackendTest(unittest.TestCase):
                             )
                     prepare.assert_not_called()
                     construct.assert_not_called()
+
     def test_windows_uses_its_own_cuda_runtime(self):
         root = Path("C:/qwen-runtime")
         registry = CharacterVoiceRegistry()
@@ -146,6 +147,7 @@ class QwenBackendTest(unittest.TestCase):
             self.assertEqual(len(calls), 2)
             self.assertEqual(calls[0]["voice_clone_prompt"], "cached-prompt")
             self.assertGreater(calls[0]["max_new_tokens"], 0)
+
     def test_reference_text_reaches_model_and_is_required(self):
         with TemporaryDirectory() as directory:
             reference = Path(directory) / "reference.wav"

@@ -2,8 +2,8 @@
 
 ## Active - Qwen voice cloning on Windows
 
-- [ ] Resolve the official `qwen-tts==0.1.1` dependency audit findings without silently suppressing known vulnerabilities; keep Windows Qwen off `main` until the release gate passes or the security exception is explicitly accepted.
-- [ ] Confirm the Windows CI import smoke and bundled-runtime staging on a Windows runner, then render and time one Matilda reference on the RTX 2070 Super 8 GB. Check that the UI reports CUDA and the correct GPU.
+- [ ] Resolve the official `qwen-tts==0.1.1` dependency audit findings without silently suppressing known vulnerabilities.
+- [ ] Render and time one Matilda reference on the RTX 2070 Super 8 GB. Check that the UI reports CUDA and the correct GPU.
 
 ## Active - Review remaining source-extraction UI
 

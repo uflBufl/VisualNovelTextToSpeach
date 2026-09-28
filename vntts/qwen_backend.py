@@ -184,7 +184,7 @@ class QwenTTSVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 metal_available = True
                 model_path = snapshot_download(QWEN_MODEL, revision=QWEN_REVISION)
 
-                def load_qwen_model(_name: str, *, lazy: bool) -> _QwenTTSModel:
+                def load_qwen_model(model_name: str, *, lazy: bool) -> _QwenTTSModel:
                     return load_model(model_path, lazy=lazy)
 
                 resolved_model_factory = load_qwen_model
@@ -195,7 +195,7 @@ class QwenTTSVoiceRouterBackend(MossTTSVoiceRouterBackend):
                     QWEN_CUDA_MODEL, revision=QWEN_CUDA_REVISION
                 )
 
-                def load_cuda_model(_name: str, *, lazy: bool) -> _QwenTTSModel:
+                def load_cuda_model(model_name: str, *, lazy: bool) -> _QwenTTSModel:
                     return cast(_QwenTTSModel, _load_cuda_qwen_model(model_path))
 
                 resolved_model_factory = load_cuda_model
@@ -343,7 +343,9 @@ class QwenTTSVoiceRouterBackend(MossTTSVoiceRouterBackend):
             if request.seed is not None:
                 torch.manual_seed(request.seed)
             with torch.inference_mode():
-                wavs, sample_rate = cast(_CudaQwenModel, self.model).generate_voice_clone(
+                wavs, sample_rate = cast(
+                    _CudaQwenModel, self.model
+                ).generate_voice_clone(
                     text=prepared.text,
                     language="English",
                     voice_clone_prompt=prepared.prompt_audio_codes,
