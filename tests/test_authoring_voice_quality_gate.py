@@ -325,6 +325,31 @@ class AuthoringVoiceQualityGateTest(unittest.TestCase):
             with self.assertRaisesRegex(VoiceQualityGateError, "identity"):
                 load_voice_quality_gate(output)
 
+    def test_gate_rejects_non_integer_schema_version(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state, _queue_id, plan, decision = self.create_review(root)
+            gate = build_voice_quality_gate(workspace, plan, decision)
+            output = root / "gate.json"
+            write_voice_quality_gate(gate, output)
+
+            for value in (True, 1.0):
+                with self.subTest(value=value):
+                    document = gate.to_dict()
+                    document["schema_version"] = value
+                    document["gate_id"] = (
+                        voice_quality_gate_module.canonical_document_sha256(
+                            {
+                                key: item
+                                for key, item in document.items()
+                                if key != "gate_id"
+                            }
+                        )
+                    )
+                    output.write_text(json.dumps(document))
+                    with self.assertRaisesRegex(VoiceQualityGateError, "schema"):
+                        load_voice_quality_gate(output)
+
     def test_publication_never_replaces_existing_gate(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

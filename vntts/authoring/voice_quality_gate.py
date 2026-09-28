@@ -460,7 +460,7 @@ def _is_gate_document(value: object) -> TypeIs[_GateDocument]:
     return (
         isinstance(value, dict)
         and isinstance(value.get("schema"), str)
-        and isinstance(value.get("schema_version"), int)
+        and type(value.get("schema_version")) is int
         and isinstance(value.get("gate_id"), str)
         and isinstance(value.get("reuse_policy"), dict)
         and isinstance(value.get("identity"), dict)
@@ -504,6 +504,7 @@ def _validated_gate_document(
     if (
         not isinstance(document, dict)
         or document.get("schema") != VOICE_QUALITY_GATE_SCHEMA
+        or type(document.get("schema_version")) is not int
         or document.get("schema_version") != VOICE_QUALITY_GATE_VERSION
     ):
         raise VoiceQualityGateError("Voice-quality gate schema is unsupported")
