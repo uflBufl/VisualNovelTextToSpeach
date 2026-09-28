@@ -577,6 +577,21 @@ class PregenerationSetupTest(unittest.TestCase):
 
             self.assertFalse((root / "jobs").exists())
 
+    def test_saved_job_rejects_non_text_selected_line_id(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            store = PregenerationJobStore(root / "jobs")
+            job = store.create_or_resume(content, ("main-1",))
+            document = job.to_document()
+            document["selected_line_ids"] = [job.selected_line_ids[0], 7]
+            write_versioned_json(store.path_for(job.job_id), 1, document)
+
+            with self.assertRaisesRegex(
+                PregenerationSetupError, "selected_line_ids must contain non-empty text"
+            ):
+                store.load(job.job_id)
+
     def test_prepared_story_coverage_accumulates_across_jobs(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

@@ -995,7 +995,7 @@ def _text_tuple(
             f"{name} must be a{' non-empty' if not allow_empty else ''} list"
         )
     result = tuple(value for value in values if isinstance(value, str))
-    if not all(isinstance(value, str) and value.strip() for value in result):
+    if len(result) != len(values) or not all(value.strip() for value in result):
         raise ValueError(f"{name} must contain non-empty text")
     if len(set(result)) != len(result):
         raise ValueError(f"{name} must not contain duplicates")
