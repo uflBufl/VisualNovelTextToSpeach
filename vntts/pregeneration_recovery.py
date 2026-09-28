@@ -33,6 +33,7 @@ from vntts.pregeneration_generation import (
     OfflineGenerationError,
     OfflineGenerationResult,
     OfflineGenerationWorker,
+    runtime_progress_manifest_path,
     validate_offline_generation_result,
 )
 from vntts.pregeneration_queue import PregenerationInput
@@ -358,12 +359,9 @@ class OfflineRecoveryWorker:
         try:
             current = self.generator.inspect(generation_input)
         except OfflineGenerationError:
-            current = None
-        statuses = (
-            _generation_queue_statuses(current, generation_input)
-            if current is not None
-            else {}
-        )
+            current, statuses = _saved_generation_state(generation_input)
+        else:
+            statuses = _generation_queue_statuses(current, generation_input)
         attempted = recovered = live_fallbacks = 0
         remaining: Counter[str] = Counter()
         pending = list(queue_ids)
@@ -378,7 +376,7 @@ class OfflineRecoveryWorker:
                 "not_reproducible",
             }:
                 continue
-            if statuses.get(queue_id) != "failed":
+            if statuses.get(queue_id) != "failed" or current is None:
                 current = self.generator.generate(
                     generation_input,
                     voice_plan,
@@ -401,7 +399,12 @@ class OfflineRecoveryWorker:
             remaining.update(dict(result.remaining_action_counts))
             statuses[queue_id] = "failed" if result.remaining_failed else "generated"
         if current is None:
-            raise OfflineRecoveryError("Offline generation produced no result")
+            current = self.generator.generate(
+                generation_input,
+                voice_plan,
+                cancel_event,
+                queue_ids=(queue_ids[0],),
+            )
         return OfflineRecoveryResult(
             current,
             attempted,
@@ -530,6 +533,37 @@ def _generation_queue_statuses(
         if isinstance(queue_id, str) and isinstance(status, str):
             statuses[queue_id] = status
     return statuses
+
+
+def _saved_generation_state(
+    generation_input: PregenerationInput,
+) -> tuple[OfflineGenerationResult | None, dict[str, str]]:
+    output = runtime_progress_manifest_path(generation_input).parent
+    state_path = output / "generation-state.json"
+    if not state_path.is_file():
+        return None, {}
+    try:
+        state = load_generation_state(state_path, generation_input.queue)
+    except (BulkGenerationError, OSError, ValueError) as error:
+        raise OfflineRecoveryError(
+            f"Unable to resume offline generation: {error}"
+        ) from error
+    items = state["items"]
+    statuses = {queue_id: item["status"] for queue_id, item in items.items()}
+    generated = sum(status in {"generated", "approved"} for status in statuses.values())
+    failed = sum(status == "failed" for status in statuses.values())
+    result = OfflineGenerationResult(
+        output=output,
+        state=state_path,
+        manifest=output / "manifest.json",
+        generated=generated,
+        failed=failed,
+        other_terminal=len(statuses) - generated - failed,
+        pending_review=sum(
+            item.get("review_status") == "pending_review" for item in items.values()
+        ),
+    )
+    return (None if state.get("active") is not None else result), statuses
 
 
 def _terminalize_exhausted_failures(

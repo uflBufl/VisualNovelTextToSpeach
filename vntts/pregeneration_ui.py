@@ -2416,10 +2416,11 @@ class OfflineAudioPreparationDialog(QDialog):
             "Cancel stops generation and closes this window. Finished lines stay "
             "saved; reopen and select Continue to generate only unfinished lines.",
         )
-        self.progress_bar.setRange(0, max(1, total))
-        self.progress_bar.setValue(0)
-        self.progress_bar.setFormat(f"0 of {total} new speech lines processed")
-        self._set_progress_counts(0, total)
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setFormat("Loading saved progress...")
+        set_labeled_text(
+            self.progress_counts, (("Progress", "Loading saved progress..."),)
+        )
         self.progress_guarantee.setText(
             "Each finished item is saved on disk; cancellation does not discard it."
         )

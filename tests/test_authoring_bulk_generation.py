@@ -1210,6 +1210,41 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertEqual(archived_hash, orphan_hash)
         self.assertEqual(state["items"][item["queue_id"]]["attempts"], 2)
 
+    def test_state_write_failure_after_wav_replace_keeps_original_error(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            output = root / "output"
+            original_write = bulk_module.atomic_write_json
+
+            def fail_success_write(path, document, **options):
+                if (
+                    Path(path).name == "generation-state.json"
+                    and document.get("active") is None
+                    and document.get("items", {})
+                    .get(item["queue_id"], {})
+                    .get("status")
+                    == "generated"
+                ):
+                    raise OSError("synthetic state write failure")
+                return original_write(path, document, **options)
+
+            with (
+                patch.object(
+                    bulk_module, "atomic_write_json", side_effect=fail_success_write
+                ),
+                self.assertRaisesRegex(OSError, "synthetic state write failure"),
+            ):
+                self.run_generation(queue, output, SyntheticRenderer(), retries=2)
+
+            self.assertIsNotNone(
+                json.loads((output / "generation-state.json").read_text())["active"]
+            )
+            resumed = self.run_generation(queue, output, SyntheticRenderer(), retries=0)
+            self.assertEqual(resumed.generated, 1)
+            self.assertEqual(len(list((output / "interrupted").glob("*.wav"))), 1)
+
     def test_review_reject_reapprove_and_stale_manifest_recovery(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

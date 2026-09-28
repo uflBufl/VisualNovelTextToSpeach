@@ -90,13 +90,14 @@ class OfflineGenerationWorker:
         *,
         queue_ids: object = None,
     ) -> OfflineGenerationResult:
-        try:
-            current = self.inspect(generation_input)
-        except OfflineGenerationError:
-            pass
-        else:
-            if current.total == generation_input.ready_items:
-                return current
+        if queue_ids is None:
+            try:
+                current = self.inspect(generation_input)
+            except OfflineGenerationError:
+                pass
+            else:
+                if current.total == generation_input.ready_items:
+                    return current
         if generation_input.identity not in self._disk_checked_inputs:
             _ensure_remaining_disk_space(generation_input)
             self._disk_checked_inputs.add(generation_input.identity)

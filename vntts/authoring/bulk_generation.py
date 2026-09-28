@@ -2566,6 +2566,8 @@ def _execute_generation_item(
                 attempt.partial.unlink()
             raise
         except Exception as error:
+            if run.state.get("active") is None:
+                raise
             try:
                 run.lease.assert_owned()
             except BulkGenerationError:

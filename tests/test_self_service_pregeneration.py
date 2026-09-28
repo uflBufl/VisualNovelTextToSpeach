@@ -1357,6 +1357,10 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 first.progress_cancel_consequence.text(),
             )
             self.assertEqual(len(interrupted.rendered_texts), 2)
+            output = first.generation_input().directory.parent / (
+                f"generation-output-{interrupted_input_id[:16]}"
+            )
+            (output / "manifest.json").unlink()
             first.reject()
             first.deleteLater()
 
@@ -1371,18 +1375,20 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 recovery=OfflineRecoveryWorker(resumed),
                 thread_pool=pool,
             )
-            second.continue_button.click()
-            for _step in range(8):
-                if second.pack_result() is not None:
-                    break
-                if second._awaiting_voice_confirmation:
-                    second.continue_button.click()
-                self.assertTrue(
-                    pool.tasks,
-                    f"step {_step}: {second.resume_status.text()}",
-                )
-                pool.tasks.pop(0).run()
-                self.application.processEvents()
+            with patch.object(resumed, "generate", wraps=resumed.generate) as generate:
+                second.continue_button.click()
+                for _step in range(8):
+                    if second.pack_result() is not None:
+                        break
+                    if second._awaiting_voice_confirmation:
+                        second.continue_button.click()
+                    self.assertTrue(
+                        pool.tasks,
+                        f"step {_step}: {second.resume_status.text()}",
+                    )
+                    pool.tasks.pop(0).run()
+                    self.application.processEvents()
+            generate.assert_called_once()
 
             self.assertEqual(second.progress_phase.text(), "Offline audio is ready")
             second.continue_button.click()

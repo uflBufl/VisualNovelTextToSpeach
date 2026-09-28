@@ -114,7 +114,9 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
             expected = Mock()
 
             with (
-                patch.object(worker, "inspect", side_effect=OfflineGenerationError),
+                patch.object(
+                    worker, "inspect", side_effect=OfflineGenerationError
+                ) as inspect,
                 patch.object(worker, "_execute", return_value=expected) as execute,
             ):
                 result = worker.generate(
@@ -125,6 +127,7 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
 
         arguments = execute.call_args.args[0]
         self.assertIs(result, expected)
+        inspect.assert_not_called()
         self.assertEqual(execute.call_count, 1)
         self.assertEqual(arguments.count("--queue-id"), 1)
         self.assertIn("mixed-event", arguments)

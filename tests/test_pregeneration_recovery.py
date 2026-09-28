@@ -317,6 +317,68 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
         )
         self.assertEqual(generator.generate.call_count, 1)
 
+    def test_resume_without_manifest_starts_only_the_missing_dialogue(self):
+        with TemporaryDirectory() as temporary_directory:
+            generation_input, final, voice_plan = inputs(Path(temporary_directory))
+            final.state.parent.mkdir()
+            final.state.touch()
+            generator = Mock()
+            generator.inspect.side_effect = OfflineGenerationError("No manifest")
+            generator.generate.return_value = final
+            worker = OfflineRecoveryWorker(generator)
+            recovered = OfflineRecoveryResult(final, 0, 0, 0, ())
+            with (
+                patch(
+                    "vntts.pregeneration_recovery._ordered_generation_queue_ids",
+                    return_value=(("a", "b"), {}),
+                ),
+                patch(
+                    "vntts.pregeneration_recovery.load_generation_state",
+                    return_value={
+                        "items": {"a": {"status": "approved"}},
+                        "active": None,
+                    },
+                ),
+                patch.object(worker, "recover", return_value=recovered),
+            ):
+                worker.generate_and_recover(generation_input, voice_plan)
+
+        generator.generate.assert_called_once_with(
+            generation_input, voice_plan, None, queue_ids=("b",)
+        )
+
+    def test_resume_all_terminal_without_manifest_needs_no_generator(self):
+        with TemporaryDirectory() as temporary_directory:
+            generation_input, final, voice_plan = inputs(Path(temporary_directory))
+            final.state.parent.mkdir()
+            final.state.touch()
+            generator = Mock()
+            generator.inspect.side_effect = OfflineGenerationError("No manifest")
+            worker = OfflineRecoveryWorker(generator)
+            with (
+                patch(
+                    "vntts.pregeneration_recovery._ordered_generation_queue_ids",
+                    return_value=(("a", "b"), {}),
+                ),
+                patch(
+                    "vntts.pregeneration_recovery.load_generation_state",
+                    return_value={
+                        "items": {
+                            "a": {"status": "approved"},
+                            "b": {"status": "live_fallback"},
+                        },
+                        "active": None,
+                    },
+                ),
+            ):
+                result = worker.generate_and_recover(generation_input, voice_plan)
+
+        generator.generate.assert_not_called()
+        self.assertEqual(result.generation.state, final.state)
+        self.assertEqual(
+            (result.generation.generated, result.generation.other_terminal), (1, 1)
+        )
+
     def test_waiting_dialogue_moves_to_the_next_render_boundary(self):
         with TemporaryDirectory() as temporary_directory:
             generation_input, current, voice_plan = inputs(Path(temporary_directory))

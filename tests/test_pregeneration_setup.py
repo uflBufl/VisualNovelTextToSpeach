@@ -2186,6 +2186,10 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
 
             dialog._start_generation_progress()
             generator.inspect_progress.assert_not_called()
+            self.assertIn(
+                "Loading saved progress", plain_label_text(dialog.progress_counts)
+            )
+            self.assertEqual(dialog.progress_bar.maximum(), 0)
             dialog._poll_generation_progress()
             self.assertEqual(len(pool.tasks), 1)
             self.run_next_task(pool)
