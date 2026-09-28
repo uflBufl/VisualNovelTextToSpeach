@@ -20,7 +20,6 @@ _MAX_JOBS = 512
 _MAX_PACKS_PER_JOB = 64
 _MAX_REFERENCE_DOCUMENT_BYTES = 4 * 1024 * 1024
 _MAX_CANDIDATE_TREE_ENTRIES = 4 * 1024
-_MAX_CANDIDATES = 64
 _MAX_DELETIONS = 8
 _ACTIVE_CLAIM = re.compile(r"\.active-[0-9]+\.guard")
 _GC_GUARD = ".voice-candidate-gc.guard"
@@ -85,9 +84,7 @@ def prune_obsolete_voice_candidate_caches(
             candidates = _candidate_directories(root)
             if not candidates:
                 return ()
-            if len(candidates) > _MAX_CANDIDATES or not all(
-                _safe_candidate_tree(directory) for directory in candidates
-            ):
+            if not all(_safe_candidate_tree(directory) for directory in candidates):
                 return ()
             referenced = _candidate_references(root, jobs, candidates, protected_paths)
             if referenced is None:

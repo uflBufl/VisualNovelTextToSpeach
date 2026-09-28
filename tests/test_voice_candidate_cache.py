@@ -37,6 +37,15 @@ class VoiceCandidateCacheTest(unittest.TestCase):
         self.assertFalse(old.exists())
         self.assertTrue(current.exists())
 
+    def test_removes_a_bounded_batch_when_cache_exceeds_previous_limit(self) -> None:
+        stale = tuple(self._candidate(f"stale-{index}") for index in range(65))
+
+        removed = prune_obsolete_voice_candidate_caches(self.root, self.jobs)
+
+        self.assertEqual(len(removed), 8)
+        self.assertTrue(all(not directory.exists() for directory in removed))
+        self.assertEqual(sum(directory.exists() for directory in stale), 57)
+
     def test_keeps_manifest_referenced_by_saved_voice_plan(self) -> None:
         old = self._candidate("old")
         saved = self._candidate("saved")
