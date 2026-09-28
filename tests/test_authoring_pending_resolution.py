@@ -21,6 +21,7 @@ from vntts.authoring.pending_resolution import (
     write_pending_resolution_plan,
 )
 from vntts.authoring.workbench import ReviewItem
+from vntts.document_identity import canonical_document_sha256
 
 
 class PendingResolutionPlanTest(unittest.TestCase):
@@ -164,6 +165,47 @@ class PendingResolutionPlanTest(unittest.TestCase):
             path.write_text(json.dumps(forged), encoding="utf-8")
             with self.assertRaisesRegex(PendingResolutionError, "identity is invalid"):
                 load_pending_resolution_plan(path)
+
+    def test_plan_rejects_boolean_and_float_integer_fields(self):
+        plan, item = self.fixture()
+        with (
+            patch(
+                "vntts.authoring.pending_resolution.build_cohort_review_plan",
+                return_value=plan,
+            ),
+            patch(
+                "vntts.authoring.pending_resolution.list_review_items",
+                return_value=(item,),
+            ),
+        ):
+            expected = build_pending_resolution_plan("workspace")
+        with TemporaryDirectory() as directory:
+            for field in (
+                "schema_version",
+                "blocked_pending_count",
+                "action_counts",
+            ):
+                for value in (True, 1.0):
+                    with self.subTest(field=field, value=value):
+                        forged = dict(expected.document)
+                        forged[field] = (
+                            {RECOVER_OR_REGENERATE: value}
+                            if field == "action_counts"
+                            else value
+                        )
+                        forged["plan_id"] = canonical_document_sha256(
+                            {
+                                key: item
+                                for key, item in forged.items()
+                                if key != "plan_id"
+                            }
+                        )
+                        with self.assertRaises(PendingResolutionError):
+                            write_pending_resolution_plan(
+                                forged,
+                                Path(directory)
+                                / f"{field}-{type(value).__name__}.json",
+                            )
 
     def test_regeneration_command_is_exact_bounded_and_current(self):
         plan, item = self.fixture()

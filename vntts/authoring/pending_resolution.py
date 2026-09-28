@@ -304,7 +304,10 @@ def _validated_plan_document(plan: object) -> _PlanDocument:
         raise PendingResolutionError("Pending resolution plan fields are invalid")
     if document.get("schema") != PENDING_RESOLUTION_PLAN_SCHEMA:
         raise PendingResolutionError("Pending resolution plan schema is unsupported")
-    if document.get("schema_version") != PENDING_RESOLUTION_PLAN_VERSION:
+    if (
+        type(document.get("schema_version")) is not int
+        or document["schema_version"] != PENDING_RESOLUTION_PLAN_VERSION
+    ):
         raise PendingResolutionError("Pending resolution plan version is unsupported")
     _required_text(document.get("workspace_id"), "Workspace ID")
     for field, label in (
@@ -323,10 +326,17 @@ def _validated_plan_document(plan: object) -> _PlanDocument:
         raise PendingResolutionError(
             "Pending resolution queue IDs must be unique and sorted"
         )
-    if document.get("blocked_pending_count") != len(canonical):
+    if type(document.get("blocked_pending_count")) is not int or document[
+        "blocked_pending_count"
+    ] != len(canonical):
         raise PendingResolutionError("Pending resolution count is inconsistent")
     expected_counts = {RECOVER_OR_REGENERATE: len(canonical)} if canonical else {}
-    if document.get("action_counts") != expected_counts:
+    action_counts = document.get("action_counts")
+    if (
+        not isinstance(action_counts, dict)
+        or action_counts != expected_counts
+        or any(type(value) is not int for value in action_counts.values())
+    ):
         raise PendingResolutionError("Pending resolution action counts are invalid")
     actual_id = canonical_document_sha256(
         {key: value for key, value in document.items() if key != "plan_id"}
