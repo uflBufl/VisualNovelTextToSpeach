@@ -1,5 +1,10 @@
 # TODO
 
+## Restore static checks on current main
+
+- [ ] Fix the four existing `uv run mypy` errors: nullable generation result and saved-state item contracts in `pregeneration_recovery.py` (lines 362, 552, 563), and nullable diagnostics dialog in `app.py` (line 2570). Preserve resume and dialog lifecycle behavior; gate: full mypy and affected tests pass.
+- [ ] Investigate the four existing Ruff complexity ratchet findings in `authoring/bulk_generation._execute_generation_item`, `pregeneration_generation.OfflineGenerationWorker.generate`, `configuration_apply.ConfigurationApplyMixin.open_settings`, and `test_self_service_pregeneration.SelfServicePregenerationJourneyTest.test_process_restart_resumes_only_the_cancelled_line`. Refactor distinct phases where ownership becomes clearer; retain a cohesive function only with a reviewed baseline update. Gate: complexity ratchet and affected tests pass.
+
 ## Validate capture changes during background preparation on Windows
 
 - [ ] While a story is preparing and reading is active, confirm Settings and Calibrate capture remain available. Opening either stops only reading, and story preparation continues; after saving a region, restart reading and confirm capture uses the new area.
