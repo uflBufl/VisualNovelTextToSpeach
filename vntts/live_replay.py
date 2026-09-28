@@ -1352,8 +1352,12 @@ def load_live_replay_corpus(path: str | Path) -> LiveReplayCorpus:
     schema_version = document["schema_version"]
     if isinstance(schema_version, bool) or not isinstance(schema_version, int):
         raise ValueError("Live replay schema_version must be an integer")
-    name = str(document.get("name") or path.stem).strip()
-    fixture_kind = str(document.get("fixture_kind") or "saved-frame-ocr-replay").strip()
+    name = _replay_string(document.get("name"), "Live replay name", path.stem)
+    fixture_kind = _replay_string(
+        document.get("fixture_kind"),
+        "Live replay fixture_kind",
+        "saved-frame-ocr-replay",
+    )
     if not fixture_kind:
         raise ValueError("Live replay fixture_kind must be non-empty")
     region = _decode_region(document.get("dialog_region"))
@@ -1368,8 +1372,19 @@ def load_live_replay_corpus(path: str | Path) -> LiveReplayCorpus:
     for index, item in enumerate(raw_dialogue, start=1):
         if not isinstance(item, dict):
             raise ValueError(f"Live replay dialogue {index} must be an object")
-        character = str(item.get("character") or "Narrator").strip() or "Narrator"
-        text = " ".join(str(item.get("text") or "").split())
+        character = (
+            _replay_string(
+                item.get("character"),
+                f"Live replay dialogue {index} character",
+                "Narrator",
+            )
+            or "Narrator"
+        )
+        text = " ".join(
+            _replay_string(
+                item.get("text"), f"Live replay dialogue {index} text"
+            ).split()
+        )
         if not text:
             raise ValueError(f"Live replay dialogue {index} has no expected text")
         declared_frame_paths = item.get("frames")
@@ -1394,7 +1409,13 @@ def load_live_replay_corpus(path: str | Path) -> LiveReplayCorpus:
         frame_recognition_sources = tuple(
             source for _frame, _path, _digest, source in loaded_frame_records
         )
-        expected_source = str(item.get("expected_source") or "").strip() or None
+        expected_source = (
+            _replay_string(
+                item.get("expected_source"),
+                f"Live replay dialogue {index} expected_source",
+            )
+            or None
+        )
         expect_playback = item.get("expect_playback", True)
         if not isinstance(expect_playback, bool):
             raise ValueError(
@@ -1413,11 +1434,21 @@ def load_live_replay_corpus(path: str | Path) -> LiveReplayCorpus:
         raw_line_id = item.get("line_id")
         line_id: str | None
         if schema_version == 1:
-            line_id = str(raw_line_id or f"replay:{index}").strip()
+            line_id = _replay_string(
+                raw_line_id, f"Live replay dialogue {index} line_id", f"replay:{index}"
+            )
             event_id = None
         else:
-            line_id = None if raw_line_id is None else str(raw_line_id).strip() or None
-            event_id = str(item.get("event_id") or "").strip() or None
+            line_id = (
+                _replay_string(raw_line_id, f"Live replay dialogue {index} line_id")
+                or None
+            )
+            event_id = (
+                _replay_string(
+                    item.get("event_id"), f"Live replay dialogue {index} event_id"
+                )
+                or None
+            )
             if event_id is None:
                 raise ValueError(
                     f"Live replay dialogue {index} has no sequence event_id"
@@ -1446,14 +1477,24 @@ def load_live_replay_corpus(path: str | Path) -> LiveReplayCorpus:
                 "speaker_name": character,
                 "text": text,
                 "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-                "source_audio_status": str(
-                    item.get("source_audio_status") or "missing"
+                "source_audio_status": _replay_string(
+                    item.get("source_audio_status"),
+                    f"Live replay dialogue {index} source_audio_status",
+                    "missing",
                 ),
-                "source_audio_id": item.get("source_audio_id"),
+                "source_audio_id": _replay_string(
+                    item.get("source_audio_id"),
+                    f"Live replay dialogue {index} source_audio_id",
+                )
+                or None,
                 "source_audio_duration_seconds": item.get(
                     "source_audio_duration_seconds"
                 ),
-                "source_audio_completeness": item.get("source_audio_completeness"),
+                "source_audio_completeness": _replay_string(
+                    item.get("source_audio_completeness"),
+                    f"Live replay dialogue {index} source_audio_completeness",
+                )
+                or None,
             }
         )
     if not dialogue:
@@ -1477,6 +1518,14 @@ def load_live_replay_corpus(path: str | Path) -> LiveReplayCorpus:
         generated_audio_manifest,
         live_sequence,
     )
+
+
+def _replay_string(value: JsonValue | None, label: str, default: str = "") -> str:
+    if value is None or value == "":
+        return default
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be a string")
+    return value.strip()
 
 
 def _decode_region(value: JsonValue | None) -> DialogRegion | None:

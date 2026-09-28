@@ -988,6 +988,11 @@ class LiveReplayTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "no sequence event_id"):
                 load_live_replay_corpus(path)
 
+            document["dialogue"][0]["event_id"] = 42
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "event_id must be a string"):
+                load_live_replay_corpus(path)
+
     def test_sequence_contract_rejects_out_of_order_dialogue(self):
         with TemporaryDirectory() as temporary_directory:
             story_lines = [
@@ -1269,6 +1274,46 @@ class LiveReplayTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 1)
         self.assertIn("no dialogue entries", errors.getvalue())
+
+    def test_corpus_rejects_non_string_identity_and_route_fields(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = self.create_corpus(temporary_directory)
+            original = json.loads(path.read_text(encoding="utf-8"))
+            for field, invalid in (
+                ("name", {"wrong": "type"}),
+                ("fixture_kind", ["wrong"]),
+                ("character", 23),
+                ("text", ["not", "speech"]),
+                ("expected_source", 42),
+                ("line_id", False),
+                ("source_audio_status", ["available"]),
+                ("source_audio_id", 123),
+                ("source_audio_completeness", {"full": True}),
+            ):
+                with self.subTest(field=field):
+                    document = json.loads(json.dumps(original))
+                    target = (
+                        document
+                        if field in {"name", "fixture_kind"}
+                        else document["dialogue"][0]
+                    )
+                    target[field] = invalid
+                    path.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        ValueError, f"{field} must be a string"
+                    ):
+                        load_live_replay_corpus(path)
+
+            original["name"] = ""
+            original["fixture_kind"] = ""
+            for field in ("character", "line_id", "source_audio_status"):
+                original["dialogue"][0][field] = ""
+            path.write_text(json.dumps(original), encoding="utf-8")
+            corpus = load_live_replay_corpus(path)
+            self.assertEqual(corpus.name, path.stem)
+            self.assertEqual(corpus.fixture_kind, "saved-frame-ocr-replay")
+            self.assertEqual(corpus.dialogue[0].character, "Narrator")
+            self.assertEqual(corpus.dialogue[0].line_id, "replay:1")
 
     def test_representative_matrix_gates_prefixes_and_routes_exact_media(self):
         with TemporaryDirectory() as temporary_directory:
