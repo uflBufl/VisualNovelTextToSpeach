@@ -998,7 +998,7 @@ def _render_stories(
             "chapter-8",
         }
         dialog._populate_stories(content)
-        if state == "confirmation":
+        if state.startswith("confirmation"):
             dialog.step.setText("Step 2 of 4 - Choose and confirm voices")
             centurion = VoiceCandidate(
                 "character:centurion",
@@ -1075,6 +1075,52 @@ def _render_stories(
                     ),
                 ),
             )
+            saved = replace(
+                plan.groups[0],
+                group_id="saved-centurion",
+                character="Centurion",
+                routing_role="Centurion",
+                line_ids=("chapter-8:14",),
+                resolution="saved-player-decision",
+            )
+            plan = replace(plan, groups=(*plan.groups, saved))
+            if state in {"confirmation-portraits", "confirmation-mixed-portraits"}:
+                portraits = []
+                for index, group in enumerate(plan.groups):
+                    if state == "confirmation-mixed-portraits" and index > 0:
+                        portraits.append(group)
+                        continue
+                    portrait = root / f"portrait-{index}.png"
+                    picture = Image.new("RGB", (64, 64), (68 + 40 * index, 83, 102))
+                    draw = ImageDraw.Draw(picture)
+                    draw.ellipse((16, 8, 48, 40), fill="#c5b89b")
+                    draw.rounded_rectangle((11, 34, 53, 64), 10, fill="#56677b")
+                    picture.save(portrait)
+                    portraits.append(
+                        replace(
+                            group,
+                            portrait_image=str(portrait),
+                            portrait_image_sha256=sha256_file(portrait),
+                        )
+                    )
+                plan = replace(plan, groups=tuple(portraits))
+            if state.startswith("confirmation-compact"):
+                long_name = "The Extremely Long Character Name Used to Verify Layout"
+                long_voice = "The Likewise Very Long Original Game Voice Name"
+                groups = (
+                    replace(
+                        plan.groups[0],
+                        character=long_name,
+                        routing_role=long_name,
+                        source_character=long_voice,
+                    ),
+                    *plan.groups[1:],
+                )
+                plan = replace(plan, groups=groups)
+                font = dialog.font()
+                font.setPointSize(max(font.pointSize() + 3, 16))
+                dialog.setFont(font)
+                dialog.resize(760, 620)
             dialog._voice_plan = plan
             dialog._show_voice_confirmation(plan)
             dialog.content_scroll.show()
@@ -1428,7 +1474,14 @@ def _render_stories(
         if state == "ready":
             document["active"] = None
             document["items"] = {}
-        elif state in {"review", "compact", "compact-actions"}:
+        elif state in {
+            "review",
+            "review-play-focus",
+            "review-long-names",
+            "review-long-names-second",
+            "compact",
+            "compact-actions",
+        }:
             document["active"] = None
             item = next(iter(document["items"].values()))
             item["status"] = "generated"
@@ -1448,6 +1501,9 @@ def _render_stories(
         if state in {
             "ready",
             "review",
+            "review-play-focus",
+            "review-long-names",
+            "review-long-names-second",
             "approved",
             "compact",
             "compact-actions",
@@ -1476,9 +1532,37 @@ def _render_stories(
             synchronous_projection=True,
         )
         dialog._catalog_temporary_directory = temporary
+        if state.startswith("review-long-names"):
+            first = dialog._selected_review_item()
+            dialog._all_reviews = (
+                replace(
+                    first,
+                    speaker="The Keeper of the Northern Library",
+                    voice_character="Centurion in ceremonial attire",
+                    text="The storm has passed, but we cannot leave before dawn.",
+                ),
+                replace(
+                    first,
+                    queue_id="catalog-long-review-2",
+                    line_id="catalog-long-line-2",
+                    speaker="The Traveling Hotelier",
+                    voice_character="Narrator voice, selected for this story",
+                    text="You do have shillings, do you not, miss?",
+                ),
+            )
+            dialog._apply_review_filters()
+            dialog.summary = replace(dialog.summary, generated=2)
+            dialog._show_counts()
+            if state == "review-long-names-second":
+                dialog.review_table.setCurrentCell(1, 7)
         if state == "filtered-empty":
             dialog.review_status.setCurrentText("Awaiting review")
-        if state in {"compact", "compact-actions"}:
+        if state in {
+            "compact",
+            "compact-actions",
+            "review-long-names",
+            "review-long-names-second",
+        }:
             font = dialog.font()
             font.setPointSize(max(font.pointSize() + 3, 16))
             dialog.setFont(font)
@@ -1909,6 +1993,21 @@ def _render_stories(
         "offline-preparation.voice-confirmation": lambda: offline_preparation(
             "confirmation"
         ),
+        "offline-preparation.voice-confirmation-portraits": lambda: offline_preparation(
+            "confirmation-portraits"
+        ),
+        "offline-preparation.voice-confirmation-mixed-portraits": lambda: (
+            offline_preparation("confirmation-mixed-portraits")
+        ),
+        "offline-preparation.voice-confirmation-compact": lambda: offline_preparation(
+            "confirmation-compact"
+        ),
+        "offline-preparation.voice-confirmation-compact-scrolled": lambda: (
+            offline_preparation("confirmation-compact-scrolled")
+        ),
+        "offline-preparation.voice-confirmation-compact-last-route": lambda: (
+            offline_preparation("confirmation-compact-last-route")
+        ),
         "offline-preparation.partial-ready": lambda: offline_preparation(
             "partial-ready"
         ),
@@ -2009,6 +2108,15 @@ def _render_stories(
             "compact-actions"
         ),
         "authoring-workbench.review": lambda: authoring_workbench("review"),
+        "authoring-workbench.review-play-focus": lambda: authoring_workbench(
+            "review-play-focus"
+        ),
+        "authoring-workbench.review-long-names": lambda: authoring_workbench(
+            "review-long-names"
+        ),
+        "authoring-workbench.review-long-names-second": lambda: authoring_workbench(
+            "review-long-names-second"
+        ),
         "authoring-workbench.approved": lambda: authoring_workbench("approved"),
         "authoring-workbench.interrupted": lambda: authoring_workbench("interrupted"),
         "authoring-workbench.failed": lambda: authoring_workbench("failed"),
@@ -2048,6 +2156,29 @@ def _render_stories(
             try:
                 widget.show()
                 app.processEvents()
+                if (
+                    story_id
+                    == "offline-preparation.voice-confirmation-compact-scrolled"
+                ):
+                    widget.content_scroll.verticalScrollBar().setValue(
+                        widget.content_scroll.verticalScrollBar().maximum()
+                    )
+                    app.processEvents()
+                if (
+                    story_id
+                    == "offline-preparation.voice-confirmation-compact-last-route"
+                ):
+                    widget.content_scroll.verticalScrollBar().setValue(
+                        widget.content_scroll.verticalScrollBar().maximum()
+                    )
+                    widget.voice_routes.setCurrentRow(widget.voice_routes.count() - 1)
+                    widget.voice_routes.verticalScrollBar().setValue(
+                        widget.voice_routes.verticalScrollBar().maximum()
+                    )
+                    app.processEvents()
+                if story_id == "authoring-workbench.review-play-focus":
+                    widget.review_play.setFocus()
+                    app.processEvents()
                 image_name = f"{story_id}.png"
                 image_path = screenshots / image_name
                 if not widget.grab().save(str(image_path)):

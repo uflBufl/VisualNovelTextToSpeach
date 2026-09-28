@@ -820,13 +820,18 @@ class OfflineAudioPreparationDialog(QDialog):
         confirmation_layout.addWidget(self.voice_routes_header)
         confirmation_layout.addWidget(self.voice_routes)
         confirmation_layout.addWidget(self.identity_suggestion)
-        route_actions = QHBoxLayout()
-        route_actions.addWidget(self.back_to_story_selection)
-        route_actions.addStretch()
-        route_actions.addWidget(self.link_identity)
-        route_actions.addWidget(self.unlink_identity)
-        route_actions.addWidget(self.inspect_character_voice)
-        route_actions.addWidget(self.choose_character_voice)
+        route_actions = QVBoxLayout()
+        identity_actions = QHBoxLayout()
+        identity_actions.addWidget(self.back_to_story_selection)
+        identity_actions.addStretch()
+        identity_actions.addWidget(self.link_identity)
+        identity_actions.addWidget(self.unlink_identity)
+        route_actions.addLayout(identity_actions)
+        voice_actions = QHBoxLayout()
+        voice_actions.addStretch()
+        voice_actions.addWidget(self.inspect_character_voice)
+        voice_actions.addWidget(self.choose_character_voice)
+        route_actions.addLayout(voice_actions)
         confirmation_layout.addLayout(route_actions)
         confirmation_layout.addWidget(self.voice_confirmation_status)
 
@@ -1612,7 +1617,7 @@ class OfflineAudioPreparationDialog(QDialog):
             None,
         )
         duration = (
-            f", {candidate.reference_duration_seconds:.1f} s"
+            f", {candidate.reference_duration_seconds:.1f}\u00a0s"
             if candidate is not None
             and candidate.reference_duration_seconds is not None
             else ""
@@ -1625,9 +1630,9 @@ class OfflineAudioPreparationDialog(QDialog):
         status = (
             "voice choice needed"
             if group.route == "needs-audition"
-            else "approved"
-            if group.resolution == "saved-player-decision"
-            else "narrator"
+            else "chosen by you"
+            if group.resolution.startswith("saved-")
+            else "automatic fallback"
             if group.route == "narrator"
             else "automatic"
         )

@@ -340,6 +340,10 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 dialog.review_actions_layout.indexOf(dialog.reload_authority), -1
             )
             self.assertFalse(dialog.technical.isChecked())
+            self.assertIn("line ID", dialog.show_technical_columns.accessibleName())
+            self.assertIn(
+                "Line ID", dialog.show_technical_columns.accessibleDescription()
+            )
             self.assertEqual(dialog.reload_authority.text(), "Reload workspace")
             self.assertEqual(dialog.reset_layout.text(), "Reset layout")
             self.assertEqual(dialog.approve.text(), "Approve")

@@ -7,8 +7,8 @@
 
 ## Active - Finish repeated UI scanability rollout
 
-- [ ] Revisit the new story tree after that integration: story title, readiness, line count, and diagnostics are still concatenated in one cell. Separate primary identity from state and detail without overwriting the in-progress grouping work.
-- [ ] Validate the integrated voice-route layout on Windows at normal and enlarged text sizes; confirm clicking or double-clicking a row still selects and inspects the intended character.
+- [ ] Revisit the current story tree: story title, readiness, line count, and diagnostics are still concatenated in one cell. Separate primary identity from state and detail without overwriting the in-progress grouping work.
+- [ ] Validate the integrated voice-route layout on Windows at normal and enlarged text sizes: wheel and keyboard navigation must reach the last route and Inspect/Edit/Generate actions; clicking or double-clicking a row must select and inspect that character. Check all-or-none portraits when game references are mixed, and retain screenshots.
 
 ## Active - Review remaining source-extraction UI
 
