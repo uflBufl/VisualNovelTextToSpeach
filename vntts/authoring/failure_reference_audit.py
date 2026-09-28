@@ -677,8 +677,10 @@ def _validate_audit_documents(
 ) -> tuple[str, list[object], list[object]]:
     if (
         document.get("schema") != FAILURE_REFERENCE_AUDIT_SCHEMA
+        or type(document.get("schema_version")) is not int
         or document.get("schema_version") != FAILURE_REFERENCE_AUDIT_VERSION
         or key.get("schema") != FAILURE_REFERENCE_AUDIT_KEY_SCHEMA
+        or type(key.get("schema_version")) is not int
         or key.get("schema_version") != FAILURE_REFERENCE_AUDIT_VERSION
     ):
         raise FailureReferenceAuditError("Unsupported reference audit schema")
@@ -744,9 +746,9 @@ def _validated_audit_counts(document: JsonDocument) -> tuple[int, int, int]:
     case_count = document["case_count"]
     group_count = document["group_count"]
     blinded_trial_count = document["blinded_trial_count"]
-    if not isinstance(case_count, int) or not isinstance(group_count, int):
+    if type(case_count) is not int or type(group_count) is not int:
         raise FailureReferenceAuditError("Reference audit case count changed")
-    if not isinstance(blinded_trial_count, int):
+    if type(blinded_trial_count) is not int:
         raise FailureReferenceAuditError("Reference audit trial count changed")
     return case_count, group_count, blinded_trial_count
 
@@ -768,7 +770,9 @@ def _validate_audit_group(
     cases = document["cases"]
     if not isinstance(cases, list):
         raise FailureReferenceAuditError("Reference audit group is malformed")
-    if document.get("case_count") != len(cases):
+    if type(document.get("case_count")) is not int or document.get("case_count") != len(
+        cases
+    ):
         raise FailureReferenceAuditError("Reference audit case count changed")
     _validate_audit_candidate_files(directory, candidates)
     return group_id, len(cases), len(candidates) * (len(candidates) - 1) // 2
@@ -778,6 +782,7 @@ def _validate_audit_candidates(group: JsonDocument) -> list[JsonDocument]:
     candidates = group.get("candidates")
     if (
         not isinstance(candidates, list)
+        or type(group.get("candidate_count")) is not int
         or group.get("candidate_count") != len(candidates)
         or not candidates
     ):

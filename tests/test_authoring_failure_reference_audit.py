@@ -191,6 +191,50 @@ class FailureReferenceAuditTest(unittest.TestCase):
         self.assertEqual(document["groups"][0]["cases"][0]["queue_id"], queue_id)
         self.assertIn("neither_acceptable", document["groups"][0]["decision_options"])
 
+    def test_audit_rejects_non_integer_schema_and_counts(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _queue_id = self.create_failed_workspace(root)
+            output = root / "audit"
+            publish_failure_reference_audit(workspace, output, seed=0)
+            original_audit = json.loads((output / "audit.json").read_text())
+            original_key = json.loads((output / ".blind-key.json").read_text())
+
+            def assert_rejected(mutate_audit, mutate_key=lambda _key: None):
+                audit = json.loads(json.dumps(original_audit))
+                key = json.loads(json.dumps(original_key))
+                mutate_audit(audit)
+                mutate_key(key)
+                audit["audit_id"] = _canonical_sha256(
+                    {name: value for name, value in audit.items() if name != "audit_id"}
+                )
+                key["audit_id"] = audit["audit_id"]
+                (output / "audit.json").write_text(json.dumps(audit))
+                (output / ".blind-key.json").write_text(json.dumps(key))
+                with self.assertRaisesRegex(
+                    FailureReferenceAuditError, "schema|count|malformed"
+                ):
+                    load_failure_reference_audit(output)
+
+            assert_rejected(
+                lambda audit: audit.__setitem__(
+                    "schema_version", float(audit["schema_version"])
+                ),
+                lambda key: key.__setitem__(
+                    "schema_version", float(key["schema_version"])
+                ),
+            )
+            assert_rejected(lambda audit: audit.__setitem__("case_count", True))
+            assert_rejected(lambda audit: audit.__setitem__("group_count", True))
+            assert_rejected(
+                lambda audit: audit["groups"][0].__setitem__("case_count", True)
+            )
+            assert_rejected(
+                lambda audit: audit["groups"][0].__setitem__(
+                    "candidate_count", float(audit["groups"][0]["candidate_count"])
+                )
+            )
+
     def test_explicit_audit_scope_accepts_only_current_failed_queue_ids(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
