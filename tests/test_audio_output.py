@@ -42,7 +42,36 @@ class FakeSoundDevice:
         return FakeStream()
 
 
+class FailingSoundDevice(FakeSoundDevice):
+    def play(self, _audio, _sample_rate, *, latency):
+        self.latency = latency
+
+    def wait(self):
+        raise RuntimeError("device wait failed")
+
+    def stop(self):
+        raise RuntimeError("device stop failed")
+
+
 class AudioOutputLifecycleTest(unittest.TestCase):
+    def test_failed_convenience_finish_is_not_logged_as_complete(self):
+        for method, operation in (("wait", "close"), ("stop", "abort")):
+            with self.subTest(method=method):
+                log = configure_audio_lifecycle_log()
+                try:
+                    output = resolve_audio_output(FailingSoundDevice())
+                    output.play(np.zeros(8, dtype=np.float32), 24000, latency="low")
+                    with self.assertRaisesRegex(
+                        RuntimeError, f"device {method} failed"
+                    ):
+                        getattr(output, method)()
+                    events = log.report()["events"]
+                finally:
+                    configure_audio_lifecycle_log()
+                self.assertEqual(events[-1]["operation"], operation)
+                self.assertEqual(events[-1]["outcome"], "failed")
+                self.assertEqual(len({event["stream_id"] for event in events}), 1)
+
     def test_stream_lifecycle_keeps_device_owner_and_playback_identity(self):
         log = configure_audio_lifecycle_log()
         token = audio_lifecycle_context.set(

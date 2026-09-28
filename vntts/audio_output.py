@@ -307,18 +307,24 @@ class _LoggedAudioOutput:
         return result
 
     def wait(self) -> object:
+        outcome = "failed"
         try:
-            return self.output.wait()
+            result = self.output.wait()
+            outcome = "complete"
+            return result
         finally:
-            self._finish_convenience("close", "convenience-wait")
+            self._finish_convenience("close", "convenience-wait", outcome)
 
     def stop(self) -> object:
+        outcome = "failed"
         try:
-            return self.output.stop()
+            result = self.output.stop()
+            outcome = "complete"
+            return result
         finally:
-            self._finish_convenience("abort", "convenience-stop")
+            self._finish_convenience("abort", "convenience-stop", outcome)
 
-    def _finish_convenience(self, operation: str, reason: str) -> None:
+    def _finish_convenience(self, operation: str, reason: str, outcome: str) -> None:
         with self.lock:
             active, self.convenience = self.convenience, None
         if active is None:
@@ -329,7 +335,7 @@ class _LoggedAudioOutput:
             **context,
             **fields,
             stream_id=stream_id,
-            outcome="complete",
+            outcome=outcome,
             reason=reason,
             owner=current_thread().name,
         )
