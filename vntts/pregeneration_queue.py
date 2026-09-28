@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import io
-import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -359,7 +358,7 @@ def _selected_records(
 
 
 def _generation_input_identity(job: PregenerationJob, plan: VoicePlan) -> str:
-    return _digest(
+    return canonical_document_sha256(
         {
             "generation_input_schema_version": generation_input_schema_version,
             "job_id": job.job_id,
@@ -700,14 +699,6 @@ def _nonnegative_int(value: object, label: str) -> int:
 def _raise_if_cancelled(cancellation: _Cancellation | None) -> None:
     if cancellation is not None and cancellation.is_set():
         raise PregenerationQueueCancelled("Offline preparation was cancelled")
-
-
-def _digest(value: object) -> str:
-    return hashlib.sha256(
-        json.dumps(
-            value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
-    ).hexdigest()
 
 
 def project_source_audio_semantics(

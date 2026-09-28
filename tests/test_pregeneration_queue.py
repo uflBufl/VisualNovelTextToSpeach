@@ -547,6 +547,10 @@ class PregenerationInputStoreTest(unittest.TestCase):
             timestamp = first.queue.stat().st_mtime_ns
             second = store.materialize(job, voice_plan)
 
+            self.assertEqual(
+                first.identity,
+                "e0d9cb8704ab8f8acf460f38b645fdbfd8714dd38a2db045e4fe9cf392bd0e83",
+            )
             self.assertEqual(first, second)
             self.assertEqual(second.queue.stat().st_mtime_ns, timestamp)
 
