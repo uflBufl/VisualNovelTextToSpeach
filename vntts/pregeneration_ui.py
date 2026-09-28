@@ -6,7 +6,15 @@ from threading import Event
 from time import monotonic, process_time
 from typing import TypeAlias, TypeGuard, cast
 
-from PySide6.QtCore import QSignalBlocker, QSize, Qt, QThreadPool, QTimer, Signal
+from PySide6.QtCore import (
+    QModelIndex,
+    QSignalBlocker,
+    QSize,
+    Qt,
+    QThreadPool,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import QCloseEvent, QIcon, QPixmap, QStandardItemModel
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -17,6 +25,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QInputDialog,
     QLabel,
     QLineEdit,
@@ -27,6 +36,8 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -128,6 +139,35 @@ StoryAudioCheck: TypeAlias = tuple[
     StoryAudioCoverage | None,
     Exception | str | None,
 ]
+
+
+class _StoryTree(QTreeWidget):
+    """Address story rows separately from collapsible category rows."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._stories: list[QTreeWidgetItem] = []
+
+    def clear(self) -> None:
+        super().clear()
+        self._stories.clear()
+
+    def add_story(self, group: QTreeWidgetItem, story: QTreeWidgetItem) -> None:
+        group.addChild(story)
+        self._stories.append(story)
+
+    def count(self) -> int:
+        return len(self._stories)
+
+    def item(self, row: int) -> QTreeWidgetItem:
+        return self._stories[row]
+
+    def setCurrentRow(self, row: int) -> None:
+        self.setCurrentItem(self.item(row))
+
+    def current_story_item(self) -> QTreeWidgetItem | None:
+        item = self.currentItem()
+        return item if item is not None and item.parent() is not None else None
 
 
 class OfflineAudioPreparationDialog(QDialog):
@@ -282,6 +322,8 @@ class OfflineAudioPreparationDialog(QDialog):
         self._close_after_voice_cancel = False
         self._content: tuple[GameContent, ...] = ()
         self._story_selection_drafts: dict[str, set[str]] = {}
+        self._story_groups: dict[str, QTreeWidgetItem] = {}
+        self._story_group_expansion: dict[tuple[str, str], bool] = {}
         self._unsaved_story_selections: dict[
             str, tuple[GameContent, tuple[str, ...]]
         ] = {}
@@ -455,15 +497,25 @@ class OfflineAudioPreparationDialog(QDialog):
         self.source_status = QLabel()
         self.source_status.setWordWrap(True)
         self.source_status.setAccessibleName("Game content status")
-        self.stories = QListWidget()
-        self.stories.setWordWrap(True)
+        self.stories = _StoryTree()
+        self.stories.setHeaderLabels(("Story", "Audio status"))
+        self.stories.header().setStretchLastSection(False)
+        self.stories.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.stories.header().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.stories.setIndentation(18)
+        self.stories.setAlternatingRowColors(True)
         self.stories.setAccessibleName("Stories and chapters")
         self.stories.setAccessibleDescription(
-            "Check every story or chapter to prepare for offline speech"
+            "Expand or collapse a type with Left and Right. Check a type to select "
+            "all its stories, or check individual stories. Audio status is in the second column."
         )
-        self.stories.setMinimumHeight(100)
-        self.stories.itemChanged.connect(self._selection_changed)
-        self.stories.currentRowChanged.connect(self._story_audio_changed)
+        self.stories.setMinimumHeight(120)
+        self.stories.itemChanged.connect(self._story_item_changed)
+        self.stories.currentItemChanged.connect(self._story_audio_changed)
+        self.stories.itemExpanded.connect(self._story_group_expansion_changed)
+        self.stories.itemCollapsed.connect(self._story_group_expansion_changed)
         self.check_story_audio = QPushButton("Check story audio")
         self.check_story_audio.setEnabled(False)
         self.check_story_audio.clicked.connect(self._check_story_audio)
@@ -479,10 +531,6 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         self.story_search.setClearButtonEnabled(True)
         self.story_search.textChanged.connect(self._filter_stories)
-        self.story_type_filter = QComboBox()
-        self.story_type_filter.setAccessibleName("Filter stories by type")
-        self.story_type_filter.addItem("All types", None)
-        self.story_type_filter.currentIndexChanged.connect(self._filter_stories)
         self.story_filter = QComboBox()
         self.story_filter.setAccessibleName("Filter stories by preparation status")
         for label, status in (
@@ -497,7 +545,6 @@ class OfflineAudioPreparationDialog(QDialog):
         self.story_filter.currentIndexChanged.connect(self._filter_stories)
         story_filters = QHBoxLayout()
         story_filters.addWidget(self.story_search, 1)
-        story_filters.addWidget(self.story_type_filter)
         story_filters.addWidget(self.story_filter)
         self.story_filter_status = QLabel()
         self.story_filter_status.setAccessibleName("Shown and selected story counts")
@@ -596,7 +643,9 @@ class OfflineAudioPreparationDialog(QDialog):
         self.progress_coverage = QLabel()
         self.progress_coverage.setAccessibleName("Final offline audio coverage")
         self.progress_coverage.setWordWrap(True)
-        self.progress_story_readiness_label = QLabel("Selected story readiness")
+        self.progress_story_readiness_label = QLabel(
+            "Story readiness (all dialogue, including game audio)"
+        )
         self.progress_story_readiness_label.setStyleSheet("font-weight: 600;")
         self.progress_story_readiness = QListWidget()
         self.progress_story_readiness.setAccessibleName(
@@ -823,8 +872,8 @@ class OfflineAudioPreparationDialog(QDialog):
         story_filters: QHBoxLayout,
         selection_actions: QHBoxLayout,
     ) -> None:
-        self.selection_panel = QWidget()
-        selection_layout = QVBoxLayout(self.selection_panel)
+        selection_content = QWidget()
+        selection_layout = QVBoxLayout(selection_content)
         selection_layout.setContentsMargins(0, 0, 0, 0)
         selection_layout.setSpacing(4)
         selection_layout.addLayout(narrator_row)
@@ -837,14 +886,21 @@ class OfflineAudioPreparationDialog(QDialog):
         selection_layout.addWidget(self.source_status)
         selection_layout.addLayout(story_filters)
         selection_layout.addWidget(self.summary)
-        story_status_row = QHBoxLayout()
-        story_status_row.addWidget(self.story_filter_status, 1)
-        story_status_row.addWidget(self.check_story_audio)
-        selection_layout.addLayout(story_status_row)
+        selection_layout.addWidget(self.story_filter_status)
         selection_layout.addWidget(self.stories, 1)
         selection_layout.addLayout(selection_actions)
-        selection_layout.addWidget(self.story_audio_status)
+        story_audio_row = QHBoxLayout()
+        story_audio_row.addWidget(self.story_audio_status, 1)
+        story_audio_row.addWidget(self.check_story_audio)
+        selection_layout.addLayout(story_audio_row)
         selection_layout.addWidget(self.prepare_again)
+        self.selection_panel = QScrollArea()
+        self.selection_panel.setWidgetResizable(True)
+        self.selection_panel.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.selection_panel.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.selection_panel.setWidget(selection_content)
 
         content = QWidget()
         layout = QVBoxLayout(content)
@@ -2088,9 +2144,9 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def selected_story_ids(self) -> tuple[str, ...]:
         return tuple(
-            self.stories.item(row).data(Qt.ItemDataRole.UserRole)
+            self.stories.item(row).data(0, Qt.ItemDataRole.UserRole)
             for row in range(self.stories.count())
-            if self.stories.item(row).checkState() == Qt.CheckState.Checked
+            if self.stories.item(row).checkState(0) == Qt.CheckState.Checked
         )
 
     def job(self) -> PregenerationJob | None:
@@ -2259,7 +2315,7 @@ class OfflineAudioPreparationDialog(QDialog):
         set_labeled_text(
             self.progress_counts,
             (
-                ("Progress", f"{completed} of {total} lines processed"),
+                ("Progress", f"{completed} of {total} new speech lines processed"),
                 ("Prepared", str(generated)),
                 ("Pending", str(max(0, total - completed))),
                 ("Failed", str(failed)),
@@ -2281,13 +2337,13 @@ class OfflineAudioPreparationDialog(QDialog):
         total = self._generation_input.ready_items
         self._show_phase(
             "Generating offline audio",
-            f"Generating {total} offline lines.",
+            f"Generating {total} new speech lines.",
             "Cancel stops generation and closes this window. Finished lines stay "
             "saved; reopen and select Continue to generate only unfinished lines.",
         )
         self.progress_bar.setRange(0, max(1, total))
         self.progress_bar.setValue(0)
-        self.progress_bar.setFormat(f"0 of {total} processed")
+        self.progress_bar.setFormat(f"0 of {total} new speech lines processed")
         self._set_progress_counts(0, total)
         self.progress_guarantee.setText(
             "Each finished item is saved on disk; cancellation does not discard it."
@@ -2393,7 +2449,9 @@ class OfflineAudioPreparationDialog(QDialog):
                 self.progress_phase.setText(durable_phase)
         self.progress_bar.setRange(0, max(1, total))
         self.progress_bar.setValue(completed)
-        self.progress_bar.setFormat(f"{completed} of {total} processed")
+        self.progress_bar.setFormat(
+            f"{completed} of {total} new speech lines processed"
+        )
         self._set_progress_counts(
             completed,
             total,
@@ -2531,19 +2589,23 @@ class OfflineAudioPreparationDialog(QDialog):
         self.step.setText("Step 1 of 4 - Choose stories")
         self._populate_stories(self.current_content())
 
-    def _story_audio_changed(self, _row: int | None = None) -> None:
+    def _story_audio_changed(self, *_items: object) -> None:
         self.story_audio_status.setToolTip("")
-        item = self.stories.currentItem()
+        item = self.stories.current_story_item()
         self.check_story_audio.setEnabled(
             item is not None and not self.coverage_runner.active
         )
         self.story_audio_status.setVisible(item is not None)
-        self.story_audio_status.setText(
-            "Saved audio for selected stories is checked automatically. You can also recheck this story."
-        )
+        if item is not None:
+            self.story_audio_status.setText(
+                f"Story details: {item.text(0)} "
+                f"({item.data(0, Qt.ItemDataRole.UserRole + 5)} lines)\n"
+                f"{item.text(1)}: {item.data(0, Qt.ItemDataRole.UserRole + 4)}\n"
+                "Saved audio is checked automatically. You can also recheck this story."
+            )
         if item is not None:
             checked = self._story_audio_checks.get(
-                self._story_audio_key(item.data(Qt.ItemDataRole.UserRole))
+                self._story_audio_key(item.data(0, Qt.ItemDataRole.UserRole))
             )
             if checked is not None:
                 self._render_story_audio_check(*checked)
@@ -2598,17 +2660,17 @@ class OfflineAudioPreparationDialog(QDialog):
         return ""
 
     def _check_story_audio(self) -> None:
-        item = self.stories.currentItem()
+        item = self.stories.current_story_item()
         content = self.current_content()
         if item is None or content is None:
             return
-        selection_id = item.data(Qt.ItemDataRole.UserRole)
+        selection_id = item.data(0, Qt.ItemDataRole.UserRole)
         self._checking_story = self._story_audio_key(selection_id)
         self.check_story_audio.setEnabled(False)
         self.story_audio_status.setText(
             "Checking saved pack and recordings in the background..."
         )
-        self.content_scroll.ensureWidgetVisible(self.story_audio_status)
+        self.selection_panel.ensureWidgetVisible(self.story_audio_status)
         self.coverage_runner.start(
             self._inspect_story_audio,
             content,
@@ -2647,7 +2709,8 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _story_audio_finished(self, result: object, error: Exception | None) -> None:
         self.check_story_audio.setEnabled(
-            self.stories.currentItem() is not None and not self.has_pending_work()
+            self.stories.current_story_item() is not None
+            and not self.has_pending_work()
         )
         if self._checking_story is None:
             return
@@ -2664,10 +2727,10 @@ class OfflineAudioPreparationDialog(QDialog):
         self._checking_story = None
         self._refresh_story_statuses()
         self._selection_changed()
-        item = self.stories.currentItem()
+        item = self.stories.current_story_item()
         if (
             item is not None
-            and self._story_audio_key(item.data(Qt.ItemDataRole.UserRole)) == key
+            and self._story_audio_key(item.data(0, Qt.ItemDataRole.UserRole)) == key
         ):
             self._render_story_audio_check(saved, active, error)
 
@@ -2680,15 +2743,16 @@ class OfflineAudioPreparationDialog(QDialog):
         self.story_audio_status.show()
         if error is not None:
             self.story_audio_status.setText(f"Audio needs attention: {error}")
-            self.content_scroll.ensureWidgetVisible(self.story_audio_status)
             return
         if active is not None and not active.missing:
             coverage = active
         assert coverage is not None
         active_story = coverage is active
-        item = self.stories.currentItem()
+        item = self.stories.current_story_item()
         playback_warning = (
-            self._reading_override_reason(item.data(Qt.ItemDataRole.UserRole), coverage)
+            self._reading_override_reason(
+                item.data(0, Qt.ItemDataRole.UserRole), coverage
+            )
             if active_story and item is not None
             else ""
         )
@@ -2730,7 +2794,6 @@ class OfflineAudioPreparationDialog(QDialog):
             )
         )
         self.story_audio_status.setToolTip(str(coverage.manifest or ""))
-        self.content_scroll.ensureWidgetVisible(self.story_audio_status)
 
     def _preparation_story_status(self, selection: StorySelection) -> tuple[str, str]:
         ready = set(getattr(self._progress_snapshot, "ready_line_ids", ()))
@@ -2773,7 +2836,7 @@ class OfflineAudioPreparationDialog(QDialog):
         with QSignalBlocker(self.stories):
             for row in range(self.stories.count()):
                 item = self.stories.item(row)
-                selection_id = item.data(Qt.ItemDataRole.UserRole)
+                selection_id = item.data(0, Qt.ItemDataRole.UserRole)
                 selection = selections[selection_id]
                 saved_status = self._story_job_statuses.get(selection_id)
                 checked = self._story_audio_checks.get(
@@ -2803,13 +2866,16 @@ class OfflineAudioPreparationDialog(QDialog):
                     and coverage.live
                 ):
                     label = "Ready with live speech"
-                item.setText(
-                    f"{selection.title} ({selection.line_count} line{'s' if selection.line_count != 1 else ''}) - "
-                    f"{label}: {detail}"
-                )
-                item.setData(Qt.ItemDataRole.UserRole + 4, item.text())
-                item.setData(Qt.ItemDataRole.UserRole + 2, status)
+                item.setText(0, selection.title)
+                item.setText(1, label)
+                item.setToolTip(0, selection.title)
+                item.setToolTip(1, detail)
+                item.setData(0, Qt.ItemDataRole.UserRole + 2, status)
+                item.setData(0, Qt.ItemDataRole.UserRole + 4, detail)
+                item.setData(0, Qt.ItemDataRole.UserRole + 5, selection.line_count)
         self._filter_stories()
+        if self.stories.current_story_item() is not None:
+            self._story_audio_changed()
         self._render_progress_story_readiness()
 
     def _render_progress_story_readiness(self) -> None:
@@ -2838,8 +2904,11 @@ class OfflineAudioPreparationDialog(QDialog):
         else:
             for row in range(self.stories.count()):
                 item = self.stories.item(row)
-                if item.data(Qt.ItemDataRole.UserRole) in selected:
-                    self.progress_story_readiness.addItem(item.text())
+                if item.data(0, Qt.ItemDataRole.UserRole) in selected:
+                    self.progress_story_readiness.addItem(
+                        f"{item.text(0)} ({item.data(0, Qt.ItemDataRole.UserRole + 5)} lines) "
+                        f"- {item.text(1)}: {item.data(0, Qt.ItemDataRole.UserRole + 4)}"
+                    )
         visible = self.progress_story_readiness.count() > 0
         self.progress_story_readiness_label.setVisible(visible)
         self.progress_story_readiness.setVisible(visible)
@@ -2985,6 +3054,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._story_audio_changed()
         self.stories.blockSignals(True)
         self.stories.clear()
+        self._story_groups.clear()
         ordered_selections = (
             sorted(
                 content.selections,
@@ -2993,17 +3063,6 @@ class OfflineAudioPreparationDialog(QDialog):
             if content is not None
             else ()
         )
-        previous_type = self.story_type_filter.currentData()
-        with QSignalBlocker(self.story_type_filter):
-            self.story_type_filter.clear()
-            self.story_type_filter.addItem("All types", None)
-            if content is not None:
-                for kind in dict.fromkeys(
-                    selection.kind for selection in ordered_selections
-                ):
-                    self.story_type_filter.addItem(_story_type_label(kind), kind)
-            index = self.story_type_filter.findData(previous_type)
-            self.story_type_filter.setCurrentIndex(max(index, 0))
         if content is not None:
             resumed = self.job_store.latest_for_content(content)
             selection_error = None
@@ -3025,9 +3084,31 @@ class OfflineAudioPreparationDialog(QDialog):
             story_statuses = self.job_store.story_statuses(content)
             self._story_job_statuses = story_statuses
             for selection in ordered_selections:
-                item = QListWidgetItem(selection.title)
-                item.setData(Qt.ItemDataRole.UserRole, selection.selection_id)
+                group = self._story_groups.get(selection.kind)
+                if group is None:
+                    group = QTreeWidgetItem(self.stories)
+                    group.setData(0, Qt.ItemDataRole.UserRole + 3, selection.kind)
+                    group.setFlags(group.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                    group.setCheckState(0, Qt.CheckState.Unchecked)
+                    group_font = group.font(0)
+                    group_font.setBold(True)
+                    group.setFont(0, group_font)
+                    group.setToolTip(
+                        0,
+                        "Expand or collapse this type. Its checkbox selects every story "
+                        "in the type, including stories hidden by a filter.",
+                    )
+                    group.setExpanded(
+                        self._story_group_expansion.get(
+                            (content.story_index_sha256, selection.kind), True
+                        )
+                    )
+                    self._story_groups[selection.kind] = group
+                item = QTreeWidgetItem()
+                item.setText(0, selection.title)
+                item.setData(0, Qt.ItemDataRole.UserRole, selection.selection_id)
                 item.setData(
+                    0,
                     Qt.ItemDataRole.UserRole + 1,
                     " ".join(
                         (
@@ -3038,14 +3119,15 @@ class OfflineAudioPreparationDialog(QDialog):
                         )
                     ).casefold(),
                 )
-                item.setData(Qt.ItemDataRole.UserRole + 3, selection.kind)
+                item.setData(0, Qt.ItemDataRole.UserRole + 3, selection.kind)
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 item.setCheckState(
+                    0,
                     Qt.CheckState.Checked
                     if selection.selection_id in selected_ids
-                    else Qt.CheckState.Unchecked
+                    else Qt.CheckState.Unchecked,
                 )
-                self.stories.addItem(item)
+                self.stories.add_story(group, item)
             ready = sum(status == "ready" for status in story_statuses.values())
             message = (
                 "Saved offline audio found. Story selection is remembered when you continue or close."
@@ -3063,56 +3145,114 @@ class OfflineAudioPreparationDialog(QDialog):
             self.resume_status.clear()
         self.stories.blockSignals(False)
         self._refresh_story_statuses()
+        self._story_audio_changed()
         self._selection_changed()
+
+    def _story_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
+        if column != 0:
+            return
+        if item.parent() is None:
+            state = (
+                Qt.CheckState.Unchecked
+                if item.checkState(0) == Qt.CheckState.Unchecked
+                else Qt.CheckState.Checked
+            )
+            with QSignalBlocker(self.stories):
+                for row in range(item.childCount()):
+                    child = item.child(row)
+                    assert child is not None
+                    child.setCheckState(0, state)
+        self._selection_changed()
+
+    def _story_group_expansion_changed(self, item: QTreeWidgetItem) -> None:
+        content = self.current_content()
+        if content is None or item.parent() is not None:
+            return
+        kind = item.data(0, Qt.ItemDataRole.UserRole + 3)
+        self._story_group_expansion[(content.story_index_sha256, kind)] = (
+            item.isExpanded()
+        )
+        current = self.stories.current_story_item()
+        if not item.isExpanded() and current is not None and current.parent() is item:
+            self.stories.setCurrentItem(item)
 
     def _set_all_checked(self, checked: bool) -> None:
         state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
-        self.stories.blockSignals(True)
-        for row in range(self.stories.count()):
-            item = self.stories.item(row)
-            if not item.isHidden():
-                item.setCheckState(state)
-        self.stories.blockSignals(False)
+        with QSignalBlocker(self.stories):
+            for row in range(self.stories.count()):
+                item = self.stories.item(row)
+                if not item.isHidden():
+                    item.setCheckState(0, state)
         self._selection_changed()
 
     def _filter_stories(self, _value: object | None = None) -> None:
         query = self.story_search.text().strip().casefold()
         status = self.story_filter.currentData()
-        story_type = self.story_type_filter.currentData()
+        filtered = bool(query) or status is not None
+        content = self.current_content()
         shown = selected = hidden_selected = 0
-        visible_types: set[str] = set()
+        current_was_hidden = False
         with QSignalBlocker(self.stories):
             for row in range(self.stories.count()):
                 item = self.stories.item(row)
-                visible = (
-                    query in item.data(Qt.ItemDataRole.UserRole + 1)
-                    and (
-                        status is None
-                        or status == item.data(Qt.ItemDataRole.UserRole + 2)
-                    )
-                    and (
-                        story_type is None
-                        or story_type == item.data(Qt.ItemDataRole.UserRole + 3)
-                    )
+                visible = query in item.data(0, Qt.ItemDataRole.UserRole + 1) and (
+                    status is None
+                    or status == item.data(0, Qt.ItemDataRole.UserRole + 2)
                 )
                 item.setHidden(not visible)
-                kind = item.data(Qt.ItemDataRole.UserRole + 3)
-                base_text = item.data(Qt.ItemDataRole.UserRole + 4)
-                if visible and kind not in visible_types:
-                    visible_types.add(kind)
-                    item.setText(f"{_story_type_label(kind)}\n{base_text}")
-                else:
-                    item.setText(base_text)
-                checked = item.checkState() == Qt.CheckState.Checked
+                checked = item.checkState(0) == Qt.CheckState.Checked
                 shown += visible
                 selected += checked
                 hidden_selected += checked and not visible
+            for kind, group in self._story_groups.items():
+                children: list[QTreeWidgetItem] = []
+                for row in range(group.childCount()):
+                    child = group.child(row)
+                    assert child is not None
+                    children.append(child)
+                matches = sum(not child.isHidden() for child in children)
+                checked_count = sum(
+                    child.checkState(0) == Qt.CheckState.Checked for child in children
+                )
+                ready = sum(
+                    child.data(0, Qt.ItemDataRole.UserRole + 2) == "ready"
+                    for child in children
+                )
+                group.setHidden(matches == 0)
+                expanded = (
+                    self._story_group_expansion.get(
+                        (content.story_index_sha256, kind), True
+                    )
+                    if content is not None
+                    else True
+                )
+                group.setExpanded(True if filtered and matches else expanded)
+                group.setCheckState(
+                    0,
+                    Qt.CheckState.Checked
+                    if checked_count == len(children)
+                    else Qt.CheckState.PartiallyChecked
+                    if checked_count
+                    else Qt.CheckState.Unchecked,
+                )
+                group.setText(0, _story_type_label(kind))
+                group.setText(1, f"{ready}/{len(children)} ready")
+                group.setToolTip(
+                    1,
+                    f"{ready} of {len(children)} stories ready; "
+                    f"{checked_count} selected"
+                    + (f"; {matches} match filters" if filtered else ""),
+                )
+            current = self.stories.current_story_item()
+            parent = current.parent() if current is not None else None
+            parent_hidden = parent.isHidden() if parent is not None else False
+            if current is not None and (current.isHidden() or parent_hidden):
+                self.stories.setCurrentIndex(QModelIndex())
+                current_was_hidden = True
+        if current_was_hidden:
+            self._story_audio_changed()
         self.story_filter_status.setText(
-            (
-                f"{shown}/{self.stories.count()} shown; "
-                if query or status is not None or story_type is not None
-                else ""
-            )
+            (f"{shown}/{self.stories.count()} shown; " if filtered else "")
             + f"{selected} selected"
             + (f"; {hidden_selected} hidden by filters." if hidden_selected else ".")
             + (
@@ -3121,9 +3261,8 @@ class OfflineAudioPreparationDialog(QDialog):
                 else ""
             )
         )
-        filtered = bool(query) or status is not None or story_type is not None
-        self.select_all_button.setText("Select shown" if filtered else "Select all")
-        self.select_none_button.setText("Clear shown" if filtered else "Select none")
+        self.select_all_button.setText("Select matches" if filtered else "Select all")
+        self.select_none_button.setText("Clear matches" if filtered else "Select none")
 
     def _selection_changed(self, _item: object | None = None) -> None:
         self.continue_button.show()
@@ -3188,8 +3327,8 @@ class OfflineAudioPreparationDialog(QDialog):
         if saved_manifest is not None:
             return "Use prepared audio"
         if any(
-            self.stories.item(row).checkState() == Qt.CheckState.Checked
-            and self.stories.item(row).data(Qt.ItemDataRole.UserRole + 2)
+            self.stories.item(row).checkState(0) == Qt.CheckState.Checked
+            and self.stories.item(row).data(0, Qt.ItemDataRole.UserRole + 2)
             != "not_started"
             for row in range(self.stories.count())
         ):
@@ -3372,9 +3511,10 @@ class OfflineAudioPreparationDialog(QDialog):
             for row in range(self.stories.count()):
                 item = self.stories.item(row)
                 item.setCheckState(
+                    0,
                     Qt.CheckState.Checked
-                    if item.data(Qt.ItemDataRole.UserRole) in selected
-                    else Qt.CheckState.Unchecked
+                    if item.data(0, Qt.ItemDataRole.UserRole) in selected
+                    else Qt.CheckState.Unchecked,
                 )
         self._selection_changed()
         self.prepare_again.setVisible(bool(selected))
@@ -4094,7 +4234,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.stories.setEnabled(enabled)
         self.check_story_audio.setEnabled(
             enabled
-            and self.stories.currentItem() is not None
+            and self.stories.current_story_item() is not None
             and not self.coverage_runner.active
         )
         self.story_search.setEnabled(enabled)

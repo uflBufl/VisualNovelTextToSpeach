@@ -10,7 +10,8 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtCore import QPoint, Qt  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
     QDialog,
@@ -452,7 +453,7 @@ class PregenerationSetupTest(unittest.TestCase):
             )
             self.addCleanup(dialog.deleteLater)
 
-            dialog.stories.item(0).setCheckState(Qt.CheckState.Checked)
+            dialog.stories.item(0).setCheckState(0, Qt.CheckState.Checked)
             self.assertIn("&lt;1999&gt;", dialog.story_context.text())
             self.assertIn("&lt;story&gt;", dialog.story_context.text())
             self.assertIn(
@@ -783,7 +784,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.show()
             self.application.processEvents()
             self.assertTrue(dialog.summary.isVisibleTo(dialog))
-            self.assertIs(dialog.summary.parentWidget(), dialog.selection_panel)
+            self.assertIs(
+                dialog.summary.parentWidget(), dialog.selection_panel.widget()
+            )
             self.assertIn("3 dialogue lines", plain_label_text(dialog.summary))
             with patch.object(
                 dialog, "_generation_engine_available", return_value=False
@@ -1087,7 +1090,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertIn("Clear filters", dialog.story_filter_status.text())
             self.assertEqual(dialog.selected_story_ids(), ("main-1",))
 
-    def test_story_types_group_and_filter_without_losing_selection(self):
+    def test_story_types_are_collapsible_selectable_groups(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             content = story_filter_content(
@@ -1100,25 +1103,50 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             )
             self.addCleanup(dialog.deleteLater)
 
-            self.assertTrue(dialog.stories.item(0).text().startswith("Main story\n"))
-            self.assertTrue(dialog.stories.item(1).text().startswith("Anecdotes\n"))
-            self.assertTrue(
-                dialog.stories.item(2).text().startswith("Character stories\n")
+            groups = [dialog.stories.topLevelItem(row) for row in range(3)]
+            self.assertEqual(
+                [group.text(0) for group in groups],
+                ["Main story", "Anecdotes", "Character stories"],
             )
+            self.assertEqual([group.childCount() for group in groups], [1, 1, 1])
+            self.assertEqual(dialog.stories.columnCount(), 2)
+            self.assertEqual(dialog.stories.headerItem().text(0), "Story")
+            self.assertEqual(dialog.stories.headerItem().text(1), "Audio status")
+            self.assertEqual(dialog.stories.item(0).text(0), "Main Story 1")
+            self.assertEqual(
+                dialog.stories.item(0).toolTip(0), dialog.stories.item(0).text(0)
+            )
+            self.assertNotEqual(groups[0].child(0).text(0), groups[1].child(0).text(0))
+            self.assertEqual(dialog.stories.item(0).text(1), "Not prepared")
+            dialog.stories.setCurrentItem(dialog.stories.item(0))
+            dialog._story_audio_changed()
+            self.assertIn("Main Story 1", dialog.story_audio_status.text())
+            self.assertIn("lines", dialog.story_audio_status.text())
+            self.assertIn("Saved audio", dialog.story_audio_status.text())
             dialog.select_all_button.click()
-            type_filter = dialog.story_type_filter
-            type_filter.setCurrentIndex(type_filter.findData("character_story"))
+            self.assertEqual(
+                dialog.selected_story_ids(), ("main-1", "anecdote-1", "character-1")
+            )
+            groups[2].setExpanded(False)
+            self.assertFalse(groups[2].isExpanded())
+            self.assertEqual(len(dialog.selected_story_ids()), 3)
+            dialog.story_search.setText("Rhiannon's Story")
             self.assertEqual(
                 [dialog.stories.item(row).isHidden() for row in range(3)],
                 [True, True, False],
             )
-            self.assertEqual(
-                dialog.selected_story_ids(), ("main-1", "anecdote-1", "character-1")
-            )
-            type_filter.setCurrentIndex(type_filter.findData(None))
+            self.assertTrue(groups[2].isExpanded())
+            self.assertTrue(groups[0].isHidden())
+            self.assertFalse(groups[2].child(0).isHidden())
+            dialog.story_search.clear()
             self.assertFalse(
                 any(dialog.stories.item(row).isHidden() for row in range(3))
             )
+            self.assertFalse(groups[2].isExpanded())
+            groups[2].setCheckState(0, Qt.CheckState.Unchecked)
+            self.assertEqual(dialog.selected_story_ids(), ("main-1", "anecdote-1"))
+            dialog.stories.setCurrentItem(groups[2])
+            self.assertFalse(dialog.check_story_audio.isEnabled())
 
     def test_story_search_matches_visible_character_and_episode_title(self):
         with TemporaryDirectory() as temporary_directory:
@@ -1137,6 +1165,76 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                     [not dialog.stories.item(row).isHidden() for row in range(2)],
                     [False, True],
                 )
+
+    def test_story_group_checkbox_and_filtered_bulk_selection(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = story_filter_content(
+                inspect_story_index(write_story_index(root / "content"))
+            )
+            second_character = replace(
+                content.selections[0],
+                selection_id="character-2",
+                title="A Second Character Story",
+                order=3,
+            )
+            content = replace(
+                content, selections=(*content.selections, second_character)
+            )
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+            )
+            self.addCleanup(dialog.deleteLater)
+            group = dialog.stories.topLevelItem(2)
+
+            with patch.object(
+                dialog, "_selection_changed", wraps=dialog._selection_changed
+            ) as selection_changed:
+                group.setCheckState(0, Qt.CheckState.Checked)
+            self.assertEqual(selection_changed.call_count, 1)
+            self.assertEqual(
+                dialog.selected_story_ids(), ("character-1", "character-2")
+            )
+            dialog.story_search.setText("A Second Character Story")
+            self.assertEqual(dialog.select_none_button.text(), "Clear matches")
+            dialog.select_none_button.click()
+            self.assertEqual(dialog.selected_story_ids(), ("character-1",))
+            self.assertEqual(group.checkState(0), Qt.CheckState.PartiallyChecked)
+            group.setCheckState(0, Qt.CheckState.Checked)
+            self.assertEqual(
+                dialog.selected_story_ids(), ("character-1", "character-2")
+            )
+            dialog.story_search.clear()
+            self.assertEqual(group.checkState(0), Qt.CheckState.Checked)
+
+    def test_story_group_keyboard_and_refresh_preserve_expansion(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = story_filter_content(
+                inspect_story_index(write_story_index(root / "content"))
+            )
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog.show()
+            group = dialog.stories.topLevelItem(2)
+            dialog.stories.setCurrentItem(group)
+            dialog.stories.setFocus()
+            QTest.keyClick(dialog.stories, Qt.Key.Key_Left)
+            self.assertFalse(group.isExpanded())
+            QTest.keyClick(dialog.stories, Qt.Key.Key_Right)
+            self.assertTrue(group.isExpanded())
+            QTest.keyClick(dialog.stories, Qt.Key.Key_Space)
+            self.assertEqual(dialog.selected_story_ids(), ("character-1",))
+            group.setExpanded(False)
+            dialog._populate_stories(content)
+            self.assertFalse(dialog.stories.topLevelItem(2).isExpanded())
+            self.assertEqual(dialog.selected_story_ids(), ("character-1",))
 
     def test_fresh_catalog_starts_with_no_story_selected(self):
         with TemporaryDirectory() as temporary_directory:
@@ -1169,7 +1267,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
 
             self.assertIsNone(dialog.job())
             self.assertFalse(dialog.has_pending_work())
-            dialog.stories.item(0).setCheckState(Qt.CheckState.Checked)
+            dialog.stories.item(0).setCheckState(0, Qt.CheckState.Checked)
             self.assertEqual(dialog.continue_button.text(), "Prepare selected story")
             dialog.continue_button.click()
             self.assertEqual(dialog.job().selected_story_ids, ("main-1",))
@@ -1206,8 +1304,12 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 & Qt.TextInteractionFlag.TextSelectableByMouse
             )
             self.assertTrue(
+                dialog.story_audio_status.textInteractionFlags()
+                & Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            self.assertTrue(
                 all(
-                    "Not prepared" in dialog.stories.item(row).text()
+                    "Not prepared" in dialog.stories.item(row).text(1)
                     for row in range(2)
                 )
             )
@@ -1224,6 +1326,35 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(
                 self.application.clipboard().text(),
                 f"Unable to save preparation: {error}",
+            )
+
+    def test_story_selection_scrolls_at_large_text(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog.resize(620, 440)
+            font = dialog.font()
+            font.setPointSize(22)
+            dialog.setFont(font)
+            dialog.show()
+            dialog.stories.setCurrentRow(0)
+            self.application.processEvents()
+            self.assertGreater(dialog.selection_panel.verticalScrollBar().maximum(), 0)
+            dialog.selection_panel.ensureWidgetVisible(dialog.check_story_audio)
+            self.application.processEvents()
+            y = dialog.check_story_audio.mapTo(
+                dialog.selection_panel.viewport(), QPoint(0, 0)
+            ).y()
+            self.assertGreaterEqual(y, 0)
+            self.assertLessEqual(
+                y + dialog.check_story_audio.height(),
+                dialog.selection_panel.viewport().height(),
             )
 
     def test_unstarted_story_selection_survives_close_without_creating_jobs(self):
@@ -1245,8 +1376,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             first = reopen()
             first.select_none_button.click()
             first.source.setCurrentIndex(1)
-            first.stories.item(0).setCheckState(Qt.CheckState.Checked)
-            first.stories.item(1).setCheckState(Qt.CheckState.Unchecked)
+            first.stories.item(0).setCheckState(0, Qt.CheckState.Checked)
+            first.stories.item(1).setCheckState(0, Qt.CheckState.Unchecked)
             first.close()
             second = reopen()
             self.assertEqual(second.selected_story_ids(), ())
@@ -1372,7 +1503,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 thread_pool=pool,
             )
             self.addCleanup(dialog.deleteLater)
-            self.assertIn("Partially prepared", dialog.stories.item(0).text())
+            self.assertIn("Partially prepared", dialog.stories.item(0).text(1))
             self.assertEqual(dialog.continue_button.text(), "Checking saved audio...")
             self.assertFalse(dialog.continue_button.isEnabled())
             dialog.stories.setCurrentRow(0)
@@ -1402,9 +1533,11 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             ):
                 dialog.check_story_audio.click()
                 self.run_next_task(pool)
-            self.assertIn("Ready with live speech", dialog.stories.item(0).text())
-            self.assertIn("1 live speech", dialog.stories.item(0).text())
-            self.assertIn("active in Reading", dialog.stories.item(0).text())
+            self.assertIn("Ready with live speech", dialog.stories.item(0).text(1))
+            self.assertIn("live speech: 1", dialog.story_audio_status.text())
+            self.assertIn(
+                "Checked the active Reading pack", dialog.story_audio_status.text()
+            )
             self.assertEqual(dialog.continue_button.text(), "Start reading")
             with (
                 patch.object(
@@ -1419,7 +1552,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 dialog.check_story_audio.click()
                 self.run_next_task(pool)
                 self.assertEqual(
-                    dialog.stories.item(0).data(Qt.ItemDataRole.UserRole + 2), "ready"
+                    dialog.stories.item(0).data(0, Qt.ItemDataRole.UserRole + 2),
+                    "ready",
                 )
                 self.assertEqual(dialog.continue_button.text(), "Start reading")
                 self.assertTrue(dialog.continue_button.isEnabled())
@@ -1437,11 +1571,11 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             ):
                 dialog.check_story_audio.click()
                 self.run_next_task(pool)
-            self.assertIn("Needs attention", dialog.stories.item(0).text())
+            self.assertIn("Needs attention", dialog.stories.item(0).text(1))
             self.assertIn("Saved audio damaged", dialog.story_audio_status.text())
             self.assertEqual(dialog.continue_button.text(), "Continue preparation")
             dialog.refresh()
-            self.assertIn("checking saved audio", dialog.stories.item(0).text())
+            self.assertEqual(dialog.stories.item(0).text(1), "Partially prepared")
 
     def test_active_preparation_and_shared_progress_report_saved_counts_and_failure(
         self,
@@ -1464,13 +1598,13 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.continue_button.click()
             self.assertTrue(dialog.continue_button.isHidden())
             self.assertTrue(
-                all("Preparing" in dialog.stories.item(row).text() for row in range(2))
+                all("Preparing" in dialog.stories.item(row).text(1) for row in range(2))
             )
             dialog._generation_input = SimpleNamespace(ready_items=3)
             dialog._render_generation_progress(
                 OfflineGenerationProgress(generated=1, failed=1)
             )
-            self.assertIn("2 of 3 lines processed", updates[-1])
+            self.assertIn("2 of 3 new speech lines processed", updates[-1])
             self.assertIn("Pending: 1", updates[-1])
             self.assertEqual(dialog.progress_story_readiness.count(), 2)
             self.assertIn("Preparing", dialog.progress_story_readiness.item(0).text())
@@ -1478,7 +1612,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 None, ValueError("No character references. Import the game again.")
             )
             self.application.processEvents()
-            self.assertIn("Needs attention", dialog.stories.item(0).text())
+            self.assertIn("Needs attention", dialog.stories.item(0).text(1))
             self.assertIn("No character references", updates[-1])
             self.assertEqual(dialog.continue_button.text(), "Continue preparation")
             dialog.voice_runner.cancel()
@@ -1508,7 +1642,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
 
             self.assertIn(
                 "all remaining lines are playable from the current line",
-                dialog.stories.item(0).text(),
+                dialog.progress_story_readiness.item(0).text(),
             )
             self.assertIn(
                 "all remaining lines are playable from the current line",
@@ -1533,8 +1667,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 thread_pool=pool,
             )
             self.addCleanup(dialog.deleteLater)
-            dialog.stories.item(0).setCheckState(Qt.CheckState.Checked)
-            dialog.stories.item(1).setCheckState(Qt.CheckState.Unchecked)
+            dialog.stories.item(0).setCheckState(0, Qt.CheckState.Checked)
+            dialog.stories.item(1).setCheckState(0, Qt.CheckState.Unchecked)
             ready = StoryAudioCoverage(
                 "Main Story 1", root / "active.json", original=1, generated=1
             )
@@ -1583,8 +1717,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 job_store=PregenerationJobStore(root / "jobs"),
             )
             self.addCleanup(dialog.deleteLater)
-            dialog.stories.item(0).setCheckState(Qt.CheckState.Checked)
-            dialog.stories.item(1).setCheckState(Qt.CheckState.Unchecked)
+            dialog.stories.item(0).setCheckState(0, Qt.CheckState.Checked)
+            dialog.stories.item(1).setCheckState(0, Qt.CheckState.Unchecked)
             dialog.stories.setCurrentRow(0)
             ready = StoryAudioCoverage(
                 "Main Story 1", root / "active.json", original=1, generated=1
@@ -1614,7 +1748,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                     dialog._story_audio_changed()
                     self.assertEqual(dialog._can_start_reading(), not blocked)
                     self.assertEqual(
-                        dialog.stories.item(0).data(Qt.ItemDataRole.UserRole + 2),
+                        dialog.stories.item(0).data(0, Qt.ItemDataRole.UserRole + 2),
                         "attention" if blocked else "ready",
                     )
                     if blocked:
@@ -1725,8 +1859,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 job_store=PregenerationJobStore(root / "jobs"),
             )
             self.addCleanup(preparation.deleteLater)
-            preparation.stories.item(0).setCheckState(Qt.CheckState.Checked)
-            preparation.stories.item(1).setCheckState(Qt.CheckState.Unchecked)
+            preparation.stories.item(0).setCheckState(0, Qt.CheckState.Checked)
+            preparation.stories.item(1).setCheckState(0, Qt.CheckState.Unchecked)
             preparation.stories.setCurrentRow(0)
             ready = StoryAudioCoverage(
                 "Main Story 1", root / "active.json", original=1, generated=1
@@ -1867,10 +2001,10 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             )
             self.assertIn("2 stories", dialog.source.currentText())
             self.assertEqual(dialog.stories.count(), 2)
-            self.assertIn("Not prepared", dialog.stories.item(0).text())
+            self.assertIn("Not prepared", dialog.stories.item(0).text(1))
             self.assertIn(
-                "Partially prepared: checking saved audio",
-                dialog.stories.item(1).text(),
+                "Partially prepared",
+                dialog.stories.item(1).text(1),
             )
             dialog.close()
             dialog.deleteLater()
@@ -1926,7 +2060,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.select_all_button.click()
             self.assertTrue(
                 all(
-                    dialog.stories.item(row).checkState() == Qt.CheckState.Checked
+                    dialog.stories.item(row).checkState(0) == Qt.CheckState.Checked
                     for row in range(dialog.stories.count())
                 )
             )
@@ -2001,7 +2135,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
 
             self.assertEqual(dialog.source.count(), 1)
             self.assertEqual(dialog.selected_story_ids(), ("rhiannon",))
-            self.assertIn("Partially prepared", dialog.stories.item(1).text())
+            self.assertIn("Partially prepared", dialog.stories.item(1).text(1))
             dialog.deleteLater()
 
     def test_progress_card_polls_durable_counts_during_slow_generation(self):
@@ -2139,10 +2273,10 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.selected_story_ids(), ("rhiannon",))
             self.assertIn("Saved offline audio found", dialog.resume_status.text())
             self.assertIn(
-                "Partially prepared: checking saved audio",
-                dialog.stories.item(1).text(),
+                "Partially prepared",
+                dialog.stories.item(1).text(1),
             )
-            self.assertIn("Partially prepared", dialog.stories.item(0).text())
+            self.assertIn("Partially prepared", dialog.stories.item(0).text(1))
             dialog.deleteLater()
 
     def test_each_dialogue_is_recovered_before_pack_publication(self):
@@ -2210,8 +2344,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.job().status, "prepared")
             self.assertTrue(
                 all(
-                    "Partially prepared: checking saved audio"
-                    in dialog.stories.item(row).text()
+                    "Partially prepared" in dialog.stories.item(row).text(1)
                     for row in range(dialog.stories.count())
                 )
             )
@@ -2530,7 +2663,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 thread_pool=pool,
             )
 
-            dialog.stories.item(0).setCheckState(Qt.CheckState.Checked)
+            dialog.stories.item(0).setCheckState(0, Qt.CheckState.Checked)
             dialog.change_voices.setChecked(True)
             self.assertIn(
                 "clears saved character choices", plain_label_text(dialog.summary)

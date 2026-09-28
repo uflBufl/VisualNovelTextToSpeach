@@ -1208,7 +1208,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                     self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
                     if not cancel:
                         self.assertFalse(dialog.activating_saved)
-                        self.assertIn("Needs attention", dialog.stories.item(0).text())
+                        self.assertIn("Needs attention", dialog.stories.item(0).text(1))
                         self.assertIn(
                             "Prepare this story again", plain_label_text(dialog.summary)
                         )

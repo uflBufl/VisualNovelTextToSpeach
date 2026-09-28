@@ -1161,7 +1161,7 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
                 job_store=PregenerationJobStore(root / "jobs"),
             )
             self.addCleanup(dialog.deleteLater)
-            dialog.stories.item(0).setCheckState(Qt.CheckState.Checked)
+            dialog.stories.item(0).setCheckState(0, Qt.CheckState.Checked)
             dialog._voice_plan = plan
             dialog._prepared_voice_manifest = root / "prepared-voices.json"
             dialog._prepared_voice_job = "prepared-job"
@@ -1178,7 +1178,9 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             self.assertTrue(dialog.content_scroll.isHidden())
             self.assertEqual(dialog.step.text(), "Step 1 of 4 - Choose stories")
             self.assertEqual(dialog.cancel_button.text(), "Cancel")
-            self.assertEqual(dialog.stories.item(0).checkState(), Qt.CheckState.Checked)
+            self.assertEqual(
+                dialog.stories.item(0).checkState(0), Qt.CheckState.Checked
+            )
             self.assertIsNone(dialog.voice_plan())
             self.assertIsNone(dialog._prepared_voice_manifest)
             self.assertIsNone(dialog._prepared_voice_job)
@@ -1434,7 +1436,7 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
                 self._inspected_voice_dialog(root)
             )
 
-            dialog.stories.item(0).setCheckState(Qt.CheckState.Checked)
+            dialog.stories.item(0).setCheckState(0, Qt.CheckState.Checked)
             dialog.continue_button.click()
             pool.tasks.pop().run()
             self.application.processEvents()

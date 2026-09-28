@@ -1,9 +1,5 @@
 # TODO
 
-## Active - Resolve the archived typing branch
-
-- [ ] Confirm whether to publish the local `archive/refactor-debt-typing-20260923` tag before deleting the last remote feature branch, `origin/codex/refactor-debt-typing`. Its useful remaining change is in `main`; the tag preserves obsolete draft history. After the choice, verify local and remote branch inventories.
-
 ## Active - Review remaining source-extraction UI
 
 - [ ] In `reverse1999-extractor`, reduce empty Character Story table/portrait space so review and A/B actions are easier to reach, and scale table headers with enlarged text.
