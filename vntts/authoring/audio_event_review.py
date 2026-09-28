@@ -345,6 +345,7 @@ def _validate_review_schema_and_queue_authority(
 ) -> VoiceGenerationQueue:
     if (
         review.get("schema") != AUDIO_EVENT_REVIEW_SCHEMA
+        or type(review.get("schema_version")) is not int
         or review.get("schema_version") != AUDIO_EVENT_REVIEW_VERSION
     ):
         raise AudioEventReviewError("Unsupported audio-event review schema")
@@ -404,6 +405,15 @@ def _validate_review_candidate_audio(
             f"Invalid audio-event review WAV: {error}"
         ) from error
     _validate_effect_audio_info(info)
+    if (
+        type(candidate.get("sample_rate")) is not int
+        or type(candidate.get("sample_count")) is not int
+        or isinstance(candidate.get("duration_seconds"), bool)
+        or not isinstance(candidate.get("duration_seconds"), (int, float))
+        or isinstance(candidate.get("peak"), bool)
+        or not isinstance(candidate.get("peak"), (int, float))
+    ):
+        raise AudioEventReviewError("Audio-event review WAV metadata is invalid")
     if (
         candidate.get("sample_rate") != info.sample_rate
         or candidate.get("sample_count") != info.sample_count
@@ -547,6 +557,7 @@ def _validate_decision_document(
 ) -> dict[str, object]:
     if (
         value.get("schema") != AUDIO_EVENT_DECISION_SCHEMA
+        or type(value.get("schema_version")) is not int
         or value.get("schema_version") != AUDIO_EVENT_DECISION_VERSION
     ):
         raise AudioEventReviewError("Unsupported audio-event decision schema")

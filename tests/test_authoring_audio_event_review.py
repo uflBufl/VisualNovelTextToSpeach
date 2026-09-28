@@ -65,11 +65,11 @@ def write_source_story(path):
     return path
 
 
-def publish(root, *, text="Tsk!"):
+def publish(root, *, text="Tsk!", sample_count=1_200):
     queue = root / "queue.jsonl"
     queue_id = write_queue(queue, text)
     audio = root / "source.wav"
-    samples = np.zeros(1_200, dtype=np.float32)
+    samples = np.zeros(sample_count, dtype=np.float32)
     samples[300:340] = 0.4
     write_pcm16_wav(audio, samples, 24_000)
     output = root / "review"
@@ -152,6 +152,57 @@ class AudioEventReviewTest(unittest.TestCase):
             document["candidate"]["source"]["source_speaker"] = "Poacher I"
             review_path.write_text(json.dumps(document))
             with self.assertRaisesRegex(AudioEventReviewError, "identity changed"):
+                load_audio_event_review(result.directory)
+
+    def test_public_reader_rejects_bool_and_float_schema_versions(self):
+        for value in (True, 1.0):
+            with (
+                self.subTest(review_schema_version=value),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                result, _queue, _audio = publish(root)
+                review_path = result.directory / "review.json"
+                document = json.loads(review_path.read_text())
+                document["schema_version"] = value
+                review_path.write_text(json.dumps(document))
+                with self.assertRaisesRegex(AudioEventReviewError, "schema"):
+                    load_audio_event_review(result.directory)
+
+            with (
+                self.subTest(decision_schema_version=value),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                result, _queue, _audio = publish(root)
+                record_audio_event_review_decision(result.directory, "accept")
+                decision_path = result.directory / "decision.json"
+                document = json.loads(decision_path.read_text())
+                document["schema_version"] = value
+                decision_path.write_text(json.dumps(document))
+                with self.assertRaisesRegex(AudioEventReviewError, "schema"):
+                    load_audio_event_review(result.directory)
+
+    def test_public_reader_rejects_noncanonical_audio_metadata_numbers(self):
+        for field, value in (("sample_rate", 24_000.0), ("sample_count", 1_200.0)):
+            with self.subTest(field=field), TemporaryDirectory() as directory:
+                root = Path(directory)
+                result, _queue, _audio = publish(root)
+                review_path = result.directory / "review.json"
+                document = json.loads(review_path.read_text())
+                document["candidate"][field] = value
+                review_path.write_text(json.dumps(document))
+                with self.assertRaisesRegex(AudioEventReviewError, "metadata"):
+                    load_audio_event_review(result.directory)
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            result, _queue, _audio = publish(root, sample_count=24_000)
+            review_path = result.directory / "review.json"
+            document = json.loads(review_path.read_text())
+            document["candidate"]["duration_seconds"] = True
+            review_path.write_text(json.dumps(document))
+            with self.assertRaisesRegex(AudioEventReviewError, "metadata"):
                 load_audio_event_review(result.directory)
 
     def test_rejects_unbound_source_story_claim_and_silent_audio(self):
