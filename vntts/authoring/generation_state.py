@@ -621,34 +621,16 @@ def _validate_live_fallback_structure(decision: StateObject, queue_id: str) -> o
         raise BulkGenerationError(
             f"State item {queue_id!r} live fallback decision is malformed"
         )
+    evidence_validators = _live_fallback_evidence_validators()
     expected_fields = (
         common_fields | {"evidence"}
-        if version
-        in {
-            LIVE_FALLBACK_EVIDENCE_VERSION,
-            LIVE_FALLBACK_REVIEW_EVIDENCE_VERSION,
-            LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION,
-            LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION,
-            LIVE_FALLBACK_AUDIO_EVENT_PROJECTION_VERSION,
-            LIVE_FALLBACK_REVIEWED_REJECTION_VERSION,
-            LIVE_FALLBACK_AUTOMATIC_RECOVERY_VERSION,
-        }
+        if version in evidence_validators
         else common_fields
     )
     if (
         set(decision) != expected_fields
         or decision.get("schema") != LIVE_FALLBACK_SCHEMA
-        or version
-        not in {
-            LIVE_FALLBACK_VERSION,
-            LIVE_FALLBACK_EVIDENCE_VERSION,
-            LIVE_FALLBACK_REVIEW_EVIDENCE_VERSION,
-            LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION,
-            LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION,
-            LIVE_FALLBACK_AUDIO_EVENT_PROJECTION_VERSION,
-            LIVE_FALLBACK_REVIEWED_REJECTION_VERSION,
-            LIVE_FALLBACK_AUTOMATIC_RECOVERY_VERSION,
-        }
+        or (version != LIVE_FALLBACK_VERSION and version not in evidence_validators)
         or decision.get("reason") not in LIVE_FALLBACK_REASONS
         or decision.get("provider") != "pocket-tts"
         or decision.get("model") != "pocket-tts"
@@ -2661,6 +2643,43 @@ state_nonnegative_int = _nonnegative_int
 provider_attempts = _provider_attempts
 
 
+def live_fallback_decision(
+    *,
+    schema_version: int,
+    reason: str,
+    queue_id: str,
+    line_id: object,
+    text_sha256: object,
+    speaker: object,
+    requested_voice_character: object,
+    previous_result_sha256: object,
+    decided_at: str,
+    evidence: StateObject | None = None,
+    provider: str = "pocket-tts",
+    model: str = "pocket-tts",
+    generation_profile: str = "default",
+) -> StateObject:
+    """Build the common persisted envelope for one live-fallback decision."""
+    decision: StateObject = {
+        "schema": LIVE_FALLBACK_SCHEMA,
+        "schema_version": schema_version,
+        "reason": reason,
+        "provider": provider,
+        "model": model,
+        "generation_profile": generation_profile,
+        "queue_id": queue_id,
+        "line_id": line_id,
+        "text_sha256": text_sha256,
+        "speaker": speaker,
+        "requested_voice_character": requested_voice_character,
+        "previous_result_sha256": previous_result_sha256,
+        "decided_at": decided_at,
+    }
+    if evidence is not None:
+        decision["evidence"] = evidence
+    return decision
+
+
 def validate_generation_state_document(
     document: object,
     output_directory: str | Path,
@@ -2668,8 +2687,9 @@ def validate_generation_state_document(
     queue_sha256: str | None,
 ) -> StateObject:
     """Validate captured state semantics without reopening its JSON path."""
+    if not isinstance(document, dict):
+        raise BulkGenerationError("Generation state must be a JSON object")
     state = copy.deepcopy(document)
-    assert isinstance(state, dict)
     _validate_state_document(
         state,
         Path(output_directory).expanduser().resolve(),
@@ -2711,6 +2731,7 @@ __all__ = [
     "STATE_VERSION",
     "contained_state_path",
     "control_directory_digest",
+    "live_fallback_decision",
     "load_stable_generation_queue",
     "provider_attempts",
     "reviewed_waveform_publication_queue_ids",

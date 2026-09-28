@@ -29,8 +29,8 @@ from vntts.authoring.bulk_generation import (
 from vntts.authoring.generation_manifest import write_generated_manifest_from_state
 from vntts.authoring.generation_state import (
     LIVE_FALLBACK_REVIEWED_REJECTION_VERSION,
-    LIVE_FALLBACK_SCHEMA,
     REVIEWED_REJECTION_LIVE_FALLBACK_EVIDENCE_SCHEMA,
+    live_fallback_decision,
 )
 from vntts.authoring.publication import (
     publish_single_base_successor,
@@ -327,22 +327,18 @@ def _mutate_rejection_state(
             "route_source": ledger["route_source"],
             "route_reference_sha256s": ledger["route_reference_sha256s"],
         }
-        decision = {
-            "schema": LIVE_FALLBACK_SCHEMA,
-            "schema_version": LIVE_FALLBACK_REVIEWED_REJECTION_VERSION,
-            "reason": REASON,
-            "provider": "pocket-tts",
-            "model": "pocket-tts",
-            "generation_profile": "default",
-            "queue_id": queue_id,
-            "line_id": ledger["line_id"],
-            "text_sha256": ledger["text_sha256"],
-            "speaker": ledger["speaker"],
-            "requested_voice_character": ledger["synthesis_character"],
-            "previous_result_sha256": ledger["base_result_sha256"],
-            "decided_at": decided_at,
-            "evidence": evidence,
-        }
+        decision = live_fallback_decision(
+            schema_version=LIVE_FALLBACK_REVIEWED_REJECTION_VERSION,
+            reason=REASON,
+            queue_id=queue_id,
+            line_id=ledger["line_id"],
+            text_sha256=ledger["text_sha256"],
+            speaker=ledger["speaker"],
+            requested_voice_character=ledger["synthesis_character"],
+            previous_result_sha256=ledger["base_result_sha256"],
+            decided_at=decided_at,
+            evidence=evidence,
+        )
         projected = copy.deepcopy(base_result)
         projected["live_fallback"] = decision
         projected["updated_at"] = decided_at

@@ -33,7 +33,7 @@ from vntts.authoring.generation_state import (
     KNOWN_ROLE_LIVE_FALLBACK_EVIDENCE_SCHEMA,
     LIVE_FALLBACK_HYPOTHESES_EXHAUSTED,
     LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION,
-    LIVE_FALLBACK_SCHEMA,
+    live_fallback_decision,
 )
 from vntts.authoring.missing_voice_policy import MissingVoicePolicy
 from vntts.authoring.publication import (
@@ -446,22 +446,18 @@ def _mutate_known_role_fallback(
                 if key != "queue_id" and key != "evidence_config_fingerprint"
             },
         }
-        decision = {
-            "schema": LIVE_FALLBACK_SCHEMA,
-            "schema_version": LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION,
-            "reason": LIVE_FALLBACK_HYPOTHESES_EXHAUSTED,
-            "provider": "pocket-tts",
-            "model": "pocket-tts",
-            "generation_profile": "default",
-            "queue_id": queue_id,
-            "line_id": queue_item.line_id,
-            "text_sha256": queue_item.text_sha256,
-            "speaker": queue_item.speaker,
-            "requested_voice_character": selection.synthesis_character,
-            "previous_result_sha256": None,
-            "decided_at": decided_at,
-            "evidence": evidence,
-        }
+        decision = live_fallback_decision(
+            schema_version=LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION,
+            reason=LIVE_FALLBACK_HYPOTHESES_EXHAUSTED,
+            queue_id=queue_id,
+            line_id=queue_item.line_id,
+            text_sha256=queue_item.text_sha256,
+            speaker=queue_item.speaker,
+            requested_voice_character=selection.synthesis_character,
+            previous_result_sha256=None,
+            decided_at=decided_at,
+            evidence=evidence,
+        )
         target_items[queue_id] = {
             "status": "live_fallback",
             "review_status": "live_fallback",

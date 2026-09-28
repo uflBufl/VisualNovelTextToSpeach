@@ -25,7 +25,7 @@ from vntts.authoring.generation_manifest import write_generated_manifest_from_st
 from vntts.authoring.generation_state import (
     AUDIO_EVENT_PROJECTION_LIVE_FALLBACK_EVIDENCE_SCHEMA,
     LIVE_FALLBACK_AUDIO_EVENT_PROJECTION_VERSION,
-    LIVE_FALLBACK_SCHEMA,
+    live_fallback_decision,
 )
 from vntts.authoring.publication import (
     publish_single_base_successor,
@@ -327,22 +327,18 @@ def _mutate_projection_state(
             "source_character": queue_item.speaker,
             "synthesis_character": SYNTHESIS_CHARACTER,
         }
-        decision = {
-            "schema": LIVE_FALLBACK_SCHEMA,
-            "schema_version": LIVE_FALLBACK_AUDIO_EVENT_PROJECTION_VERSION,
-            "reason": REASON,
-            "provider": "pocket-tts",
-            "model": "pocket-tts",
-            "generation_profile": "default",
-            "queue_id": queue_id,
-            "line_id": queue_item.line_id,
-            "text_sha256": queue_item.text_sha256,
-            "speaker": queue_item.speaker,
-            "requested_voice_character": SYNTHESIS_CHARACTER,
-            "previous_result_sha256": ledger["base_result_sha256"],
-            "decided_at": decided_at,
-            "evidence": evidence,
-        }
+        decision = live_fallback_decision(
+            schema_version=LIVE_FALLBACK_AUDIO_EVENT_PROJECTION_VERSION,
+            reason=REASON,
+            queue_id=queue_id,
+            line_id=queue_item.line_id,
+            text_sha256=queue_item.text_sha256,
+            speaker=queue_item.speaker,
+            requested_voice_character=SYNTHESIS_CHARACTER,
+            previous_result_sha256=ledger["base_result_sha256"],
+            decided_at=decided_at,
+            evidence=evidence,
+        )
         projected = copy.deepcopy(base_result)
         projected["live_fallback"] = decision
         projected["updated_at"] = decided_at

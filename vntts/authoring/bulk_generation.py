@@ -133,6 +133,9 @@ from vntts.authoring.generation_state import (
     control_directory_digest as _control_directory_digest,
 )
 from vntts.authoring.generation_state import (
+    live_fallback_decision as _live_fallback_decision,
+)
+from vntts.authoring.generation_state import (
     load_stable_generation_queue,
 )
 from vntts.authoring.generation_state import (
@@ -3945,9 +3948,8 @@ def authorize_live_fallback(
         requested = synthesis_character_for_line(
             queue_item.speaker, queue_item.voice_character
         )
-        decision: JsonDocument = {
-            "schema": LIVE_FALLBACK_SCHEMA,
-            "schema_version": (
+        decision: JsonDocument = _live_fallback_decision(
+            schema_version=(
                 LIVE_FALLBACK_AUTOMATIC_RECOVERY_VERSION
                 if reason == LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED
                 else (
@@ -3961,20 +3963,19 @@ def authorize_live_fallback(
                     )
                 )
             ),
-            "reason": reason,
-            "provider": provider,
-            "model": model,
-            "generation_profile": generation_profile,
-            "queue_id": queue_id,
-            "line_id": queue_item.line_id,
-            "text_sha256": queue_item.text_sha256,
-            "speaker": queue_item.speaker,
-            "requested_voice_character": requested,
-            "previous_result_sha256": previous_sha256,
-            "decided_at": _now(),
-        }
-        if evidence is not None:
-            decision["evidence"] = evidence
+            reason=reason,
+            provider=provider,
+            model=model,
+            generation_profile=generation_profile,
+            queue_id=queue_id,
+            line_id=queue_item.line_id,
+            text_sha256=queue_item.text_sha256,
+            speaker=queue_item.speaker,
+            requested_voice_character=requested,
+            previous_result_sha256=previous_sha256,
+            decided_at=_now(),
+            evidence=evidence,
+        )
         proposed = _live_fallback_proposed_state(
             state, existing, queue_id, queue_item, requested, reason, decision
         )

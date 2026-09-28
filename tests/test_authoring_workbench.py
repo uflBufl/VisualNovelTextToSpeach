@@ -431,6 +431,20 @@ def write_terminal_merge_reconciliation(root, base, source, queue_id):
 
 
 class AuthoringWorkbenchTest(unittest.TestCase):
+    def test_workspace_state_rejects_non_object_generation_state(self):
+        with TemporaryDirectory() as directory:
+            _fixture, _imported, workspace = create_test_workspace(Path(directory))
+            document = json.loads(
+                (workspace.directory / "workspace.json").read_text(encoding="utf-8")
+            )
+            state_path = workspace.directory / "generated-audio/generation-state.json"
+            state_path.write_text("[]", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "state is invalid"):
+                workspace_state_module.load_stable_workspace_generation_state(
+                    workspace.directory, document, "non-object"
+                )
+
     def test_bounded_workspace_read_validates_generation_state_once(self):
         with TemporaryDirectory() as directory:
             _fixture, _imported, workspace = create_test_workspace(Path(directory))

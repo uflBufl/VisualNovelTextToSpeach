@@ -114,7 +114,6 @@ def _load_stable_workspace_generation_state(
             queue,
             queue_sha256,
         )
-        assert isinstance(parsed, dict)
     except (UnicodeDecodeError, json.JSONDecodeError, BulkGenerationError) as error:
         raise error_type(f"Outcome merge {label} state is invalid: {error}") from error
     if parsed != validated or sha256_file(state_path) != digest:

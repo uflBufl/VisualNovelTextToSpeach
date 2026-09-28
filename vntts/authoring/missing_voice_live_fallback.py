@@ -31,8 +31,8 @@ from vntts.authoring.generation_manifest import (
 )
 from vntts.authoring.generation_state import (
     LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION,
-    LIVE_FALLBACK_SCHEMA,
     MISSING_VOICE_LIVE_FALLBACK_EVIDENCE_SCHEMA,
+    live_fallback_decision,
     load_stable_generation_queue,
     validate_generation_state_document,
 )
@@ -247,22 +247,18 @@ def authorize_missing_voice_live_fallback(
             "configured_narrator_character": narrator_character,
             "batch_id": batch_id,
         }
-        decision = {
-            "schema": LIVE_FALLBACK_SCHEMA,
-            "schema_version": LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION,
-            "reason": "reference_unavailable_after_audit",
-            "provider": "pocket-tts",
-            "model": "pocket-tts",
-            "generation_profile": "default",
-            "queue_id": queue_id,
-            "line_id": queue_item.line_id,
-            "text_sha256": queue_item.text_sha256,
-            "speaker": queue_item.speaker,
-            "requested_voice_character": character,
-            "previous_result_sha256": None,
-            "decided_at": decided_at,
-            "evidence": evidence,
-        }
+        decision = live_fallback_decision(
+            schema_version=LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION,
+            reason="reference_unavailable_after_audit",
+            queue_id=queue_id,
+            line_id=queue_item.line_id,
+            text_sha256=queue_item.text_sha256,
+            speaker=queue_item.speaker,
+            requested_voice_character=character,
+            previous_result_sha256=None,
+            decided_at=decided_at,
+            evidence=evidence,
+        )
         proposed_items = _object_field(proposed, "items", "Generation state items")
         proposed_items[queue_id] = {
             "status": "live_fallback",
