@@ -1692,6 +1692,25 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(reconsidered.audition_count, 1)
             self.assertIsNone(library.binding("Rhiannon"))
 
+    def test_voice_library_skips_historical_independent_choices(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            library = VoiceLibrary(root / "library")
+            decisions = VoiceDecisionStore(
+                root / "decisions.json", voice_library=library
+            )
+            store = VoicePlanStore(jobs, decisions=decisions, voice_library=library)
+
+            with patch.object(store, "_saved_independent_groups") as saved_groups:
+                store.create(
+                    job,
+                    AppSettings(pocket_gated_model_accepted=True),
+                    manifest_path=write_conflicting_manifest(root / "voices"),
+                )
+
+            saved_groups.assert_not_called()
+
     def test_saved_inspection_choice_updates_only_affected_routes(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

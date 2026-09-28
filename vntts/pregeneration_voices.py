@@ -651,7 +651,9 @@ class VoicePlanStore:
         )
         controls = _synthesis_controls(settings)
         saved_groups = (
-            self._saved_independent_groups(controls) if not ignore_decisions else ()
+            self._saved_independent_groups(controls)
+            if self.voice_library is None and not ignore_decisions
+            else ()
         )
         controls_sha256 = _digest(controls)
         grouped = self._group_selected_lines(
