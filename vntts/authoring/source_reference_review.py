@@ -171,6 +171,7 @@ def import_source_reference_review(
         )
     if (
         report.get("schema") != SOURCE_REPORT_SCHEMA
+        or type(report.get("schema_version")) is not int
         or report.get("schema_version") not in SOURCE_REPORT_VERSIONS
     ):
         raise SourceReferenceReviewError(
@@ -178,6 +179,7 @@ def import_source_reference_review(
         )
     if (
         review.get("schema") != SOURCE_REVIEW_SCHEMA
+        or type(review.get("schema_version")) is not int
         or review.get("schema_version") not in SOURCE_REVIEW_VERSIONS
     ):
         raise SourceReferenceReviewError(
@@ -387,6 +389,7 @@ def load_source_reference_plan(directory: str | Path) -> JsonObject:
         raise SourceReferenceReviewError("Source-reference plan path is inconsistent")
     if (
         plan.get("schema") != REFERENCE_PLAN_SCHEMA
+        or type(plan.get("schema_version")) is not int
         or plan.get("schema_version") != REFERENCE_PLAN_VERSION
     ):
         raise SourceReferenceReviewError("Unsupported source-reference plan schema")
@@ -1701,6 +1704,7 @@ def _load_evaluation_generation(
     )
     if (
         comparison.get("schema") != REFERENCE_EVALUATION_SCHEMA
+        or type(comparison.get("schema_version")) is not int
         or comparison.get("schema_version") != REFERENCE_EVALUATION_VERSION
     ):
         raise SourceReferenceReviewError(

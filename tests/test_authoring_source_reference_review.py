@@ -544,6 +544,38 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
                     with self.assertRaisesRegex(SourceReferenceReviewError, message):
                         load_source_reference_plan(result.directory)
 
+    def test_import_and_plan_loader_reject_noninteger_versions(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            report, review, story = self.write_inputs(root)
+            original_report = report.read_bytes()
+            original_review = review.read_bytes()
+            for source, version in ((report, True), (report, 1.0), (review, 2.0)):
+                with self.subTest(source=source.name, version=version):
+                    document = json.loads(source.read_text(encoding="utf-8"))
+                    document["schema_version"] = version
+                    source.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaisesRegex(SourceReferenceReviewError, "schema"):
+                        import_source_reference_review(
+                            report, review, story, root / "invalid-plan"
+                        )
+                    report.write_bytes(original_report)
+                    review.write_bytes(original_review)
+
+            result = import_source_reference_review(
+                report, review, story, root / "valid-plan"
+            )
+            path = result.directory / "plan.json"
+            original = json.loads(path.read_text(encoding="utf-8"))
+            for version in (True, 1.0):
+                with self.subTest(plan_version=version):
+                    path.write_text(
+                        json.dumps({**original, "schema_version": version}),
+                        encoding="utf-8",
+                    )
+                    with self.assertRaisesRegex(SourceReferenceReviewError, "schema"):
+                        load_source_reference_plan(result.directory)
+
     def test_refuses_to_replace_existing_output(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -681,6 +713,24 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
             reports = publish_source_reference_listening_reports(
                 evaluation.directory, generation.state, root / "reports"
             )
+            comparison_path = evaluation.directory / "comparison.json"
+            original_comparison = json.loads(
+                comparison_path.read_text(encoding="utf-8")
+            )
+            for version in (True, 1.0):
+                with self.subTest(evaluation_version=version):
+                    comparison_path.write_text(
+                        json.dumps({**original_comparison, "schema_version": version}),
+                        encoding="utf-8",
+                    )
+                    with self.assertRaisesRegex(
+                        SourceReferenceReviewError, "evaluation schema"
+                    ):
+                        publish_source_reference_listening_reports(
+                            evaluation.directory,
+                            generation.state,
+                            root / "invalid-reports",
+                        )
             session_path = create_listening_session_from_reports(
                 sorted(reports.directory.glob("*.json")), root / "session", seed=9
             )
