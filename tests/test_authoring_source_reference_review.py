@@ -836,6 +836,20 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
             loaded_decision = load_portrait_alias_decision(decision_path, loaded_plan)
             identities = portrait_identity_by_variant(loaded_decision)
 
+            forged_decision = json.loads(decision_path.read_text(encoding="utf-8"))
+            forged_decision["schema_version"] = True
+            decision_path.write_text(json.dumps(forged_decision), encoding="utf-8")
+            with self.assertRaisesRegex(PortraitAliasError, "Unsupported"):
+                load_portrait_alias_decision(decision_path, loaded_plan)
+
+            for field, value in (("schema_version", True), ("suggestion_count", True)):
+                with self.subTest(field=field):
+                    forged_plan = json.loads(plan_path.read_text(encoding="utf-8"))
+                    forged_plan[field] = value
+                    plan_path.write_text(json.dumps(forged_plan), encoding="utf-8")
+                    with self.assertRaisesRegex(PortraitAliasError, "Unsupported"):
+                        load_portrait_alias_plan(plan_path)
+
         self.assertEqual(plan.document["suggestion_count"], 1)
         self.assertEqual(suggestion["dhash_distance"], 0)
         self.assertEqual(len(identities), 2)

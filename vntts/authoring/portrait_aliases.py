@@ -343,6 +343,7 @@ def load_portrait_alias_decision(
     if (
         not isinstance(document, dict)
         or document.get("schema") != PORTRAIT_ALIAS_DECISION_SCHEMA
+        or type(document.get("schema_version")) is not int
         or document.get("schema_version") != PORTRAIT_ALIAS_DECISION_VERSION
         or document.get("plan_id") != plan.plan_id
     ):
@@ -418,12 +419,13 @@ def _validate_plan_shape(document: JsonObject) -> _PortraitAliasPlanDocument:
     schema_version = document.get("schema_version")
     if (
         schema != PORTRAIT_ALIAS_PLAN_SCHEMA
+        or type(schema_version) is not int
         or schema_version != PORTRAIT_ALIAS_PLAN_VERSION
         or not isinstance(source_quality_review, str)
         or not isinstance(source_quality_review_sha256, str)
-        or not isinstance(max_dhash_distance, int)
-        or not isinstance(eligible_variant_count, int)
-        or not isinstance(suggestion_count, int)
+        or type(max_dhash_distance) is not int
+        or type(eligible_variant_count) is not int
+        or type(suggestion_count) is not int
         or not isinstance(raw_suggestions, list)
         or not isinstance(plan_id, str)
     ):
@@ -437,7 +439,7 @@ def _validate_plan_shape(document: JsonObject) -> _PortraitAliasPlanDocument:
             not isinstance(value.get("suggestion_id"), str)
             or not isinstance(value.get("character"), str)
             or not isinstance(value.get("source_bank"), str)
-            or not isinstance(value.get("dhash_distance"), int)
+            or type(value.get("dhash_distance")) is not int
             or not isinstance(variants, list)
         ):
             raise PortraitAliasError("Unsupported portrait alias plan")
