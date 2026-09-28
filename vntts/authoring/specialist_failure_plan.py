@@ -255,7 +255,10 @@ def _validated(plan: SpecialistFailurePlan | object) -> JsonObject:
         or document.get("schema") != SPECIALIST_FAILURE_PLAN_SCHEMA
     ):
         raise CohortReviewError("Unsupported specialist failure plan schema")
-    if document.get("schema_version") != SPECIALIST_FAILURE_PLAN_VERSION:
+    if (
+        type(document.get("schema_version")) is not int
+        or document.get("schema_version") != SPECIALIST_FAILURE_PLAN_VERSION
+    ):
         raise CohortReviewError("Unsupported specialist failure plan version")
     claimed = document.get("plan_id")
     actual = canonical_document_sha256(
@@ -264,8 +267,46 @@ def _validated(plan: SpecialistFailurePlan | object) -> JsonObject:
     if claimed != actual:
         raise CohortReviewError("Specialist failure plan identity changed")
     items = document.get("items")
-    if not isinstance(items, list) or document.get("item_count") != len(items):
+    if (
+        not isinstance(items, list)
+        or type(document.get("item_count")) is not int
+        or document.get("item_count") != len(items)
+    ):
         raise CohortReviewError("Specialist failure plan item count is invalid")
+    sources = document.get("sources")
+    if (
+        not isinstance(sources, list)
+        or type(document.get("source_count")) is not int
+        or document.get("source_count") != len(sources)
+    ):
+        raise CohortReviewError("Specialist failure plan source count is invalid")
+    clusters = document.get("clusters")
+    if (
+        not isinstance(clusters, list)
+        or type(document.get("cluster_count")) is not int
+        or document.get("cluster_count") != len(clusters)
+    ):
+        raise CohortReviewError("Specialist failure plan cluster count is invalid")
+    if (
+        any(
+            not isinstance(source, dict)
+            or type(source.get("failed_item_count")) is not int
+            for source in sources
+        )
+        or sum(source["failed_item_count"] for source in sources)
+        != document["item_count"]
+    ):
+        raise CohortReviewError("Specialist failure plan source counts are invalid")
+    if any(
+        not isinstance(cluster, dict)
+        or not isinstance(cluster.get("queue_ids"), list)
+        or type(cluster.get("item_count")) is not int
+        or cluster["item_count"] != len(cluster["queue_ids"])
+        for cluster in clusters
+    ):
+        raise CohortReviewError(
+            "Specialist failure plan cluster item counts are invalid"
+        )
     action_counts = document.get("action_counts")
     if (
         not isinstance(action_counts, dict)

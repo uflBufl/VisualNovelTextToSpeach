@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.cohort_review import CohortReviewError
 from vntts.authoring.specialist_failure_plan import (
     INLINE_PAUSE_MARKER,
@@ -102,6 +103,59 @@ class SpecialistFailurePlanTest(unittest.TestCase):
 
             with self.assertRaisesRegex(CohortReviewError, "identity changed"):
                 load_specialist_failure_plan(output)
+
+    def test_published_plan_rejects_checksum_valid_non_integer_counts(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            sentence = self.create_workspace(
+                root, "sentence_boundary_segmentation", "a"
+            )
+            pocket = self.create_workspace(root, OFFLINE_FALLBACK_BACKEND, "b")
+            plan = build_specialist_failure_plan((sentence, pocket))
+            output = root / "plan.json"
+
+            for field, value, error in (
+                ("schema_version", True, "version"),
+                ("item_count", float(plan.document["item_count"]), "item count"),
+                ("source_count", float(plan.document["source_count"]), "source count"),
+                (
+                    "cluster_count",
+                    float(plan.document["cluster_count"]),
+                    "cluster count",
+                ),
+            ):
+                with self.subTest(field=field):
+                    document = json.loads(json.dumps(plan.document))
+                    document[field] = value
+                    document["plan_id"] = canonical_document_sha256(
+                        {
+                            key: value
+                            for key, value in document.items()
+                            if key != "plan_id"
+                        }
+                    )
+                    output.write_text(json.dumps(document))
+                    with self.assertRaisesRegex(CohortReviewError, error):
+                        load_specialist_failure_plan(output)
+
+            for group, field, value, error in (
+                ("sources", "failed_item_count", True, "source counts"),
+                ("sources", "failed_item_count", 99, "source counts"),
+                ("clusters", "item_count", 1.0, "cluster item counts"),
+            ):
+                with self.subTest(group=group, field=field):
+                    document = json.loads(json.dumps(plan.document))
+                    document[group][0][field] = value
+                    document["plan_id"] = canonical_document_sha256(
+                        {
+                            key: value
+                            for key, value in document.items()
+                            if key != "plan_id"
+                        }
+                    )
+                    output.write_text(json.dumps(document))
+                    with self.assertRaisesRegex(CohortReviewError, error):
+                        load_specialist_failure_plan(output)
 
     def test_complete_sentence_silence_is_not_sent_to_pocket(self):
         with TemporaryDirectory() as directory:
