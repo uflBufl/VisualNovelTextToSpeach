@@ -226,7 +226,13 @@
     {
       "code": "C901",
       "path": "vntts/authoring/terminal_conflict_workspace.py",
-      "scope": "merge_terminal_conflict_resolution",
+      "scope": "_publish_staged_terminal_conflict_workspace",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/terminal_conflict_workspace.py",
+      "scope": "_select_terminal_conflict_sources",
       "count": 1
     },
     {
@@ -802,7 +808,13 @@
     {
       "code": "PLR0912",
       "path": "vntts/authoring/terminal_conflict_workspace.py",
-      "scope": "merge_terminal_conflict_resolution",
+      "scope": "_publish_staged_terminal_conflict_workspace",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/terminal_conflict_workspace.py",
+      "scope": "_select_terminal_conflict_sources",
       "count": 1
     },
     {
@@ -1318,7 +1330,7 @@
     {
       "code": "PLR0915",
       "path": "vntts/authoring/terminal_conflict_workspace.py",
-      "scope": "merge_terminal_conflict_resolution",
+      "scope": "_select_terminal_conflict_sources",
       "count": 1
     },
     {
