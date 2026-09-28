@@ -101,6 +101,29 @@ class SettingsTest(unittest.TestCase):
         self.assertIsNone(effective.tts_language)
         self.assertEqual(effective.output_volume_percent, 35)
 
+    def test_offline_engine_migrates_once_and_changes_independently(self):
+        legacy = AppSettings.from_mapping(
+            {"speech_backend": "moss-tts", "tts_model": "model.gguf"}
+        )
+        self.assertEqual(legacy.offline_speech_backend, "moss-tts")
+        self.assertEqual(legacy.offline_tts_model, "model.gguf")
+        split = legacy.updated(speech_backend="pocket-tts", tts_model=None)
+        self.assertEqual(split.offline_speech_backend, "moss-tts")
+        self.assertEqual(split.offline_tts_model, "model.gguf")
+        self.assertEqual(
+            restart_required_setting_changes(legacy, split),
+            ("speech_backend", "tts_model"),
+        )
+        self.assertEqual(
+            restart_required_setting_changes(
+                split, split.updated(offline_speech_backend="coqui-xtts")
+            ),
+            (),
+        )
+        self.assertEqual(AppSettings.from_mapping(asdict(split)), split)
+        invalid = AppSettings.from_mapping({"speech_backend": "missing-engine"})
+        self.assertEqual(invalid.offline_speech_backend, invalid.speech_backend)
+
     def test_schema_11_idle_delay_migrates_to_lower_live_latency(self):
         settings = AppSettings.from_mapping(
             {
@@ -128,6 +151,19 @@ class SettingsTest(unittest.TestCase):
         )
 
         self.assertEqual(settings.speech_backend, "chatterbox-nano")
+        self.assertEqual(settings.offline_speech_backend, "chatterbox-nano")
+
+    def test_environment_override_keeps_split_engines_independent(self):
+        saved = AppSettings(
+            speech_backend="pocket-tts", offline_speech_backend="moss-tts"
+        )
+
+        effective = saved.with_environment_overrides(
+            {"VNTTS_SPEECH_BACKEND": "coqui-xtts"}
+        )
+
+        self.assertEqual(effective.speech_backend, "coqui-xtts")
+        self.assertEqual(effective.offline_speech_backend, "moss-tts")
 
     def test_invalid_environment_overrides_preserve_saved_settings(self):
         saved = AppSettings(

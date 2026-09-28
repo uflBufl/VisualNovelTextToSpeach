@@ -199,6 +199,7 @@ def create_backend(
     cache_root: PathInput,
     *,
     model_name: object | None = None,
+    language: str | None = None,
     model_revision: object | None = None,
     narrator_reference: PathInput | None = None,
     moss_streaming_first_chunk_frames: int | None = None,
@@ -229,6 +230,7 @@ def create_backend(
 ) -> BenchmarkBackend:
     allowed_options = {
         "model_name",
+        "language",
         "model_revision",
         "narrator_reference",
         "moss_streaming_first_chunk_frames",
@@ -351,7 +353,7 @@ def create_backend(
             model_name=str(
                 model_name or "tts_models/multilingual/multi-dataset/xtts_v2"
             ),
-            language="en",
+            language=str(options.get("language") or "en"),
             persisted_voice_cache=False,
         )
         voice_router_factory: Callable[..., object] = CharacterVoiceRouter

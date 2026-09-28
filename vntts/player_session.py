@@ -126,24 +126,81 @@ class PlayerSessionOwner:
         restart: bool = False,
     ) -> tuple[bool, bool]:
         def operation(_cancellation: Event) -> tuple[bool, bool]:
+            previous_settings = self.controller.settings
+            was_ready = bool(self.controller.is_ready)
+
+            def restore_previous_runtime(error: Exception | None = None) -> None:
+                if not self.is_current(generation):
+                    return
+                try:
+                    self.controller.shutdown()
+                    if not self.is_current(generation):
+                        return
+                    if self.controller.apply_settings(previous_settings) is False:
+                        if self.is_current(generation):
+                            raise RuntimeError(
+                                "Unable to restore previous speech settings"
+                            )
+                        return
+                    if not self.is_current(generation):
+                        return
+                    if was_ready:
+                        self.controller.prepare_startup()
+                        if not self.is_current(generation):
+                            self.controller.request_shutdown()
+                            return
+                        if self.controller.start() is False and self.is_current(
+                            generation
+                        ):
+                            raise RuntimeError(
+                                "Unable to restore previous speech runtime"
+                            )
+                except Exception as rollback_error:
+                    if error is None:
+                        raise
+                    raise RuntimeError(
+                        f"{error}; previous speech runtime could not be restored: "
+                        f"{rollback_error}"
+                    ) from rollback_error
+
             if restart:
                 self.controller.shutdown()
                 if cancellation.is_set() or not self.is_current(generation):
+                    restore_previous_runtime()
                     return False, False
-            applied = self.controller.apply_settings(
-                settings, cancellation=cancellation
-            )
-            if restart and applied is not False and not cancellation.is_set():
+            try:
+                applied = self.controller.apply_settings(
+                    settings, cancellation=cancellation
+                )
+            except Exception as error:
+                if restart:
+                    restore_previous_runtime(error)
+                raise
+            if restart and applied is False:
+                restore_previous_runtime()
+                return self.is_current(generation), False
+            if restart:
+                if cancellation.is_set():
+                    restore_previous_runtime()
+                    return False, False
                 if not self.is_current(generation):
                     return False, False
-                self.controller.prepare_startup()
-                if cancellation.is_set() or not self.is_current(generation):
-                    self.controller.request_shutdown()
-                    return False, False
-                applied = self.controller.start()
+                try:
+                    self.controller.prepare_startup()
+                    if cancellation.is_set() or not self.is_current(generation):
+                        self.controller.request_shutdown()
+                        restore_previous_runtime()
+                        return False, False
+                    applied = self.controller.start()
+                except Exception as error:
+                    restore_previous_runtime(error)
+                    raise
                 if cancellation.is_set() or not self.is_current(generation):
                     self.controller.shutdown()
+                    restore_previous_runtime()
                     return False, False
+                if applied is False:
+                    restore_previous_runtime()
             return self.is_current(generation), applied is not False
 
         return self.run(generation, operation, (False, False))

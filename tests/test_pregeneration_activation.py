@@ -159,14 +159,19 @@ class OfflinePackActivatorTest(unittest.TestCase):
             ],
         )
 
-    def test_new_choices_use_pack_narrator_and_rollback_keeps_old_settings(self):
+    def test_offline_choices_do_not_replace_live_settings_and_rollback_keeps_old_settings(
+        self,
+    ):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             pack = published_pack(root)
-            previous = AppSettings(game_pack="previous-pack.json")
+            previous = AppSettings(
+                game_pack="previous-pack.json", tts_speaker_wav="live-narrator.wav"
+            )
             selected = previous.updated(
                 pocket_gated_model_accepted=True,
                 tts_speaker_wav="old-narrator.wav",
+                speech_backend="moss-tts",
             )
             for failure in (None, "start", "save", "apply"):
                 with self.subTest(failure=failure):
@@ -196,8 +201,11 @@ class OfflinePackActivatorTest(unittest.TestCase):
                         result = activator.activate(
                             previous, pack, controller, generation_settings=selected
                         )
-                        self.assertTrue(result.settings.pocket_gated_model_accepted)
-                        self.assertIsNone(result.settings.tts_speaker_wav)
+                        self.assertFalse(result.settings.pocket_gated_model_accepted)
+                        self.assertEqual(result.settings.speech_backend, "pocket-tts")
+                        self.assertEqual(
+                            result.settings.tts_speaker_wav, "live-narrator.wav"
+                        )
 
     def test_save_failure_restores_the_previous_running_pack(self):
         with TemporaryDirectory() as temporary_directory:

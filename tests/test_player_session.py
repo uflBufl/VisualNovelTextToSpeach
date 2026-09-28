@@ -59,3 +59,60 @@ def test_shutdown_cleans_up_a_late_start_once() -> None:
     controller.request_shutdown.assert_called_once()
     controller.shutdown.assert_called_once()
     assert not owner.is_current(generation)
+
+
+def test_configure_restart_restores_previous_runtime_after_cancel() -> None:
+    cancellation = Event()
+    controller = Mock()
+    previous = AppSettings(speech_backend="moss-tts")
+    requested = AppSettings(speech_backend="pocket-tts")
+    controller.settings = previous
+
+    def apply_settings(
+        settings: AppSettings, *, cancellation: Event | None = None
+    ) -> bool:
+        if settings == requested:
+            assert cancellation is not None
+            cancellation.set()
+            return False
+        controller.settings = settings
+        return True
+
+    controller.apply_settings.side_effect = apply_settings
+    owner = PlayerSessionOwner(controller)
+    generation = owner.begin(cancellation)
+
+    assert owner.configure(generation, requested, cancellation, restart=True) == (
+        True,
+        False,
+    )
+    assert controller.settings == previous
+    assert controller.apply_settings.call_args_list[1].args == (previous,)
+    controller.prepare_startup.assert_called_once()
+    controller.start.assert_called_once()
+
+
+def test_configure_restart_restores_previous_runtime_after_failed_start() -> None:
+    cancellation = Event()
+    controller = Mock()
+    previous = AppSettings(speech_backend="moss-tts")
+    requested = AppSettings(speech_backend="pocket-tts")
+    controller.settings = previous
+
+    def apply_settings(settings: AppSettings, **_kwargs: object) -> bool:
+        controller.settings = settings
+        return True
+
+    controller.apply_settings.side_effect = apply_settings
+    controller.start.side_effect = (False, True)
+    owner = PlayerSessionOwner(controller)
+    generation = owner.begin(cancellation)
+
+    assert owner.configure(generation, requested, cancellation, restart=True) == (
+        True,
+        False,
+    )
+    assert controller.settings == previous
+    assert controller.apply_settings.call_args_list[1].args == (previous,)
+    assert controller.prepare_startup.call_count == 2
+    assert controller.start.call_count == 2

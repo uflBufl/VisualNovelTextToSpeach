@@ -310,6 +310,17 @@ class RuntimeLifecycleComponent:
             )
             if registry is None:
                 return False
+            if (
+                controller.settings.speech_backend == "pocket-tts"
+                and not controller.settings.pocket_gated_model_accepted
+                and isinstance(registry, CharacterVoiceRegistry)
+            ):
+                for name, voice in registry.voices.items():
+                    if voice.references:
+                        registry.assignments[name] = None
+                for name, voice in tuple(registry.assignments.items()):
+                    if voice is not None and voice.references:
+                        registry.assignments[name] = None
             backend_factory = {
                 "chatterbox-nano": controller.chatterbox_backend_factory,
                 "moss-tts": controller.moss_backend_factory,
@@ -335,6 +346,24 @@ class RuntimeLifecycleComponent:
                 backend_options["allow_gated_model_access"] = (
                     controller.settings.pocket_gated_model_accepted
                 )
+                if (
+                    not controller.settings.pocket_gated_model_accepted
+                    and narrator_reference is not None
+                    and str(narrator_reference) not in pocket_tts_preset_voices
+                ):
+                    narrator_reference = next(
+                        (
+                            value
+                            for value in (
+                                controller.settings.narrator_speaker,
+                                controller.settings.tts_speaker,
+                                "alba",
+                            )
+                            if value in pocket_tts_preset_voices
+                        ),
+                        "alba",
+                    )
+                    backend_options["narrator_reference"] = narrator_reference
             if getattr(backend_factory, "supports_startup_cancellation", False) is True:
                 backend_options["startup_cancellation"] = controller.shutdown_requested
             if getattr(backend_factory, "supports_startup_progress", False) is True:

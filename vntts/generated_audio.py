@@ -944,6 +944,12 @@ class GeneratedAudioFallbackBackend:
             )
             else self.library.find_live_fallback(line.line_id, line.text_sha256)
         )
+        if live_fallback is not None:
+            try:
+                _validate_live_fallback_backend(self.live_backend, live_fallback)
+            except ValueError:
+                fallback_reasons.append("live-fallback-backend-mismatch")
+                live_fallback = None
         if (
             line is not None
             and line.line_id
@@ -2262,6 +2268,8 @@ def _validate_render_review_fallback_evidence(
 def _validate_live_fallback_backend(
     backend: SpeechBackend, decision: LiveFallbackDecision
 ) -> None:
+    if decision.schema_version == 6:
+        return
     provider = getattr(backend, "name", None)
     model = (
         getattr(backend, "model_identity", None)

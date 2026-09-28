@@ -305,8 +305,15 @@ class OfflineGenerationWorker:
         ]
         if voice_plan.synthesis_model:
             arguments.extend(("--model", voice_plan.synthesis_model))
+        if voice_plan.synthesis_language:
+            arguments.extend(("--language", voice_plan.synthesis_language))
         if voice_plan.pocket_voice_cloning:
             arguments.append("--allow-gated-model-access")
+        if (
+            voice_plan.synthesis_backend == "coqui-xtts"
+            and voice_plan.xtts_terms_accepted
+        ):
+            arguments.append("--accept-xtts-terms")
         for role in generation_input.narrator_fallback_roles:
             arguments.extend(("--narrator-fallback-role", role))
         return arguments

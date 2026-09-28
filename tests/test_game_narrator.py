@@ -1608,7 +1608,7 @@ class GameNarratorTest(unittest.TestCase):
             self.assertIsNone(original.tts_model)
             self.assertFalse(original.pocket_gated_model_accepted)
 
-    def test_unavailable_and_xtts_engines_point_to_global_settings(self):
+    def test_unavailable_engine_and_unaccepted_xtts_show_guidance(self):
         for backend in ("moss-tts", "coqui-xtts"):
             with (
                 self.subTest(backend=backend),
@@ -1636,7 +1636,7 @@ class GameNarratorTest(unittest.TestCase):
                 self.assertFalse(dialog.save_button.isEnabled())
                 self.assertFalse(dialog.preview_button.isEnabled())
                 self.assertIn(
-                    "not supported for story preparation"
+                    "Accept the XTTS model terms"
                     if backend == "coqui-xtts"
                     else "not included in this package",
                     dialog._engine_guidance_text(),

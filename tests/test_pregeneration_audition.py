@@ -127,6 +127,27 @@ def ambiguous_fixture(root):
 
 
 class VoiceAuditionPreviewServiceTest(unittest.TestCase):
+    def test_xtts_preview_uses_the_planned_language(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            plan = replace(
+                plan,
+                synthesis_backend="coqui-xtts",
+                synthesis_language="ru",
+                xtts_terms_accepted=True,
+            )
+            factory = Mock(return_value=FakeBackend("coqui-xtts"))
+            service = VoiceAuditionPreviewService(
+                root / "auditions", backend_factory=factory
+            )
+            try:
+                service.generate(plan, group, group.candidates[0].source_id)
+            finally:
+                service.close()
+
+            self.assertEqual(factory.call_args.kwargs["language"], "ru")
+
     def test_automatic_voice_route_can_be_previewed(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

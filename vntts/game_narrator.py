@@ -134,6 +134,7 @@ def narrator_preview_plan(
         synthesis_language=settings.tts_language,
         synthesis_profile=settings.tts_profile,
         pocket_voice_cloning=settings.pocket_gated_model_accepted and not preset,
+        xtts_terms_accepted=settings.xtts_terms_accepted,
         synthesis_controls_sha256=controls,
         groups=(group,),
     )

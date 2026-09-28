@@ -173,12 +173,13 @@ class TTSBenchmarkTest(unittest.TestCase):
                     directory,
                     model_name="tts_models/multilingual/multi-dataset/xtts_v2",
                     terms_accepted=True,
+                    language="ru",
                 )
 
         self.assertIs(backend, wrapped)
         create.assert_called_once_with(
             model_name="tts_models/multilingual/multi-dataset/xtts_v2",
-            language="en",
+            language="ru",
             persisted_voice_cache=False,
         )
         route.assert_called_once_with(engine, registry, force_reference_audio=True)

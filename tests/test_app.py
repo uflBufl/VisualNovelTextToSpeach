@@ -36,6 +36,7 @@ from vntts.ocr import DialogRegion  # noqa: E402
 from vntts.onboarding import DiagnosticResult  # noqa: E402
 from vntts.pregeneration_activation import OfflinePackActivationResult  # noqa: E402
 from vntts.pregeneration_pack import OfflinePackResult  # noqa: E402
+from vntts.pregeneration_voices import resolve_pregeneration_settings  # noqa: E402
 from vntts.profiles import GameProfileStore  # noqa: E402
 from vntts.settings import AppSettings, load_app_settings  # noqa: E402
 from vntts.voice_library import VoiceLibrary  # noqa: E402
@@ -649,6 +650,8 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIs(result, dialog)
         create_dialog.assert_called_once_with(
             tray_application.settings,
+            audition_service=ANY,
+            generator=ANY,
             game_narrator_chooser=tray_application._open_preparation_narrator,
             automatic_activation=True,
             parent=tray_application.dashboard,
@@ -763,7 +766,7 @@ class TrayApplicationTest(unittest.TestCase):
         tray.pregeneration_dialog = None
         tray.shutdown()
 
-    def test_main_narrator_entry_reuses_preparation_settings(self):
+    def test_main_narrator_entry_uses_live_settings_with_preparation_open(self):
         controller = Mock(is_ready=False, is_live_running=False)
         tray_application = TrayApplication(
             self.application,
@@ -772,7 +775,7 @@ class TrayApplicationTest(unittest.TestCase):
         )
         dialog = Mock()
         dialog.has_pending_work.return_value = False
-        dialog.settings = AppSettings()
+        dialog.settings = AppSettings(offline_speech_backend="moss-tts")
         tray_application.pregeneration_dialog = dialog
         with (
             patch("vntts.app.GameNarratorDialog") as factory,
@@ -780,10 +783,70 @@ class TrayApplicationTest(unittest.TestCase):
             patch.object(tray_application.dashboard, "remove_narrator"),
         ):
             tray_application.open_voice_previews()
-            factory.assert_called_once_with(dialog.settings, tray_application.dashboard)
+            factory.assert_called_once_with(
+                tray_application.settings,
+                tray_application.dashboard,
+                use_offline_engine=False,
+            )
             tray_application._narrator_finished(QDialog.DialogCode.Rejected)
         controller.start.assert_not_called()
         tray_application.pregeneration_dialog = None
+        tray_application.shutdown()
+
+    def test_preparation_narrator_entry_uses_offline_settings(self):
+        controller = Mock(is_ready=False, is_live_running=False)
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        preparation = Mock()
+        preparation.has_pending_work.return_value = False
+        preparation.settings = AppSettings(offline_speech_backend="moss-tts")
+        tray_application.pregeneration_dialog = preparation
+        with (
+            patch("vntts.app.GameNarratorDialog") as factory,
+            patch.object(tray_application.dashboard, "embed_narrator"),
+            patch.object(tray_application.dashboard, "remove_narrator"),
+        ):
+            tray_application._open_preparation_narrator(
+                preparation.settings, tray_application.dashboard
+            )
+            factory.assert_called_once_with(
+                resolve_pregeneration_settings(preparation.settings),
+                tray_application.dashboard,
+                use_offline_engine=True,
+            )
+            tray_application._narrator_finished(QDialog.DialogCode.Rejected)
+        tray_application.pregeneration_dialog = None
+        tray_application.shutdown()
+
+    def test_preparation_voice_save_preserves_live_reference_and_consent(self):
+        settings = AppSettings(
+            speech_backend="pocket-tts",
+            offline_speech_backend="moss-tts",
+            tts_speaker_wav="live.wav",
+            pocket_gated_model_accepted=True,
+        )
+        tray_application = TrayApplication(
+            self.application,
+            settings,
+            controller_factory=Mock(return_value=Mock()),
+        )
+        dialog = Mock(
+            result_settings=settings.updated(
+                speech_backend="moss-tts",
+                tts_speaker_wav=None,
+                pocket_gated_model_accepted=False,
+            )
+        )
+
+        with patch.object(tray_application, "_save_settings_candidate"):
+            saved = tray_application._save_narrator_candidate(dialog, offline=True)
+
+        self.assertEqual(saved.speech_backend, "pocket-tts")
+        self.assertEqual(saved.tts_speaker_wav, "live.wav")
+        self.assertTrue(saved.pocket_gated_model_accepted)
         tray_application.shutdown()
 
     def test_shared_voice_entry_and_reading_start_use_existing_actions(self):
@@ -1297,7 +1360,9 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.open_speaker_mapping()
 
         factory.assert_called_once_with(
-            tray_application.settings, tray_application.dashboard
+            tray_application.settings,
+            tray_application.dashboard,
+            use_offline_engine=False,
         )
         dialog.set_voice_context.assert_called_once_with(character="Selone")
         dialog.set_recovery_context.assert_called_once_with("Selone", resume_live=False)
@@ -1834,7 +1899,7 @@ class TrayApplicationTest(unittest.TestCase):
         restart_note = next(
             label
             for label in dialog.findChildren(QLabel)
-            if "Changes marked 'restart required'" in label.text()
+            if "reload speech when saved" in label.text()
         )
         self.assertTrue(dialog.settings_scroll.widget().isAncestorOf(restart_note))
         self.assertEqual(
@@ -2116,8 +2181,13 @@ class TrayApplicationTest(unittest.TestCase):
                 )
             )
 
-    def test_settings_restart_fields_are_marked_per_control(self):
-        dialog = SettingsDialog(AppSettings())
+    def test_settings_distinguish_live_and_offline_engines(self):
+        dialog = SettingsDialog(
+            AppSettings(
+                offline_speech_backend="moss-tts",
+                offline_tts_model="moss-model.gguf",
+            )
+        )
         restart_labels = {
             label.text()
             for label in dialog.findChildren(QLabel)
@@ -2126,15 +2196,28 @@ class TrayApplicationTest(unittest.TestCase):
 
         self.assertEqual(
             restart_labels,
-            {
-                "Speech engine (restart required)",
-                "Speech model (restart required)",
-                "TTS language (restart required)",
-                "Narrator reference (restart required)",
-                "Voice manifest (restart required)",
-                "Narrator speaker (restart required)",
-            },
+            set(),
         )
+        self.assertEqual(
+            [
+                dialog.speech_backend.itemData(i)
+                for i in range(dialog.speech_backend.count())
+            ],
+            [
+                dialog.offline_speech_backend.itemData(i)
+                for i in range(dialog.offline_speech_backend.count())
+            ],
+        )
+        self.assertEqual(dialog.speech_backend.currentData(), "pocket-tts")
+        self.assertEqual(dialog.offline_speech_backend.currentData(), "moss-tts")
+        self.assertEqual(dialog.settings().offline_speech_backend, "moss-tts")
+        dialog.offline_speech_backend.setCurrentIndex(
+            dialog.offline_speech_backend.findData("coqui-xtts")
+        )
+        self.assertEqual(dialog.offline_tts_model.text(), "")
+        self.assertTrue(dialog.tts_language.isEnabled())
+        dialog.tts_language.setText("ru")
+        self.assertEqual(dialog.settings().tts_language, "ru")
         for field in (
             dialog.speech_backend,
             dialog.tts_model,
@@ -2143,7 +2226,7 @@ class TrayApplicationTest(unittest.TestCase):
             dialog.voice_manifest,
             dialog.narrator_speaker,
         ):
-            self.assertIn("require", field.accessibleDescription().casefold())
+            self.assertIn("reload speech", field.accessibleDescription().casefold())
         delete_dialog(dialog)
 
     def test_settings_fit_scaled_fonts_with_navigation_and_validation_visible(self):
@@ -2602,9 +2685,9 @@ class TrayApplicationTest(unittest.TestCase):
             "Screenshot directory": dialog.screenshot_directory,
             "Game window": dialog.game_window,
             "Diagnostics directory": dialog.ocr_diagnostics_directory,
-            "Narrator reference (restart required)": dialog.narrator_reference,
+            "Narrator reference": dialog.narrator_reference,
             "Game pack": dialog.game_pack,
-            "Voice manifest (restart required)": dialog.voice_manifest,
+            "Voice manifest": dialog.voice_manifest,
             "Story index": dialog.story_index,
             "Live speaker corpus": dialog.live_speaker_corpus,
             "Generated audio manifest": dialog.generated_audio_manifest,
@@ -2692,9 +2775,11 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIn("disk full", tray_application.status_action.text())
         tray_application.shutdown()
 
-    def test_backend_setting_reports_restart_and_keeps_effective_identity_visible(self):
+    def test_backend_setting_reloads_speech_without_app_restart(self):
         controller = Mock()
         controller.settings = AppSettings(speech_backend="pocket-tts")
+        controller.is_ready = True
+        controller.start.return_value = True
         tray_application = TrayApplication(
             self.application,
             controller.settings,
@@ -2704,6 +2789,7 @@ class TrayApplicationTest(unittest.TestCase):
         dialog.exec.return_value = QDialog.DialogCode.Accepted
         updated = controller.settings.updated(speech_backend="moss-tts")
         dialog.settings.return_value = updated
+        tray_application._controller_ready = True
 
         with (
             patch("vntts.app.SettingsDialog", return_value=dialog),
@@ -2717,11 +2803,10 @@ class TrayApplicationTest(unittest.TestCase):
             self.wait_until(lambda: not tray_application.configuration_runner.active)
 
         controller.apply_settings.assert_called_once_with(updated, cancellation=ANY)
+        controller.shutdown.assert_called_once_with()
+        controller.start.assert_called_once_with()
         self.assertEqual(tray_application.settings.speech_backend, "moss-tts")
-        self.assertIn("restart required", tray_application.status_action.text())
-        self.assertLessEqual(len(tray_application.status_action.text()), 96)
-        self.assertTrue(tray_application.status_action.text().endswith("..."))
-        self.assertIn("still uses pocket-tts", tray_application.status_action.toolTip())
+        self.assertIn("speech reloaded", tray_application.status_action.toolTip())
         tray_application.shutdown()
 
     def test_macos_permission_action_opens_recovery_dialog(self):
@@ -2761,7 +2846,9 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application._narrator_finished(QDialog.DialogCode.Rejected)
 
         factory.assert_called_once_with(
-            tray_application.settings, tray_application.dashboard
+            tray_application.settings,
+            tray_application.dashboard,
+            use_offline_engine=False,
         )
         controller.start.assert_not_called()
         controller.available_voice_choices.assert_not_called()

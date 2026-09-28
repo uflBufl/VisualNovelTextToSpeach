@@ -441,6 +441,21 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
 
         self.assertIn("--allow-gated-model-access", arguments)
 
+    def test_xtts_terms_acceptance_reaches_isolated_worker(self):
+        with TemporaryDirectory() as temporary_directory:
+            generation_input, plan = generation_inputs(
+                Path(temporary_directory), backend="coqui-xtts"
+            )
+            plan = replace(plan, xtts_terms_accepted=True, synthesis_language="ru")
+            arguments = OfflineGenerationWorker(command=("worker",))._base_arguments(
+                generation_input,
+                plan,
+                generation_input.directory.parent / "output",
+            )
+
+        self.assertIn("--accept-xtts-terms", arguments)
+        self.assertEqual(arguments[arguments.index("--language") + 1], "ru")
+
     def test_selection_jobs_share_one_content_addressed_synthesis_cache(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory) / "jobs"

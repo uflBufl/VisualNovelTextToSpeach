@@ -1447,6 +1447,39 @@ class MainTest(unittest.TestCase):
         )
         controller.shutdown()
 
+    def test_pocket_without_cloning_ignores_offline_game_references(self):
+        backend = Mock()
+        backend.registry = Mock()
+        backend.capabilities.concurrent_prepare_and_play = False
+        registry = CharacterVoiceRegistry(
+            (
+                CharacterVoice(
+                    "Narrator", "Centurion", references=(Path("centurion.wav"),)
+                ),
+                CharacterVoice("Ada", "Ada", references=(Path("ada.wav"),)),
+            )
+        )
+        pocket_factory = Mock(return_value=backend)
+        with (
+            patch("vntts.controller.initialize_voice_registry", return_value=registry),
+            patch("vntts.controller.ThreadPoolExecutor", return_value=Mock()),
+            patch("vntts.controller.LiveDialogReader", return_value=Mock()),
+            patch("vntts.controller.create_dialog_read_scheduler", return_value=Mock()),
+        ):
+            controller = AppController(
+                AppSettings(
+                    speech_backend="pocket-tts",
+                    offline_speech_backend="moss-tts",
+                ),
+                pocket_backend_factory=pocket_factory,
+                model_asset_manager_factory=Mock(),
+            )
+            self.assertTrue(controller.start())
+        self.assertIsNone(registry.resolve("Narrator"))
+        self.assertIsNone(registry.resolve("Ada"))
+        self.assertIsNone(pocket_factory.call_args.kwargs["narrator_reference"])
+        controller.shutdown()
+
     def test_controller_loads_moss_with_model_language_and_huggingface_cache(self):
         backend = Mock()
         backend.registry = Mock()

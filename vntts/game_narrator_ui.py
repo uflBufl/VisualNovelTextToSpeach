@@ -123,6 +123,7 @@ class GameNarratorDialog(QDialog):
         player: QtPcmPlayer | None = None,
         binder: Binder = bind_voice_library_selection,
         voice_library: VoiceLibrary | None = None,
+        use_offline_engine: bool = True,
     ) -> None:
         super().__init__(parent)
         self._initialize_state(
@@ -133,6 +134,7 @@ class GameNarratorDialog(QDialog):
             player,
             thread_pool,
             voice_library,
+            use_offline_engine,
         )
         self._build_status_and_assignment_controls()
         self._build_voice_source_controls(settings)
@@ -153,10 +155,13 @@ class GameNarratorDialog(QDialog):
         player: QtPcmPlayer | None,
         thread_pool: QThreadPool | None,
         voice_library: VoiceLibrary | None,
+        use_offline_engine: bool,
     ) -> None:
         self.setWindowTitle("Narrator and character voices")
         self.resize(900, 560)
-        self.settings_value = resolve_pregeneration_settings(settings)
+        self.settings_value = (
+            resolve_pregeneration_settings(settings) if use_offline_engine else settings
+        )
         self._initial_settings_value = self.settings_value
         self._settings_dirty = False
         self.result_settings: AppSettings | None = None
@@ -1041,7 +1046,9 @@ class GameNarratorDialog(QDialog):
 
     def _engine_available(self) -> bool:
         backend = self.settings_value.speech_backend
-        return backend != "coqui-xtts" and any(
+        return (
+            backend != "coqui-xtts" or self.settings_value.xtts_terms_accepted
+        ) and any(
             option == backend and available
             for _label, option, available in speech_backend_options(backend)
         )
@@ -1049,10 +1056,8 @@ class GameNarratorDialog(QDialog):
     def _engine_guidance_text(self) -> str:
         backend = self.settings_value.speech_backend
         if backend == "coqui-xtts":
-            return (
-                "XTTS is not supported for story preparation. "
-                "Choose another engine in Settings."
-            )
+            if not self.settings_value.xtts_terms_accepted:
+                return "Accept the XTTS model terms in Settings before previewing."
         if not self._engine_available():
             return (
                 "This engine is not included in this package. "

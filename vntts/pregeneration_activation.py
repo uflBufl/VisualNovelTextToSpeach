@@ -100,11 +100,10 @@ class OfflinePackActivator:
             raise OfflinePackActivationError("Offline game pack identity changed")
         _record_activation_phase("pack-preflight", phase_started, cpu_started)
         phase_started, cpu_started = perf_counter(), process_time()
-        source_settings = generation_settings or current_settings
         source_dialogue = ChapterVoicePreloader.load_optional(
             imported.story_index
         ).dialogue
-        candidate = imported.apply_to(source_settings).updated(
+        candidate = imported.apply_to(current_settings).updated(
             audio_source_policy=(
                 "prefer-game-audio"
                 if any(
@@ -115,7 +114,6 @@ class OfflinePackActivator:
                 else "prefer-generated"
             ),
             force_live_narrator=False,
-            tts_speaker_wav=None,
         )
         _record_activation_phase("settings-build", phase_started, cpu_started)
         _raise_if_cancelled(cancellation)

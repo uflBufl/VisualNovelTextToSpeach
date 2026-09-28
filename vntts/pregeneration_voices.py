@@ -99,6 +99,7 @@ class SynthesisControls(TypedDict):
     language: str | None
     profile: str
     pocket_voice_cloning: bool | None
+    xtts_terms_accepted: bool | None
     narrator_speaker: str | None
     narrator_reference: JsonObject | None
 
@@ -137,7 +138,12 @@ class PregenerationVoiceCancelled(PregenerationVoiceError):
 
 
 def resolve_pregeneration_settings(settings: AppSettings) -> AppSettings:
-    """Normalize profiles without replacing the user's selected speech engine."""
+    """Use the selected offline engine without changing live preferences."""
+    settings = settings.updated(
+        speech_backend=settings.offline_speech_backend,
+        tts_model=settings.offline_tts_model,
+        tts_profile=settings.offline_tts_profile,
+    )
     backend = settings.speech_backend
     if backend == "pocket-tts":
         return settings.updated(tts_model=None, tts_profile="default")
@@ -265,6 +271,7 @@ class VoicePlan:
     synthesis_controls_sha256: str
     groups: tuple[VoiceGroup, ...]
     person_link_suggestions: tuple[PersonLinkSuggestion, ...] = ()
+    xtts_terms_accepted: bool = False
 
     @property
     def generation_line_count(self) -> int:
@@ -292,6 +299,7 @@ class VoicePlan:
             "synthesis_language": self.synthesis_language,
             "synthesis_profile": self.synthesis_profile,
             "pocket_voice_cloning": self.pocket_voice_cloning,
+            "xtts_terms_accepted": self.xtts_terms_accepted,
             "synthesis_controls_sha256": self.synthesis_controls_sha256,
             "groups": [group.to_document() for group in self.groups],
             "person_link_suggestions": [
@@ -693,6 +701,7 @@ class VoicePlanStore:
             synthesis_language=settings.tts_language,
             synthesis_profile=controls["profile"],
             pocket_voice_cloning=bool(controls["pocket_voice_cloning"]),
+            xtts_terms_accepted=bool(controls["xtts_terms_accepted"]),
             synthesis_controls_sha256=controls_sha256,
             groups=tuple(groups),
             person_link_suggestions=suggest_person_links(
@@ -949,6 +958,8 @@ class VoicePlanStore:
                 or plan.get("synthesis_profile") != controls["profile"]
                 or plan.get("pocket_voice_cloning")
                 != bool(controls["pocket_voice_cloning"])
+                or bool(plan.get("xtts_terms_accepted"))
+                != bool(controls["xtts_terms_accepted"])
             ):
                 continue
             plan_groups = plan.get("groups")
@@ -2281,6 +2292,11 @@ def _synthesis_controls(settings: AppSettings) -> SynthesisControls:
         "pocket_voice_cloning": (
             settings.pocket_gated_model_accepted
             if settings.speech_backend == "pocket-tts"
+            else None
+        ),
+        "xtts_terms_accepted": (
+            settings.xtts_terms_accepted
+            if settings.speech_backend == "coqui-xtts"
             else None
         ),
         "narrator_speaker": settings.narrator_speaker,

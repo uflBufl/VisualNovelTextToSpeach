@@ -232,8 +232,8 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
         write_voice_references(manifest)
         original = AppSettings(voice_manifest=str(manifest))
         selected = original.updated(
-            speech_backend="moss-tts",
-            tts_model="selected-model.gguf",
+            offline_speech_backend="moss-tts",
+            offline_tts_model="selected-model.gguf",
         )
 
         def choose_narrator(*_args, **_kwargs):
@@ -463,7 +463,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertIn("Marius", plain_label_text(dialog.narrator_status))
             self.assertIn("no account", dialog.pocket_terms.text())
             self.assertTrue(dialog.model_choice.isHidden())
-            self.assertTrue(dialog.engine_controls.isHidden())
+            self.assertFalse(dialog.engine_controls.isHidden())
             self.assertTrue(dialog.pocket_terms.isHidden())
             self.assertTrue(dialog.pocket_voice_cloning.isHidden())
             chooser.side_effect = None
@@ -626,7 +626,8 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertNotEqual(dialog.generation_input().identity, old_input.identity)
             self.assertTrue(old_input.directory.exists())
             self.assertTrue(dialog.narrator_controls.isHidden())
-            self.assertTrue(dialog.engine_controls.isHidden())
+            self.assertFalse(dialog.engine_controls.isHidden())
+            self.assertFalse(dialog.engine_choice.isEnabled())
             self.assertTrue(dialog.pocket_terms.isHidden())
             dialog.reject()
             dialog.deleteLater()
@@ -648,7 +649,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 dialog.engine_choice.findData("moss-tts")
             )
             dialog.model_choice.setText("selected-model.gguf")
-            self.assertEqual(dialog.settings.tts_model, "selected-model.gguf")
+            self.assertEqual(dialog.settings.offline_tts_model, "selected-model.gguf")
             self.assertEqual(settings.speech_backend, "pocket-tts")
             dialog.select_all_button.click()
             self.assertIn("Stories:", plain_label_text(dialog.story_context))
@@ -690,7 +691,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             dialog._save_selection()
             self.assertIsNone(dialog.job())
             self.assertIn(
-                "Choose an available generation engine",
+                "Accept the XTTS model terms",
                 plain_label_text(dialog.summary),
             )
             dialog.engine_choice.setCurrentIndex(

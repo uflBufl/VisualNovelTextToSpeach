@@ -14,7 +14,7 @@ from vntts.application_directories import get_config_directory, get_local_data_d
 from vntts.hotkeys import default_hotkey
 from vntts.versioned_json import load_versioned_json, write_versioned_json
 
-settings_schema_version = 30
+settings_schema_version = 31
 main_sections = ("stories", "voices", "reading")
 
 audio_source_policies = {
@@ -65,12 +65,15 @@ class AppSettingsChanges(TypedDict, total=False):
     ocr_minimum_confidence: int
     ocr_language: str
     speech_backend: str
+    offline_speech_backend: str
     audio_source_policy: str
     tts_model: str | None
+    offline_tts_model: str | None
     tts_speaker: str | None
     tts_language: str | None
     tts_speaker_wav: str | None
     tts_profile: str
+    offline_tts_profile: str
     output_volume_percent: int
     speech_rate_percent: int
     warm_up_voices: bool
@@ -162,8 +165,13 @@ class AppSettings:
     ocr_minimum_confidence: int = 60
     ocr_language: str = "eng"
     speech_backend: str = "pocket-tts"
+    offline_speech_backend: str = ""
     audio_source_policy: str = default_audio_source_policy
     tts_model: str | None = field(
+        default=None,
+        metadata={"support_sensitivity": "path-or-id"},
+    )
+    offline_tts_model: str | None = field(
         default=None,
         metadata={"support_sensitivity": "path-or-id"},
     )
@@ -174,6 +182,7 @@ class AppSettings:
         metadata={"support_sensitivity": "path"},
     )
     tts_profile: str = "stable"
+    offline_tts_profile: str = ""
     output_volume_percent: int = 100
     speech_rate_percent: int = 100
     warm_up_voices: bool = False
@@ -210,6 +219,14 @@ class AppSettings:
     force_live_narrator: bool = False
     active_profile_id: str | None = None
 
+    def __post_init__(self) -> None:
+        if not self.offline_speech_backend:
+            object.__setattr__(self, "offline_speech_backend", self.speech_backend)
+            object.__setattr__(self, "offline_tts_model", self.tts_model)
+            object.__setattr__(self, "offline_tts_profile", self.tts_profile)
+        elif not self.offline_tts_profile:
+            object.__setattr__(self, "offline_tts_profile", self.tts_profile)
+
     @classmethod
     def from_mapping(
         cls,
@@ -244,6 +261,7 @@ class AppSettings:
         )
         optional_string_fields = (
             "tts_model",
+            "offline_tts_model",
             "tts_speaker",
             "tts_language",
             "tts_speaker_wav",
@@ -339,6 +357,35 @@ class AppSettings:
         else:
             report("Invalid 'tts_profile' setting; using its default")
 
+        if parsed["speech_backend"] not in {
+            "coqui-xtts",
+            "chatterbox-nano",
+            "moss-tts",
+            "pocket-tts",
+        }:
+            report("Invalid 'speech_backend' setting; using its default")
+            parsed["speech_backend"] = defaults.speech_backend
+
+        offline_backend = values.get("offline_speech_backend", parsed["speech_backend"])
+        if isinstance(offline_backend, str) and offline_backend in {
+            "coqui-xtts",
+            "chatterbox-nano",
+            "moss-tts",
+            "pocket-tts",
+        }:
+            parsed["offline_speech_backend"] = offline_backend
+        else:
+            report("Invalid 'offline_speech_backend' setting; using live engine")
+            parsed["offline_speech_backend"] = parsed["speech_backend"]
+        if "offline_tts_model" not in values:
+            parsed["offline_tts_model"] = parsed["tts_model"]
+        offline_profile = values.get("offline_tts_profile", parsed["tts_profile"])
+        if isinstance(offline_profile, str) and offline_profile.strip():
+            parsed["offline_tts_profile"] = offline_profile.strip().casefold()
+        else:
+            report("Invalid 'offline_tts_profile' setting; using live profile")
+            parsed["offline_tts_profile"] = parsed["tts_profile"]
+
         capture_mode = values.get("capture_mode", defaults.capture_mode)
         if capture_mode in {"screen", "window"}:
             parsed["capture_mode"] = capture_mode
@@ -354,15 +401,6 @@ class AppSettings:
         if parsed["auto_advance_key"] not in {"space", "enter", "right", "down"}:
             report("Invalid 'auto_advance_key' setting; using its default")
             parsed["auto_advance_key"] = defaults.auto_advance_key
-
-        if parsed["speech_backend"] not in {
-            "coqui-xtts",
-            "chatterbox-nano",
-            "moss-tts",
-            "pocket-tts",
-        }:
-            report("Invalid 'speech_backend' setting; using its default")
-            parsed["speech_backend"] = defaults.speech_backend
 
         if parsed["audio_source_policy"] not in audio_source_policies:
             report("Invalid 'audio_source_policy' setting; using its default")
@@ -462,6 +500,26 @@ class AppSettings:
                         )
                         continue
                 values[setting_name] = configured
+
+        # Legacy settings had one engine for both paths. Keep its environment
+        # overrides linked until the saved live and offline values diverge.
+        for live_name, live_field, offline_field in (
+            ("VNTTS_SPEECH_BACKEND", "speech_backend", "offline_speech_backend"),
+            ("VNTTS_TTS_MODEL", "tts_model", "offline_tts_model"),
+            ("VNTTS_TTS_PROFILE", "tts_profile", "offline_tts_profile"),
+        ):
+            configured = environment.get(live_name)
+            if (
+                configured
+                and configured.strip()
+                and (
+                    live_field != "speech_backend"
+                    or configured
+                    in {"coqui-xtts", "chatterbox-nano", "moss-tts", "pocket-tts"}
+                )
+                and getattr(self, live_field) == getattr(self, offline_field)
+            ):
+                values[offline_field] = values[live_field]
 
         for environment_name, setting_name in numeric_overrides.items():
             configured = environment.get(environment_name)

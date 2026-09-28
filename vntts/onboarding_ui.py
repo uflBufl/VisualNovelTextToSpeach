@@ -548,7 +548,10 @@ class ConfigurationPage(QWizardPage):
             self.flow.request_voices()
             return
         dialog = GameNarratorDialog(
-            self._base_settings(), self, voice_library=self.voice_library
+            self._base_settings(),
+            self,
+            voice_library=self.voice_library,
+            use_offline_engine=False,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return

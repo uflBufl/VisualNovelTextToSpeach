@@ -778,6 +778,7 @@ class SupportBundleBuilderTest(unittest.TestCase):
                 "screenshot_directory",
                 "ocr_diagnostics_directory",
                 "tts_model",
+                "offline_tts_model",
                 "tts_speaker_wav",
                 "game_pack",
                 "voice_manifest",

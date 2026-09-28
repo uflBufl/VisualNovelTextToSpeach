@@ -324,7 +324,6 @@ class ConfigurationApplyMixin:
         restart_changes = restart_required_setting_changes(
             original_settings, updated_settings
         )
-        effective_backend = self.controller.settings.speech_backend
         self.settings = updated_settings
         self.dashboard.set_configuration(self.settings)
         self.sequence_resync_action.setVisible(
@@ -338,10 +337,10 @@ class ConfigurationApplyMixin:
         profile_suffix = ""
         if not profile_synced:
             profile_suffix = "; active profile could not be updated"
-        if restart_changes:
+        if restart_changes and self._controller_ready:
             success_status = (
-                f"Settings saved to {path}; restart required to load speech "
-                f"engine/model changes. This session still uses {effective_backend}"
+                f"Settings saved to {path}; speech reloaded with "
+                f"{updated_settings.speech_backend}"
                 f"{profile_suffix}."
             )
         else:
@@ -351,6 +350,7 @@ class ConfigurationApplyMixin:
             progress_status=f"Applying saved settings in background ({path})...",
             success_status=success_status,
             refresh_hotkeys=True,
+            restart=bool(restart_changes and self._controller_ready),
         )
         if self.readiness_dialog is not None:
             self.readiness_dialog.update_settings(self.settings)
@@ -377,7 +377,9 @@ class ConfigurationApplyMixin:
             self.settings,
             progress_status="Applying model and voice settings in background...",
             success_status=(
-                "Assets updated; restart to load voice or model changes. "
-                f"Saved to {path}{profile_suffix}"
+                f"Assets updated; speech reloaded. Saved to {path}{profile_suffix}"
+                if self._controller_ready
+                else f"Assets updated. Saved to {path}{profile_suffix}"
             ),
+            restart=bool(self._controller_ready),
         )

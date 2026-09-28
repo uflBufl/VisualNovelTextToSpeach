@@ -112,7 +112,7 @@ from vntts.pregeneration_generation import OfflineGenerationWorker
 from vntts.pregeneration_pack import OfflinePackResult
 from vntts.pregeneration_setup import GameContent, PregenerationJob
 from vntts.pregeneration_ui import OfflineAudioPreparationDialog
-from vntts.pregeneration_voices import VoicePlan
+from vntts.pregeneration_voices import VoicePlan, resolve_pregeneration_settings
 from vntts.profiles import GameProfileStore
 from vntts.profiles_ui import GameProfilesDialog
 from vntts.readiness_ui import ReadinessDialog
@@ -433,17 +433,28 @@ class SettingsDialog(QDialog):
 
     def _build_engine_controls(self, settings: AppSettings) -> None:
         self.tts_model = QLineEdit(settings.tts_model or "")
+        self.offline_tts_model = QLineEdit(settings.offline_tts_model or "")
+        self.offline_tts_model.setAccessibleName("Offline preparation model")
         self.speech_backend = QComboBox()
-        for label, backend, available in speech_backend_options(
-            settings.speech_backend
+        self.offline_speech_backend = QComboBox()
+        self.offline_speech_backend.setAccessibleName("Offline preparation engine")
+        for choice, current in (
+            (self.speech_backend, settings.speech_backend),
+            (self.offline_speech_backend, settings.offline_speech_backend),
         ):
-            self.speech_backend.addItem(label, backend)
-            if not available:
-                model = self.speech_backend.model()
-                if isinstance(model, QStandardItemModel):
-                    model.item(self.speech_backend.count() - 1).setEnabled(False)
+            for label, backend, available in speech_backend_options(current):
+                choice.addItem(label, backend)
+                if not available:
+                    model = choice.model()
+                    if isinstance(model, QStandardItemModel):
+                        model.item(choice.count() - 1).setEnabled(False)
         self.speech_backend.setCurrentIndex(
             max(0, self.speech_backend.findData(settings.speech_backend))
+        )
+        self.offline_speech_backend.setCurrentIndex(
+            max(
+                0, self.offline_speech_backend.findData(settings.offline_speech_backend)
+            )
         )
         self.audio_source_policy = QComboBox()
         self.audio_source_policy.addItem(
@@ -658,9 +669,7 @@ class SettingsDialog(QDialog):
             self.narrator_speaker,
         ):
             current = field.accessibleDescription().strip()
-            restart_description = (
-                "Changes to this setting require an application restart."
-            )
+            restart_description = "Changes to this setting reload speech when saved."
             field.setAccessibleDescription(f"{current} {restart_description}".strip())
         return (
             screenshot_layout,
@@ -727,7 +736,9 @@ class SettingsDialog(QDialog):
     ) -> QFormLayout:
         speech_form = QFormLayout()
         self.speech_form = speech_form
-        speech_form.addRow("Speech engine (restart required)", self.speech_backend)
+        speech_form.addRow("Live reading engine", self.speech_backend)
+        speech_form.addRow("Offline preparation engine", self.offline_speech_backend)
+        speech_form.addRow("Offline preparation model", self.offline_tts_model)
         self.narrator_voice = QLabel()
         self.narrator_voice.setWordWrap(True)
         self.narrator_voice.setAccessibleName("Selected narrator voice")
@@ -745,11 +756,11 @@ class SettingsDialog(QDialog):
         self.advanced_narrator = QCheckBox("Advanced: audio file")
         speech_form.addRow(self.advanced_narrator)
         speech_form.addRow("Audio source policy", self.audio_source_policy)
-        speech_form.addRow("Speech model (restart required)", self.tts_model)
-        speech_form.addRow("TTS language (restart required)", self.tts_language)
+        speech_form.addRow("Live reading model", self.tts_model)
+        speech_form.addRow("TTS language", self.tts_language)
         _add_composite_form_row(
             speech_form,
-            "Narrator reference (restart required)",
+            "Narrator reference",
             self.narrator_reference,
             narrator_reference_layout,
         )
@@ -765,7 +776,7 @@ class SettingsDialog(QDialog):
         )
         _add_composite_form_row(
             speech_form,
-            "Voice manifest (restart required)",
+            "Voice manifest",
             self.voice_manifest,
             voice_manifest_layout,
         )
@@ -790,7 +801,7 @@ class SettingsDialog(QDialog):
             self.generated_audio_manifest,
             generated_audio_manifest_layout,
         )
-        speech_form.addRow("Narrator speaker (restart required)", self.narrator_speaker)
+        speech_form.addRow("Narrator speaker", self.narrator_speaker)
         speech_form.addRow("Voice profile", self.tts_profile)
         speech_form.addRow("XTTS license", self.xtts_terms)
         speech_form.addRow("", self.pocket_gated_model)
@@ -904,10 +915,7 @@ class SettingsDialog(QDialog):
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
 
-        note_text = (
-            "Changes marked 'restart required' take effect after restarting "
-            "the application."
-        )
+        note_text = "Speech engine and voice changes reload speech when saved."
         if sys.platform != "darwin":
             note_text = f"Hotkey changes take effect immediately. {note_text}"
         self.restart_note = QLabel(note_text)
@@ -941,6 +949,9 @@ class SettingsDialog(QDialog):
         self.tts_model.textChanged.connect(self.update_terms_control)
         self.speech_backend.currentIndexChanged.connect(
             self.update_speech_backend_controls
+        )
+        self.offline_speech_backend.currentIndexChanged.connect(
+            self._offline_backend_changed
         )
         self.retain_uncertain_frames.toggled.connect(
             self.update_ocr_diagnostics_controls
@@ -1057,6 +1068,7 @@ class SettingsDialog(QDialog):
             self.screenshot_directory,
             self.ocr_diagnostics_directory,
             self.tts_model,
+            self.offline_tts_model,
             self.tts_language,
             self.narrator_reference,
             self.game_pack,
@@ -1072,6 +1084,7 @@ class SettingsDialog(QDialog):
             self.capture_mode,
             self.game_window,
             self.speech_backend,
+            self.offline_speech_backend,
             self.live_sequence_mode,
         ):
             combo_box.currentIndexChanged.connect(self.update_validation_summary)
@@ -1135,9 +1148,8 @@ class SettingsDialog(QDialog):
             add(1, self.game_window, "Capture source: select the game window.")
         if (
             self.speech_backend.currentData() == "coqui-xtts"
-            and "xtts" in self.tts_model.text().casefold()
-            and not self.xtts_terms.isChecked()
-        ):
+            or self.offline_speech_backend.currentData() == "coqui-xtts"
+        ) and not self.xtts_terms.isChecked():
             add(2, self.xtts_terms, "XTTS license: accept the CPML terms.")
         backend = self.speech_backend.currentData()
         if not packaged_speech_backend_available(backend):
@@ -1146,6 +1158,13 @@ class SettingsDialog(QDialog):
                 self.speech_backend,
                 f"Speech engine: {backend} is not included in this application "
                 "package. Choose an available engine.",
+            )
+        offline_backend = self.offline_speech_backend.currentData()
+        if not packaged_speech_backend_available(offline_backend):
+            add(
+                2,
+                self.offline_speech_backend,
+                f"Offline preparation engine: {offline_backend} is not included in this application package.",
             )
         narrator_binding = self.voice_library.binding("Narrator")
         if (
@@ -1287,7 +1306,10 @@ class SettingsDialog(QDialog):
 
     def choose_narrator(self) -> None:
         dialog = GameNarratorDialog(
-            self._raw_settings(), self, voice_library=self.voice_library
+            self._raw_settings(),
+            self,
+            voice_library=self.voice_library,
+            use_offline_engine=False,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -1367,16 +1389,24 @@ class SettingsDialog(QDialog):
 
     def update_terms_control(self) -> None:
         backend = self.speech_backend.currentData()
-        uses_xtts = backend == "coqui-xtts"
-        uses_pocket = backend == "pocket-tts"
-        self.xtts_terms.setEnabled(
-            uses_xtts and "xtts" in self.tts_model.text().casefold()
+        uses_xtts = (
+            backend == "coqui-xtts"
+            or self.offline_speech_backend.currentData() == "coqui-xtts"
         )
+        uses_pocket = (
+            backend == "pocket-tts"
+            or self.offline_speech_backend.currentData() == "pocket-tts"
+        )
+        self.xtts_terms.setEnabled(uses_xtts)
         self.xtts_terms.setVisible(uses_xtts)
         self.speech_form.setRowVisible(self.xtts_terms, uses_xtts)
         self.pocket_gated_model.setEnabled(uses_pocket)
         self.pocket_gated_model.setVisible(uses_pocket)
         self.pocket_terms_label.setVisible(uses_pocket)
+
+    def _offline_backend_changed(self) -> None:
+        self.offline_tts_model.clear()
+        self.update_speech_backend_controls()
 
     def update_speech_backend_controls(self) -> None:
         backend = self.speech_backend.currentData()
@@ -1393,11 +1423,18 @@ class SettingsDialog(QDialog):
         }:
             self.tts_model.setText(default_xtts_model)
         self.tts_model.setEnabled(uses_xtts or uses_moss)
+        self.offline_tts_model.setEnabled(
+            self.offline_speech_backend.currentData() in {"coqui-xtts", "moss-tts"}
+        )
         advanced = self.advanced_settings.isChecked()
         self.speech_form.setRowVisible(
             self.tts_model, advanced and (uses_xtts or uses_moss)
         )
-        self.tts_language.setEnabled(uses_xtts or uses_moss)
+        self.tts_language.setEnabled(
+            uses_xtts
+            or uses_moss
+            or self.offline_speech_backend.currentData() == "coqui-xtts"
+        )
         self.narrator_reference.setEnabled(True)
         self.narrator_reference_button.setEnabled(True)
         self.narrator_speaker.setEnabled(uses_xtts)
@@ -1445,8 +1482,18 @@ class SettingsDialog(QDialog):
                 "ocr_minimum_confidence": self.ocr_minimum_confidence.value(),
                 "ocr_language": self.ocr_language.text().strip(),
                 "speech_backend": self.speech_backend.currentData(),
+                "offline_speech_backend": self.offline_speech_backend.currentData(),
                 "audio_source_policy": self.audio_source_policy.currentData(),
                 "tts_model": optional_text(self.tts_model),
+                "offline_tts_model": optional_text(self.offline_tts_model),
+                "offline_tts_profile": (
+                    "default"
+                    if self.offline_speech_backend.currentData() == "pocket-tts"
+                    else self.original_settings.offline_tts_profile
+                    if self.offline_speech_backend.currentData()
+                    == self.original_settings.offline_speech_backend
+                    else "stable"
+                ),
                 "tts_language": optional_text(self.tts_language),
                 "tts_speaker_wav": optional_text(self.narrator_reference),
                 "game_pack": optional_text(self.game_pack),
@@ -1733,6 +1780,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.support_dialog: SupportCenterDialog | None = None
         self.narrator_dialog: GameNarratorDialog | None = None
         self._narrator_preparation: OfflineAudioPreparationDialog | None = None
+        self._narrator_offline = False
         self._narrator_return_to_stories = False
         self._resume_live_after_narrator = False
         self._preparation_activation_settings: AppSettings | None = None
@@ -2920,27 +2968,20 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self._controller_busy or self._shutting_down:
             self.set_status("Controller reconfiguration is already in progress")
             return None
-        if self.settings.speech_backend == "moss-tts":
-            dialog = OfflineAudioPreparationDialog(
-                self.settings,
-                audition_service=VoiceAuditionPreviewService(
-                    backend_factory=self.moss_runtime.benchmark_backend
-                ),
-                generator=OfflineGenerationWorker(
-                    backend_factory=self.moss_runtime.benchmark_backend
-                ),
-                game_narrator_chooser=self._open_preparation_narrator,
-                automatic_activation=True,
-                parent=self.dashboard,
-            )
-        else:
-            dialog = OfflineAudioPreparationDialog(
-                self.settings,
-                game_narrator_chooser=self._open_preparation_narrator,
-                automatic_activation=True,
-                parent=self.dashboard,
-            )
+        dialog = OfflineAudioPreparationDialog(
+            self.settings,
+            audition_service=VoiceAuditionPreviewService(
+                backend_factory=self.moss_runtime.benchmark_backend
+            ),
+            generator=OfflineGenerationWorker(
+                backend_factory=self.moss_runtime.benchmark_backend
+            ),
+            game_narrator_chooser=self._open_preparation_narrator,
+            automatic_activation=True,
+            parent=self.dashboard,
+        )
         self.pregeneration_dialog = dialog
+        dialog.offlinePreferencesChanged.connect(self._save_offline_preferences)
         dialog.finished.connect(self._pregeneration_finished)
         dialog.readingRequested.connect(self._read_prepared_story)
         dialog.preparationRequested.connect(self._remember_preparation_context)
@@ -2950,6 +2991,22 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         self.dashboard.embed_preparation(dialog, show=show)
         return dialog
+
+    def _save_offline_preferences(self, selected: AppSettings) -> None:
+        candidate = self.settings.updated(
+            offline_speech_backend=selected.offline_speech_backend,
+            offline_tts_model=selected.offline_tts_model,
+            offline_tts_profile=selected.offline_tts_profile,
+        )
+        try:
+            self._save_settings_candidate(candidate)
+        except OSError as error:
+            self.show_error(f"Unable to save offline engine choice: {error}")
+            if self.pregeneration_dialog is not None:
+                self.pregeneration_dialog.apply_narrator_settings(self.settings)
+            return
+        self.settings = candidate
+        self.dashboard.set_configuration(candidate)
 
     def _read_prepared_story(self) -> None:
         if self._controller_ready and self._preparation_runtime_settings() is None:
@@ -3320,6 +3377,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         character: str | None = None,
         resume_live: bool | None = None,
         recovery: bool = False,
+        for_preparation: bool = False,
     ) -> None:
         if self._controller_busy or self._shutting_down:
             return
@@ -3356,6 +3414,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                     should_resume_live,
                     character=character,
                     recovery=recovery,
+                    for_preparation=for_preparation,
                 ),
                 "Stopping live capture before voice preview...",
             )
@@ -3364,6 +3423,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             should_resume_live,
             character=character,
             recovery=recovery,
+            for_preparation=for_preparation,
         )
 
     def _open_narrator_picker(
@@ -3372,6 +3432,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         *,
         character: str | None = None,
         recovery: bool = False,
+        for_preparation: bool = False,
     ) -> None:
         if self._shutting_down or self._quit_requested:
             return
@@ -3380,13 +3441,18 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.dashboard.sections.currentWidget() is self.dashboard.stories_stack
         )
         self._narrator_preparation = self.pregeneration_dialog
+        self._narrator_offline = for_preparation
         settings = (
-            self.pregeneration_dialog.settings
-            if self.pregeneration_dialog is not None
+            resolve_pregeneration_settings(self.pregeneration_dialog.settings)
+            if for_preparation and self.pregeneration_dialog is not None
             else self.settings
         )
-        dialog = GameNarratorDialog(settings, self.dashboard)
-        if self.pregeneration_dialog is not None:
+        dialog = GameNarratorDialog(
+            settings,
+            self.dashboard,
+            use_offline_engine=for_preparation,
+        )
+        if for_preparation and self.pregeneration_dialog is not None:
             plan = self.pregeneration_dialog.voice_plan()
             content = self.pregeneration_dialog.current_content()
             if isinstance(content, GameContent):
@@ -3435,7 +3501,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         *,
         character: str | None = None,
     ) -> AppSettings | None:
-        self.open_voice_previews(character=character)
+        self.open_voice_previews(character=character, for_preparation=True)
         return None
 
     def _load_voice_impact_context(self) -> None:
@@ -3479,13 +3545,26 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             finish()
 
     def _save_narrator_candidate(
-        self, dialog: GameNarratorDialog
+        self, dialog: GameNarratorDialog, *, offline: bool = False
     ) -> AppSettings | None:
         if dialog.result_settings is None:
             self.show_error("Voice selection finished without saved settings")
             return None
         candidate = dialog.result_settings.updated(
-            last_main_section=self.settings.last_main_section
+            speech_backend=self.settings.speech_backend,
+            tts_model=self.settings.tts_model,
+            tts_profile=self.settings.tts_profile,
+            tts_speaker_wav=(
+                self.settings.tts_speaker_wav
+                if offline
+                else dialog.result_settings.tts_speaker_wav
+            ),
+            pocket_gated_model_accepted=(
+                self.settings.pocket_gated_model_accepted
+                if offline and self.settings.offline_speech_backend != "pocket-tts"
+                else dialog.result_settings.pocket_gated_model_accepted
+            ),
+            last_main_section=self.settings.last_main_section,
         )
         try:
             self._save_settings_candidate(candidate)
@@ -3540,6 +3619,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.narrator_dialog = None
         preparation = self._narrator_preparation
         self._narrator_preparation = None
+        offline = self._narrator_offline
+        self._narrator_offline = False
         return_to_stories = self._narrator_return_to_stories
         self._narrator_return_to_stories = False
         resume_live = self._resume_live_after_narrator
@@ -3554,7 +3635,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return
         try:
             if result == QDialog.DialogCode.Accepted:
-                candidate = self._save_narrator_candidate(dialog)
+                candidate = self._save_narrator_candidate(dialog, offline=offline)
                 if candidate is None:
                     return
                 mapping_resolved = bool(

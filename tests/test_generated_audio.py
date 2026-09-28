@@ -17,6 +17,7 @@ from vntts_artifacts.generated_audio import (
 
 from tests.symlink_support import symlink_or_skip
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
+from vntts.document_identity import canonical_document_sha256
 from vntts.generated_audio import (
     GeneratedAudioFallbackBackend,
     GeneratedAudioLibrary,
@@ -866,7 +867,7 @@ class GeneratedAudioTest(unittest.TestCase):
         wait.assert_not_called()
         live.play_prepared.assert_called_once()
 
-    def test_explicit_live_fallback_uses_only_bound_pocket_backend(self):
+    def test_explicit_live_fallback_uses_bound_backend_or_selected_live_engine(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             library = self.create_live_fallback_library(root)
@@ -885,8 +886,9 @@ class GeneratedAudioTest(unittest.TestCase):
             route = backend.prepare_route("Ada", "Hello.")
             outcome = backend.play_route(route)
             live.model_name = "different-model"
-            with self.assertRaisesRegex(ValueError, "authorized fallback"):
-                backend.prepare_route("Ada", "Hello.")
+            other_model_route = backend.prepare_route("Ada", "Hello.")
+            live.name = "moss-tts"
+            other_engine_route = backend.prepare_route("Ada", "Hello.")
 
         self.assertIsInstance(route, LiveFallbackRoute)
         self.assertEqual(route.decision.reason, "generated_audio_rejected")
@@ -896,7 +898,83 @@ class GeneratedAudioTest(unittest.TestCase):
         )
         self.assertTrue(outcome.successful)
         self.assertEqual(outcome.audio_source, "live-fallback")
-        live.prepare_playback.assert_called_with("Narrator", "Hello.")
+        self.assertIsInstance(other_model_route, LiveTTSRoute)
+        self.assertIsInstance(other_engine_route, LiveTTSRoute)
+        self.assertIn(
+            "live-fallback-backend-mismatch", other_engine_route.trace.fallback_reason
+        )
+        live.prepare_playback.assert_called_with("Ada", "Hello.")
+
+    def test_audio_event_projection_fallback_keeps_spoken_text_on_moss(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            text = "No! *gasp*"
+            spoken_text = "No!"
+            base_result = {"status": "generated", "review_status": "rejected"}
+            base_result_sha256 = canonical_document_sha256(base_result)
+            evidence = {
+                "schema": "vntts.authoring-audio-event-projection-live-fallback-evidence",
+                "schema_version": 1,
+                "batch_id": "a" * 64,
+                "base_workspace_id": "workspace:1",
+                "base_workspace_sha256": "b" * 64,
+                "base_state_sha256": "c" * 64,
+                "queue_sha256": "d" * 64,
+                "queue_id": "queue:1",
+                "base_result_sha256": base_result_sha256,
+                "base_result": base_result,
+                "plan_sha256": "e" * 64,
+                "spoken_text": spoken_text,
+                "spoken_text_sha256": hashlib.sha256(
+                    spoken_text.encode("utf-8")
+                ).hexdigest(),
+                "source_character": "Ada",
+                "synthesis_character": "Narrator",
+            }
+            decision = {
+                "schema": "vntts.authoring-live-fallback-decision",
+                "schema_version": 6,
+                "reason": "generated_audio_rejected",
+                "provider": "pocket-tts",
+                "model": "pocket-tts",
+                "generation_profile": "default",
+                "queue_id": "queue:1",
+                "line_id": "game:1",
+                "text_sha256": text_sha256(text),
+                "speaker": "Ada",
+                "requested_voice_character": "Narrator",
+                "previous_result_sha256": base_result_sha256,
+                "decided_at": "2026-08-18T12:00:00+00:00",
+                "evidence": evidence,
+            }
+            decision["decision_sha256"] = canonical_document_sha256(decision)
+            manifest = root / "generated-audio.json"
+            write_generated_audio_manifest(
+                manifest,
+                {
+                    "vntts.authoring.live_fallback": {
+                        "schema_version": 1,
+                        "mode": "explicit",
+                        "entries": [decision],
+                    }
+                },
+                [],
+            )
+            live = self.create_live_backend()
+            live.name = "moss-tts"
+            library = GeneratedAudioLibrary.load_optional(manifest)
+            backend = GeneratedAudioFallbackBackend(
+                live,
+                library,
+                self.create_resolver(text=text),
+                audio_output=FakeAudioOutput(),
+            )
+
+            route = backend.prepare_route("Ada", text)
+
+        self.assertIsInstance(route, LiveFallbackRoute)
+        self.assertEqual(route.decision.requested_voice_character, "Narrator")
+        live.prepare_playback.assert_called_once_with("Narrator", spoken_text)
 
     def test_malformed_live_fallback_disables_optional_generated_library(self):
         with TemporaryDirectory() as directory:

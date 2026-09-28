@@ -93,7 +93,7 @@ class _BackendFactory(Protocol):
 
 
 NativePreviewContext: TypeAlias = dict[str, object]
-BackendConfig: TypeAlias = tuple[str, str | None, str, bool]
+BackendConfig: TypeAlias = tuple[str, str | None, str | None, str, bool, bool]
 ProgressReporter: TypeAlias = Callable[[str], object]
 
 
@@ -336,8 +336,10 @@ class VoiceAuditionPreviewService:
         config = (
             plan.synthesis_backend,
             plan.synthesis_model,
+            plan.synthesis_language,
             plan.synthesis_profile,
             plan.pocket_voice_cloning,
+            plan.xtts_terms_accepted,
         )
         if self._backend is not None and self._backend_config == config:
             self._backend.registry = registry
@@ -353,8 +355,10 @@ class VoiceAuditionPreviewService:
                     registry,
                     self.root / "synthesis-cache",
                     model_name=plan.synthesis_model,
+                    language=plan.synthesis_language,
                     startup_cancellation=cancellation,
                     allow_gated_model_access=plan.pocket_voice_cloning,
+                    terms_accepted=plan.xtts_terms_accepted,
                 )
             else:
                 self._backend = self.backend_factory(
@@ -362,9 +366,11 @@ class VoiceAuditionPreviewService:
                     registry,
                     self.root / "synthesis-cache",
                     model_name=plan.synthesis_model,
+                    language=plan.synthesis_language,
                     startup_cancellation=cancellation,
                     startup_progress=progress,
                     allow_gated_model_access=plan.pocket_voice_cloning,
+                    terms_accepted=plan.xtts_terms_accepted,
                 )
         except Exception as error:
             if cancellation.is_set():

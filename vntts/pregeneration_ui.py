@@ -178,6 +178,7 @@ class OfflineAudioPreparationDialog(QDialog):
     phaseChanged = Signal(str)
     activityChanged = Signal(bool)
     preparationRequested = Signal()
+    offlinePreferencesChanged = Signal(object)
     packReady = Signal()
     readingRequested = Signal()
     readingLineObserved = Signal(str, str)
@@ -368,36 +369,34 @@ class OfflineAudioPreparationDialog(QDialog):
         self.engine_choice = QComboBox()
         self.engine_choice.setAccessibleName("Offline generation engine")
         for label, backend, available in speech_backend_options(
-            self.settings.speech_backend
+            self.settings.offline_speech_backend
         ):
-            if backend == "coqui-xtts":
-                if self.settings.speech_backend != backend:
-                    continue
-                label += " (not supported for story preparation)"
-                available = False
             self.engine_choice.addItem(label, backend)
             model = self.engine_choice.model()
             if isinstance(model, QStandardItemModel):
                 model.item(self.engine_choice.count() - 1).setEnabled(available)
         self.engine_choice.setCurrentIndex(
-            max(0, self.engine_choice.findData(self.settings.speech_backend))
+            max(0, self.engine_choice.findData(self.settings.offline_speech_backend))
         )
-        self.model_choice = QLineEdit(self.settings.tts_model or "")
+        self.model_choice = QLineEdit(self.settings.offline_tts_model or "")
         self.model_choice.setPlaceholderText("Default model shown above")
         self.model_choice.setAccessibleName("Offline generation model")
         self.model_choice.setEnabled(
-            self.settings.speech_backend in {"coqui-xtts", "moss-tts"}
+            self.settings.offline_speech_backend in {"coqui-xtts", "moss-tts"}
         )
         self.model_choice.setVisible(self.model_choice.isEnabled())
         self.engine_choice.currentIndexChanged.connect(self._engine_changed)
         self.model_choice.textChanged.connect(self._model_changed)
+        self.model_choice.editingFinished.connect(
+            lambda: self.offlinePreferencesChanged.emit(self.settings)
+        )
         self.engine_controls = QWidget()
         engine_row = QHBoxLayout(self.engine_controls)
         engine_row.setContentsMargins(0, 0, 0, 0)
         engine_row.addWidget(QLabel("Generate with"))
         engine_row.addWidget(self.engine_choice, 1)
         engine_row.addWidget(self.model_choice, 1)
-        self.engine_controls.setVisible(game_narrator_chooser is None)
+        self.engine_controls.show()
 
         self.narrator_status = QLabel()
         self.narrator_status.setAccessibleName("Selected narrator voice")
@@ -413,7 +412,7 @@ class OfflineAudioPreparationDialog(QDialog):
         narrator_row.addWidget(self.copy_narrator_details)
         self.game_narrator_button = QPushButton("Edit in Voices...")
         self.game_narrator_button.setAccessibleDescription(
-            "Choose the narrator and speech engine in the shared Voices editor"
+            "Choose a narrator voice; the generation engine is selected above"
         )
         self.game_narrator_button.setVisible(game_narrator_chooser is not None)
         self.game_narrator_button.clicked.connect(self._choose_game_narrator)
@@ -1262,12 +1261,12 @@ class OfflineAudioPreparationDialog(QDialog):
             QSignalBlocker(self.pocket_voice_cloning),
         ):
             self.engine_choice.setCurrentIndex(
-                self.engine_choice.findData(settings.speech_backend)
+                self.engine_choice.findData(settings.offline_speech_backend)
             )
-            self.model_choice.setText(settings.tts_model or "")
+            self.model_choice.setText(settings.offline_tts_model or "")
             self.pocket_voice_cloning.setChecked(settings.pocket_gated_model_accepted)
         self.model_choice.setVisible(
-            settings.speech_backend in {"coqui-xtts", "moss-tts"}
+            settings.offline_speech_backend in {"coqui-xtts", "moss-tts"}
         )
         self._voice_plan = None
         self._prepared_voice_manifest = None
@@ -1296,9 +1295,9 @@ class OfflineAudioPreparationDialog(QDialog):
     def _engine_changed(self) -> None:
         backend = self.engine_choice.currentData()
         self.settings = self.settings.updated(
-            speech_backend=backend,
-            tts_model=None,
-            tts_profile="default" if backend == "pocket-tts" else "stable",
+            offline_speech_backend=backend,
+            offline_tts_model=None,
+            offline_tts_profile="default" if backend == "pocket-tts" else "stable",
         )
         self.model_choice.clear()
         self.model_choice.setEnabled(backend in {"coqui-xtts", "moss-tts"})
@@ -1308,17 +1307,21 @@ class OfflineAudioPreparationDialog(QDialog):
         self._voice_plan = None
         self._refresh_narrator_status()
         self._selection_changed()
+        self.offlinePreferencesChanged.emit(self.settings)
 
     def _model_changed(self, model: str) -> None:
-        self.settings = self.settings.updated(tts_model=model.strip() or None)
+        self.settings = self.settings.updated(offline_tts_model=model.strip() or None)
         self._voice_plan = None
         self._refresh_narrator_status()
 
     def _generation_engine_available(self) -> bool:
-        return self.settings.speech_backend != "coqui-xtts" and any(
-            backend == self.settings.speech_backend and available
+        return (
+            self.settings.offline_speech_backend != "coqui-xtts"
+            or self.settings.xtts_terms_accepted
+        ) and any(
+            backend == self.settings.offline_speech_backend and available
             for _label, backend, available in speech_backend_options(
-                self.settings.speech_backend
+                self.settings.offline_speech_backend
             )
         )
 
@@ -1377,10 +1380,7 @@ class OfflineAudioPreparationDialog(QDialog):
         return speech_configuration_label(settings, narrator=narrator, compact=compact)
 
     def _full_narrator_configuration(self) -> str:
-        return (
-            "Defaults for future preparation and live speech\n"
-            + self._narrator_configuration()
-        )
+        return "Settings for this audio preparation\n" + self._narrator_configuration()
 
     def _full_generation_details(self) -> str:
         content = self.current_content()
@@ -1418,7 +1418,8 @@ class OfflineAudioPreparationDialog(QDialog):
         self.step.setText("Step 2 of 4 - Choose and confirm voices")
         local_voice_controls = self.game_narrator_chooser is None
         show_terms = (
-            local_voice_controls and self.settings.speech_backend == "pocket-tts"
+            local_voice_controls
+            and self.settings.offline_speech_backend == "pocket-tts"
         )
         self.pocket_voice_cloning.setVisible(show_terms)
         self.pocket_terms.setVisible(show_terms)
@@ -3372,11 +3373,9 @@ class OfflineAudioPreparationDialog(QDialog):
                     (
                         "Preparation",
                         "Choose an available generation engine before preparing stories."
-                        + (
-                            " Open Voices to change the engine."
-                            if self.game_narrator_chooser is not None
-                            else ""
-                        ),
+                        if self.settings.offline_speech_backend != "coqui-xtts"
+                        or self.settings.xtts_terms_accepted
+                        else "Accept the XTTS model terms in Settings before preparing stories.",
                     ),
                 ),
             )
@@ -4270,13 +4269,14 @@ class OfflineAudioPreparationDialog(QDialog):
         if enabled and not self.selection_panel.isHidden():
             show_terms = (
                 self.game_narrator_chooser is None
-                and self.settings.speech_backend == "pocket-tts"
+                and self.settings.offline_speech_backend == "pocket-tts"
             )
             self.pocket_voice_cloning.setVisible(show_terms)
             self.pocket_terms.setVisible(show_terms)
         self.engine_choice.setEnabled(enabled)
         self.model_choice.setEnabled(
-            enabled and self.settings.speech_backend in {"coqui-xtts", "moss-tts"}
+            enabled
+            and self.settings.offline_speech_backend in {"coqui-xtts", "moss-tts"}
         )
         self.source.setEnabled(enabled)
         self.refresh_button.setEnabled(enabled)

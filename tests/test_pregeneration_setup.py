@@ -779,6 +779,18 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 game_narrator_chooser=chooser,
             )
             self.addCleanup(dialog.deleteLater)
+            self.assertEqual(
+                [
+                    dialog.engine_choice.itemData(i)
+                    for i in range(dialog.engine_choice.count())
+                ],
+                ["pocket-tts", "coqui-xtts", "chatterbox-nano", "moss-tts"],
+            )
+            dialog.engine_choice.setCurrentIndex(
+                dialog.engine_choice.findData("moss-tts")
+            )
+            self.assertEqual(dialog.settings.speech_backend, "pocket-tts")
+            self.assertEqual(dialog.settings.offline_speech_backend, "moss-tts")
             dialog.select_all_button.click()
             dialog.resize(620, 440)
             dialog.show()
@@ -794,7 +806,10 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 dialog._selection_changed()
                 self.application.processEvents()
                 self.assertTrue(dialog.summary.isVisibleTo(dialog))
-                self.assertIn("Open Voices", plain_label_text(dialog.summary))
+                self.assertIn(
+                    "Choose an available generation engine",
+                    plain_label_text(dialog.summary),
+                )
                 self.assertFalse(dialog.continue_button.isEnabled())
                 self.assertTrue(dialog.game_narrator_button.isVisibleTo(dialog))
                 dialog.game_narrator_button.click()

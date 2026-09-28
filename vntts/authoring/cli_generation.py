@@ -103,9 +103,11 @@ def _configure_generate_parser(
     generate.add_argument(
         "--backend",
         required=True,
-        choices=("pocket-tts", "chatterbox-nano", "moss-tts"),
+        choices=("pocket-tts", "chatterbox-nano", "moss-tts", "coqui-xtts"),
     )
     generate.add_argument("--model")
+    generate.add_argument("--language")
+    generate.add_argument("--accept-xtts-terms", action="store_true")
     generate.add_argument(
         "--cache-directory",
         type=Path,
@@ -619,8 +621,10 @@ def _run_bulk_generation(
             registry,
             cache_directory,
             model_name=arguments.model,
+            language=arguments.language,
             narrator_reference=narrator_reference,
             allow_gated_model_access=arguments.allow_gated_model_access,
+            terms_accepted=arguments.accept_xtts_terms,
             persistent_audio_cache_max_entries=max(512, len(policy_queue.items) * 2),
             startup_cancellation=cancellation,
             startup_progress=startup_progress,
