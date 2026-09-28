@@ -6,7 +6,6 @@ import hashlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
-from typing import cast
 
 from vntts_artifacts.file_integrity import sha256_file
 
@@ -193,6 +192,9 @@ def workspace_successor_config_fingerprint(
     unknown = set(overlays) - _SUCCESSOR_OVERLAY_FIELDS
     if unknown:
         raise ValueError(f"Unknown workspace successor overlays: {sorted(unknown)!r}")
+    narrator = workspace.get("narrator_character")
+    if not isinstance(narrator, str) or not narrator.strip():
+        raise ValueError("Workspace narrator character must be non-empty text")
     fields = {
         field: workspace.get(field)
         for field in _SUCCESSOR_OVERLAY_FIELDS
@@ -205,7 +207,7 @@ def workspace_successor_config_fingerprint(
         import_id,
         workspace.get("story_index"),
         workspace.get("voice_manifest"),
-        cast(str, workspace.get("narrator_character")),
+        narrator,
         overlays.get("run_config", workspace.get("run_config")),
         **fields,
     )

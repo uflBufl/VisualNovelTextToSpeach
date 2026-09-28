@@ -51,3 +51,11 @@ class WorkspaceSuccessorConfigTest(unittest.TestCase):
             workspace_successor_config_fingerprint(
                 {}, "legacy-0123456789abcdef01234567", overlays={"unknown": 1}
             )
+
+    def test_successor_rejects_non_text_narrator(self):
+        with self.assertRaisesRegex(ValueError, "Workspace narrator character"):
+            workspace_successor_config_fingerprint(
+                {"narrator_character": None},
+                "legacy-0123456789abcdef01234567",
+                overlays={},
+            )
