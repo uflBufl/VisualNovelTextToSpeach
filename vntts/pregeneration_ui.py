@@ -4202,6 +4202,8 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _start_prepared_sequence(self, generation_input: PregenerationInput) -> None:
         """Best-effort plan preparation never delays audio generation."""
+        if self._job is None or self._job.provider_id != self.importer.provider_id:
+            return
         self.sequence_runner.start(
             _prepare_runtime_sequence,
             generation_input,
@@ -4620,7 +4622,6 @@ class OfflineAudioPreparationDialog(QDialog):
                 self.generating,
                 self.recovering,
                 self.publishing_pack,
-                self.sequence_runner.active,
                 self.activating_saved,
             )
         )

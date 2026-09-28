@@ -262,6 +262,21 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             pool.tasks.pop(0).run()
             self.application.processEvents()
 
+    def test_optional_sequence_preparation_does_not_block_voice_controls(self):
+        with TemporaryDirectory() as directory:
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery(()),
+                job_store=PregenerationJobStore(Path(directory) / "jobs"),
+                thread_pool=pool,
+            )
+            dialog.sequence_runner.start(lambda: None)
+            self.assertTrue(dialog.sequence_runner.active)
+            self.assertFalse(dialog.has_pending_work())
+            dialog.sequence_runner.cancel()
+            dialog.reject()
+
     def test_generation_exception_keeps_exact_copyable_details(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

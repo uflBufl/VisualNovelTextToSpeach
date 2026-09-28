@@ -145,7 +145,9 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 content, ("chapter:314501",)
             )
             importer = Reverse1999GameImporter(output_root=root / "imports")
-            bank_index = importer.output_root / "reverse1999" / "english-bank-index.json"
+            bank_index = (
+                importer.output_root / "reverse1999" / "english-bank-index.json"
+            )
             bank_index.parent.mkdir(parents=True)
             bank_index.write_text("{}", encoding="utf-8")
             model = root / "model"
@@ -217,7 +219,9 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 }
                 evidence["evidence_id"] = canonical_document_sha256(evidence)
                 evidence["generated_at"] = "2026-09-29T00:00:00+00:00"
-                evidence_path = Path(arguments[arguments.index("--evidence-output") + 1])
+                evidence_path = Path(
+                    arguments[arguments.index("--evidence-output") + 1]
+                )
                 atomic_write_json(evidence_path, evidence, sort_keys=True)
                 record.update(
                     source_audio_completeness="full",

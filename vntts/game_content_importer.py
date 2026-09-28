@@ -503,7 +503,9 @@ class Reverse1999GameImporter:
         self._raise_if_cancelled(cancel_event)
         source = Path(job.story_index).expanduser().resolve()
         try:
-            document = load_verified_story_index_document(source, job.story_index_sha256)
+            document = load_verified_story_index_document(
+                source, job.story_index_sha256
+            )
         except (OSError, StoryIndexError, ValueError) as error:
             raise GameContentImportError(
                 f"Unable to inspect selected source audio: {error}"
@@ -656,7 +658,9 @@ class Reverse1999GameImporter:
     @staticmethod
     def _raise_if_cancelled(cancel_event: Cancellation | None) -> None:
         if cancel_event is not None and cancel_event.is_set():
-            raise GameContentImportCancelled("Source-audio semantic preparation cancelled")
+            raise GameContentImportCancelled(
+                "Source-audio semantic preparation cancelled"
+            )
 
     @staticmethod
     def _publisher_command(executable: str, module: str) -> tuple[str, ...] | None:
@@ -665,7 +669,7 @@ class Reverse1999GameImporter:
             return (command,)
         try:
             module_available = importlib.util.find_spec(module) is not None
-        except (ImportError, ModuleNotFoundError, ValueError):
+        except ImportError, ModuleNotFoundError, ValueError:
             module_available = False
         if module_available and not getattr(sys, "frozen", False):
             return (sys.executable, "-m", module)
@@ -679,12 +683,7 @@ class Reverse1999GameImporter:
         return None
 
     def _semantic_output_root(self, job: PregenerationJob) -> Path:
-        return (
-            self.output_root
-            / "reverse1999"
-            / "source-audio-semantics"
-            / job.job_id
-        )
+        return self.output_root / "reverse1999" / "source-audio-semantics" / job.job_id
 
     @staticmethod
     def _semantic_evidence_is_current(
@@ -693,7 +692,7 @@ class Reverse1999GameImporter:
         evidence = story.parent / "source-audio-semantic-evidence.json"
         try:
             load_source_audio_semantic_evidence(evidence, document)
-        except (OSError, SourceAudioSemanticEvidenceError, ValueError):
+        except OSError, SourceAudioSemanticEvidenceError, ValueError:
             return False
         selected_source_records = tuple(
             record
@@ -735,7 +734,7 @@ class Reverse1999GameImporter:
     ) -> bool:
         try:
             document = load_story_index_document(story)
-        except (OSError, StoryIndexError, ValueError):
+        except OSError, StoryIndexError, ValueError:
             return False
         if evidence != story.parent / "source-audio-semantic-evidence.json":
             return False
