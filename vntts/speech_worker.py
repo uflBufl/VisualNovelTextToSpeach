@@ -1805,17 +1805,17 @@ def create_qwen_worker_backend(
 ) -> IsolatedSpeechBackend:
     # The locked MOSS MLX environment already contains Qwen's MLX dependencies.
     options["model_name"] = QWEN_MODEL
+    cancellation = options.get("startup_cancellation")
+    if not _is_cancellation(cancellation):
+        raise TTSConfigurationError(
+            "Speech worker startup cancellation must be callable or Event-like"
+        )
+    progress = options.get("startup_progress")
+    if not _is_startup_progress(progress):
+        raise TTSConfigurationError("Speech worker startup progress is invalid")
     if "runtime_directory" not in options:
         from vntts.runtime_installation import ensure_speech_runtime
 
-        cancellation = options.get("startup_cancellation")
-        if not _is_cancellation(cancellation):
-            raise TTSConfigurationError(
-                "Speech worker startup cancellation must be callable or Event-like"
-            )
-        progress = options.get("startup_progress")
-        if not _is_startup_progress(progress):
-            raise TTSConfigurationError("Speech worker startup progress is invalid")
         options["runtime_directory"] = ensure_speech_runtime(
             "moss-tts", cancellation=cancellation, progress=progress
         )[0]
