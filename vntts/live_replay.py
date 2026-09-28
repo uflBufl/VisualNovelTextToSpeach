@@ -1092,12 +1092,6 @@ class LiveReplayRunner:
         controller.speech_executor = executors[2]
         controller.playback_executor = executors[3]
         live_configuration = controller._get_live_configuration()
-        configured_interval = live_configuration.get("interval_seconds")
-        configured_tracker_options = live_configuration.get("tracker_options")
-        if not isinstance(configured_interval, float):
-            raise RuntimeError("Replay live configuration has no interval")
-        if not isinstance(configured_tracker_options, dict):
-            raise RuntimeError("Replay live configuration has no tracker options")
 
         def play(chunk: SpeechChunk, prepared: object) -> bool:
             result = controller._play_live_chunk(chunk, prepared)
@@ -1209,8 +1203,8 @@ class LiveReplayRunner:
             pipeline_event_handler=record_pipeline_event,
             max_speech_jobs=1,
             first_pcm_on_prepare=False,
-            interval_seconds=configured_interval,
-            tracker_options=configured_tracker_options,
+            interval_seconds=live_configuration["interval_seconds"],
+            tracker_options=dict(live_configuration["tracker_options"]),
         )
         controller.live_reader = reader
         controller._set_backend_live_mode(True)

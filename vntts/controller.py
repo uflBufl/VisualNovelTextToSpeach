@@ -84,6 +84,8 @@ from vntts.ocr_corrections import OCRCorrectionDictionary, OCRCorrectionStore
 from vntts.playback import PreparedPlayback
 from vntts.profiles import GameProfileStore
 from vntts.runtime_config import (
+    LiveConfiguration,
+    LiveTrackerOptions,
     get_live_configuration,
     initialize_voice_registry,
     initialize_voice_router,
@@ -847,13 +849,15 @@ class AppController:
         self.live_speaker_corpus_error = None
         return True
 
-    def _get_live_configuration(self) -> dict[str, object]:
+    def _get_live_configuration(self) -> LiveConfiguration:
         configuration = get_live_configuration(self.settings)
-        tracker_options = dict(configuration["tracker_options"])
-        tracker_options["complete_dialogue_only"] = bool(
-            self.settings.audio_source_policy != "live-tts-only"
-            or self._live_sequence_audio_active()
-        )
+        tracker_options: LiveTrackerOptions = {
+            **configuration["tracker_options"],
+            "complete_dialogue_only": (
+                self.settings.audio_source_policy != "live-tts-only"
+                or self._live_sequence_audio_active()
+            ),
+        }
         if tracker_options["complete_dialogue_only"] and self.settings.story_index:
             tracker_options["incomplete_dialogue_probe"] = (
                 self.chapter_voice_preloader.is_unique_incomplete_prefix
@@ -865,7 +869,10 @@ class AppController:
             tracker_options["early_dialogue_resolver"] = (
                 self._resolve_early_indexed_dialogue
             )
-        return {**configuration, "tracker_options": tracker_options}
+        return {
+            "interval_seconds": configuration["interval_seconds"],
+            "tracker_options": tracker_options,
+        }
 
     def _resolve_early_indexed_dialogue(self, character: str, text: str) -> str | None:
         backend = self.speech_backend

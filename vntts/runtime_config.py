@@ -3,11 +3,12 @@
 import os
 import sys
 from collections.abc import Callable
-from typing import TypedDict, TypeVar, overload
+from typing import NotRequired, TypedDict, TypeVar, overload
 
 from pynput import keyboard
 
 from vntts.hotkeys import default_hotkey as default_hotkey_for_key
+from vntts.live_tracking import TrackerProbe, TrackerResolver
 from vntts.services.tts_engine import (
     TTSEngine,
     default_tts_profile,
@@ -31,6 +32,9 @@ class LiveTrackerOptions(TypedDict):
     stability_frames: int
     idle_flush_seconds: float
     min_chunk_characters: int
+    complete_dialogue_only: NotRequired[bool]
+    early_dialogue_resolver: NotRequired[TrackerResolver]
+    incomplete_dialogue_probe: NotRequired[TrackerProbe]
 
 
 class LiveConfiguration(TypedDict):
