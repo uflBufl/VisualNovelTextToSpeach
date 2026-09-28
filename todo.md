@@ -426,13 +426,3 @@ Planned implementation order after approval:
       desktop runtime; preserve the current 27 stories / 33 surfaces, screenshot
       IDs, rendering order and cleanup. Gate: catalog render and tests pass, and
       these four findings can be removed from the ratchet.
-
-## Active - Expand type and runtime coverage
-
-- [ ] After concurrent `vntts/app.py` edits settle, resolve its 184 whole-package
-      mypy errors against the existing 181-error inventory baseline. Type coherent
-      ownership slices without `Any`, casts or ignores; preserve Qt signal behavior
-      and persisted settings. Add the file to configured scope only at zero errors.
-- [ ] After concurrent UI edits settle, rerun full Ruff format/complexity and mypy
-      inventory ratchets, fix new findings in their owners, run broad CI tests and
-      push separately verified commits.
