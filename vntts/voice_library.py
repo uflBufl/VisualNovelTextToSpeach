@@ -169,7 +169,10 @@ class VoiceLibrary:
                 identity,
                 {"role": display_role, "variant_key": display_variant, "items": []},
             )
-            if not any(item["sha256"] == checksum for item in group["items"]):
+            alternative_added = not any(
+                item["sha256"] == checksum for item in group["items"]
+            )
+            if alternative_added:
                 group["items"].append(
                     {
                         "sha256": checksum,
@@ -188,7 +191,8 @@ class VoiceLibrary:
                     None,
                     _provenance(method, evidence, algorithm, timestamp),
                 )
-            self._write(document)
+            if alternative_added or binding_added:
+                self._write(document)
             if binding_added:
                 self._rollback_after(rollback, document, (identity,))
         return VoiceAlternative(

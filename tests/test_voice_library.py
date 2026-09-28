@@ -221,7 +221,9 @@ class VoiceLibraryTest(unittest.TestCase):
             write_wav(second, b"\x01\x00")
             library = VoiceLibrary(root / "fixed-library.json")
             selected = library.discover("Mrs. Owen", first, bind_if_missing=True)
-            duplicate = library.discover("Mrs. Owen", first)
+            with patch.object(library, "_write", wraps=library._write) as write:
+                duplicate = library.discover("Mrs. Owen", first)
+                write.assert_not_called()
             library.discover("Mrs. Owen", second, bind_if_missing=True)
 
             self.assertEqual(selected.sha256, duplicate.sha256)
@@ -229,6 +231,20 @@ class VoiceLibraryTest(unittest.TestCase):
             self.assertEqual(library.binding("Mrs Owen").source_sha256, selected.sha256)
             self.assertEqual(library.resolve_source_path("Mrs Owen"), selected.path)
             self.assertEqual(len(list(library.blobs_path.glob("*.wav"))), 2)
+
+    def test_existing_alternative_can_be_bound_without_rediscovery(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "voice.wav"
+            write_wav(reference, b"\x00\x00")
+            library = VoiceLibrary(root / "library")
+            alternative = library.discover("Role", reference)
+
+            with patch.object(library, "_write", wraps=library._write) as write:
+                library.discover("Role", reference, bind_if_missing=True)
+                write.assert_called_once()
+
+            self.assertEqual(library.binding("Role").source_sha256, alternative.sha256)
 
     def test_explicit_routes_replace_one_variant_binding_and_support_presets(
         self,
