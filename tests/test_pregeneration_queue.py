@@ -327,6 +327,17 @@ class PregenerationInputStoreTest(unittest.TestCase):
                     probe_pcm16_mono_wav(result.directory / relative)
             self.assertNotIn("not-selected", result.story_index.read_text())
 
+    def test_materialization_rejects_duplicate_selected_line_ids(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs, voice_plan, _manifest = self.fixture(root)
+            repeated = replace(job, selected_line_ids=(job.selected_line_ids[0],) * 2)
+
+            with self.assertRaisesRegex(
+                PregenerationQueueError, "duplicate identities"
+            ):
+                PregenerationInputStore(jobs).materialize(repeated, voice_plan)
+
     def test_materializes_narrator_by_source_id_not_friendly_label(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

@@ -353,7 +353,7 @@ def _selected_records(
         raise PregenerationQueueError(
             "Selected dialogue changed after preparation was planned"
         ) from error
-    if len(records) != len(selected_line_ids):
+    if len(set(selected_line_ids)) != len(selected_line_ids):
         raise PregenerationQueueError("Selected dialogue contains duplicate identities")
     return records
 
