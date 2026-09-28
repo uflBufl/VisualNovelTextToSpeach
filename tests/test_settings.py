@@ -170,7 +170,10 @@ class SettingsTest(unittest.TestCase):
             settings = AppSettings.from_mapping(
                 {"speech_backend": live, "offline_speech_backend": offline}
             )
-            self.assertEqual((settings.speech_backend, settings.offline_speech_backend), (live, offline))
+            self.assertEqual(
+                (settings.speech_backend, settings.offline_speech_backend),
+                (live, offline),
+            )
 
     def test_invalid_environment_overrides_preserve_saved_settings(self):
         saved = AppSettings(
