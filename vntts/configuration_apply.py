@@ -296,6 +296,36 @@ class ConfigurationApplyMixin:
         self.set_status(self._configuration_success_status)
         self._configuration_success_status = None
 
+    def _save_settings_with_login_rollback(
+        self, updated_settings: AppSettings, original_settings: AppSettings
+    ) -> Path | None:
+        launch_changed = (
+            updated_settings.launch_at_login != original_settings.launch_at_login
+        )
+        if launch_changed:
+            try:
+                self._configure_macos_launch_at_login(updated_settings.launch_at_login)
+            except OSError as error:
+                self.show_error(f"Unable to configure launch at login: {error}")
+                return None
+        try:
+            path = self._save_settings_candidate(updated_settings)
+        except OSError as error:
+            rollback_error = None
+            if launch_changed:
+                try:
+                    self._configure_macos_launch_at_login(
+                        original_settings.launch_at_login
+                    )
+                except OSError as caught_error:
+                    rollback_error = caught_error
+            message = f"Unable to save settings: {error}"
+            if rollback_error is not None:
+                message += f"; launch-at-login rollback also failed: {rollback_error}"
+            self.show_error(message)
+            return None
+        return path
+
     def open_settings(self) -> None:
         if self._controller_busy or self._shutting_down:
             self.set_status("Controller reconfiguration is already in progress")
@@ -313,30 +343,10 @@ class ConfigurationApplyMixin:
             return
         updated_settings = dialog.settings()
         original_settings = self.settings
-        launch_changed = (
-            updated_settings.launch_at_login != original_settings.launch_at_login
+        path = self._save_settings_with_login_rollback(
+            updated_settings, original_settings
         )
-        if launch_changed:
-            try:
-                self._configure_macos_launch_at_login(updated_settings.launch_at_login)
-            except OSError as error:
-                self.show_error(f"Unable to configure launch at login: {error}")
-                return
-        try:
-            path = self._save_settings_candidate(updated_settings)
-        except OSError as error:
-            rollback_error = None
-            if launch_changed:
-                try:
-                    self._configure_macos_launch_at_login(
-                        original_settings.launch_at_login
-                    )
-                except OSError as caught_error:
-                    rollback_error = caught_error
-            message = f"Unable to save settings: {error}"
-            if rollback_error is not None:
-                message += f"; launch-at-login rollback also failed: {rollback_error}"
-            self.show_error(message)
+        if path is None:
             return
         restart_changes = restart_required_setting_changes(
             original_settings, updated_settings

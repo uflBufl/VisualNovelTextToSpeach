@@ -279,12 +279,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/configuration_apply.py",
-      "scope": "ConfigurationApplyMixin.open_settings",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/controller.py",
       "scope": "AppController._dialog_observed",
       "count": 1
