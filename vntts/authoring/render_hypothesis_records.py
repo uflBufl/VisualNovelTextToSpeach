@@ -17,6 +17,11 @@ from vntts.authoring.authority import (
 from vntts.path_safety import contained_regular_file
 
 JsonObject: TypeAlias = dict[str, object]
+RENDER_HYPOTHESIS_REVIEW_SCHEMA = "vntts.authoring-render-hypothesis-review"
+RENDER_HYPOTHESIS_REVIEW_VERSION = 1
+RENDER_HYPOTHESIS_DECISION_SCHEMA = "vntts.authoring-render-hypothesis-decision"
+RENDER_HYPOTHESIS_DECISION_VERSION = 1
+RENDER_HYPOTHESIS_DECISIONS = frozenset({"accept_hypothesis", "need_different"})
 
 
 class RenderHypothesisRecordError(RuntimeError):
@@ -157,9 +162,9 @@ def _validate_review(
     if (
         not isinstance(review, dict)
         or set(review) != required
-        or review.get("schema") != "vntts.authoring-render-hypothesis-review"
+        or review.get("schema") != RENDER_HYPOTHESIS_REVIEW_SCHEMA
         or type(review.get("schema_version")) is not int
-        or review.get("schema_version") != 1
+        or review.get("schema_version") != RENDER_HYPOTHESIS_REVIEW_VERSION
     ):
         raise RenderHypothesisRecordError("Render hypothesis review is malformed")
     identity = {
@@ -262,14 +267,14 @@ def _validate_decision(
             "decision",
             "reviewed_at",
         }
-        or decision.get("schema") != "vntts.authoring-render-hypothesis-decision"
+        or decision.get("schema") != RENDER_HYPOTHESIS_DECISION_SCHEMA
         or type(decision.get("schema_version")) is not int
-        or decision.get("schema_version") != 1
+        or decision.get("schema_version") != RENDER_HYPOTHESIS_DECISION_VERSION
         or decision.get("review_id") != review["review_id"]
         or decision.get("review_sha256") != review_sha256
         or decision.get("reference_sha256") != review["reference_sha256"]
         or decision.get("result_sha256") != review["result_sha256"]
-        or decision.get("decision") not in {"accept_hypothesis", "need_different"}
+        or decision.get("decision") not in RENDER_HYPOTHESIS_DECISIONS
     ):
         raise RenderHypothesisRecordError(
             "Render hypothesis decision is malformed or stale"

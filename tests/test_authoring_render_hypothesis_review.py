@@ -344,6 +344,22 @@ class RenderHypothesisReviewTest(unittest.TestCase):
             symlink_or_skip(link, output, target_is_directory=True)
             with self.assertRaisesRegex(RenderHypothesisRecordError, "unavailable"):
                 load_render_hypothesis_record(link)
+            with self.assertRaisesRegex(RenderHypothesisReviewError, "unavailable"):
+                load_render_hypothesis_review(link)
+
+    def test_publication_rejects_dangling_symlink_output(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            comparison = root / "comparison"
+            queue_id = write_comparison(comparison)
+            target = root / "redirected"
+            link = root / "review-link"
+            symlink_or_skip(link, target, target_is_directory=True)
+            with self.assertRaisesRegex(RenderHypothesisReviewError, "output exists"):
+                publish_render_hypothesis_review(
+                    comparison, queue_id, "reference-02", link
+                )
+            self.assertFalse(target.exists())
 
     def test_public_record_rejects_noninteger_versions(self):
         with TemporaryDirectory() as directory:
@@ -356,17 +372,32 @@ class RenderHypothesisReviewTest(unittest.TestCase):
             )
 
             review_path = output / "review.json"
-            review = json.loads(review_path.read_text(encoding="utf-8"))
+            original_review = json.loads(review_path.read_text(encoding="utf-8"))
             for version in (True, 1.0):
-                review["schema_version"] = version
+                review = {**original_review, "schema_version": version}
+                identity = {
+                    key: value
+                    for key, value in review.items()
+                    if key
+                    not in {
+                        "review_id",
+                        "created_at",
+                        "comparison",
+                        "arm_report",
+                        "reference",
+                        "result",
+                    }
+                }
+                review["review_id"] = canonical_sha256(identity)
                 atomic_write_json(review_path, review)
                 with self.assertRaisesRegex(
                     RenderHypothesisRecordError, "review is malformed"
                 ):
                     load_render_hypothesis_record(output)
+                with self.assertRaises(RenderHypothesisReviewError):
+                    load_render_hypothesis_review(output)
 
-            review["schema_version"] = 1
-            atomic_write_json(review_path, review)
+            atomic_write_json(review_path, original_review)
             record_render_hypothesis_decision(output, "accept_hypothesis")
             decision_path = output / "decision.json"
             decision = json.loads(decision_path.read_text(encoding="utf-8"))
@@ -377,6 +408,8 @@ class RenderHypothesisReviewTest(unittest.TestCase):
                     RenderHypothesisRecordError, "decision is malformed"
                 ):
                     load_render_hypothesis_record(output)
+                with self.assertRaises(RenderHypothesisReviewError):
+                    load_render_hypothesis_review(output)
 
     def test_reference_keeps_its_original_reviewable_format(self):
         with TemporaryDirectory() as directory:

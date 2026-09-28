@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import TypeAlias
 
 from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.audio import Pcm16MonoWavError, probe_pcm16_mono_wav
 
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
@@ -27,6 +26,7 @@ from vntts.authoring.failure_reference_audit import (
 )
 from vntts.authoring.publication import (
     AtomicPublicationError,
+    no_replace_destination,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -34,15 +34,24 @@ from vntts.authoring.reference_render_comparison import (
     ReferenceRenderComparisonError,
     load_reference_render_comparison_document,
 )
+from vntts.authoring.render_hypothesis_records import (
+    RENDER_HYPOTHESIS_DECISION_SCHEMA,
+    RENDER_HYPOTHESIS_DECISION_VERSION,
+    RENDER_HYPOTHESIS_DECISIONS,
+    RENDER_HYPOTHESIS_REVIEW_SCHEMA,
+    RENDER_HYPOTHESIS_REVIEW_VERSION,
+    RenderHypothesisRecordError,
+    load_render_hypothesis_record,
+)
+from vntts.authoring.render_hypothesis_records import (
+    _validate_decision as _validate_record_decision,
+)
+from vntts.authoring.render_hypothesis_records import (
+    _validate_review as _validate_record_review,
+)
 from vntts.path_safety import contained_regular_file
 
 JsonObject: TypeAlias = dict[str, object]
-
-RENDER_HYPOTHESIS_REVIEW_SCHEMA = "vntts.authoring-render-hypothesis-review"
-RENDER_HYPOTHESIS_REVIEW_VERSION = 1
-RENDER_HYPOTHESIS_DECISION_SCHEMA = "vntts.authoring-render-hypothesis-decision"
-RENDER_HYPOTHESIS_DECISION_VERSION = 1
-RENDER_HYPOTHESIS_DECISIONS = frozenset({"accept_hypothesis", "need_different"})
 
 
 class RenderHypothesisReviewError(RuntimeError):
@@ -170,7 +179,7 @@ def publish_render_hypothesis_review(
     if supplied.is_symlink():
         raise RenderHypothesisReviewError("Reference render comparison is a symlink")
     comparison_root = supplied.resolve()
-    output = Path(output).expanduser().resolve()
+    output = no_replace_destination(output)
     if output.exists() or output.is_symlink():
         raise RenderHypothesisReviewError(
             f"Render hypothesis review output exists: {output}"
@@ -382,82 +391,38 @@ def _assert_publish_snapshots(
 
 def load_render_hypothesis_review(directory: str | Path) -> RenderHypothesisReview:
     """Load and verify one self-contained render hypothesis review."""
-    directory = Path(directory).expanduser().resolve()
-    if directory.is_symlink() or not directory.is_dir():
-        raise RenderHypothesisReviewError(
-            f"Render hypothesis review is unavailable: {directory}"
-        )
     try:
-        review_snapshot = capture_authority_file(
-            directory / "review.json", "render hypothesis review", root=directory
-        )
-        review = review_snapshot.json_document("render hypothesis review")
-        comparison_snapshot = capture_authority_file(
-            _contained_file(directory, review.get("comparison"), "copied comparison"),
-            "copied reference render comparison",
-            root=directory,
-        )
-        report_snapshot = capture_authority_file(
-            _contained_file(directory, review.get("arm_report"), "copied report"),
-            "copied reference render report",
-            root=directory,
-        )
-        reference_snapshot = capture_authority_file(
-            _contained_file(directory, review.get("reference"), "copied reference"),
-            "copied reference audio",
-            root=directory,
-        )
-        result_snapshot = capture_authority_file(
-            _contained_file(directory, review.get("result"), "copied result"),
-            "copied render result",
-            root=directory,
-        )
-    except AuthoringAuthorityError as error:
+        record = load_render_hypothesis_record(directory)
+    except RenderHypothesisRecordError as error:
         raise RenderHypothesisReviewError(str(error)) from error
-    _validate_review_document(
-        review,
-        comparison_snapshot,
-        report_snapshot,
-        reference_snapshot,
-        result_snapshot,
-    )
-    decision = None
-    decision_path = directory / "decision.json"
-    if decision_path.exists() or decision_path.is_symlink():
-        try:
-            decision_snapshot = capture_authority_file(
-                decision_path, "render hypothesis decision", root=directory
-            )
-            decision_document = decision_snapshot.json_document(
-                "render hypothesis decision"
-            )
-        except AuthoringAuthorityError as error:
-            raise RenderHypothesisReviewError(str(error)) from error
-        decision = _required_text(
-            _validate_decision_document(
-                decision_document, review, review_snapshot.sha256
-            )["decision"],
-            "render hypothesis decision",
+    if record.decision_snapshot is not None:
+        assert_authority_snapshot(
+            record.decision_snapshot, "render hypothesis decision"
         )
-        assert_authority_snapshot(decision_snapshot, "render hypothesis decision")
     for snapshot, label in (
-        (review_snapshot, "render hypothesis review"),
-        (comparison_snapshot, "copied reference render comparison"),
-        (report_snapshot, "copied reference render report"),
-        (reference_snapshot, "copied reference audio"),
-        (result_snapshot, "copied render result"),
+        (record.review_snapshot, "render hypothesis review"),
+        (record.comparison_snapshot, "copied reference render comparison"),
+        (record.report_snapshot, "copied reference render report"),
+        (record.reference_snapshot, "copied reference audio"),
+        (record.result_snapshot, "copied render result"),
     ):
         assert_authority_snapshot(snapshot, label)
     return RenderHypothesisReview(
-        directory=directory,
-        review_id=_required_text(review["review_id"], "review ID"),
-        queue_id=_required_text(review["queue_id"], "queue ID"),
-        arm_id=_required_text(review["arm_id"], "arm ID"),
-        reference=reference_snapshot.path,
-        reference_sha256=reference_snapshot.sha256,
-        result=result_snapshot.path,
-        result_sha256=result_snapshot.sha256,
-        decision=decision,
+        directory=record.directory,
+        review_id=_required_text(record.review["review_id"], "review ID"),
+        queue_id=_required_text(record.review["queue_id"], "queue ID"),
+        arm_id=_required_text(record.review["arm_id"], "arm ID"),
+        reference=record.reference_snapshot.path,
+        reference_sha256=record.reference_snapshot.sha256,
+        result=record.result_snapshot.path,
+        result_sha256=record.result_snapshot.sha256,
+        decision=(
+            None
+            if record.decision is None
+            else _required_text(
+                record.decision["decision"], "render hypothesis decision"
+            )
+        ),
     )
 
 
@@ -998,201 +963,25 @@ def _validate_review_document(
     reference_snapshot: AuthoritySnapshot,
     result_snapshot: AuthoritySnapshot,
 ) -> None:
-    _validate_review_shape(review)
-    _validate_review_identity(review)
-    _validate_review_hashes(
-        review,
-        comparison_snapshot,
-        report_snapshot,
-        reference_snapshot,
-        result_snapshot,
-    )
-    comparison, report, result_sample_count = _review_documents_and_audio(
-        comparison_snapshot, report_snapshot, result_snapshot
-    )
-    _validate_review_records(review, comparison, report)
-    _validate_review_audio(review, reference_snapshot, result_sample_count)
-
-
-def _validate_review_shape(review: JsonObject) -> None:
-    required = {
-        "schema",
-        "schema_version",
-        "review_id",
-        "created_at",
-        "comparison",
-        "comparison_id",
-        "comparison_sha256",
-        "arm_id",
-        "arm_report",
-        "arm_report_sha256",
-        "queue_id",
-        "line_id",
-        "text",
-        "text_sha256",
-        "candidate_group_id",
-        "candidate_id",
-        "reference",
-        "reference_sha256",
-        "reference_format",
-        "result",
-        "result_sha256",
-        "backend",
-        "model",
-        "generation_profile",
-        "seed",
-    }
-    if not isinstance(review, dict) or set(review) != required:
-        raise RenderHypothesisReviewError("Render hypothesis review is malformed")
-    if (
-        review["schema"] != RENDER_HYPOTHESIS_REVIEW_SCHEMA
-        or review["schema_version"] != RENDER_HYPOTHESIS_REVIEW_VERSION
-    ):
-        raise RenderHypothesisReviewError("Unsupported render hypothesis review")
-
-
-def _validate_review_identity(review: JsonObject) -> None:
-    identity = {
-        key: value
-        for key, value in review.items()
-        if key
-        not in {
-            "review_id",
-            "created_at",
-            "comparison",
-            "arm_report",
-            "reference",
-            "result",
-        }
-    }
-    identity["schema"] = review["schema"]
-    identity["schema_version"] = review["schema_version"]
-    if review["review_id"] != canonical_document_sha256(identity):
-        raise RenderHypothesisReviewError("Render hypothesis review ID changed")
-
-
-def _validate_review_hashes(
-    review: JsonObject,
-    comparison_snapshot: AuthoritySnapshot,
-    report_snapshot: AuthoritySnapshot,
-    reference_snapshot: AuthoritySnapshot,
-    result_snapshot: AuthoritySnapshot,
-) -> None:
-    if (
-        comparison_snapshot.sha256 != review["comparison_sha256"]
-        or report_snapshot.sha256 != review["arm_report_sha256"]
-        or reference_snapshot.sha256 != review["reference_sha256"]
-        or result_snapshot.sha256 != review["result_sha256"]
-    ):
-        raise RenderHypothesisReviewError("Render hypothesis artifact changed")
-
-
-def _review_documents_and_audio(
-    comparison_snapshot: AuthoritySnapshot,
-    report_snapshot: AuthoritySnapshot,
-    result_snapshot: AuthoritySnapshot,
-) -> tuple[JsonObject, JsonObject, int]:
     try:
-        comparison = comparison_snapshot.json_document(
-            "copied reference render comparison"
+        _validate_record_review(
+            review,
+            comparison_snapshot,
+            report_snapshot,
+            reference_snapshot,
+            result_snapshot,
         )
-        report = report_snapshot.json_document("copied reference render report")
-        result_info = probe_pcm16_mono_wav(result_snapshot.path)
-    except (AuthoringAuthorityError, OSError, Pcm16MonoWavError) as error:
+    except RenderHypothesisRecordError as error:
         raise RenderHypothesisReviewError(str(error)) from error
-    return comparison, report, result_info.sample_count
-
-
-def _validate_review_records(
-    review: JsonObject, comparison: JsonObject, report: JsonObject
-) -> None:
-    if comparison.get("comparison_id") != review["comparison_id"]:
-        raise RenderHypothesisReviewError("Render hypothesis comparison ID changed")
-    arm = next(
-        (
-            value
-            for value in _documents(comparison.get("arms"))
-            if value.get("arm_id") == review["arm_id"]
-        ),
-        None,
-    )
-    render = next(
-        (
-            value
-            for value in _documents((arm or {}).get("renders"))
-            if value.get("id") == review["queue_id"]
-            and value.get("outcome") == "complete"
-        ),
-        None,
-    )
-    report_sample = next(
-        (
-            value
-            for value in _documents(report.get("samples"))
-            if value.get("id") == review["queue_id"]
-        ),
-        None,
-    )
-    if render is None or report_sample != render:
-        raise RenderHypothesisReviewError("Render hypothesis record changed")
-    for field in (
-        "line_id",
-        "text",
-        "text_sha256",
-        "candidate_group_id",
-        "candidate_id",
-        "reference_sha256",
-        "audio_sha256",
-        "backend",
-        "model",
-        "generation_profile",
-        "seed",
-    ):
-        review_field = "result_sha256" if field == "audio_sha256" else field
-        if render.get(field) != review.get(review_field):
-            raise RenderHypothesisReviewError(f"Render hypothesis {field} changed")
-
-
-def _validate_review_audio(
-    review: JsonObject, reference_snapshot: AuthoritySnapshot, result_sample_count: int
-) -> None:
-    if not reference_snapshot.payload or result_sample_count <= 0:
-        raise RenderHypothesisReviewError("Render hypothesis audio is empty")
-    expected_reference_suffix = "." + _required_text(
-        review["reference_format"], "reference format"
-    )
-    if reference_snapshot.path.suffix.lower() != expected_reference_suffix:
-        raise RenderHypothesisReviewError("Render hypothesis reference format changed")
 
 
 def _validate_decision_document(
     decision: JsonObject, review: JsonObject, review_sha256: str
 ) -> JsonObject:
-    if (
-        not isinstance(decision, dict)
-        or set(decision)
-        != {
-            "schema",
-            "schema_version",
-            "review_id",
-            "review_sha256",
-            "reference_sha256",
-            "result_sha256",
-            "decision",
-            "reviewed_at",
-        }
-        or decision.get("schema") != RENDER_HYPOTHESIS_DECISION_SCHEMA
-        or type(decision.get("schema_version")) is not int
-        or decision.get("schema_version") != RENDER_HYPOTHESIS_DECISION_VERSION
-        or decision.get("review_id") != review["review_id"]
-        or decision.get("review_sha256") != review_sha256
-        or decision.get("reference_sha256") != review["reference_sha256"]
-        or decision.get("result_sha256") != review["result_sha256"]
-        or decision.get("decision") not in RENDER_HYPOTHESIS_DECISIONS
-    ):
-        raise RenderHypothesisReviewError(
-            "Render hypothesis decision is malformed or stale"
-        )
+    try:
+        _validate_record_decision(decision, review, review_sha256)
+    except RenderHypothesisRecordError as error:
+        raise RenderHypothesisReviewError(str(error)) from error
     return decision
 
 
