@@ -243,6 +243,7 @@ def _validated_plan_document(
         raise FailureRegenerationError("Failure regeneration plan fields are invalid")
     if (
         document.get("schema") != FAILURE_REGENERATION_PLAN_SCHEMA
+        or type(document.get("schema_version")) is not int
         or document.get("schema_version") != FAILURE_REGENERATION_PLAN_VERSION
     ):
         raise FailureRegenerationError(

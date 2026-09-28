@@ -15,6 +15,7 @@ from vntts.authoring.failure_regeneration import (
     load_failure_regeneration_plan,
     write_failure_regeneration_plan,
 )
+from vntts.document_identity import canonical_document_sha256
 
 
 class FailureRegenerationPlanTest(unittest.TestCase):
@@ -91,6 +92,21 @@ class FailureRegenerationPlanTest(unittest.TestCase):
                 FailureRegenerationError, "identity is invalid"
             ):
                 load_failure_regeneration_plan(path)
+
+    def test_plan_rejects_boolean_and_float_schema_versions(self):
+        expected = self.build()
+        with TemporaryDirectory() as directory:
+            for value in (True, 1.0):
+                with self.subTest(value=value):
+                    forged = {**expected.document, "schema_version": value}
+                    forged["plan_id"] = canonical_document_sha256(
+                        {key: item for key, item in forged.items() if key != "plan_id"}
+                    )
+                    with self.assertRaises(FailureRegenerationError):
+                        write_failure_regeneration_plan(
+                            forged,
+                            Path(directory) / f"plan-{type(value).__name__}.json",
+                        )
 
     def test_command_is_exact_single_attempt_and_rejects_stale_plan(self):
         expected = self.build()
