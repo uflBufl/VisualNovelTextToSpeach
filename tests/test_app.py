@@ -555,6 +555,35 @@ class TrayApplicationTest(unittest.TestCase):
         bootstrap.assert_called_once_with(["--data-directory", "/tmp/import-output"])
         qt_application.assert_not_called()
 
+    def test_packaged_source_audio_semantic_worker_runs_without_creating_qt(self):
+        package = ModuleType("r1999extractor")
+        package.__path__ = []
+        semantics_module = ModuleType("r1999extractor.source_audio_semantics")
+        semantics = Mock(return_value=0)
+        semantics_module.main = semantics
+        with (
+            patch.dict(
+                "sys.modules",
+                {
+                    "r1999extractor": package,
+                    "r1999extractor.source_audio_semantics": semantics_module,
+                },
+            ),
+            patch("vntts.app.QApplication") as qt_application,
+        ):
+            result = main(
+                [
+                    "--source-audio-publisher-worker",
+                    "semantics",
+                    "--story-index",
+                    "/tmp/timed-story.jsonl",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        semantics.assert_called_once_with(["--story-index", "/tmp/timed-story.jsonl"])
+        qt_application.assert_not_called()
+
     def test_packaged_generation_worker_runs_without_creating_qt(self):
         with (
             patch(

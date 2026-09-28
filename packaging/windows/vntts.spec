@@ -54,6 +54,7 @@ binaries.extend(
     (str(library), "tesseract") for library in tesseract_directory.glob("*.dll")
 )
 hidden_imports = collect_submodules("transformers.models.gpt2")
+hidden_imports += collect_submodules("transformers.models.whisper")
 
 collect_packaged_dependencies(datas, binaries, hidden_imports)
 

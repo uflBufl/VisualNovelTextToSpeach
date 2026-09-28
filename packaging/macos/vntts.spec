@@ -66,6 +66,7 @@ binaries = [
     (str(espeak_executable), "espeak-ng"),
 ]
 hidden_imports = collect_submodules("transformers.models.gpt2")
+hidden_imports += collect_submodules("transformers.models.whisper")
 hidden_imports.extend(["ApplicationServices", "Quartz"])
 
 collect_packaged_dependencies(datas, binaries, hidden_imports)

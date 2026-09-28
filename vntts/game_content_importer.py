@@ -28,6 +28,11 @@ from vntts_artifacts.story_index import (
 from vntts_artifacts.voice_manifest import normalize_character_name
 
 from vntts.application_directories import get_config_directory, get_local_data_directory
+from vntts.authoring.asr_model import (
+    ManagedAsrModelError,
+    install_managed_asr_model,
+    resolve_managed_asr_model,
+)
 from vntts.chapter_voice_preload import (
     _has_authoritative_source_audio,
     _validated_source_audio_line_ids,
@@ -40,6 +45,10 @@ from vntts.pregeneration_setup import (
     PregenerationSetupError,
     inspect_story_index,
     load_verified_story_index_document,
+)
+from vntts.source_audio_semantics import (
+    SourceAudioSemanticEvidenceError,
+    load_source_audio_semantic_evidence,
 )
 from vntts.subprocess_utils import last_output_line, terminate_process
 from vntts.voice_candidate_cache import voice_candidate_cache_guard
@@ -474,6 +483,263 @@ class Reverse1999GameImporter:
             progress=progress,
             target_story_index=job.story_index,
         )
+
+    def prepare_source_audio_semantics(
+        self,
+        job: PregenerationJob,
+        cancel_event: Cancellation | None = None,
+        *,
+        progress: ProgressCallback | None = None,
+        provision_model: bool = False,
+    ) -> GameContent | None:
+        """Publish an offline semantic successor for the selected story stages.
+
+        The caller must replace the old content/job with the returned successor
+        before preparing its queue.  This method never changes the job's source
+        index, so a cancelled or failed authoring run cannot affect playback.
+        """
+        if job.provider_id != self.provider_id or job.game != self.display_name:
+            return None
+        self._raise_if_cancelled(cancel_event)
+        source = Path(job.story_index).expanduser().resolve()
+        try:
+            document = load_verified_story_index_document(source, job.story_index_sha256)
+        except (OSError, StoryIndexError, ValueError) as error:
+            raise GameContentImportError(
+                f"Unable to inspect selected source audio: {error}"
+            ) from error
+        selected = set(job.selected_line_ids)
+        selected_records = tuple(
+            record for record in document.records if record.line_id in selected
+        )
+        if len(selected_records) != len(selected):
+            raise GameContentImportError("Selected story lines changed before ASR")
+        chapters = tuple(sorted({record.chapter for record in selected_records}))
+        if not chapters:
+            raise GameContentImportError("Choose at least one story stage first")
+        if not any(
+            record.source_audio_status == "available" for record in selected_records
+        ):
+            return None
+        if self._semantic_evidence_is_current(source, document, selected):
+            return inspect_story_index(source, provider_id=self.provider_id)
+
+        root = self._semantic_output_root(job)
+        timed_story = root / "timed-story-index.jsonl"
+        semantic_story = root / "story-index.jsonl"
+        evidence = root / "source-audio-semantic-evidence.json"
+        if self._semantic_success_is_current(semantic_story, evidence, selected):
+            timed_story.unlink(missing_ok=True)
+            return inspect_story_index(semantic_story, provider_id=self.provider_id)
+        # These are only private, derived outputs.  A semantic publisher can
+        # atomically leave either destination behind if its sibling fails;
+        # remove that incomplete pair and reuse the expensive timed successor.
+        semantic_story.unlink(missing_ok=True)
+        evidence.unlink(missing_ok=True)
+        root.mkdir(parents=True, exist_ok=True)
+        decoder = ensure_game_decoder(
+            cancellation=cancel_event,
+            progress=progress,
+            allow_homebrew=self.allow_decoder_homebrew,
+        )
+        self._raise_if_cancelled(cancel_event)
+        bank_index = self.output_root / "reverse1999" / "english-bank-index.json"
+        if not bank_index.is_file():
+            raise GameContentImportError(
+                "Installed game audio index is missing; import the game again."
+            )
+        duration_command = self._publisher_command(
+            "r1999-source-audio-duration", "r1999extractor.source_audio_duration"
+        )
+        if duration_command is None:
+            raise GameContentImportError(
+                "Reverse: 1999 source-audio duration publisher is not installed."
+            )
+        if not timed_story.exists():
+            if progress is not None:
+                progress("Measuring selected game speech before offline ASR...")
+            duration_arguments = [
+                *duration_command,
+                "--story-index",
+                str(source),
+                "--bank-index",
+                str(bank_index),
+                "--output",
+                str(timed_story),
+                "--decoder",
+                str(decoder),
+            ]
+            for chapter in chapters:
+                duration_arguments.extend(("--chapter", chapter))
+            self._run(duration_arguments, cancel_event)
+        self._raise_if_cancelled(cancel_event)
+
+        try:
+            timed_document = load_story_index_document(timed_story)
+        except (OSError, StoryIndexError, ValueError) as error:
+            raise GameContentImportError(
+                f"Source-audio timing publisher produced an invalid story index: {error}"
+            ) from error
+        requires_asr = any(
+            record.line_id in selected
+            and record.source_audio_status == "available"
+            and self._has_exact_source_audio_timing(record)
+            and record.document.get("source_audio_completeness") == "unknown"
+            for record in timed_document.records
+        )
+        if not requires_asr:
+            return inspect_story_index(timed_story, provider_id=self.provider_id)
+        model = self._resolve_asr_model(
+            cancel_event, progress=progress, provision_model=provision_model
+        )
+        semantic_command = self._publisher_command(
+            "r1999-source-audio-semantics", "r1999extractor.source_audio_semantics"
+        )
+        if semantic_command is None:
+            raise GameContentImportError(
+                "Reverse: 1999 source-audio semantic publisher is not installed."
+            )
+        if progress is not None:
+            progress("Classifying selected game speech with offline ASR...")
+        semantic_arguments = [
+            *semantic_command,
+            "--story-index",
+            str(timed_story),
+            "--bank-index",
+            str(bank_index),
+            "--model",
+            str(model),
+            "--evidence-output",
+            str(evidence),
+            "--story-output",
+            str(semantic_story),
+            "--decoder",
+            str(decoder),
+        ]
+        for chapter in chapters:
+            semantic_arguments.extend(("--chapter", chapter))
+        self._run(semantic_arguments, cancel_event)
+        self._raise_if_cancelled(cancel_event)
+        if not self._semantic_success_is_current(semantic_story, evidence, selected):
+            raise GameContentImportError(
+                "Source-audio semantic publisher produced unverifiable evidence."
+            )
+        timed_story.unlink(missing_ok=True)
+        return inspect_story_index(semantic_story, provider_id=self.provider_id)
+
+    def _resolve_asr_model(
+        self,
+        cancel_event: Cancellation | None,
+        *,
+        progress: ProgressCallback | None,
+        provision_model: bool,
+    ) -> Path:
+        self._raise_if_cancelled(cancel_event)
+        try:
+            return resolve_managed_asr_model()
+        except ManagedAsrModelError as error:
+            if not provision_model:
+                raise GameContentImportError(
+                    f"Offline source-audio ASR model is unavailable: {error}"
+                ) from error
+            if progress is not None:
+                progress("Installing the pinned offline ASR model...")
+            try:
+                result = install_managed_asr_model()
+            except ManagedAsrModelError as install_error:
+                raise GameContentImportError(
+                    f"Unable to install offline source-audio ASR model: {install_error}"
+                ) from install_error
+            self._raise_if_cancelled(cancel_event)
+            return Path(result["model_directory"])
+
+    @staticmethod
+    def _raise_if_cancelled(cancel_event: Cancellation | None) -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise GameContentImportCancelled("Source-audio semantic preparation cancelled")
+
+    @staticmethod
+    def _publisher_command(executable: str, module: str) -> tuple[str, ...] | None:
+        command = shutil.which(executable)
+        if command:
+            return (command,)
+        try:
+            module_available = importlib.util.find_spec(module) is not None
+        except (ImportError, ModuleNotFoundError, ValueError):
+            module_available = False
+        if module_available and not getattr(sys, "frozen", False):
+            return (sys.executable, "-m", module)
+        if getattr(sys, "frozen", False):
+            worker = {
+                "r1999-source-audio-duration": "duration",
+                "r1999-source-audio-semantics": "semantics",
+            }.get(executable)
+            if worker is not None:
+                return (sys.executable, "--source-audio-publisher-worker", worker)
+        return None
+
+    def _semantic_output_root(self, job: PregenerationJob) -> Path:
+        return (
+            self.output_root
+            / "reverse1999"
+            / "source-audio-semantics"
+            / job.job_id
+        )
+
+    @staticmethod
+    def _semantic_evidence_is_current(
+        story: Path, document: StoryIndexDocument, selected: set[str]
+    ) -> bool:
+        evidence = story.parent / "source-audio-semantic-evidence.json"
+        try:
+            load_source_audio_semantic_evidence(evidence, document)
+        except (OSError, SourceAudioSemanticEvidenceError, ValueError):
+            return False
+        selected_source_records = tuple(
+            record
+            for record in document.records
+            if record.line_id in selected
+            and record.source_audio_status == "available"
+            and Reverse1999GameImporter._has_exact_source_audio_timing(record)
+        )
+        return bool(selected_source_records) and all(
+            record.document.get("source_audio_completeness") != "unknown"
+            and (
+                record.document.get("source_audio_completeness") != "full"
+                or record.document.get("source_audio_semantic_evidence_entry_id")
+            )
+            and (
+                record.document.get("source_audio_completeness_reason")
+                != "asr-transcript-mismatch"
+                or record.document.get("source_audio_semantic_evidence_entry_id")
+            )
+            for record in selected_source_records
+        )
+
+    @staticmethod
+    def _has_exact_source_audio_timing(record: object) -> bool:
+        document = getattr(record, "document", {})
+        media_id = document.get("source_audio_duration_media_id")
+        media_sha256 = document.get("source_audio_duration_media_sha256")
+        return (
+            isinstance(media_id, int)
+            and not isinstance(media_id, bool)
+            and isinstance(media_sha256, str)
+            and len(media_sha256) == 64
+            and all(character in "0123456789abcdef" for character in media_sha256)
+        )
+
+    @classmethod
+    def _semantic_success_is_current(
+        cls, story: Path, evidence: Path, selected: set[str]
+    ) -> bool:
+        try:
+            document = load_story_index_document(story)
+        except (OSError, StoryIndexError, ValueError):
+            return False
+        if evidence != story.parent / "source-audio-semantic-evidence.json":
+            return False
+        return cls._semantic_evidence_is_current(story, document, selected)
 
     def narrator_characters(
         self,

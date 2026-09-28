@@ -1,6 +1,7 @@
 """Guided player UI for selecting content to prepare for offline speech."""
 
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
 from time import monotonic, process_time
@@ -140,6 +141,13 @@ StoryAudioCheck: TypeAlias = tuple[
     StoryAudioCoverage | None,
     Exception | str | None,
 ]
+
+
+@dataclass(frozen=True)
+class _SemanticVoicePlan:
+    plan: VoicePlan
+    job: PregenerationJob
+    content: GameContent
 
 
 class _StoryTree(QTreeWidget):
@@ -317,6 +325,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.inspecting_voice_plan = False
         self.replanning_voice_decisions = False
         self._fast_voice_choice_pending = False
+        self._semantic_preparation_enabled = False
         self._generate_after_input = False
         self.preparing_inputs = False
         self.generating = False
@@ -3694,6 +3703,10 @@ class OfflineAudioPreparationDialog(QDialog):
             self._story_audio_checks.pop(self._story_audio_key(selection_id), None)
         self.planning_voices = True
         self._pending_voice_rematch = self.change_voices.isChecked()
+        self._semantic_preparation_enabled = (
+            content.provider_id == self.importer.provider_id
+            and content.game == self.importer.display_name
+        )
         self.step.setText("Step 2 of 4 - Choose and confirm voices")
         self.replanning_voice_decisions = False
         self._close_after_voice_cancel = False
@@ -3703,8 +3716,13 @@ class OfflineAudioPreparationDialog(QDialog):
         self.cancel_button.setText("Cancel voice matching")
         self.cancel_button.setEnabled(True)
         self._show_waiting_phase(
-            "Matching character voices",
-            "Preparing and matching character voices...",
+            "Classifying selected game speech"
+            if self._semantic_preparation_enabled
+            else "Matching character voices",
+            "Measuring and classifying selected game speech before matching voices. "
+            "A pinned offline model may be installed once; this uses CPU."
+            if self._semantic_preparation_enabled
+            else "Preparing and matching character voices...",
             "Cancel stops voice matching and closes this window. Reopen it to "
             "reuse the saved story selection.",
         )
@@ -3712,13 +3730,34 @@ class OfflineAudioPreparationDialog(QDialog):
             self._create_voice_plan,
             self._job,
             self._pending_voice_rematch,
+            self._semantic_preparation_enabled,
         )
 
     def _create_voice_plan(
-        self, job: PregenerationJob, ignore_decisions: bool = False
-    ) -> VoicePlan:
+        self,
+        job: PregenerationJob,
+        ignore_decisions: bool = False,
+        semantic_enabled: bool = False,
+    ) -> VoicePlan | _SemanticVoicePlan:
         started, cpu_started = monotonic(), process_time()
         settings = resolve_pregeneration_settings(self.settings)
+        semantic_content = None
+        if semantic_enabled:
+            try:
+                semantic_content = self.importer.prepare_source_audio_semantics(
+                    job,
+                    self.voice_cancel_event,
+                    progress=self.decoderProgress.emit,
+                    provision_model=True,
+                )
+            except GameContentImportCancelled as error:
+                raise PregenerationVoiceCancelled(
+                    "Source-audio semantic preparation was cancelled"
+                ) from error
+            if semantic_content is not None:
+                job = self.job_store.create_or_resume(
+                    semantic_content, job.selected_story_ids
+                )
         self.voice_plan_store.validate_saved_voice_access(job, settings)
         if self._prepared_voice_job != job.job_id:
             self._prepared_voice_manifest = None
@@ -3764,6 +3803,8 @@ class OfflineAudioPreparationDialog(QDialog):
             "complete",
             cpu_ms=(process_time() - cpu_started) * 1000,
         )
+        if semantic_content is not None:
+            return _SemanticVoicePlan(plan, job, semantic_content)
         return plan
 
     def _decoder_progress(self, message: str) -> None:
@@ -3776,6 +3817,12 @@ class OfflineAudioPreparationDialog(QDialog):
         self._fast_voice_choice_pending = False
         if self._recover_stale_voice_job(error):
             return
+        if isinstance(plan, _SemanticVoicePlan):
+            self._job = plan.job
+            self._story_selection_drafts[plan.content.story_index_sha256] = set(
+                plan.job.selected_story_ids
+            )
+            plan = plan.plan
         error = self._voice_plan_completion_error(plan, error)
         if self._show_voice_plan_error(error):
             return

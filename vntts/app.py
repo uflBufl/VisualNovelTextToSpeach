@@ -4507,6 +4507,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
+        "--source-audio-publisher-worker",
+        choices=("duration", "semantics"),
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "--offline-generation-worker",
         action="store_true",
         help=argparse.SUPPRESS,
@@ -4519,6 +4524,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         from r1999extractor.bootstrap import main as reverse1999_bootstrap_main
 
         return reverse1999_bootstrap_main(qt_arguments)
+    if arguments.source_audio_publisher_worker == "duration":
+        from r1999extractor.source_audio_duration import main as duration_main
+
+        return duration_main(qt_arguments)
+    if arguments.source_audio_publisher_worker == "semantics":
+        from r1999extractor.source_audio_semantics import main as semantics_main
+
+        return semantics_main(qt_arguments)
     if arguments.offline_generation_worker:
         from vntts.authoring.cli_generation import main as generation_main
 

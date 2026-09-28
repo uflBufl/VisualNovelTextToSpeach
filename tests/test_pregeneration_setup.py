@@ -2709,6 +2709,75 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertIs(voice_plan_store.create.call_args.args[1], effective_settings)
             dialog.deleteLater()
 
+    def test_reverse1999_stage_asr_is_captured_before_voice_worker_starts(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(
+                write_story_index(root / "content"), provider_id="reverse1999"
+            )
+            importer = Mock(provider_id="reverse1999", display_name="Reverse: 1999")
+            importer.availability.return_value = ImporterAvailability(True, "Ready")
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                importer=importer,
+                job_store=PregenerationJobStore(root / "jobs"),
+                thread_pool=pool,
+            )
+            self.addCleanup(dialog.deleteLater)
+
+            dialog.stories.item(0).setCheckState(0, Qt.CheckState.Checked)
+            dialog._save_selection()
+
+        self.assertTrue(pool.tasks[-1].arguments[2])
+
+    def test_semantic_successor_replaces_job_only_after_voice_plan_succeeds(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = inspect_story_index(
+                write_story_index(root / "source", generated_text="Original."),
+                provider_id="reverse1999",
+            )
+            successor = inspect_story_index(
+                write_story_index(root / "successor", generated_text="Successor."),
+                provider_id="reverse1999",
+            )
+            jobs = PregenerationJobStore(root / "jobs")
+            job = jobs.create_or_resume(source, ("main-1",))
+            importer = Mock(provider_id="reverse1999", display_name="Reverse: 1999")
+            importer.availability.return_value = ImporterAvailability(True, "Ready")
+            importer.prepare_source_audio_semantics.return_value = successor
+            importer.prepare_voice_candidates.return_value = None
+            plans = Mock()
+            plans.create.return_value = empty_voice_plan()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((source,)),
+                importer=importer,
+                job_store=jobs,
+                voice_plan_store=plans,
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog._job = job
+
+            with patch(
+                "vntts.pregeneration_ui.find_default_voice_manifest",
+                return_value=None,
+            ):
+                result = dialog._create_voice_plan(job, semantic_enabled=True)
+
+            self.assertNotEqual(result.job.story_index_sha256, job.story_index_sha256)
+            self.assertEqual(
+                plans.create.call_args.args[0].story_index_sha256,
+                result.job.story_index_sha256,
+            )
+            with patch.object(dialog, "_start_generation_input") as start_input:
+                dialog._voice_plan_finished(result, None)
+
+        self.assertEqual(dialog.job(), result.job)
+        start_input.assert_called_once_with(result.plan)
+
     def test_generation_input_cancel_waits_for_its_worker(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
