@@ -1,4 +1,5 @@
 import json
+import math
 import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -102,10 +103,12 @@ class DialogRegion:
     def __post_init__(self) -> None:
         values = (self.left, self.top, self.width, self.height)
         if not all(
-            isinstance(value, (int, float)) and not isinstance(value, bool)
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and (not isinstance(value, float) or math.isfinite(value))
             for value in values
         ):
-            raise ValueError("Dialog region values must be numbers")
+            raise ValueError("Dialog region values must be finite numbers")
         if self.left < 0 or self.top < 0 or self.width <= 0 or self.height <= 0:
             raise ValueError("Dialog region values must be positive and normalized")
         if self.left + self.width > 1 or self.top + self.height > 1:

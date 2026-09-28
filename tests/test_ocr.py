@@ -31,6 +31,18 @@ from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 
 class DialogRegionTest(unittest.TestCase):
+    def test_non_finite_coordinates_are_rejected_before_cropping(self):
+        for values in (
+            (float("nan"), 0.1, 0.5, 0.5),
+            (0.0, float("inf"), 0.5, 0.5),
+            (0.0, 0.1, float("-inf"), 0.5),
+        ):
+            with (
+                self.subTest(values=values),
+                self.assertRaisesRegex(ValueError, "finite numbers"),
+            ):
+                DialogRegion(*values)
+
     def test_boolean_coordinates_are_rejected(self):
         for values in (
             (False, 0.1, 0.5, 0.5),
