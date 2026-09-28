@@ -81,6 +81,88 @@ class AuthoringCohortBundleTest(unittest.TestCase):
             with self.assertRaisesRegex(CohortReviewError, "inventory changed"):
                 load_cohort_review_bundle(path)
 
+    def test_bundle_rejects_checksum_valid_non_integer_headers_and_counts(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = self.create_sources(root)[0][0]
+            bundle = build_cohort_review_bundle([source])
+            path = root / "bundle.json"
+
+            for field, value, error in (
+                ("schema_version", True, "version"),
+                ("workspace_count", 1.0, "counts"),
+                ("cohort_count", 1.0, "counts"),
+                ("pending_item_count", 1.0, "counts"),
+                ("sample_item_count", 1.0, "counts"),
+                ("blocked_item_count", 0.0, "counts"),
+                ("blocked_source_occurrence_count", 0.0, "counts"),
+            ):
+                with self.subTest(field=field):
+                    document = json.loads(json.dumps(bundle.document))
+                    document[field] = value
+                    document["bundle_id"] = cohort_bundle_module._canonical_sha256(
+                        {
+                            key: value
+                            for key, value in document.items()
+                            if key != "bundle_id"
+                        }
+                    )
+                    path.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaisesRegex(CohortReviewError, error):
+                        load_cohort_review_bundle(path)
+
+    def test_bundle_rejects_checksum_valid_boolean_plan_number(self):
+        with TemporaryDirectory() as directory:
+            source = self.create_sources(Path(directory))[0][0]
+            bundle = build_cohort_review_bundle([source])
+            document = json.loads(json.dumps(bundle.document))
+            plan = document["sources"][0]["plan"]
+            plan["cohorts"][0]["items"][0]["words_per_minute"] = True
+            plan["plan_id"] = cohort_bundle_module._canonical_sha256(
+                {key: value for key, value in plan.items() if key != "plan_id"}
+            )
+            document["bundle_id"] = cohort_bundle_module._canonical_sha256(
+                {key: value for key, value in document.items() if key != "bundle_id"}
+            )
+
+            with self.assertRaisesRegex(CohortReviewError, "invalid typed fields"):
+                cohort_bundle_module._validated_bundle_document(document)
+
+    def test_checksum_valid_progress_and_observations_require_integer_versions(self):
+        with TemporaryDirectory() as directory:
+            source = self.create_sources(Path(directory))[0][0]
+            bundle = build_cohort_review_bundle([source])
+            progress_body = {
+                "schema": cohort_bundle_module.COHORT_REVIEW_PROGRESS_SCHEMA,
+                "schema_version": True,
+                "root_bundle_id": bundle.bundle_id,
+                "current_bundle": bundle.document,
+            }
+            progress = {
+                **progress_body,
+                "progress_id": cohort_bundle_module._canonical_sha256(progress_body),
+            }
+            observations_body = {
+                "schema": cohort_bundle_module.COHORT_REVIEW_OBSERVATIONS_SCHEMA,
+                "schema_version": True,
+                "root_bundle_id": bundle.bundle_id,
+                "current_bundle_id": bundle.bundle_id,
+                "observations": [],
+            }
+            observations = {
+                **observations_body,
+                "observations_id": cohort_bundle_module._canonical_sha256(
+                    observations_body
+                ),
+            }
+
+            with self.assertRaisesRegex(CohortReviewError, "progress is malformed"):
+                cohort_bundle_module._validated_progress_document(progress, bundle)
+            with self.assertRaisesRegex(CohortReviewError, "identity is invalid"):
+                cohort_bundle_module._validated_observations_document(
+                    observations, bundle.document, bundle.document
+                )
+
     def test_reconciliation_accepts_only_the_exact_mixed_item_projection(self):
         with TemporaryDirectory() as directory:
             output = Path(directory)

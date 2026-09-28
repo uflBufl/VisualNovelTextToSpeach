@@ -212,7 +212,7 @@ def _is_plan_item(value: object) -> TypeIs[_PlanItem]:
         and all(
             field not in value
             or value.get(field) is None
-            or isinstance(value.get(field), (int, float))
+            or type(value.get(field)) in (int, float)
             for field in optional_numbers
         )
         and (
@@ -244,8 +244,7 @@ def _is_plan_cohort(value: object) -> TypeIs[_PlanCohort]:
         and isinstance(value.get("cohort_id"), str)
         and isinstance(value.get("identity"), dict)
         and all(
-            isinstance(value.get(field), int)
-            for field in ("item_count", "attention_count")
+            type(value.get(field)) is int for field in ("item_count", "attention_count")
         )
         and _is_text_list(value.get("sample_queue_ids"))
         and isinstance(value.get("items"), list)
@@ -256,7 +255,7 @@ def _is_plan_cohort(value: object) -> TypeIs[_PlanCohort]:
 def _is_plan_policy(value: object) -> TypeIs[_PlanPolicy]:
     return (
         isinstance(value, dict)
-        and isinstance(value.get("clean_samples_per_bucket"), int)
+        and type(value.get("clean_samples_per_bucket")) is int
         and (
             "selected_queue_ids" not in value
             or _is_text_list(value.get("selected_queue_ids"))
@@ -284,7 +283,7 @@ def _is_plan_document(value: object) -> TypeIs[_PlanDocument]:
     )
     return (
         all(isinstance(value.get(field), str) for field in strings)
-        and all(isinstance(value.get(field), int) for field in counts)
+        and all(type(value.get(field)) is int for field in counts)
         and _is_plan_policy(value.get("policy"))
         and isinstance(value.get("blocked_items"), list)
         and all(_is_plan_item(item) for item in value["blocked_items"])
@@ -312,7 +311,7 @@ def _is_decision_document(value: object) -> TypeIs[_DecisionDocument]:
         and (
             "next_clean_samples_per_bucket" not in value
             or value.get("next_clean_samples_per_bucket") is None
-            or isinstance(value.get("next_clean_samples_per_bucket"), int)
+            or type(value.get("next_clean_samples_per_bucket")) is int
         )
         and (
             "target_items" not in value
@@ -804,6 +803,7 @@ def _validated_observations_document(
     body = {key: value for key, value in document.items() if key != "observations_id"}
     if (
         document.get("schema") != COHORT_REVIEW_OBSERVATIONS_SCHEMA
+        or type(document.get("schema_version")) is not int
         or document.get("schema_version")
         not in SUPPORTED_COHORT_REVIEW_OBSERVATIONS_VERSIONS
         or document.get("root_bundle_id") != root["bundle_id"]
@@ -1576,6 +1576,7 @@ def _validated_progress_document(
             "progress_id",
         }
         or document.get("schema") != COHORT_REVIEW_PROGRESS_SCHEMA
+        or type(document.get("schema_version")) is not int
         or document.get("schema_version") != COHORT_REVIEW_PROGRESS_VERSION
         or document.get("root_bundle_id") != original.bundle_id
     ):
@@ -1999,7 +2000,10 @@ def _validate_bundle_document_header(document: dict[str, object]) -> None:
         raise CohortReviewError("Cohort review bundle fields are invalid")
     if document.get("schema") != COHORT_REVIEW_BUNDLE_SCHEMA:
         raise CohortReviewError("Unsupported cohort review bundle schema")
-    if document.get("schema_version") != COHORT_REVIEW_BUNDLE_VERSION:
+    if (
+        type(document.get("schema_version")) is not int
+        or document.get("schema_version") != COHORT_REVIEW_BUNDLE_VERSION
+    ):
         raise CohortReviewError("Unsupported cohort review bundle version")
 
 
@@ -2070,6 +2074,18 @@ def _validate_bundle_counts(
     sources: Sequence[_SourceDocument],
     cohorts: Sequence[object],
 ) -> None:
+    if any(
+        type(document.get(field)) is not int
+        for field in (
+            "workspace_count",
+            "cohort_count",
+            "pending_item_count",
+            "sample_item_count",
+            "blocked_item_count",
+            "blocked_source_occurrence_count",
+        )
+    ):
+        raise CohortReviewError("Cohort review bundle counts are invalid")
     if document.get("workspace_count") != len(sources):
         raise CohortReviewError("Cohort review bundle workspace count is invalid")
     if document.get("cohort_count") != len(cohorts):
