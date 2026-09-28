@@ -1090,13 +1090,14 @@ class VoicePlanStoreTest(unittest.TestCase):
                 },
             )
 
-    def test_player_import_candidates_reach_the_same_bounded_audition(self):
+    def test_equally_ranked_story_voices_choose_one_without_narrator(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)
             manifest = write_player_candidate_manifest(
                 root / "player-voices",
                 job.story_index_sha256,
+                quality_scores=(100, 100),
             )
 
             plan = VoicePlanStore(jobs).create(
@@ -1108,7 +1109,9 @@ class VoicePlanStoreTest(unittest.TestCase):
             rhiannon = next(
                 group for group in plan.groups if group.character == "Rhiannon"
             )
-            self.assertEqual(rhiannon.route, "needs-audition")
+            self.assertEqual(rhiannon.route, "voice")
+            self.assertEqual(rhiannon.source_id, rhiannon.candidates[0].source_id)
+            self.assertEqual(plan.audition_count, 0)
             self.assertEqual(len(rhiannon.candidates), 2)
             self.assertEqual(rhiannon.candidates[0].source_bank, "rhiannon.bnk")
             self.assertEqual(
@@ -1328,7 +1331,8 @@ class VoicePlanStoreTest(unittest.TestCase):
                     "Player candidate Rhiannon 5",
                 ],
             )
-            self.assertEqual(group.route, "needs-audition")
+            self.assertEqual(group.route, "voice")
+            self.assertEqual(group.source_id, group.candidates[0].source_id)
 
             library = VoiceLibrary(root / "library")
             long_source = "character:playercandidaterhiannon6"

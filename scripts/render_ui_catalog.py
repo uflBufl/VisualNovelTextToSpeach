@@ -919,7 +919,7 @@ def _render_stories(
             StorySelection(
                 "side-story",
                 "A long side-story title that still has to remain readable",
-                "story",
+                "character_story",
                 2,
                 tuple(f"side-story:{index}" for index in range(12)),
                 12,
@@ -982,6 +982,9 @@ def _render_stories(
         dialog.select_all_button.click()
         dialog._unsaved_story_selections.clear()
         if state == "selection":
+            dialog._story_job_statuses["chapter-8"] = "ready"
+            dialog._refresh_story_statuses()
+            dialog.stories.setCurrentRow(1)
             dialog.continue_button.setFocus()
             return dialog
 

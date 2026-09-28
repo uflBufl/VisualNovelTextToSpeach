@@ -278,8 +278,8 @@ def _first_process(root):
         _run_next(pool, application)
         if dialog.stories.count() != 2:
             raise AssertionError("Imported catalog did not show both stories")
-        dialog.stories.item(0).setCheckState(Qt.CheckState.Checked)
-        dialog.stories.item(1).setCheckState(Qt.CheckState.Unchecked)
+        dialog.stories.item(0).setCheckState(0, Qt.CheckState.Checked)
+        dialog.stories.item(1).setCheckState(0, Qt.CheckState.Unchecked)
         application.processEvents()
         if dialog.selected_story_ids() != ("selected-story",):
             raise AssertionError("The unprepared story was not left unselected")

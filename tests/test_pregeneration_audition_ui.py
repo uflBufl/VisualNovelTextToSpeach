@@ -1161,7 +1161,7 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
                 job_store=PregenerationJobStore(root / "jobs"),
             )
             self.addCleanup(dialog.deleteLater)
-            dialog.stories.item(0).setCheckState(Qt.CheckState.Checked)
+            dialog.stories.item(0).setCheckState(0, Qt.CheckState.Checked)
             dialog._voice_plan = plan
             dialog._prepared_voice_manifest = root / "prepared-voices.json"
             dialog._prepared_voice_job = "prepared-job"
@@ -1178,7 +1178,9 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             self.assertTrue(dialog.content_scroll.isHidden())
             self.assertEqual(dialog.step.text(), "Step 1 of 4 - Choose stories")
             self.assertEqual(dialog.cancel_button.text(), "Cancel")
-            self.assertEqual(dialog.stories.item(0).checkState(), Qt.CheckState.Checked)
+            self.assertEqual(
+                dialog.stories.item(0).checkState(0), Qt.CheckState.Checked
+            )
             self.assertIsNone(dialog.voice_plan())
             self.assertIsNone(dialog._prepared_voice_manifest)
             self.assertIsNone(dialog._prepared_voice_job)
@@ -1305,6 +1307,10 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
                 character="Aderyn",
                 routing_role="Aderyn",
                 line_ids=("line:aderyn",),
+                route="voice",
+                source_id=rhiannon.candidates[0].source_id,
+                source_character=rhiannon.candidates[0].source_character,
+                resolution="known-character-voice",
             )
             suggestion = PersonLinkSuggestion(
                 left_role="Aderyn",
@@ -1326,9 +1332,27 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             dialog._show_voice_confirmation(plan)
             dialog.show_all_voice_routes.setChecked(True)
             self.assertEqual(dialog.voice_routes.count(), 2)
+            self.assertIn(
+                "1 voice uses Narrator until reviewed",
+                dialog.voice_route_summary.text(),
+            )
+            self.assertIn("font-weight: 600", dialog.voice_route_summary.styleSheet())
             for row in range(dialog.voice_routes.count()):
                 item = dialog.voice_routes.item(row)
+                if item.data(Qt.ItemDataRole.UserRole) == "Rhiannon":
+                    self.assertTrue(item.text().startswith("REVIEW VOICE: "))
+                    self.assertIn("Narrator fallback until reviewed", item.text())
+                    self.assertTrue(item.font().bold())
+                    self.assertIn(
+                        "Inspect selected voice",
+                        item.data(Qt.ItemDataRole.AccessibleDescriptionRole),
+                    )
                 if item.data(Qt.ItemDataRole.UserRole) == "Aderyn":
+                    self.assertTrue(item.text().startswith("POSSIBLE SAME PERSON: "))
+                    self.assertIn(
+                        "Link same person",
+                        item.data(Qt.ItemDataRole.AccessibleDescriptionRole),
+                    )
                     dialog.voice_routes.setCurrentRow(row)
                     break
 
@@ -1412,7 +1436,7 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
                 self._inspected_voice_dialog(root)
             )
 
-            dialog.stories.item(0).setCheckState(Qt.CheckState.Checked)
+            dialog.stories.item(0).setCheckState(0, Qt.CheckState.Checked)
             dialog.continue_button.click()
             pool.tasks.pop().run()
             self.application.processEvents()

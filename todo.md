@@ -1,9 +1,5 @@
 # TODO
 
-## Active - Resolve the archived typing branch
-
-- [ ] Confirm whether to publish the local `archive/refactor-debt-typing-20260923` tag before deleting the last remote feature branch, `origin/codex/refactor-debt-typing`. Its useful remaining change is in `main`; the tag preserves obsolete draft history. After the choice, verify local and remote branch inventories.
-
 ## Active - Review remaining source-extraction UI
 
 - [ ] In `reverse1999-extractor`, reduce empty Character Story table/portrait space so review and A/B actions are easier to reach, and scale table headers with enlarged text.
@@ -12,6 +8,7 @@
 
 ## Validate game voice provenance on Windows
 
+- [ ] Reopen A Fledgling's Brave Fall on Windows. Confirm Everecho receives a game voice automatically when equally ranked story recordings are available, and genuinely unresolved roles show the review action prominently before generation.
 - [ ] Validate the repaired mid-preparation game-index refresh on Windows without deleting the import or choosing Centurion again. After voice discovery updates `story-index.jsonl`, confirm Step 2 resumes with the same story selection and saved narrator. If a selected story disappears, confirm the saved voice remains and Stories asks for a new selection; Cancel during refresh must close the dialog.
 - [ ] Open Voice plan and Voices with a fresh installed-game import. Confirm known game dialogue displays its original text, unlinked bank clips are explicitly labelled and available only for manual choice, and the saved reviewed Mrs. Owen clip remains selected after reopening. Old candidate catalogs should refresh without deleting the game import.
 - [ ] On Windows, refresh an existing Centurion candidate catalog from the installed game. Confirm Voices and Story inspection show all usable character references (not just the three automatic recommendations), each original transcript contains spoken words once without labels such as `Greeting` or `Night`, and distinct in-game line IDs still resolve to the shared audio. No game-import deletion should be needed.
