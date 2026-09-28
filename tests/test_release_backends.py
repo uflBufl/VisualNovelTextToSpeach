@@ -19,14 +19,25 @@ class ReleaseBackendsTest(unittest.TestCase):
             ["pocket-tts", "coqui-xtts", "chatterbox-nano", "moss-tts", "qwen-tts"],
         )
 
-    def test_qwen_requires_source_apple_silicon(self):
+    def test_qwen_source_supports_apple_silicon_and_windows_x64(self):
         with (
             patch("vntts.release_backends.sys.platform", "darwin"),
             patch("vntts.release_backends.platform.machine", return_value="arm64"),
         ):
             self.assertTrue(packaged_speech_backend_available("qwen-tts"))
-        with patch("vntts.release_backends.sys.platform", "win32"):
-            self.assertFalse(packaged_speech_backend_available("qwen-tts"))
+        with (
+            patch("vntts.release_backends.sys.platform", "win32"),
+            patch("vntts.release_backends.platform.machine", return_value="AMD64"),
+        ):
+            self.assertTrue(packaged_speech_backend_available("qwen-tts"))
+
+    def test_frozen_windows_qwen_requires_its_bundled_runtime(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch("vntts.release_backends.sys.platform", "win32"):
+                self.assertFalse(packaged_speech_backend_available("qwen-tts", root))
+                (root / "speech-runtimes/qwen-tts").mkdir(parents=True)
+                self.assertTrue(packaged_speech_backend_available("qwen-tts", root))
 
     def test_frozen_options_only_advertise_supplied_backends(self):
         with TemporaryDirectory() as directory:

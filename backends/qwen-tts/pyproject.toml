@@ -1,0 +1,27 @@
+[project]
+name = "vntts-qwen-tts-runtime"
+version = "0.1.0"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "numpy>=1.24",
+    "platformdirs>=4.3,<5",
+    "qwen-tts==0.1.1",
+    "scipy>=1.11,<2",
+    "torch==2.11.0",
+    "torchaudio==2.11.0",
+    "vntts-artifacts[audio]",
+]
+
+[tool.uv]
+package = false
+environments = ["sys_platform == 'win32'"]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu126" }]
+torchaudio = [{ index = "pytorch-cu126" }]
+vntts-artifacts = { git = "https://github.com/AlexRedby/vntts-artifacts.git", rev = "dd0459df41d596d649a5a3e33fb03f93024d5af9" }
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true

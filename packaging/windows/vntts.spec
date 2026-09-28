@@ -29,6 +29,8 @@ if not espeak_data_directories:
 for required_path in (
     speech_runtimes_directory / "pocket-tts" / "python.exe",
     speech_runtimes_directory / "runtime-manifest.json",
+    speech_runtimes_directory / "qwen-tts" / "python.exe",
+    speech_runtimes_directory / "qwen-tts-runtime-manifest.json",
     decoder_directory / "vgmstream-cli.exe",
     decoder_directory / "licenses" / "COPYING",
 ):

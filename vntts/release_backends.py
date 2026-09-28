@@ -15,7 +15,7 @@ SPEECH_BACKEND_LABELS = {
     "coqui-xtts": "XTTS",
     "chatterbox-nano": "Chatterbox Nano",
     "moss-tts": "MOSS-TTS Local v1.5",
-    "qwen-tts": "Qwen3-TTS 1.7B (experimental, Mac)",
+    "qwen-tts": "Qwen3-TTS voice cloning (experimental)",
 }
 _SOURCE_BACKENDS = tuple(SPEECH_BACKEND_LABELS)
 
@@ -35,6 +35,8 @@ def packaged_speech_backend_available(
             backend != "qwen-tts"
             or sys.platform == "darwin"
             and platform.machine().casefold() == "arm64"
+            or sys.platform == "win32"
+            and platform.machine().casefold() in {"amd64", "x86_64"}
         )
     if backend == "coqui-xtts":
         return True
@@ -42,6 +44,11 @@ def packaged_speech_backend_available(
         return _frozen_moss_backend_available()
     if backend == "pocket-tts":
         return find_bundled_speech_runtime(backend, bundle_root) is not None
+    if backend == "qwen-tts":
+        return (
+            sys.platform == "win32"
+            and find_bundled_speech_runtime(backend, bundle_root) is not None
+        )
     return False
 
 

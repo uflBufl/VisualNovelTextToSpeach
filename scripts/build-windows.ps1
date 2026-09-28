@@ -96,6 +96,11 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "Pocket speech runtime staging failed."
     }
+    uv run --frozen python -m vntts.release_runtime $SpeechRuntimesPath `
+        --backend qwen-tts --python-version 3.13 --append
+    if ($LASTEXITCODE -ne 0) {
+        throw "Qwen speech runtime staging failed."
+    }
     $env:VNTTS_SPEECH_RUNTIMES_DIR = $SpeechRuntimesPath
     $env:VNTTS_VGMSTREAM_DIR = Join-Path $ProjectRoot "build\windows\vgmstream"
     if (Test-Path -LiteralPath $env:VNTTS_VGMSTREAM_DIR) {

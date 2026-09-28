@@ -51,6 +51,7 @@ $EnvironmentNames = @(
     "VNTTS_POCKET_TTS_RUNTIME"
     "VNTTS_CHATTERBOX_RUNTIME"
     "VNTTS_MOSS_RUNTIME"
+    "VNTTS_QWEN_RUNTIME"
     "VNTTS_MOSS_DELAY_RUNTIME"
     "HF_HOME"
     "HF_HUB_CACHE"
@@ -77,6 +78,7 @@ try {
     $env:VNTTS_POCKET_TTS_RUNTIME = $null
     $env:VNTTS_CHATTERBOX_RUNTIME = $null
     $env:VNTTS_MOSS_RUNTIME = $null
+    $env:VNTTS_QWEN_RUNTIME = $null
     $env:VNTTS_MOSS_DELAY_RUNTIME = $null
     $env:HF_HOME = $null
     $env:HF_HUB_CACHE = $null

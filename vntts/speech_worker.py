@@ -32,7 +32,7 @@ from vntts.playback import (
     PreparedPlayback,
     outcome_for_prepared,
 )
-from vntts.qwen_backend import QWEN_MODEL, QwenTTSVoiceRouterBackend
+from vntts.qwen_backend import QWEN_CUDA_MODEL, QWEN_MODEL, QwenTTSVoiceRouterBackend
 from vntts.runtime_paths import (
     RUNTIME_ENVIRONMENT_VARIABLES,
     default_source_speech_runtime,
@@ -113,7 +113,11 @@ _REQUIRED_MODULES = {
         "safetensors",
     ),
     "qwen-tts": _COMMON_REQUIRED_MODULES
-    + ("mlx.core", "mlx_audio", "transformers", "tokenizers", "safetensors"),
+    + (
+        ("qwen_tts", "torch", "torchaudio")
+        if sys.platform == "win32"
+        else ("mlx.core", "mlx_audio", "transformers", "tokenizers", "safetensors")
+    ),
     "moss-tts-delay": _COMMON_REQUIRED_MODULES
     + ("torch", "transformers", "tokenizers", "safetensors"),
 }
@@ -1803,8 +1807,7 @@ def create_moss_worker_backend(
 def create_qwen_worker_backend(
     registry: CharacterVoiceRegistry, **options: object
 ) -> IsolatedSpeechBackend:
-    # The locked MOSS MLX environment already contains Qwen's MLX dependencies.
-    options["model_name"] = QWEN_MODEL
+    options["model_name"] = QWEN_CUDA_MODEL if sys.platform == "win32" else QWEN_MODEL
     cancellation = options.get("startup_cancellation")
     if not _is_cancellation(cancellation):
         raise TTSConfigurationError(
@@ -1817,7 +1820,9 @@ def create_qwen_worker_backend(
         from vntts.runtime_installation import ensure_speech_runtime
 
         options["runtime_directory"] = ensure_speech_runtime(
-            "moss-tts", cancellation=cancellation, progress=progress
+            "qwen-tts" if sys.platform == "win32" else "moss-tts",
+            cancellation=cancellation,
+            progress=progress,
         )[0]
     return _isolated_backend_constructor("qwen-tts", registry, **options)
 

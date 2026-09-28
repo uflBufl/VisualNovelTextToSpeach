@@ -2,6 +2,7 @@
 
 import unittest
 import wave
+from contextlib import nullcontext
 from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -19,7 +20,7 @@ from vntts.speech_worker import (
     _serialize_registry,
     create_qwen_worker_backend,
 )
-from vntts.synthesis import SynthesisCompletion, SynthesisRequest
+from vntts.synthesis import SynthesisCachePolicy, SynthesisCompletion, SynthesisRequest
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 
@@ -28,6 +29,7 @@ class QwenBackendTest(unittest.TestCase):
         root = Path("/tmp/test-moss-mlx-runtime")
         registry = CharacterVoiceRegistry()
         with (
+            patch("vntts.speech_worker.sys.platform", "darwin"),
             patch(
                 "vntts.runtime_installation.ensure_speech_runtime",
                 return_value=(root, None, None),
@@ -65,7 +67,85 @@ class QwenBackendTest(unittest.TestCase):
                             )
                     prepare.assert_not_called()
                     construct.assert_not_called()
+    def test_windows_uses_its_own_cuda_runtime(self):
+        root = Path("C:/qwen-runtime")
+        registry = CharacterVoiceRegistry()
+        with (
+            patch("vntts.speech_worker.sys.platform", "win32"),
+            patch(
+                "vntts.runtime_installation.ensure_speech_runtime",
+                return_value=(root, None, None),
+            ) as prepare,
+            patch(
+                "vntts.speech_worker._isolated_backend_constructor",
+                return_value="worker",
+            ) as construct,
+        ):
+            self.assertEqual(create_qwen_worker_backend(registry), "worker")
+        self.assertEqual(prepare.call_args.args, ("qwen-tts",))
+        self.assertEqual(construct.call_args.kwargs["runtime_directory"], root)
 
+    def test_windows_cuda_uses_exact_prompt_and_bounded_pcm(self):
+        with TemporaryDirectory() as directory:
+            reference = Path(directory) / "reference.wav"
+            with wave.open(str(reference), "wb") as output:
+                output.setparams((1, 2, 24000, 0, "NONE", "not compressed"))
+                output.writeframes(b"\0\0" * 24000)
+            registry = CharacterVoiceRegistry(
+                [
+                    CharacterVoice(
+                        "Narrator",
+                        "Narrator",
+                        references=(reference,),
+                        reference_transcript="The original words.",
+                    )
+                ]
+            )
+            prompts = []
+            calls = []
+
+            class FakeCudaModel:
+                sample_rate = 24000
+
+                def create_voice_clone_prompt(self, **options):
+                    prompts.append(options)
+                    return "cached-prompt"
+
+                def generate_voice_clone(self, **options):
+                    calls.append(options)
+                    return [np.zeros(2400, dtype=np.float32)], 24000
+
+            fake_torch = SimpleNamespace(
+                inference_mode=nullcontext, manual_seed=lambda _: None
+            )
+            with (
+                patch("vntts.qwen_backend.sys.platform", "win32"),
+                patch.dict("sys.modules", {"torch": fake_torch}),
+            ):
+                backend = QwenTTSVoiceRouterBackend(
+                    registry,
+                    narrator_reference=reference,
+                    model_factory=lambda _name, lazy=False: FakeCudaModel(),
+                    persistent_audio_cache_directory=Path(directory) / "cache",
+                )
+                self.assertEqual(backend.device, "cuda")
+                self.assertIs(backend.torch, fake_torch)
+                for _ in range(2):
+                    result = backend.render(
+                        SynthesisRequest(
+                            voice="Narrator",
+                            text="A new line.",
+                            cache_policy=SynthesisCachePolicy.BYPASS,
+                        )
+                    ).collect()
+                    self.assertEqual(result.completion, SynthesisCompletion.COMPLETE)
+                    self.assertEqual(result.sample_rate, 24000)
+            self.assertEqual(len(prompts), 1)
+            self.assertEqual(prompts[0]["ref_text"], "The original words.")
+            self.assertFalse(prompts[0]["x_vector_only_mode"])
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[0]["voice_clone_prompt"], "cached-prompt")
+            self.assertGreater(calls[0]["max_new_tokens"], 0)
     def test_reference_text_reaches_model_and_is_required(self):
         with TemporaryDirectory() as directory:
             reference = Path(directory) / "reference.wav"

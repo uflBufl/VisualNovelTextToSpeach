@@ -200,6 +200,7 @@ class ReleasePackagingTest(unittest.TestCase):
                     "VNTTS_POCKET_TTS_RUNTIME",
                     "VNTTS_CHATTERBOX_RUNTIME",
                     "VNTTS_MOSS_RUNTIME",
+                    "VNTTS_QWEN_RUNTIME",
                     "VNTTS_MOSS_DELAY_RUNTIME",
                 ):
                     self.assertIn(name, script)
