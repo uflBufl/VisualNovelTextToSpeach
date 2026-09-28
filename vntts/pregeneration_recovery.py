@@ -19,6 +19,7 @@ from vntts_artifacts.voice_manifest import VoiceManifestError
 from vntts.authoring.bulk_generation import (
     AUTOMATIC_RECOVERY_LIVE_FALLBACK_ACTIONS,
     BulkGenerationError,
+    _state_items,
     authorize_live_fallback,
     generation_failure_repair_plan,
     is_spoken_queue_item,
@@ -356,6 +357,7 @@ class OfflineRecoveryWorker:
                 generation_input, voice_plan, cancel_event
             )
             return OfflineRecoveryResult(generation, 0, 0, generation.failed, ())
+        current: OfflineGenerationResult | None
         try:
             current = self.generator.inspect(generation_input)
         except OfflineGenerationError:
@@ -548,8 +550,13 @@ def _saved_generation_state(
         raise OfflineRecoveryError(
             f"Unable to resume offline generation: {error}"
         ) from error
-    items = state["items"]
-    statuses = {queue_id: item["status"] for queue_id, item in items.items()}
+    items = _state_items(state)
+    statuses: dict[str, str] = {}
+    for queue_id, item in items.items():
+        status = item.get("status")
+        if not isinstance(status, str):
+            raise OfflineRecoveryError("Saved offline generation status is invalid")
+        statuses[queue_id] = status
     generated = sum(status in {"generated", "approved"} for status in statuses.values())
     failed = sum(status == "failed" for status in statuses.values())
     result = OfflineGenerationResult(
