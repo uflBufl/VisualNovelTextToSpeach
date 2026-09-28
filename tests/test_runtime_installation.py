@@ -597,6 +597,8 @@ class RuntimeInstallationTest(unittest.TestCase):
             ("win32", "arm64", "pocket-tts", False),
             ("win32", "AMD64", "moss-tts-delay", False),
             ("win32", "AMD64", "moss-tts", False),
+            ("win32", "AMD64", "qwen-tts", True),
+            ("darwin", "arm64", "qwen-tts", False),
             ("darwin", "arm64", "moss-tts", True),
         ):
             with (

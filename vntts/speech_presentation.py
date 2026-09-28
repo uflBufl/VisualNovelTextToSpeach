@@ -1,6 +1,7 @@
 """User-facing speech identity, shared by setup, preparation and reading."""
 
 import re
+import sys
 from pathlib import Path
 
 from vntts.release_backends import SPEECH_BACKEND_LABELS
@@ -60,9 +61,9 @@ def _engine_model_identity(
 
             model = default_moss_tts_model
     elif backend == "qwen-tts":
-        from vntts.qwen_backend import QWEN_MODEL
+        from vntts.qwen_backend import QWEN_CUDA_MODEL, QWEN_MODEL
 
-        model = QWEN_MODEL
+        model = QWEN_CUDA_MODEL if sys.platform == "win32" else QWEN_MODEL
     elif not model:
         model = {
             "coqui-xtts": "tts_models/multilingual/multi-dataset/xtts_v2",

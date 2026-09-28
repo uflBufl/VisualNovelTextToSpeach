@@ -521,7 +521,7 @@ def _write_effective_voices(
                 _write_reference_wav(staging / relative, payload, character)
                 copied[expected] = relative
             relative_references.append(relative)
-        entry = {
+        entry: dict[str, object] = {
             "character": character,
             "speaker": speaker,
             "vntts.source_character": (

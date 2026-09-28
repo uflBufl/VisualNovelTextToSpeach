@@ -533,9 +533,7 @@ class OnboardingWizardTest(unittest.TestCase):
             reference = Path(directory) / "narrator.wav"
             reference.touch()
             wizard = OnboardingWizard(
-                AppSettings(
-                    speech_backend="qwen-tts", tts_speaker_wav=str(reference)
-                )
+                AppSettings(speech_backend="qwen-tts", tts_speaker_wav=str(reference))
             )
             page = wizard.configuration_page
             self.assertTrue(

@@ -106,7 +106,7 @@ class OnboardingDiagnostics:
         ):
             ensure_speech_runtime(
                 "moss-tts"
-                if settings.speech_backend == "qwen-tts"
+                if settings.speech_backend == "qwen-tts" and sys.platform == "darwin"
                 else settings.speech_backend,
                 cancellation=cancellation,
                 progress=progress,
@@ -230,6 +230,7 @@ class OnboardingDiagnostics:
                 runtime, _interpreter, _site = resolve_speech_runtime_paths(
                     "moss-tts"
                     if settings.speech_backend == "qwen-tts"
+                    and sys.platform == "darwin"
                     else settings.speech_backend
                 )
             except Exception as error:

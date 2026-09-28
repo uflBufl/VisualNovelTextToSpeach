@@ -20,6 +20,7 @@ BINARY_PACKAGES = (
 WHEEL_PLATFORMS = {
     "moss-soundeffect-v2": {"linux"},
     "moss-tts": {"darwin"},
+    "qwen-tts": {"win32"},
 }
 
 
@@ -45,6 +46,7 @@ def main() -> None:
 
     for project in projects():
         label = "." if project == ROOT else project.relative_to(ROOT).as_posix()
+        python_version = "3.13" if project.name == "qwen-tts" else "3.14"
         print(f"\n== {label} ==", flush=True)
         if outdated:
             run(
@@ -60,7 +62,17 @@ def main() -> None:
                 ]
             )
             continue
-        run(["uv", "lock", "--project", str(project), "--check", "--python", "3.14"])
+        run(
+            [
+                "uv",
+                "lock",
+                "--project",
+                str(project),
+                "--check",
+                "--python",
+                python_version,
+            ]
+        )
         if allowed := WHEEL_PLATFORMS.get(project.name):
             if sys.platform not in allowed:
                 print(f"wheel check skipped: unsupported on {sys.platform}", flush=True)
@@ -72,7 +84,7 @@ def main() -> None:
             str(project),
             "--dry-run",
             "--python",
-            "3.14",
+            python_version,
         ]
         for package in BINARY_PACKAGES:
             command.extend(("--no-build-package", package))

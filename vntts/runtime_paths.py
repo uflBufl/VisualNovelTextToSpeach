@@ -9,14 +9,14 @@ from typing import TypeAlias
 PathInput: TypeAlias = str | Path
 
 _BUNDLED_SPEECH_RUNTIMES = frozenset(
-    {"pocket-tts", "chatterbox-nano", "moss-tts", "moss-tts-delay"}
+    {"pocket-tts", "chatterbox-nano", "moss-tts", "moss-tts-delay", "qwen-tts"}
 )
 
 RUNTIME_ENVIRONMENT_VARIABLES = {
     "pocket-tts": "VNTTS_POCKET_TTS_RUNTIME",
     "chatterbox-nano": "VNTTS_CHATTERBOX_RUNTIME",
     "moss-tts": "VNTTS_MOSS_RUNTIME",
-    "qwen-tts": "VNTTS_MOSS_RUNTIME",
+    "qwen-tts": "VNTTS_QWEN_RUNTIME",
     "moss-tts-delay": "VNTTS_MOSS_DELAY_RUNTIME",
 }
 
@@ -45,7 +45,8 @@ def managed_runtime_location(backend: str) -> Path | None:
     for name in ("pyproject.toml", "uv.lock"):
         digest.update(name.encode() + b"\0")
         digest.update((project / name).read_bytes())
-    digest.update(f"3.14:{sys.platform}:{platform.machine()}".encode())
+    python_version = "3.13" if backend == "qwen-tts" else "3.14"
+    digest.update(f"{python_version}:{sys.platform}:{platform.machine()}".encode())
     return get_local_data_directory() / "speech-runtimes" / backend / digest.hexdigest()
 
 

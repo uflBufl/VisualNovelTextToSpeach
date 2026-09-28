@@ -1,4 +1,4 @@
-"""Build a self-contained, relocation-tested Pocket TTS release runtime."""
+"""Build self-contained, relocation-tested speech runtimes for release bundles."""
 
 from __future__ import annotations
 
@@ -24,6 +24,17 @@ PROBE_MODULES = (
     "safetensors",
     "scipy",
     "torch",
+    "vntts",
+    "vntts_artifacts",
+)
+QWEN_PROBE_MODULES = (
+    "durable_file",
+    "numpy",
+    "platformdirs",
+    "qwen_tts",
+    "scipy",
+    "torch",
+    "torchaudio",
     "vntts",
     "vntts_artifacts",
 )
@@ -166,11 +177,11 @@ def _run_checked(
     )
 
 
-def _probe_script() -> str:
-    modules = repr(PROBE_MODULES)
+def _probe_script(modules: tuple[str, ...] = PROBE_MODULES) -> str:
+    module_names = repr(modules)
     return (
         "import importlib,json,sys;"
-        f"names={modules};"
+        f"names={module_names};"
         "loaded={name:importlib.import_module(name) for name in names};"
         "print(json.dumps({'executable':sys.executable,'prefix':sys.prefix,"
         "'base_prefix':sys.base_prefix,'modules':{name:getattr(module,'__file__',"
@@ -188,15 +199,17 @@ def _probe_relocated_runtime(
     *,
     platform_name: str,
     run: Callable[..., object],
+    backend: str = BACKEND,
+    probe_modules: tuple[str, ...] = PROBE_MODULES,
 ) -> dict[str, object]:
     with TemporaryDirectory(prefix="vntts-runtime-relocation-") as directory:
         relocated = Path(directory) / "speech-runtimes"
         shutil.copytree(speech_runtimes, relocated, symlinks=True)
-        runtime_root = relocated / BACKEND
+        runtime_root = relocated / backend
         interpreter = _runtime_interpreter(runtime_root, platform_name)
         completed = _run_checked(
             run,
-            (interpreter, "-I", "-B", "-c", _probe_script()),
+            (interpreter, "-I", "-B", "-c", _probe_script(probe_modules)),
             capture_output=True,
         )
         stdout = getattr(completed, "stdout", None)
@@ -236,7 +249,7 @@ def _probe_relocated_runtime(
         }
         if escaped:
             raise RuntimeError(
-                "Relocated Pocket runtime escaped its staging root: "
+                f"Relocated {backend} runtime escaped its staging root: "
                 + json.dumps(escaped, sort_keys=True)
             )
         return report
@@ -250,13 +263,19 @@ def stage_pocket_runtime(
     python_version: str = PYTHON_VERSION,
     platform_name: str = sys.platform,
     run: Callable[..., object] = subprocess.run,
+    backend: str = BACKEND,
+    append: bool = False,
 ) -> Path:
+    if backend not in {BACKEND, "qwen-tts"}:
+        raise ValueError(f"Unsupported release runtime {backend}")
+    if backend == "qwen-tts" and platform_name != "win32":
+        raise ValueError("The Qwen release runtime currently supports Windows only")
     project_root = Path(project_root).resolve()
     destination = Path(destination)
     if destination.is_symlink() or destination.is_junction():
         raise RuntimeError("Pocket runtime staging destination must not be an alias")
     destination = destination.resolve()
-    backend_project = project_root / "backends" / BACKEND
+    backend_project = project_root / "backends" / backend
     lockfile = backend_project / "uv.lock"
     if not lockfile.is_file():
         raise FileNotFoundError(f"Pocket runtime lockfile is missing: {lockfile}")
@@ -264,12 +283,14 @@ def stage_pocket_runtime(
         raise RuntimeError(
             "Pocket runtime staging destination contains the source project"
         )
-    if destination.exists():
+    if destination.exists() and not append:
         shutil.rmtree(destination)
-    destination.mkdir(parents=True)
+    destination.mkdir(parents=True, exist_ok=True)
 
     managed_root = destination / "_python"
-    runtime_root = destination / BACKEND
+    runtime_root = destination / backend
+    if runtime_root.exists():
+        shutil.rmtree(runtime_root)
     _run_checked(
         run,
         (
@@ -294,7 +315,7 @@ def stage_pocket_runtime(
             managed_interpreter,
             runtime_root,
         )
-        with TemporaryDirectory(prefix="vntts-pocket-lock-") as directory:
+        with TemporaryDirectory(prefix=f"vntts-{backend}-lock-") as directory:
             requirements = Path(directory) / "requirements.txt"
             _run_checked(
                 run,
@@ -321,6 +342,11 @@ def stage_pocket_runtime(
                     runtime_interpreter,
                     "--break-system-packages",
                     "--compile-bytecode",
+                    *(
+                        ("--index", "https://download.pytorch.org/whl/cu126")
+                        if backend == "qwen-tts"
+                        else ()
+                    ),
                     requirements,
                 ),
             )
@@ -380,15 +406,21 @@ def stage_pocket_runtime(
         destination,
         platform_name=platform_name,
         run=run,
+        backend=backend,
+        probe_modules=(QWEN_PROBE_MODULES if backend == "qwen-tts" else PROBE_MODULES),
     )
     manifest = {
-        "backend": BACKEND,
+        "backend": backend,
         "python_request": python_version,
         "lock_sha256": sha256_file(lockfile),
         "project_pyproject_sha256": sha256_file(project_root / "pyproject.toml"),
         "probe": probe,
     }
-    manifest_path = destination / "runtime-manifest.json"
+    manifest_path = destination / (
+        "runtime-manifest.json"
+        if backend == BACKEND
+        else f"{backend}-runtime-manifest.json"
+    )
     manifest_path.write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -397,18 +429,22 @@ def stage_pocket_runtime(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Stage the locked Pocket TTS runtime for a release bundle."
+        description="Stage a locked speech runtime for a release bundle."
     )
     parser.add_argument("destination")
     parser.add_argument("--project-root", default=Path(__file__).resolve().parents[1])
     parser.add_argument("--uv", default="uv")
     parser.add_argument("--python-version", default=PYTHON_VERSION)
+    parser.add_argument("--backend", choices=(BACKEND, "qwen-tts"), default=BACKEND)
+    parser.add_argument("--append", action="store_true")
     arguments = parser.parse_args(argv)
     manifest = stage_pocket_runtime(
         arguments.project_root,
         arguments.destination,
         uv_executable=arguments.uv,
         python_version=arguments.python_version,
+        backend=arguments.backend,
+        append=arguments.append,
     )
     print(manifest)
     return 0

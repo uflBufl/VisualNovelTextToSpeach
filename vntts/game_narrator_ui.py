@@ -1561,11 +1561,13 @@ class GameNarratorDialog(QDialog):
                 dict.fromkeys(value for value in spoken_text if value)
             )
             voice = registry.resolve_source(source_id)
+            source_line_ids = variant.get("source_line_ids")
             if (
                 voice is not None
                 and len(voice.references) == 1
                 and len(spoken_text) == 1
-                and len(variant.get("source_line_ids") or ()) == 1
+                and isinstance(source_line_ids, list)
+                and len(source_line_ids) == 1
             ):
                 self._exact_transcripts[source_id] = spoken_text[0]
             bank_only = variant.get("candidate_origin") == UNLINKED_BANK_MEDIA

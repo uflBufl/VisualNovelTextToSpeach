@@ -81,6 +81,11 @@ def runtime_installation_available(backend: str) -> bool:
             and sys.platform == "darwin"
             and machine in {"arm64", "aarch64"}
         )
+        or (
+            backend == "qwen-tts"
+            and sys.platform == "win32"
+            and machine in {"amd64", "x86_64"}
+        )
     )
     project = source_runtime_project(backend)
     return bool(
@@ -232,8 +237,20 @@ def _ensure_speech_runtime(
                 "machine": platform.machine(),
                 "nvidia_driver": _nvidia_driver_status(cancellation),
             }
-            device = "CPU" if backend == "pocket-tts" else "Apple Silicon"
-            label = "Pocket TTS" if backend == "pocket-tts" else "MOSS-TTS"
+            device = {
+                "pocket-tts": "CPU",
+                "moss-tts": "Apple Silicon",
+                "qwen-tts": "NVIDIA CUDA",
+            }[backend]
+            label = {
+                "pocket-tts": "Pocket TTS",
+                "moss-tts": "MOSS-TTS",
+                "qwen-tts": "Qwen3-TTS",
+            }[backend]
+            if backend == "qwen-tts" and hardware["nvidia_driver"] == "not-detected":
+                raise TTSConfigurationError(
+                    "Qwen3-TTS requires a working NVIDIA driver on Windows"
+                )
             action = (
                 "Repairing" if (location / "verified.json").exists() else "Preparing"
             )
@@ -270,7 +287,7 @@ def _ensure_speech_runtime(
                         str(project),
                         "--locked",
                         "--python",
-                        "3.14",
+                        "3.13" if backend == "qwen-tts" else "3.14",
                         "--no-dev",
                         "--no-install-project",
                     ],

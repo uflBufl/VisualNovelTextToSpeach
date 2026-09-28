@@ -13,11 +13,24 @@ from types import SimpleNamespace
 from vntts.runtime_paths import RUNTIME_ENVIRONMENT_VARIABLES
 
 ROOT = Path(__file__).resolve().parents[1]
-CUDA_BACKENDS = {"moss-tts-delay", "moss-soundeffect-v2"}
+CUDA_BACKENDS = {"moss-tts-delay", "moss-soundeffect-v2", "qwen-tts"}
 
 
 def _forbid_model_loading(*_args, **_kwargs):
     raise RuntimeError("A dependency smoke test must never load model weights")
+
+
+def _qwen_without_cuda() -> str:
+    from vntts.qwen_backend import _require_cuda_device
+    from vntts.services.tts_engine import TTSConfigurationError
+
+    try:
+        _require_cuda_device()
+    except TTSConfigurationError as error:
+        if "requires an NVIDIA CUDA GPU" not in str(error):
+            raise
+        return str(error)
+    raise RuntimeError("CUDA backend failed to refuse model startup")
 
 
 def check_runtime(backend, *, allow_unavailable_metal=False):
@@ -78,6 +91,8 @@ def check_runtime(backend, *, allow_unavailable_metal=False):
                 ):
                     raise
                 report["no_cuda"] = str(error)
+        elif backend == "qwen-tts":
+            report["no_cuda"] = _qwen_without_cuda()
         else:
             from vntts.authoring.sound_effect_benchmark import benchmark_sound_effects
             from vntts.cuda_probe import CudaProbeError

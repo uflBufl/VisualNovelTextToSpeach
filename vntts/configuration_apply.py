@@ -129,6 +129,7 @@ class ConfigurationApplyMixin:
         sequence_resync_action: QAction
         sequence_expected_action: QAction
         _controller_busy: bool
+        _controller_ready: bool
         _shutting_down: bool
 
         def _begin_controller_lifecycle(

@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from tests.symlink_support import symlink_or_skip
 from vntts.release_runtime import (
@@ -220,6 +220,56 @@ class ReleaseRuntimeTest(unittest.TestCase):
                 )
             )
             self.assertFalse(any(command[1] == "venv" for command in commands))
+
+    def test_qwen_windows_stage_keeps_pocket_and_uses_cuda_index(self):
+        with TemporaryDirectory() as directory:
+            project = Path(directory) / "project"
+            backend = project / "backends/qwen-tts"
+            backend.mkdir(parents=True)
+            (backend / "uv.lock").write_text("locked", encoding="utf-8")
+            (project / "pyproject.toml").write_text("[project]", encoding="utf-8")
+            destination = Path(directory) / "speech-runtimes"
+            (destination / "pocket-tts").mkdir(parents=True)
+            pocket = destination / "pocket-tts/python.exe"
+            pocket.write_bytes(b"pocket")
+            calls = []
+
+            def runner(command, **_options):
+                calls.append(command)
+                if command[1:3] == ["python", "install"]:
+                    managed = Path(command[command.index("--install-dir") + 1])
+                    distribution = managed / "cpython-3.13-test"
+                    (distribution / "Lib/site-packages").mkdir(parents=True)
+                    (distribution / "python.exe").write_bytes(b"python")
+                elif command[1] == "export":
+                    Path(command[command.index("--output-file") + 1]).write_text(
+                        "torch==2.11.0+cu126", encoding="utf-8"
+                    )
+                return SimpleNamespace(stdout="")
+
+            with patch(
+                "vntts.release_runtime._probe_relocated_runtime", return_value={}
+            ):
+                manifest = stage_pocket_runtime(
+                    project,
+                    destination,
+                    backend="qwen-tts",
+                    python_version="3.13",
+                    platform_name="win32",
+                    append=True,
+                    run=runner,
+                )
+
+            self.assertEqual(pocket.read_bytes(), b"pocket")
+            self.assertTrue((destination / "qwen-tts/python.exe").is_file())
+            self.assertEqual(json.loads(manifest.read_text())["backend"], "qwen-tts")
+            self.assertTrue(
+                any(
+                    command[1:3] == ["pip", "sync"]
+                    and "https://download.pytorch.org/whl/cu126" in command
+                    for command in calls
+                )
+            )
 
     def test_runtime_paths_are_platform_specific(self):
         root = Path("runtime")
