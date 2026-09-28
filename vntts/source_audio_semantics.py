@@ -129,11 +129,11 @@ def validate_source_audio_semantic_evidence(
         source_line_ids = entry.get("source_line_ids")
         if (
             not isinstance(source_line_ids, list)
-            or source_line_ids != sorted(set(source_line_ids))
             or any(
                 not isinstance(line_id, str) or not line_id
                 for line_id in source_line_ids
             )
+            or source_line_ids != sorted(set(source_line_ids))
         ):
             raise SourceAudioSemanticEvidenceError(
                 "Semantic source line IDs are invalid"
