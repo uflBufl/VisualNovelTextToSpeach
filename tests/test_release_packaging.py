@@ -33,6 +33,13 @@ class ReleasePackagingTest(unittest.TestCase):
                 self.assertIn("vntts.release_runtime", script)
                 self.assertIn("VNTTS_SPEECH_RUNTIMES_DIR", script)
 
+        windows_script = (PROJECT_ROOT / "scripts/build-windows.ps1").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "--backend qwen-tts --python-version 3.14 --append", windows_script
+        )
+
     def test_platform_specs_require_staged_runtime(self):
         for relative_path in (
             "packaging/macos/vntts.spec",

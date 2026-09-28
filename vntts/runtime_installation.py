@@ -287,7 +287,7 @@ def _ensure_speech_runtime(
                         str(project),
                         "--locked",
                         "--python",
-                        "3.13" if backend == "qwen-tts" else "3.14",
+                        "3.14",
                         "--no-dev",
                         "--no-install-project",
                     ],

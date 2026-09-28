@@ -45,8 +45,7 @@ def managed_runtime_location(backend: str) -> Path | None:
     for name in ("pyproject.toml", "uv.lock"):
         digest.update(name.encode() + b"\0")
         digest.update((project / name).read_bytes())
-    python_version = "3.13" if backend == "qwen-tts" else "3.14"
-    digest.update(f"{python_version}:{sys.platform}:{platform.machine()}".encode())
+    digest.update(f"3.14:{sys.platform}:{platform.machine()}".encode())
     return get_local_data_directory() / "speech-runtimes" / backend / digest.hexdigest()
 
 

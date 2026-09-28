@@ -97,7 +97,7 @@ try {
         throw "Pocket speech runtime staging failed."
     }
     uv run --frozen python -m vntts.release_runtime $SpeechRuntimesPath `
-        --backend qwen-tts --python-version 3.13 --append
+        --backend qwen-tts --python-version 3.14 --append
     if ($LASTEXITCODE -ne 0) {
         throw "Qwen speech runtime staging failed."
     }
