@@ -37,7 +37,7 @@ def prune_obsolete_voice_candidate_caches(
     try:
         root = root.resolve(strict=True)
         candidates = _candidate_directories(root)
-        if candidates is None:
+        if not candidates:
             return ()
         if len(candidates) > _MAX_CANDIDATES or not all(
             _safe_candidate_tree(directory) for directory in candidates
