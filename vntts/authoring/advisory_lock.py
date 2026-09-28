@@ -56,7 +56,11 @@ def exclusive_advisory_lock(
     """Hold one persistent file guard without deleting its shared inode."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    if path.is_symlink() or path.is_junction():
+        raise OSError(errno.ELOOP, "Advisory lock must not be an alias", path)
+    descriptor = os.open(
+        path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600
+    )
     try:
         _acquire(descriptor, blocking, path)
         try:
