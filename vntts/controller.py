@@ -27,6 +27,7 @@ from vntts.controller_components import (
 )
 from vntts.controller_components import speak_live_chunk as speak_live_chunk
 from vntts.diagnostics import resolve_voice_label
+from vntts.dialog import speak_dialog
 from vntts.dialog_capture import (
     DiagnosticSnapshot,
     capture_live_frame,
@@ -122,6 +123,8 @@ from vntts.window_capture import WindowCaptureTarget, WindowGeometry
 
 class _DialogReadFuture(Protocol):
     def done(self) -> bool: ...
+
+    def cancel(self) -> bool: ...
 
 
 class _DialogReadExecutor(Protocol):
@@ -326,6 +329,57 @@ class LiveSequenceStatus:
     story_title: str | None = None
 
 
+class _ScheduledDialogRead:
+    def __init__(
+        self,
+        submit: Callable[[Callable[[str, str], object]], _DialogReadFuture],
+        deliver: Callable[[str, str], object],
+        live_reader: _LiveReaderState | None,
+    ) -> None:
+        self._submit = submit
+        self._deliver = deliver
+        self._live_reader = live_reader
+        self._active_read: _DialogReadFuture | None = None
+        self._generation = 0
+        self._lock = RLock()
+
+    @property
+    def is_running(self) -> bool:
+        with self._lock:
+            return self._active_read is not None and not self._active_read.done()
+
+    def cancel(self) -> bool:
+        with self._lock:
+            active = self.is_running
+            self._generation += 1
+            future = self._active_read
+            self._active_read = None
+        if future is not None:
+            future.cancel()
+        return active
+
+    def __call__(self) -> bool:
+        with self._lock:
+            if self._live_reader is not None and self._live_reader.is_running:
+                print("Stop live reading before requesting a one-time read")
+                return False
+            if self.is_running:
+                print("A dialog read is already in progress")
+                return False
+
+            self._generation += 1
+            generation = self._generation
+
+            def guarded_deliver(character: str, text: str) -> object:
+                with self._lock:
+                    if generation != self._generation:
+                        return False
+                    return self._deliver(character, text)
+
+            self._active_read = self._submit(guarded_deliver)
+            return True
+
+
 def create_dialog_read_scheduler(
     executor: _DialogReadExecutor,
     voice_router: object,
@@ -342,39 +396,32 @@ def create_dialog_read_scheduler(
     ocr_language: str = "eng",
     correction_dictionary: OCRCorrectionDictionary | None = None,
     region_provider: Callable[[], DialogRegion] | None = None,
-) -> Callable[[], bool]:
-    active_read: _DialogReadFuture | None = None
-    active_read_lock = Lock()
+) -> _ScheduledDialogRead:
+    def deliver(character: str, text: str) -> object:
+        if speech_handler is not None:
+            return speech_handler(character, text)
+        speak = getattr(voice_router, "speak")
+        speak_dialog(text, lambda value: speak(character, value))
+        return None
 
-    def schedule_dialog_read() -> bool:
-        nonlocal active_read
+    def submit(guarded_deliver: Callable[[str, str], object]) -> _DialogReadFuture:
+        return executor.submit(
+            read_dialog_safely,
+            voice_router,
+            screenshot_directory,
+            error_handler=error_handler,
+            capture_target=capture_target,
+            speech_handler=guarded_deliver,
+            minimum_confidence=minimum_confidence,
+            uncertain_frame_recorder=uncertain_frame_recorder,
+            diagnostic_handler=diagnostic_handler,
+            voice_resolver=voice_resolver,
+            ocr_language=ocr_language,
+            correction_dictionary=correction_dictionary,
+            region=region_provider() if region_provider is not None else None,
+        )
 
-        with active_read_lock:
-            if live_reader is not None and live_reader.is_running:
-                print("Stop live reading before requesting a one-time read")
-                return False
-            if active_read is not None and not active_read.done():
-                print("A dialog read is already in progress")
-                return False
-
-            active_read = executor.submit(
-                read_dialog_safely,
-                voice_router,
-                screenshot_directory,
-                error_handler=error_handler,
-                capture_target=capture_target,
-                speech_handler=speech_handler,
-                minimum_confidence=minimum_confidence,
-                uncertain_frame_recorder=uncertain_frame_recorder,
-                diagnostic_handler=diagnostic_handler,
-                voice_resolver=voice_resolver,
-                ocr_language=ocr_language,
-                correction_dictionary=correction_dictionary,
-                region=region_provider() if region_provider is not None else None,
-            )
-            return True
-
-    return schedule_dialog_read
+    return _ScheduledDialogRead(submit, deliver, live_reader)
 
 
 @dataclass(frozen=True)
@@ -404,7 +451,7 @@ class AppController:
     speech_backend: SpeechBackend | GeneratedAudioFallbackBackend | None
     tts: VoiceEngine | _VoiceRouter | None
     voice_router: _VoiceRouter | None
-    schedule_dialog_read: Callable[[], bool] | None
+    schedule_dialog_read: _ScheduledDialogRead | None
     live_speaker_corpus: LiveSpeakerCorpus | None
     live_speaker_corpus_error: str | None
     last_diagnostic: DiagnosticSnapshot | None
@@ -582,6 +629,11 @@ class AppController:
     @property
     def is_live_running(self) -> bool:
         return self.live_reader is not None and self.live_reader.is_running
+
+    @property
+    def is_one_shot_read_running(self) -> bool:
+        schedule = self.schedule_dialog_read
+        return schedule is not None and schedule.is_running is True
 
     def start(self) -> bool:
         return self.runtime_lifecycle.start()

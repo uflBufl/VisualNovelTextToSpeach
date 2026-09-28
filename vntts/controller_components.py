@@ -571,6 +571,9 @@ class RuntimeLifecycleComponent:
 
     def _stop_live_for_settings(self) -> bool | None:
         controller = self.controller
+        schedule = controller.schedule_dialog_read
+        if schedule is not None:
+            schedule.cancel()
         if not controller.is_live_running:
             return False
         reader = controller.live_reader
@@ -680,6 +683,9 @@ class RuntimeLifecycleComponent:
             voice_prime_futures = tuple(controller.voice_prime_futures)
         for future in voice_prime_futures:
             future.cancel()
+        schedule = controller.schedule_dialog_read
+        if schedule is not None:
+            schedule.cancel()
         controller._interrupt_speech()
         controller._set_backend_live_mode(False)
         if controller.live_reader is not None:
@@ -741,7 +747,7 @@ class LiveSessionComponent:
         controller = self.controller
         reader = controller.live_reader
         schedule = controller.schedule_dialog_read
-        if reader is None or schedule is None:
+        if reader is None or schedule is None or reader.is_running:
             return False
         reader.resume_after_emergency()
         accepted = schedule()
@@ -924,14 +930,17 @@ class LiveSessionComponent:
 
     def emergency_stop(self) -> bool:
         controller = self.controller
+        schedule = controller.schedule_dialog_read
+        cancel_read = getattr(schedule, "cancel", None)
+        cancelled_read = cancel_read() is True if callable(cancel_read) else False
         reader = controller.live_reader
         if reader is None:
-            return False
+            return cancelled_read
         stopped = reader.emergency_stop()
         controller.allow_unscoped_live_reading = False
         controller._set_backend_live_mode(False)
-        controller.status_handler("Emergency stop: live reading and speech stopped")
-        return bool(stopped)
+        controller.status_handler("Reading and speech stopped")
+        return bool(stopped or cancelled_read)
 
     def set_auto_advance_enabled(self, enabled: bool) -> bool:
         controller = self.controller

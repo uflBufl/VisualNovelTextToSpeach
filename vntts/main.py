@@ -40,14 +40,9 @@ from vntts.dialog_capture import (
 )
 from vntts.hotkeys import HotkeyValidationError, validate_hotkey_assignments
 from vntts.runtime_config import (
-    get_clear_queue_hotkey,
-    get_emergency_stop_hotkey,
     get_hotkey,
     get_live_configuration,
     get_live_hotkey,
-    get_pause_hotkey,
-    get_repeat_hotkey,
-    get_skip_hotkey,
     get_tts_configuration,
     initialize_tts,
     initialize_voice_registry,
@@ -61,35 +56,17 @@ from vntts.window_capture import enable_windows_dpi_awareness
 def listen_for_hotkeys(
     hotkey: str,
     live_hotkey: str,
-    pause_hotkey: str,
-    skip_hotkey: str,
-    repeat_hotkey: str,
-    clear_queue_hotkey: str,
-    emergency_stop_hotkey: str,
     on_activate: Callable[[], object],
     on_live_toggle: Callable[[], object],
-    on_pause_toggle: Callable[[], object],
-    on_skip: Callable[[], object],
-    on_repeat: Callable[[], object],
-    on_clear_queue: Callable[[], object],
-    on_emergency_stop: Callable[[], object],
 ) -> None:
     print(f"Press {hotkey} to read from screen once")
-    print(f"Press {live_hotkey} to start or stop live reading")
-    print(f"Press {pause_hotkey} to pause or resume speech")
-    print(f"Press {skip_hotkey} to skip current speech")
-    print(f"Press {repeat_hotkey} to repeat the last speech")
-    print(f"Press {clear_queue_hotkey} to clear the speech queue")
-    print(f"Press {emergency_stop_hotkey} for an emergency stop")
+    print(
+        f"Press {live_hotkey} to start reading or immediately stop reading and speech"
+    )
     with keyboard.GlobalHotKeys(
         {
             hotkey: on_activate,
             live_hotkey: on_live_toggle,
-            pause_hotkey: on_pause_toggle,
-            skip_hotkey: on_skip,
-            repeat_hotkey: on_repeat,
-            clear_queue_hotkey: on_clear_queue,
-            emergency_stop_hotkey: on_emergency_stop,
         }
     ) as listener:
         listener.join()
@@ -104,43 +81,42 @@ def main(tts_factory: Callable[..., object] = TTSEngine) -> int:
 
     hotkey = get_hotkey(settings)
     live_hotkey = get_live_hotkey(settings)
-    pause_hotkey = get_pause_hotkey(settings)
-    skip_hotkey = get_skip_hotkey(settings)
-    repeat_hotkey = get_repeat_hotkey(settings)
-    clear_queue_hotkey = get_clear_queue_hotkey(settings)
-    emergency_stop_hotkey = get_emergency_stop_hotkey(settings)
     try:
         validate_hotkey_assignments(
             {
                 "Read once": hotkey,
                 "Live reading": live_hotkey,
-                "Pause or resume": pause_hotkey,
-                "Skip speech": skip_hotkey,
-                "Repeat speech": repeat_hotkey,
-                "Clear queue": clear_queue_hotkey,
-                "Emergency stop": emergency_stop_hotkey,
             }
         )
     except HotkeyValidationError as error:
         controller.shutdown()
         return cli_error(f"Invalid hotkeys: {error}")
 
+    def reading_active() -> bool:
+        reader = controller.live_reader
+        snapshot = reader.runtime_control_snapshot() if reader is not None else {}
+        return bool(
+            controller.is_live_running
+            or controller.is_one_shot_read_running is True
+            or any(snapshot.get(key) for key in ("paused", "speaking", "queued"))
+        )
+
+    def read_once() -> None:
+        if not reading_active():
+            controller.read_once()
+
+    def toggle_reading() -> None:
+        if reading_active():
+            controller.emergency_stop()
+        else:
+            controller.toggle_live()
+
     try:
         listen_for_hotkeys(
             hotkey,
             live_hotkey,
-            pause_hotkey,
-            skip_hotkey,
-            repeat_hotkey,
-            clear_queue_hotkey,
-            emergency_stop_hotkey,
-            controller.read_once,
-            controller.toggle_live,
-            controller.toggle_speech_pause,
-            controller.skip_current_speech,
-            controller.repeat_last_speech,
-            controller.clear_speech_queue,
-            controller.emergency_stop,
+            read_once,
+            toggle_reading,
         )
     except KeyboardInterrupt:
         return 130

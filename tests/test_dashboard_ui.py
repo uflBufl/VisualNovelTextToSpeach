@@ -30,6 +30,51 @@ from vntts.ui_text import plain_label_text, set_labeled_text  # noqa: E402
 
 
 class ControlDashboardTest(unittest.TestCase):
+    def test_auto_advance_control_shows_key_and_capture_policy(self):
+        dashboard = ControlDashboard(
+            AppSettings(
+                capture_mode="window",
+                auto_advance_enabled=True,
+                auto_advance_key="right",
+            )
+        )
+        requested = []
+        dashboard.auto_advance_requested.connect(requested.append)
+        self.assertEqual(
+            dashboard.auto_advance_check.text(), "Auto advance after speech using Right"
+        )
+        self.assertTrue(dashboard.auto_advance_check.isChecked())
+        dashboard.auto_advance_check.setChecked(False)
+        self.assertEqual(requested, [False])
+
+        dashboard.set_auto_advance_configuration(
+            AppSettings(capture_mode="screen", auto_advance_enabled=True)
+        )
+        self.assertFalse(dashboard.auto_advance_check.isEnabled())
+        self.assertFalse(dashboard.auto_advance_check.isChecked())
+        self.assertIn("Select a game window", dashboard.auto_advance_reason.text())
+        self.assertIn("selected game window", dashboard.auto_advance_check.toolTip())
+        self.assertEqual(requested, [False])
+        dashboard.deleteLater()
+
+    def test_auto_advance_follows_main_buttons_in_keyboard_order(self):
+        dashboard = ControlDashboard(AppSettings(capture_mode="window"))
+        dashboard.show_reading()
+        dashboard.set_ready(True)
+        dashboard.show()
+        dashboard.compact_button.setFocus()
+        self.application.processEvents()
+
+        QTest.keyClick(dashboard.compact_button, Qt.Key.Key_Tab)
+        self.assertTrue(dashboard.auto_advance_check.hasFocus())
+        requested = []
+        dashboard.auto_advance_requested.connect(requested.append)
+        QTest.keyClick(dashboard.auto_advance_check, Qt.Key.Key_Space)
+        self.assertEqual(requested, [False])
+        dashboard._quitting = True
+        dashboard.close()
+        dashboard.deleteLater()
+
     def test_macos_floating_window_capture_requires_explicit_opt_in(self):
         appkit = SimpleNamespace(
             NSWindowCollectionBehaviorMoveToActiveSpace=1,
@@ -259,27 +304,53 @@ class ControlDashboardTest(unittest.TestCase):
         )
         self.assertIn("first audio 240 ms", dashboard.latency.text())
         self.assertIn("queue 1", dashboard.latency.text())
-        self.assertFalse(dashboard.live_button.isDefault())
+        self.assertTrue(dashboard.live_button.isDefault())
         self.assertIn("Reading is active", dashboard.action_reason.text())
         dashboard.deleteLater()
 
     def test_reading_state_distinguishes_waiting_speaking_paused_and_stopped(self):
         dashboard = ControlDashboard(AppSettings())
-        for state, expected in (
-            (RuntimeControlState(ready=True, live=True), "Waiting for dialogue"),
+        dashboard.set_dialogue("Selone", "I have returned.")
+        for state, expected, dialogue_title in (
+            (
+                RuntimeControlState(ready=True, live=True),
+                "Waiting for dialogue",
+                "Last detected dialogue",
+            ),
             (
                 RuntimeControlState(ready=True, live=True, speaking=True),
                 "Speaking current dialogue",
+                "Current dialogue",
             ),
-            (RuntimeControlState(ready=True, live=True, paused=True), "Speech paused"),
-            (RuntimeControlState(ready=True), "Reading stopped"),
+            (
+                RuntimeControlState(ready=True, live=True, paused=True),
+                "Speech paused",
+                "Current dialogue",
+            ),
+            (
+                RuntimeControlState(ready=True, speaking=True),
+                "Speaking current dialogue",
+                "Current dialogue",
+            ),
+            (
+                RuntimeControlState(ready=True),
+                "Reading stopped",
+                "Last detected dialogue",
+            ),
         ):
             dashboard.set_runtime_controls(state)
             self.assertEqual(dashboard.reading_state.text(), expected)
+            self.assertEqual(dashboard.dialogue_card.title(), dialogue_title)
+            if state.live:
+                self.assertFalse(dashboard.read_button.isEnabled())
+                self.assertIn("Stop reading", dashboard.read_button.toolTip())
+            if state.speaking:
+                self.assertEqual(dashboard.live_button.text(), "Stop reading")
         dashboard.set_live(True)
-        self.assertIn(
-            "queued speech may finish", dashboard.live_button.accessibleDescription()
-        )
+        self.assertIn("current speech", dashboard.live_button.accessibleDescription())
+        self.assertTrue(dashboard.live_button.isDefault())
+        dashboard.set_dialogue(None, None)
+        self.assertEqual(dashboard.dialogue_card.title(), "Current dialogue")
         dashboard.deleteLater()
 
     def test_primary_context_stays_visible_and_does_not_mislabel_recordings(self):
@@ -294,6 +365,10 @@ class ControlDashboardTest(unittest.TestCase):
         self.application.processEvents()
         self.assertFalse(dashboard.details_content.isVisibleTo(dashboard))
         self.assertTrue(dashboard.reading_defaults.isVisibleTo(dashboard))
+        self.assertTrue(dashboard.capture_target.isVisibleTo(dashboard))
+        self.assertEqual(
+            dashboard.capture_target.text(), "Capture: Calibrated screen region"
+        )
         self.assertFalse(dashboard.speech_runtime.isVisibleTo(dashboard))
         self.assertEqual(dashboard.speech_runtime.textFormat(), Qt.TextFormat.PlainText)
         self.assertTrue(dashboard.audio_source.isVisibleTo(dashboard))
@@ -309,6 +384,15 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertIn("custom-model", dashboard.audio_source.text())
         self.assertIn("no generation", dashboard.audio_source.text())
         self.assertIn("Saved recordings", dashboard.reading_help.text())
+        dashboard.set_configuration(
+            AppSettings(capture_mode="window", game_window_title="Reverse: 1999")
+        )
+        self.assertEqual(dashboard.capture_target.text(), "Capture: Reverse: 1999")
+        dashboard.set_configuration(
+            AppSettings(capture_mode="window", game_window_title="<b>Reverse</b>")
+        )
+        self.assertEqual(dashboard.capture_target.textFormat(), Qt.TextFormat.PlainText)
+        self.assertEqual(dashboard.capture_target.text(), "Capture: <b>Reverse</b>")
         dashboard.set_ready(True)
         self.assertTrue(dashboard.action_reason.isHidden())
         self.assertFalse(dashboard.reading_help.isVisibleTo(dashboard))
@@ -322,8 +406,7 @@ class ControlDashboardTest(unittest.TestCase):
         self.application.processEvents()
         for button in (
             dashboard.live_button,
-            dashboard.stop_button,
-            dashboard.pause_button,
+            dashboard.read_button,
         ):
             self.assertTrue(
                 dashboard.rect().contains(
@@ -365,12 +448,15 @@ class ControlDashboardTest(unittest.TestCase):
 
     def test_loading_speech_engine_is_obvious_and_blocks_conflicting_actions(self):
         dashboard = ControlDashboard(AppSettings())
+        dashboard.show_reading()
         dashboard.show()
         self.application.processEvents()
 
         dashboard.set_loading(True)
 
         self.assertTrue(dashboard.loading_panel.isVisibleTo(dashboard))
+        self.assertEqual(dashboard.reading_state.text(), "Loading speech engine")
+        self.assertFalse(dashboard.action_reason.isVisibleTo(dashboard))
         self.assertIn("unlock", dashboard.action_reason.text())
         self.assertNotIn("Check readiness", dashboard.action_reason.text())
         dashboard.set_status("Loading speech model")
@@ -391,6 +477,8 @@ class ControlDashboardTest(unittest.TestCase):
         dashboard.set_loading(False)
 
         self.assertTrue(dashboard.loading_panel.isHidden())
+        self.assertEqual(dashboard.reading_state.text(), "Not ready")
+        self.assertTrue(dashboard.action_reason.isVisibleTo(dashboard))
         self.assertTrue(dashboard.prepare_audio_button.isEnabled())
         self.assertTrue(dashboard.setup_primary_button.isEnabled())
         self.assertTrue(dashboard.narrator_voice_button.isEnabled())
@@ -440,8 +528,8 @@ class ControlDashboardTest(unittest.TestCase):
             if group.title() == "Reading controls"
         )
         self.assertTrue(controls.isAncestorOf(dashboard.compact_button))
-        self.assertTrue(controls.isAncestorOf(dashboard.pause_button))
-        self.assertTrue(controls.isAncestorOf(dashboard.stop_button))
+        self.assertTrue(controls.isAncestorOf(dashboard.live_button))
+        self.assertTrue(controls.isAncestorOf(dashboard.read_button))
         self.assertFalse(dashboard.details_content.isVisibleTo(dashboard))
         self.assertEqual(dashboard.details_toggle.text(), "Show technical details")
         self.assertEqual(
@@ -696,11 +784,10 @@ class ControlDashboardTest(unittest.TestCase):
         dashboard.close()
         dashboard.deleteLater()
 
-    def test_compact_controller_exposes_play_controls_and_state(self):
+    def test_compact_controller_exposes_reading_controls_and_state(self):
         controller = CompactController(platform="darwin")
         requests = []
         controller.live_requested.connect(lambda: requests.append("live"))
-        controller.repeat_requested.connect(lambda: requests.append("repeat"))
         controller.set_ready(True)
         controller.set_dialogue("Selone", "I have returned.")
         controller.set_live(True)
@@ -708,15 +795,13 @@ class ControlDashboardTest(unittest.TestCase):
 
         controller.live_button.click()
         controller.set_runtime_controls(
-            RuntimeControlState(ready=True, replayable=True)
+            RuntimeControlState(ready=True, live=True, replayable=True)
         )
-        controller.repeat_button.click()
 
-        self.assertEqual(requests, ["live", "repeat"])
+        self.assertEqual(requests, ["live"])
         self.assertEqual(controller.speaker.text(), "Selone")
         self.assertEqual(controller.mode.text(), "Paused")
         self.assertEqual(controller.live_button.text(), "Stop reading")
-        self.assertEqual(controller.stop_button.text(), "Emergency stop")
         self.assertEqual(controller.full_button.text(), "Full controls")
         self.assertTrue(controller.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
         self.assertTrue(
@@ -780,7 +865,7 @@ class ControlDashboardTest(unittest.TestCase):
         self.application.processEvents()
         for button in (
             controller.live_button,
-            controller.stop_button,
+            controller.read_button,
             controller.full_button,
         ):
             self.assertTrue(
@@ -797,34 +882,44 @@ class ControlDashboardTest(unittest.TestCase):
         compact = CompactController(platform="win32")
         cases = (
             (
+                "identifying current chapter",
+                RuntimeControlState(ready=True, starting=True),
+                (False, True),
+            ),
+            (
+                "loading with active speech",
+                RuntimeControlState(ready=False, speaking=True),
+                (False, True),
+            ),
+            (
                 "idle",
                 RuntimeControlState(ready=True),
-                (True, True, False, False, False, False),
+                (True, True),
             ),
             (
                 "live",
                 RuntimeControlState(ready=True, live=True),
-                (True, True, True, False, False, True),
+                (False, True),
             ),
             (
                 "speaking",
                 RuntimeControlState(ready=True, speaking=True),
-                (True, True, True, True, False, True),
+                (False, True),
             ),
             (
                 "paused",
                 RuntimeControlState(ready=True, paused=True),
-                (True, True, True, False, False, True),
+                (False, True),
             ),
             (
                 "queued",
                 RuntimeControlState(ready=True, queued=True),
-                (True, True, True, False, False, True),
+                (False, True),
             ),
             (
                 "replayable",
                 RuntimeControlState(ready=True, replayable=True),
-                (True, True, False, False, True, False),
+                (True, True),
             ),
         )
         for name, state, expected in cases:
@@ -836,10 +931,6 @@ class ControlDashboardTest(unittest.TestCase):
                     for button in (
                         dashboard.read_button,
                         dashboard.live_button,
-                        dashboard.pause_button,
-                        dashboard.skip_button,
-                        dashboard.repeat_button,
-                        dashboard.stop_button,
                     )
                 )
                 compact_state = tuple(
@@ -847,17 +938,12 @@ class ControlDashboardTest(unittest.TestCase):
                     for button in (
                         compact.read_button,
                         compact.live_button,
-                        compact.pause_button,
-                        compact.skip_button,
-                        compact.repeat_button,
-                        compact.stop_button,
                     )
                 )
                 self.assertEqual(dashboard_state, expected)
                 self.assertEqual(compact_state, expected)
                 self.assertEqual(
-                    dashboard.repeat_button.toolTip(),
-                    compact.repeat_button.toolTip(),
+                    dashboard.live_button.text(), compact.live_button.text()
                 )
         dashboard.deleteLater()
         compact.deleteLater()
@@ -958,10 +1044,6 @@ class ControlDashboardTest(unittest.TestCase):
         buttons = (
             controller.read_button,
             controller.live_button,
-            controller.pause_button,
-            controller.skip_button,
-            controller.repeat_button,
-            controller.stop_button,
             controller.full_button,
         )
         self.assertTrue(controller.status.wordWrap())

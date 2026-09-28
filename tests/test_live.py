@@ -714,6 +714,23 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
 
         self.assertEqual(route_calls, [("second", False), ("second", True)])
 
+    def test_disabling_auto_advance_cancels_delayed_key_press(self):
+        harness = AutoAdvanceFakeFrameHarness()
+        with patch("vntts.live.Timer", side_effect=harness.timer_scheduler.create):
+            harness.start()
+            self.addCleanup(harness.stop)
+            harness.prepare_ready_dialogue()
+            harness.speech_executor.run_next()
+            harness.playback_executor.run_next()
+            pending = harness.timer_scheduler.pending("_run_auto_advance")
+            self.assertEqual(len(pending), 1)
+
+            self.assertFalse(harness.reader.set_auto_advance(None))
+
+            self.assertTrue(pending[0].cancelled)
+            self.assertFalse(pending[0].fire())
+            self.assertEqual(harness.advance_calls, [])
+
     def test_delayed_next_screen_confirms_after_playback_without_duplicate_press(self):
         harness = AutoAdvanceFakeFrameHarness()
         with patch(
@@ -2226,6 +2243,19 @@ class LiveDialogReaderTest(unittest.TestCase):
 
         self.assertTrue(reader.start())
         self.assertFalse(reader.runtime_control_snapshot()["paused"])
+
+    def test_graceful_stop_leaves_audio_playing_until_emergency_stop(self):
+        interrupt_speech = Mock()
+        reader = self.create_reader(interrupt_speech=interrupt_speech)
+        reader.capture_future = Future()
+        reader.current_chunk = SpeechChunk(1, "Alice", "Current dialogue.")
+
+        self.assertTrue(reader.stop())
+        self.assertTrue(reader.runtime_control_snapshot()["speaking"])
+        interrupt_speech.assert_not_called()
+
+        self.assertTrue(reader.emergency_stop())
+        interrupt_speech.assert_called_once_with()
 
     def test_pausing_current_speech_interrupts_and_replays_it_on_resume(self):
         speech_executor = Mock()
