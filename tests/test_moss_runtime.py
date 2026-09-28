@@ -97,15 +97,24 @@ class RetainedMossRuntimeTests(unittest.TestCase):
         runtime = RetainedMossRuntime(
             "/tmp/vntts-moss-runtime-test", backend_factory=factory
         )
-        first = runtime.backend_for("first", model_name="model-a", language="English")
-        same_language = runtime.backend_for(
-            "second", model_name="model-a", language="English"
-        )
-        self.assertEqual(len(created), 1)
-        self.assertEqual(same_language.render(None).collect(), "second")
-        changed_language = runtime.backend_for(
-            "third", model_name="model-a", language="Russian"
-        )
+        with patch("vntts.moss_runtime.record_native_speech") as record:
+            first = runtime.backend_for(
+                "first", model_name="model-a", language="English"
+            )
+            same_language = runtime.backend_for(
+                "second", model_name="model-a", language="English"
+            )
+            self.assertEqual(len(created), 1)
+            self.assertEqual(same_language.render(None).collect(), "second")
+            record.assert_not_called()
+            changed_language = runtime.backend_for(
+                "third", model_name="model-a", language="Russian"
+            )
+            record.assert_called_once_with(
+                operation="runtime-replace",
+                reason="configuration-change",
+                server_pid=None,
+            )
 
         self.assertEqual(len(created), 2)
         self.assertEqual(created[0].shutdowns, 1)

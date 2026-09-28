@@ -12,6 +12,7 @@ from vntts.moss_cpp_backend import moss_cpp_requested
 from vntts.playback import PreparedPlayback
 from vntts.speech_backend_runtime import shutdown_speech_backend
 from vntts.speech_worker import create_moss_worker_backend
+from vntts.support import record_native_speech
 from vntts.synthesis import (
     SynthesisChunk,
     SynthesisChunkStream,
@@ -227,6 +228,14 @@ class RetainedMossRuntime:
             return self._create_backend(registry, **options)
         with self._operation_lock:
             if self._backend is None or self._model_configuration != configuration:
+                if self._backend is not None:
+                    record_native_speech(
+                        operation="runtime-replace",
+                        reason="configuration-change",
+                        server_pid=getattr(
+                            getattr(self._backend, "server", None), "pid", None
+                        ),
+                    )
                 shutdown_speech_backend(self._backend)
                 self._backend = None
                 self.root.mkdir(parents=True, exist_ok=True)

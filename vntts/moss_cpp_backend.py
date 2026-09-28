@@ -920,7 +920,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 **base_options,
             )
         except BaseException:
-            self._stop_server()
+            self._stop_server("initialization-failed")
             raise
 
     def _startup_cancelled(self) -> bool:
@@ -1175,7 +1175,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                     ),
                 )
                 fallback = self._startup_fallback(category)
-                self._stop_server()
+                self._stop_server("startup-retry")
                 if fallback is None:
                     raise TTSConfigurationError(
                         "MOSS C++ server exited while loading. Check its DLLs and model "
@@ -1183,7 +1183,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                     )
                 controls = fallback
         except BaseException:
-            self._stop_server()
+            self._stop_server("startup-failed")
             raise
 
     def _startup_fallback(self, category: str | None) -> NativeControls | None:
@@ -1204,7 +1204,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
     def _start_server_once(
         self, cancelled: Callable[[], bool], controls: NativeControls
     ) -> tuple[bool, str | None, int | None]:
-        self._stop_server()
+        self._stop_server("before-start")
         self.server_directory = TemporaryDirectory(
             prefix="vntts-moss-", ignore_cleanup_errors=True
         )
@@ -1744,11 +1744,11 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 **stages,
             )
             if outcome in {"failed", "cancelled"}:
-                self._stop_server()
+                self._stop_server(f"generation-{outcome}")
                 if worker is not None:
                     worker.join(timeout=2)
 
-    def _stop_server(self) -> None:
+    def _stop_server(self, reason: str = "shutdown") -> None:
         with self.server_lock:
             server, self.server = self.server, None
             job, self.server_job = self.server_job, None
@@ -1759,7 +1759,15 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             self._registered_references.clear()
             try:
                 if server is not None:
-                    if server.poll() is None:
+                    exit_code = server.poll()
+                    record_native_speech(
+                        operation="server-stop",
+                        outcome="requested" if exit_code is None else "exited",
+                        reason=reason,
+                        server_pid=server.pid,
+                        exit_code=exit_code,
+                    )
+                    if exit_code is None:
                         server.terminate()
                     try:
                         server.wait(timeout=2)

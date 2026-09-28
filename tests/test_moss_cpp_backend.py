@@ -883,7 +883,16 @@ class MossCppBackendTest(unittest.TestCase):
             "cache=persistent-cache", self.native_log.snapshot()[-1]["message"]
         )
         directory = Path(backend.server_directory.name)
+        server_pid = backend.server.pid
         backend.shutdown()
+        stops = [
+            entry["native"]
+            for entry in self.native_log.report()["events"]
+            if entry["native"]["operation"] == "server-stop"
+        ]
+        self.assertEqual(len(stops), 1)
+        self.assertEqual(stops[0]["server_pid"], server_pid)
+        self.assertEqual(stops[0]["reason"], "shutdown")
         self.assertIsNone(backend.server_directory)
         if sys.platform != "win32":
             self.assertFalse(directory.exists())
@@ -927,14 +936,18 @@ class MossCppBackendTest(unittest.TestCase):
         self.assertIn("prefill_s=unavailable", message)
         with self.assertRaises(TTSSynthesisError):
             backend.render(SynthesisRequest("Narrator", "Fail.")).collect()
-        message = self.native_log.snapshot()[-1]["message"]
+        message = self.native_log.snapshot()[-2]["message"]
         self.assertIn("outcome=failed", message)
         self.assertIn("gen_s=unavailable", message)
         self.assertIn("audio_frames=unavailable", message)
-        event = self.native_log.report()["events"][-1]["native"]
+        event = self.native_log.report()["events"][-2]["native"]
         self.assertIsInstance(event["reference_prepare_s"], float)
         self.assertIsInstance(event["http_round_trip_s"], float)
         self.assertIsNone(event["response_pcm_decode_s"])
+        self.assertEqual(
+            self.native_log.report()["events"][-1]["native"]["reason"],
+            "generation-failed",
+        )
         self.assertIsNone(backend.server_directory)
 
     def test_native_timing_parser_bounds_log_and_rejects_invalid_measurements(self):
@@ -1304,16 +1317,15 @@ class MossCppBackendTest(unittest.TestCase):
             task.join(5)
             self.assertFalse(task.is_alive())
             self.assertEqual(result[0].completion, SynthesisCompletion.CANCELLED)
-            self.assertIn(
-                "outcome=cancelled", self.native_log.snapshot()[-1]["message"]
-            )
-            self.assertIn(
-                "gen_s=unavailable", self.native_log.snapshot()[-1]["message"]
-            )
-            event = self.native_log.report()["events"][-1]["native"]
+            events = [entry["native"] for entry in self.native_log.report()["events"]]
+            event = events[-2]
+            self.assertEqual(event["outcome"], "cancelled")
+            self.assertIsNone(event["gen_s"])
             self.assertIsInstance(event["reference_prepare_s"], float)
             self.assertIsNone(event["http_round_trip_s"])
             self.assertIsNone(event["response_pcm_decode_s"])
+            self.assertEqual(events[-1]["operation"], "server-stop")
+            self.assertEqual(events[-1]["reason"], "generation-cancelled")
             self.assertIsNotNone(self.children[0].poll())
             self.assertEqual(
                 backend.render(SynthesisRequest("Narrator", "Again."))
