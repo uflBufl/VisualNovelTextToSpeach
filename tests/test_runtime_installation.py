@@ -272,6 +272,54 @@ class RuntimeInstallationTest(unittest.TestCase):
                 self.assertIsNotNone(process.poll())
                 self.assertEqual(list((paths[0].parent / "users").iterdir()), [])
 
+    def test_qwen_worker_claims_reused_moss_runtime_before_launch(self):
+        from vntts.speech_worker import IsolatedSpeechBackend
+
+        project = self.root / "backends/moss-tts"
+        project.mkdir(parents=True)
+        (project / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+        (project / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+        with (
+            patch("sys.platform", "darwin"),
+            patch("platform.machine", return_value="arm64"),
+            patch("vntts.runtime_installation._run", side_effect=self.install),
+            patch("vntts.speech_worker.probe_speech_runtime", return_value={}),
+        ):
+            old = ensure_speech_runtime("moss-tts")
+            worker = object.__new__(IsolatedSpeechBackend)
+            worker.name = "qwen-tts"
+            worker.runtime_root = old[0]
+            worker._runtime_use = None
+            with patch.object(IsolatedSpeechBackend, "_launch_worker"):
+                worker._start_worker()
+            self.assertIsNotNone(worker._runtime_use)
+
+            with (project / "uv.lock").open("a", encoding="utf-8") as stream:
+                stream.write("# another recipe\n")
+            new = ensure_speech_runtime("moss-tts")
+            self.assertTrue(old[0].exists())
+
+            worker._runtime_use.close()
+            cleanup_managed_runtimes("moss-tts", new[0])
+            self.assertFalse(old[0].exists())
+
+    def test_qwen_worker_keeps_an_explicit_qwen_runtime_claim(self):
+        from vntts.speech_worker import IsolatedSpeechBackend
+
+        worker = object.__new__(IsolatedSpeechBackend)
+        worker.name = "qwen-tts"
+        worker.runtime_root = Path("/runtime")
+        worker._runtime_use = None
+        use = Mock()
+        with (
+            patch("sys.platform", "darwin"),
+            patch("vntts.runtime_ownership.claim_runtime", return_value=use) as claim,
+            patch.object(IsolatedSpeechBackend, "_launch_worker"),
+        ):
+            worker._start_worker()
+        self.assertIs(worker._runtime_use, use)
+        claim.assert_called_once_with("qwen-tts", worker.runtime_root)
+
     def test_missing_interpreter_is_repaired(self):
         old = self.prepared_runtime()
         old[1].unlink()

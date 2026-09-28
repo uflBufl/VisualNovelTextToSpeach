@@ -1049,6 +1049,10 @@ class IsolatedSpeechBackend:
 
         if self._runtime_use is None:
             self._runtime_use = claim_runtime(self.name, self.runtime_root)
+            if self._runtime_use is None and (
+                self.name == "qwen-tts" and sys.platform == "darwin"
+            ):
+                self._runtime_use = claim_runtime("moss-tts", self.runtime_root)
         try:
             self._launch_worker()
         except BaseException:
