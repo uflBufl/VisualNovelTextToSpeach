@@ -392,6 +392,40 @@ class PregenerationSetupTest(unittest.TestCase):
             [("chapter:1", ("first",)), ("chapter:2", ("second",))],
         )
 
+    def test_non_contiguous_story_steps_stay_in_their_collection(self):
+        collection = SimpleNamespace(
+            collection_id="story",
+            title="A Story",
+            kind="main_story",
+            order=1,
+        )
+        records = tuple(
+            SimpleNamespace(
+                chapter=chapter,
+                speakable=True,
+                source_audio_status="absent",
+                voice_character="Ada",
+                speaker="Ada",
+                line_id=line_id,
+                text="Line",
+                collection_id="story",
+            )
+            for line_id, chapter in (
+                ("first", "1001"),
+                ("second", "1002"),
+                ("third", "1001"),
+            )
+        )
+
+        selections = _story_selections(
+            SimpleNamespace(collections=(collection,), records=records)
+        )
+
+        self.assertEqual(
+            [(selection.selection_id, selection.line_ids) for selection in selections],
+            [("story", ("first", "second", "third"))],
+        )
+
     def test_story_content_reports_player_level_collection_coverage(self):
         with TemporaryDirectory() as temporary_directory:
             path = write_story_index(Path(temporary_directory))
@@ -406,6 +440,66 @@ class PregenerationSetupTest(unittest.TestCase):
         self.assertEqual(main.original_audio_lines, 1)
         self.assertEqual(main.generation_lines, 1)
         self.assertEqual(main.speakers, ("Rhiannon",))
+
+    def test_collection_story_steps_are_selectable_as_stages(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            path = root / "story-index.jsonl"
+            write_story_index_document(
+                path,
+                {
+                    "game": "Synthetic Game",
+                    "language": "en",
+                    "collections": [
+                        {
+                            "collection_id": "story",
+                            "title": "A Story",
+                            "kind": "main_story",
+                            "order": 1,
+                        }
+                    ],
+                },
+                [
+                    {
+                        "record_type": "line",
+                        "line_id": "stage-one",
+                        "chapter": "1001",
+                        "sequence": 1,
+                        "speaker": "Ada",
+                        "text": "First stage.",
+                        "kind": "dialogue",
+                        "collection_id": "story",
+                        "source_audio_status": "absent",
+                    },
+                    {
+                        "record_type": "line",
+                        "line_id": "stage-two",
+                        "chapter": "1002",
+                        "sequence": 1,
+                        "speaker": "Ada",
+                        "text": "Second stage.",
+                        "kind": "dialogue",
+                        "collection_id": "story",
+                        "source_audio_status": "absent",
+                    },
+                ],
+            )
+            content = inspect_story_index(path)
+            job = PregenerationJobStore(root / "jobs").create_or_resume(
+                content, ("story:stage:1002",)
+            )
+
+        self.assertEqual(
+            [
+                (selection.selection_id, selection.title, selection.line_ids)
+                for selection in content.selections
+            ],
+            [
+                ("story:stage:1001", "A Story - Episode 1", ("stage-one",)),
+                ("story:stage:1002", "A Story - Episode 2", ("stage-two",)),
+            ],
+        )
+        self.assertEqual(job.selected_line_ids, ("stage-two",))
 
     def test_discovery_reuses_unchanged_catalog_and_reloads_changed_bytes(self):
         with TemporaryDirectory() as temporary_directory:

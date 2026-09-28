@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from vntts.pregeneration_queue import PregenerationInput
 
 job_schema_version = 1
-story_catalog_schema_version = 4
+story_catalog_schema_version = 5
 story_catalog_minimum_bytes = 8 * 1024 * 1024
 # ponytail: assumes 12 text chars/sec and PCM16 mono 24 kHz; upgrade with measured
 # durations and the selected backend's output format if storage estimates matter.
@@ -807,14 +807,15 @@ def _story_selections(
         for record in document.records:
             records_by_collection.setdefault(record.collection_id, []).append(record)
         groups = [
-            (
+            group
+            for collection in document.collections
+            for group in _collection_stage_groups(
                 collection.collection_id,
                 collection.title,
                 collection.kind,
                 collection.order,
                 tuple(records_by_collection.get(collection.collection_id, ())),
             )
-            for collection in document.collections
         ]
     else:
         records_by_chapter: dict[str, list[StoryIndexRecord]] = {}
@@ -844,6 +845,41 @@ def _story_selections(
         )
         for selection_id, title, kind, order, records in groups
         if records
+    )
+
+
+def _collection_stage_groups(
+    collection_id: str,
+    title: str,
+    kind: str,
+    order: int,
+    records: tuple[StoryIndexRecord, ...],
+) -> tuple[tuple[str, str, str, int, tuple[StoryIndexRecord, ...]], ...]:
+    """Split a collection only when its source story-step IDs prove stages."""
+    by_chapter: dict[str, list[StoryIndexRecord]] = {}
+    stage_order: list[str] = []
+    for record in records:
+        chapter = getattr(record, "chapter", None)
+        if not isinstance(chapter, str) or not chapter.strip():
+            return ((collection_id, title, kind, order, records),)
+        by_chapter.setdefault(chapter, []).append(record)
+        if not stage_order or stage_order[-1] != chapter:
+            stage_order.append(chapter)
+    if len(by_chapter) < 2:
+        return ((collection_id, title, kind, order, records),)
+    if len(stage_order) != len(by_chapter):
+        return ((collection_id, title, kind, order, records),)
+    stage_label = "Episode" if kind in {"main_story", "main-story"} else "Stage"
+    return tuple(
+        (
+            f"{collection_id}:stage:{chapter}",
+            f"{title} - {stage_label} {position}",
+            kind,
+            order,
+            tuple(stage_records),
+        )
+        for position, chapter in enumerate(stage_order, start=1)
+        for stage_records in (by_chapter[chapter],)
     )
 
 
@@ -951,7 +987,7 @@ def _normalized_selection_ids(
 ) -> tuple[str, ...]:
     requested = tuple(dict.fromkeys(str(value).strip() for value in selected_story_ids))
     if not requested or any(not value for value in requested):
-        raise PregenerationSetupError("Select at least one story or chapter")
+        raise PregenerationSetupError("Select at least one story, stage, or chapter")
     declared = {value.selection_id for value in content.selections}
     unknown = tuple(value for value in requested if value not in declared)
     if unknown:

@@ -390,13 +390,19 @@ class OfflinePackPublisherTest(unittest.TestCase):
             )
             single_line = replace(
                 content,
-                selections=(replace(selection, line_ids=(selection.line_ids[0],)),),
+                selections=(
+                    replace(
+                        selection,
+                        selection_id="stage-one",
+                        line_ids=(selection.line_ids[0],),
+                    ),
+                ),
             )
-            scoped = inspect_story_audio(single_line, selection.selection_id, store)
+            scoped = inspect_story_audio(single_line, "stage-one", store)
             self.assertEqual((scoped.generated, scoped.live, scoped.omitted), (1, 0, 0))
             active = inspect_story_audio(
                 single_line,
-                selection.selection_id,
+                "stage-one",
                 PregenerationJobStore(Path(directory) / "no-saved-jobs"),
                 manifest=pack.manifest,
             )
@@ -670,7 +676,8 @@ class OfflinePackPublisherTest(unittest.TestCase):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             base_job, base_input, base_result, base_items = fixture(
-                root / "base", include_omission=True
+                root / "base",
+                include_omission=True,
             )
             base = OfflinePackPublisher().publish(
                 base_job,
@@ -689,19 +696,37 @@ class OfflinePackPublisherTest(unittest.TestCase):
             current_story = load_story_index_document(current_job.story_index)
             records = {
                 record.line_id: record.to_record()
-                for record in (*base_story.records, *current_story.records)
+                | {"chapter": "1", "collection_id": "story"}
+                for record in base_story.records
             }
+            for record in current_story.records:
+                records.setdefault(
+                    record.line_id,
+                    record.to_record() | {"chapter": "2", "collection_id": "story"},
+                )
             source_story = root / "source" / "story-index.jsonl"
             source_story.parent.mkdir(parents=True)
             write_story_index_document(
                 source_story,
-                current_story.metadata,
+                current_story.metadata
+                | {
+                    "collections": [
+                        {
+                            "collection_id": "story",
+                            "title": "A Story",
+                            "kind": "character_story",
+                            "order": 1,
+                        }
+                    ]
+                },
                 records.values(),
             )
+            base_job = replace(base_job, selected_story_ids=("story:stage:1",))
             current_job = replace(
                 current_job,
                 story_index=str(source_story),
                 story_index_sha256=sha256_file(source_story),
+                selected_story_ids=("story:stage:2",),
             )
 
             successor = OfflinePackPublisher(base_pack=base.manifest).publish(
@@ -723,6 +748,12 @@ class OfflinePackPublisherTest(unittest.TestCase):
             retained_omission = library.find_audio_event_omission(
                 base_items[-1]["line_id"], base_items[-1]["text_sha256"]
             )
+            stage_one = inspect_story_audio(
+                inspect_story_index(source_story),
+                "story:stage:1",
+                PregenerationJobStore(root / "no-saved-jobs"),
+                manifest=successor.manifest,
+            )
             base_unchanged = base_hashes == (
                 sha256_file(base.manifest),
                 sha256_file(base.imported.generated_audio_manifest),
@@ -743,6 +774,9 @@ class OfflinePackPublisherTest(unittest.TestCase):
         self.assertIn(
             (current_items[1]["line_id"], current_items[1]["text_sha256"]),
             live_fallbacks,
+        )
+        self.assertEqual(
+            (stage_one.generated, stage_one.live, stage_one.missing), (1, 1, 0)
         )
         self.assertTrue(base_unchanged)
 

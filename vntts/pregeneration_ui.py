@@ -508,7 +508,7 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         self.stories.setIndentation(18)
         self.stories.setAlternatingRowColors(True)
-        self.stories.setAccessibleName("Stories and chapters")
+        self.stories.setAccessibleName("Stories, stages, and chapters")
         self.stories.setAccessibleDescription(
             "Expand or collapse a type with Left and Right. Check a type to select "
             "all its stories, or check individual stories. Audio status is in the second column."
@@ -2886,7 +2886,7 @@ class OfflineAudioPreparationDialog(QDialog):
             ready_prefix += 1
         remaining = selection.line_count - start
         if ready_prefix == selection.line_count:
-            return "ready", "all lines are playable while other chapters prepare"
+            return "ready", "all lines are playable while other selections prepare"
         if start and ready_prefix == remaining:
             return "preparing", "all remaining lines are playable from the current line"
         if ready_count:
@@ -2894,13 +2894,13 @@ class OfflineAudioPreparationDialog(QDialog):
                 "preparing",
                 f"{ready_count}/{selection.line_count} lines ready; "
                 f"{ready_prefix} consecutive from "
-                f"{'current line' if start else 'chapter start'}",
+                f"{'current line' if start else 'selection start'}",
             )
         if self._progress_snapshot is not None:
             return (
                 "preparing",
                 f"0/{selection.line_count} lines ready; waiting for the first "
-                f"consecutive line from {'current line' if start else 'chapter start'}",
+                f"consecutive line from {'current line' if start else 'selection start'}",
             )
         return "preparing", self.progress_phase.text()
 
@@ -3467,7 +3467,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self.story_context.setToolTip("")
             set_labeled_text(
                 self.summary,
-                (("Preparation", "Select at least one story or chapter."),),
+                (("Preparation", "Select at least one story, stage, or chapter."),),
             )
             self.continue_button.setEnabled(False)
             return True

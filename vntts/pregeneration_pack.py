@@ -172,6 +172,7 @@ def inspect_story_audio(
     pack = _story_audio_pack(
         content,
         selection_id,
+        selection.line_ids,
         job_store,
         manifest=manifest,
         imported_pack=imported_pack,
@@ -201,6 +202,7 @@ def inspect_story_audio(
 def _story_audio_pack(
     content: GameContent,
     selection_id: str,
+    selection_line_ids: Iterable[str],
     job_store: PregenerationJobStore,
     *,
     manifest: str | Path | None,
@@ -215,7 +217,7 @@ def _story_audio_pack(
         manifests = [
             path
             for job in job_store.jobs_for_content(content)
-            if selection_id in job.selected_story_ids
+            if set(selection_line_ids).issubset(job.selected_line_ids)
             for path in job_store.published_packs(job)
         ]
         manifest_path = max(
