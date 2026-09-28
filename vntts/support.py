@@ -274,20 +274,20 @@ class GenerationTimelineLog:
                 },
             }
             if stage == "stable-frame-gate":
-                observations = int(existing.get("observations", 0))
+                observations = _event_counter(existing, "observations")
                 candidate_frames = event.get("candidate_frames")
                 event["observations"] = observations + 1
-                event["candidate_restarts"] = int(
-                    existing.get("candidate_restarts", 0)
+                event["candidate_restarts"] = _event_counter(
+                    existing, "candidate_restarts"
                 ) + int(observations > 0 and candidate_frames == 1)
-                event["fingerprint_changes"] = int(
-                    existing.get("fingerprint_changes", 0)
+                event["fingerprint_changes"] = _event_counter(
+                    existing, "fingerprint_changes"
                 ) + int(
                     observations > 0
                     and event.get("fingerprint") != existing.get("fingerprint")
                 )
-                event["ready_observations"] = int(
-                    existing.get("ready_observations", 0)
+                event["ready_observations"] = _event_counter(
+                    existing, "ready_observations"
                 ) + int(event.get("ready") is True)
             # A stage can be reported by both the controller and the reader.
             # Preserve richer source-specific details while updating its time.
@@ -420,6 +420,11 @@ class GenerationTimelineLog:
 def _timeline_occurred_at(event: SupportDetails) -> float:
     value = event.get("occurred_at")
     return value if isinstance(value, float) else 0.0
+
+
+def _event_counter(event: SupportDetails, name: str) -> int:
+    value = event.get(name, 0)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 def _percentile(values: list[float], quantile: float) -> float | None:
