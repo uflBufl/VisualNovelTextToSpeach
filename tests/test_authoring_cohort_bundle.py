@@ -717,6 +717,30 @@ class AuthoringCohortBundleTest(unittest.TestCase):
 
         self.assertEqual(len(samples), 2)
 
+    def test_live_sample_rejects_invalid_review_item_metadata(self):
+        with TemporaryDirectory() as directory:
+            sources = self.create_sources(Path(directory))
+            bundle = build_cohort_review_bundle([value[0] for value in sources])
+            source = bundle.document["sources"][0]
+            cohort = bundle.document["cohorts"][0]
+            sample = cohort["samples"][0]
+            loaded = cohort_bundle_module._load_sample_source(source)
+            result = loaded.state_items[sample["queue_id"]]
+            self.assertIsInstance(result, dict)
+            for field, value in (
+                ("attempts", "not-an-int"),
+                ("seed", "not-an-int"),
+                ("last_error", 1),
+            ):
+                with self.subTest(field=field):
+                    original = result.get(field)
+                    result[field] = value
+                    with self.assertRaises(CohortReviewError):
+                        cohort_bundle_module._review_item_from_sample(
+                            loaded, sample["queue_id"], cohort, sample
+                        )
+                    result[field] = original
+
     def test_resume_recovers_terminal_decision_committed_before_checkpoint(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
