@@ -941,6 +941,10 @@ def _validate_person_aliases(document: dict[object, object]) -> dict[object, obj
             or normalize_character_name(canonical) == alias
         ):
             raise VoiceLibraryError("Voice library person alias is invalid")
+    if any(
+        normalize_character_name(canonical) in aliases for canonical in aliases.values()
+    ):
+        raise VoiceLibraryError("Voice library person aliases must not form a chain")
     return aliases
 
 

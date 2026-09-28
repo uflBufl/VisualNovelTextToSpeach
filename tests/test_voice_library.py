@@ -47,6 +47,31 @@ class VoiceLibraryTest(unittest.TestCase):
             with self.assertRaisesRegex(VoiceLibraryError, "Unsupported"):
                 VoiceLibrary(root).bindings()
 
+    def test_reader_rejects_alias_chains_that_writer_cannot_create(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "library"
+            root.mkdir()
+            document = {
+                "version": 3,
+                "alternatives": {},
+                "bindings": {},
+                "person_aliases": {"a": "B", "b": "C"},
+                "person_link_migrations": {
+                    key: [
+                        {
+                            "role": key,
+                            "variant_key": None,
+                            "linked_variant_key": f"story-name:{key}",
+                        }
+                    ]
+                    for key in ("a", "b")
+                },
+            }
+            (root / "voice-library.json").write_text(json.dumps(document))
+
+            with self.assertRaisesRegex(VoiceLibraryError, "must not form a chain"):
+                VoiceLibrary(root).canonical_role("A")
+
     def test_malformed_alternative_checksum_uses_library_error(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
