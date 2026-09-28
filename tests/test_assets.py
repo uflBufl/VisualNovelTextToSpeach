@@ -497,6 +497,50 @@ class VoicePackManagerTest(unittest.TestCase):
 
                 self.assertEqual(manifest.read_bytes(), payload)
 
+    def test_import_voice_alias_conflict_preserves_existing_pack(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "voice.wav"
+            source.write_bytes(b"voice")
+            manager = VoicePackManager(root / "managed")
+            manifest = manager.import_voice("Ada", [source])
+            original_manifest = manifest.read_bytes()
+            checksum = manifest.parent / "vntts-asset.json"
+            original_checksum = checksum.read_bytes()
+            original_references = set((manifest.parent / "references").iterdir())
+
+            with self.assertRaisesRegex(VoiceManifestError, "Duplicate voice"):
+                manager.import_voice("Rhiannon", [source], aliases=("Ada",))
+
+            self.assertEqual(manifest.read_bytes(), original_manifest)
+            self.assertEqual(checksum.read_bytes(), original_checksum)
+            self.assertEqual(
+                set((manifest.parent / "references").iterdir()), original_references
+            )
+            self.assertEqual(manager.validate(manifest), manifest)
+
+    def test_import_voice_removes_partially_copied_reference_on_failure(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "voice.wav"
+            source.write_bytes(b"voice")
+            manager = VoicePackManager(root / "managed")
+
+            def fail_after_partial_copy(_source, destination):
+                Path(destination).write_bytes(b"partial")
+                raise OSError("copy failed")
+
+            with (
+                patch("vntts.assets.shutil.copy2", side_effect=fail_after_partial_copy),
+                self.assertRaisesRegex(OSError, "copy failed"),
+            ):
+                manager.import_voice("Ada", [source])
+
+            self.assertEqual(
+                list((root / "managed" / "custom" / "references").iterdir()), []
+            )
+            self.assertFalse((root / "managed" / "custom" / "manifest.json").exists())
+
     def test_import_voice_rejects_aliased_managed_pack(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -587,6 +631,115 @@ class VoicePackManagerTest(unittest.TestCase):
             self.assertTrue(reference.is_file())
             self.assertTrue(imported_voice.reference.is_file())
             self.assertNotEqual(imported_voice.reference, reference)
+
+    def test_import_pack_removes_partial_copies_and_preserves_prior_pack(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            old_reference = root / "old.wav"
+            old_reference.write_bytes(b"old")
+            manager = VoicePackManager(root / "managed")
+            manifest = manager.import_voice("Ada", [old_reference])
+            checksum = manifest.parent / "vntts-asset.json"
+            original_manifest = manifest.read_bytes()
+            original_checksum = checksum.read_bytes()
+            original_references = set((manifest.parent / "references").iterdir())
+
+            source_root = root / "source"
+            source_root.mkdir()
+            for name in ("first.wav", "second.wav"):
+                (source_root / name).write_bytes(name.encode())
+            source_manifest = source_root / "manifest.json"
+            source_manifest.write_text(
+                json.dumps(
+                    {
+                        "voices": [
+                            {
+                                "character": "Rhiannon",
+                                "speaker": "rhiannon",
+                                "references": ["first.wav", "second.wav"],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            real_copy = shutil.copy2
+            copies = 0
+
+            def fail_on_second_copy(source, destination):
+                nonlocal copies
+                copies += 1
+                if copies == 2:
+                    Path(destination).write_bytes(b"partial")
+                    raise OSError("copy failed")
+                return real_copy(source, destination)
+
+            with (
+                patch("vntts.assets.shutil.copy2", side_effect=fail_on_second_copy),
+                self.assertRaisesRegex(OSError, "copy failed"),
+            ):
+                manager.import_pack(source_manifest, pack_name="custom")
+
+            self.assertEqual(manifest.read_bytes(), original_manifest)
+            self.assertEqual(checksum.read_bytes(), original_checksum)
+            self.assertEqual(
+                set((manifest.parent / "references").iterdir()), original_references
+            )
+            self.assertEqual(manager.validate(manifest), manifest)
+
+    def test_checksum_publication_failure_restores_prior_pack(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            old_reference = root / "old.wav"
+            new_reference = root / "new.wav"
+            old_reference.write_bytes(b"old")
+            new_reference.write_bytes(b"new")
+            manager = VoicePackManager(root / "managed")
+            manifest = manager.import_voice("Ada", [old_reference])
+            checksum = manifest.parent / "vntts-asset.json"
+            original_manifest = manifest.read_bytes()
+            original_checksum = checksum.read_bytes()
+            original_references = set((manifest.parent / "references").iterdir())
+
+            source_root = root / "source"
+            source_root.mkdir()
+            (source_root / "voice.wav").write_bytes(b"source")
+            source_manifest = source_root / "manifest.json"
+            source_manifest.write_text(
+                json.dumps(
+                    {
+                        "voices": [
+                            {
+                                "character": "Rhiannon",
+                                "speaker": "rhiannon",
+                                "reference": "voice.wav",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            for import_again in (
+                lambda: manager.import_voice("Ada", [new_reference]),
+                lambda: manager.import_pack(source_manifest, pack_name="custom"),
+            ):
+                with self.subTest(import_again=import_again):
+                    with (
+                        patch.object(
+                            manager,
+                            "_write_voice_checksums",
+                            side_effect=OSError("checksum failed"),
+                        ),
+                        self.assertRaisesRegex(OSError, "checksum failed"),
+                    ):
+                        import_again()
+                    self.assertEqual(manifest.read_bytes(), original_manifest)
+                    self.assertEqual(checksum.read_bytes(), original_checksum)
+                    self.assertEqual(
+                        set((manifest.parent / "references").iterdir()),
+                        original_references,
+                    )
+                    self.assertEqual(manager.validate(manifest), manifest)
 
     def test_import_manifest_removes_replaced_managed_references(self):
         with TemporaryDirectory() as temporary_directory:

@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from threading import Event
 from typing import Protocol
 from urllib.parse import urlparse
@@ -15,6 +16,7 @@ from uuid import uuid4
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.text_utils import slugify
+from vntts_artifacts.voice_manifest import validate_voice_manifest
 
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.settings import get_local_data_directory
@@ -442,23 +444,14 @@ class VoicePackManager:
             ):
                 raise VoiceManifestError("Existing voice manifest is invalid")
             references_path = pack_path / "references"
-            references_path.mkdir(parents=True, exist_ok=True)
-
-            copied = []
-            try:
-                for source in references:
-                    filename = (
-                        f"{slugify(character, fallback='asset')}-{uuid4().hex[:10]}"
-                        f"{source.suffix.casefold()}"
-                    )
-                    output = references_path / filename
-                    shutil.copy2(source, output)
-                    copied.append(output)
-            except Exception:
-                for output in copied:
-                    output.unlink(missing_ok=True)
-                raise
-
+            copied = [
+                references_path
+                / (
+                    f"{slugify(character, fallback='asset')}-{uuid4().hex[:10]}"
+                    f"{source.suffix.casefold()}"
+                )
+                for source in references
+            ]
             voice = {
                 "character": character,
                 "speaker": f"local-{slugify(character, fallback='asset')}-v2",
@@ -472,12 +465,19 @@ class VoicePackManager:
             ]
             voices.append(voice)
             voices.sort(key=lambda item: item["character"].casefold())
-            atomic_write_json(
-                manifest_path,
-                {"version": 2, "voices": voices},
+            updated_manifest = {"version": 2, "voices": voices}
+            validate_voice_manifest(updated_manifest, allow_legacy=False)
+            references_path.mkdir(parents=True, exist_ok=True)
+            try:
+                for source, output in zip(references, copied, strict=True):
+                    shutil.copy2(source, output)
+            except Exception:
+                for output in copied:
+                    output.unlink(missing_ok=True)
+                raise
+            registry = self._publish_pack(
+                pack_path, manifest_path, updated_manifest, copied
             )
-            registry = CharacterVoiceRegistry.from_file(manifest_path)
-            self._write_voice_checksums(pack_path, manifest_path)
             self._remove_unreferenced_files(pack_path, registry)
             return manifest_path
 
@@ -500,34 +500,85 @@ class VoicePackManager:
 
             unique_voices = registry.unique_voices()
             entries = []
-            for voice in unique_voices:
-                copied_references = []
-                for reference in voice.references:
-                    if not reference.is_file():
-                        raise VoiceManifestError(
-                            f"Voice reference does not exist: {reference}"
+            copied: list[Path] = []
+            try:
+                for voice in unique_voices:
+                    copied_references = []
+                    for reference in voice.references:
+                        if not reference.is_file():
+                            raise VoiceManifestError(
+                                f"Voice reference does not exist: {reference}"
+                            )
+                        output = references_path / (
+                            f"{slugify(voice.character, fallback='asset')}-{uuid4().hex[:10]}"
+                            f"{reference.suffix.casefold()}"
                         )
-                    output = references_path / (
-                        f"{slugify(voice.character, fallback='asset')}-{uuid4().hex[:10]}"
-                        f"{reference.suffix.casefold()}"
+                        copied.append(output)
+                        shutil.copy2(reference, output)
+                        copied_references.append(f"references/{output.name}")
+                    entries.append(
+                        {
+                            "character": voice.character,
+                            "speaker": voice.speaker,
+                            "aliases": list(voice.aliases),
+                            "references": copied_references,
+                        }
                     )
-                    shutil.copy2(reference, output)
-                    copied_references.append(f"references/{output.name}")
-                entries.append(
-                    {
-                        "character": voice.character,
-                        "speaker": voice.speaker,
-                        "aliases": list(voice.aliases),
-                        "references": copied_references,
-                    }
-                )
+            except Exception:
+                for output in copied:
+                    output.unlink(missing_ok=True)
+                raise
             entries.sort(key=lambda item: str(item["character"]).casefold())
             output_manifest: Path = pack_path / "manifest.json"
-            atomic_write_json(output_manifest, {"version": 2, "voices": entries})
-            imported_registry = CharacterVoiceRegistry.from_file(output_manifest)
-            self._write_voice_checksums(pack_path, output_manifest)
+            imported_registry = self._publish_pack(
+                pack_path, output_manifest, {"version": 2, "voices": entries}, copied
+            )
             self._remove_unreferenced_files(pack_path, imported_registry)
             return output_manifest
+
+    def _publish_pack(
+        self,
+        pack_path: Path,
+        manifest_path: Path,
+        document: dict[str, object],
+        copied: Sequence[Path],
+    ) -> CharacterVoiceRegistry:
+        checksum_path = pack_path / asset_manifest_name
+        replacement_started = False
+        try:
+            if checksum_path.is_symlink() or checksum_path.is_junction():
+                raise ModelIntegrityError(
+                    "Voice checksum manifest must not be an alias"
+                )
+            # ponytail: rollback handles exceptions; crash-atomic publication needs a versioned pack directory.
+            with TemporaryDirectory(
+                dir=pack_path, prefix=".voice-pack-backup-"
+            ) as temp:
+                backups = []
+                for destination in (manifest_path, checksum_path):
+                    backup = Path(temp) / destination.name
+                    if destination.exists():
+                        backup.write_bytes(destination.read_bytes())
+                    backups.append((destination, backup))
+                try:
+                    replacement_started = True
+                    atomic_write_json(manifest_path, document)
+                    registry = CharacterVoiceRegistry.from_file(manifest_path)
+                    self._write_voice_checksums(pack_path, manifest_path)
+                except Exception:
+                    for destination, backup in backups:
+                        if backup.exists():
+                            os.replace(backup, destination)
+                        else:
+                            destination.unlink(missing_ok=True)
+                    replacement_started = False
+                    raise
+        except Exception:
+            if not replacement_started:
+                for output in copied:
+                    output.unlink(missing_ok=True)
+            raise
+        return registry
 
     @staticmethod
     def _remove_unreferenced_files(
