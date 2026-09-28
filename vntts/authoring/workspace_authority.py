@@ -111,6 +111,13 @@ def _json_document(value: object, message: str) -> JsonDocument:
     return value
 
 
+def _has_exact_schema_version(document: Mapping[str, object], expected: int) -> bool:
+    return (
+        type(document.get("schema_version")) is int
+        and document.get("schema_version") == expected
+    )
+
+
 def _load_bound_workspace_queue(
     directory: Path, workspace: WorkspaceDocument
 ) -> VoiceGenerationQueue:
@@ -201,9 +208,8 @@ def _load_workspace_document(
     if workspace_path.is_symlink():
         raise AuthoringWorkbenchError("Workspace document must not be a symlink")
     workspace = _load_json(workspace_path, "authoring workspace")
-    if (
-        workspace.get("schema") != WORKSPACE_SCHEMA
-        or workspace.get("schema_version") != WORKSPACE_VERSION
+    if workspace.get("schema") != WORKSPACE_SCHEMA or not _has_exact_schema_version(
+        workspace, WORKSPACE_VERSION
     ):
         raise AuthoringWorkbenchError(f"Unsupported authoring workspace: {directory}")
     match = re.fullmatch(r"resume-([0-9a-f]{24})-([0-9a-f]{16})", directory.name)
@@ -255,6 +261,7 @@ def _load_workspace_import_snapshot(
     )
     if (
         snapshot.get("schema") != legacy_import.IMPORT_SCHEMA
+        or type(snapshot.get("schema_version")) is not int
         or snapshot.get("schema_version")
         not in legacy_import.SUPPORTED_IMPORT_SCHEMA_VERSIONS
         or snapshot.get("import_id") != expected_import_id
@@ -338,7 +345,9 @@ def _load_workspace_validation_state(
         )
         return state, state_sha256
     if any(workspace.get(field) is not None for field in direct_extensions) or (
-        isinstance(carry, dict) and carry.get("schema_version") in {2, 3, 4}
+        isinstance(carry, dict)
+        and type(carry.get("schema_version")) is int
+        and carry.get("schema_version") in {2, 3, 4}
     ):
         state_path = directory / "generated-audio/generation-state.json"
         payload = read_regular_file(
@@ -506,6 +515,7 @@ def _validate_import_history(manifest: ImportSnapshot) -> None:
         not isinstance(legacy_job, dict)
         or not has_job_artifact
         or source.get("job_schema") != legacy_import.LEGACY_JOB_SCHEMA
+        or type(source.get("job_schema_version")) is not int
         or source.get("job_schema_version") != legacy_import.LEGACY_JOB_SCHEMA_VERSION
         or not isinstance(source.get("job_directory"), str)
         or not source["job_directory"].strip()
@@ -575,7 +585,7 @@ def _validate_workspace_queue_extension(
         not isinstance(config, dict)
         or set(config) != required
         or config.get("schema") != QUEUE_EXTENSION_WORKSPACE_SCHEMA
-        or config.get("schema_version") != QUEUE_EXTENSION_WORKSPACE_VERSION
+        or not _has_exact_schema_version(config, QUEUE_EXTENSION_WORKSPACE_VERSION)
         or config.get("base_queue_sha256") != imported_queue_digest
     ):
         raise AuthoringWorkbenchError("Workspace queue extension is malformed")
@@ -746,6 +756,8 @@ def _validate_carry_forward_header(
     workspace: WorkspaceDocument, carry: JsonDocument
 ) -> tuple[int, str, list[str], list[str], FailureRepairPolicy | None]:
     version = carry.get("schema_version") if isinstance(carry, dict) else None
+    if type(version) is not int:
+        raise AuthoringWorkbenchError("Workspace carry-forward provenance is malformed")
     if not isinstance(carry, dict) or set(carry) != _carry_forward_expected_fields(
         version
     ):
@@ -1134,7 +1146,11 @@ def _validate_workspace_offline_fallback_state(
     state: GenerationState | None = None,
 ) -> None:
     carry = workspace.get("carry_forward")
-    if not isinstance(carry, dict) or carry.get("schema_version") not in {2, 3, 4}:
+    if (
+        not isinstance(carry, dict)
+        or type(carry.get("schema_version")) is not int
+        or carry.get("schema_version") not in {2, 3, 4}
+    ):
         return
     queue_path = directory / "queue.jsonl"
     state_path = directory / "generated-audio" / "generation-state.json"
@@ -1562,6 +1578,8 @@ def _validate_workspace_outcome_merge(
 
 def _validate_outcome_merge_header(merge: object) -> int:
     version = merge.get("schema_version") if isinstance(merge, dict) else None
+    if type(version) is not int:
+        raise AuthoringWorkbenchError("Workspace outcome merge provenance is malformed")
     fields = {
         "schema",
         "schema_version",
@@ -1868,7 +1886,7 @@ def _validate_terminal_conflict_merge_header(merge: object) -> int:
         not isinstance(merge, dict)
         or set(merge) != fields
         or merge.get("schema") != "vntts.authoring-terminal-conflict-workspace-merge"
-        or merge.get("schema_version") != 1
+        or not _has_exact_schema_version(merge, 1)
     ):
         raise AuthoringWorkbenchError(
             "Workspace terminal conflict merge provenance is malformed"

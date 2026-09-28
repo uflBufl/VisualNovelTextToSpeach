@@ -854,6 +854,68 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertEqual(manifest["entries"][0]["carry_forward"]["mode"], "review-only")
         self.assertEqual(source_state_sha256_after, source_state_sha256)
 
+    def test_workspace_authority_rejects_non_integer_schema_versions(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, source = create_carry_source_workspace(root)
+            review_workspace_item(source.directory, fixture["queue_id"], "approved")
+            source_directory = downgrade_workspace_run_config_to_legacy(
+                source.directory
+            )
+            carried = create_resume_workspace(
+                imported,
+                root / "workspaces",
+                story_index=fixture["job"]["story_index"],
+                voice_manifest=write_carry_target_manifest(root),
+                backend="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                narrator_character="Paper Heron",
+                carry_forward_from=source_directory,
+                carry_forward_characters=("Rhiannon",),
+            )
+            workspace_path = carried.directory / "workspace.json"
+            original = json.loads(workspace_path.read_text(encoding="utf-8"))
+
+            for version in (True, 1.0):
+                forged = json.loads(json.dumps(original))
+                forged["schema_version"] = version
+                workspace_path.write_text(json.dumps(forged), encoding="utf-8")
+                with self.assertRaisesRegex(
+                    AuthoringWorkbenchError, "Unsupported authoring workspace"
+                ):
+                    workspace_authority_module.load_workspace_authority(
+                        carried.directory
+                    )
+
+                forged = json.loads(json.dumps(original))
+                forged["carry_forward"]["schema_version"] = version
+                fingerprint = workbench_module._workspace_config_fingerprint(
+                    forged["source"]["import_id"],
+                    forged.get("story_index"),
+                    forged.get("voice_manifest"),
+                    forged["narrator_character"],
+                    forged["run_config"],
+                    forged.get("carry_forward"),
+                )
+                forged["config_fingerprint"] = fingerprint
+                forged["workspace_id"] = (
+                    f"resume-{forged['source']['import_id'].removeprefix('legacy-')}-"
+                    f"{fingerprint[:16]}"
+                )
+                forged_directory = carried.directory.with_name(forged["workspace_id"])
+                carried.directory.rename(forged_directory)
+                forged_path = forged_directory / "workspace.json"
+                forged_path.write_text(json.dumps(forged), encoding="utf-8")
+                with self.assertRaisesRegex(
+                    AuthoringWorkbenchError, "carry-forward provenance is malformed"
+                ):
+                    workspace_authority_module.load_workspace_authority(
+                        forged_directory
+                    )
+                forged_directory.rename(carried.directory)
+                workspace_path.write_text(json.dumps(original), encoding="utf-8")
+
     def test_offline_pocket_fallback_carries_exact_failure_with_fresh_seed_space(self):
         from tests.test_authoring_bulk_generation import SyntheticRenderer
         from vntts.authoring.bulk_generation import (
