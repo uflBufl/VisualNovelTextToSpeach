@@ -1374,6 +1374,7 @@ def _progress_document(
     if (
         not _is_progress_document(value)
         or value.get("schema") != TERMINAL_CONFLICT_PROGRESS_SCHEMA
+        or type(version) is not int
         or version not in SUPPORTED_TERMINAL_CONFLICT_PROGRESS_VERSIONS
         or value.get("review_id") != review["review_id"]
         or set(value) != required

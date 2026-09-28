@@ -145,6 +145,14 @@ class TerminalConflictReviewTest(unittest.TestCase):
                 carried["carry_forward"]["source_review_id"], source_result.review_id
             )
             self.assertEqual(load_terminal_conflict_review(target).completed_count, 1)
+            forged = json.loads((target / "progress.json").read_text(encoding="utf-8"))
+            forged["schema_version"] = True
+            forged.pop("carry_forward")
+            (target / "progress.json").write_text(json.dumps(forged), encoding="utf-8")
+            with self.assertRaisesRegex(TerminalConflictReviewError, "invalid"):
+                load_terminal_conflict_review_progress(target)
+
+            (target / "progress.json").write_text(json.dumps(carried), encoding="utf-8")
             target_progress_before = (target / "progress.json").read_bytes()
             with self.assertRaisesRegex(
                 TerminalConflictReviewError, "decision identity changed"
