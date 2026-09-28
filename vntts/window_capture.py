@@ -73,8 +73,8 @@ class Win32WindowBackend:
         raise WindowCaptureError("Windows returned an invalid numeric window value")
 
     def _call(self, name: str, *arguments: object) -> object:
-        function: object = getattr(self.user32, name)
-        result: object = getattr(function, "__call__")(*arguments)
+        function = getattr(self.user32, name)
+        result: object = function(*arguments)
         return result
 
     def _configure_functions(self) -> None:
