@@ -2,11 +2,12 @@ import json
 import os
 import re
 import shutil
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
-from typing import Any, Callable
+from typing import Protocol
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from uuid import uuid4
@@ -23,6 +24,21 @@ asset_manifest_name = "vntts-asset.json"
 supported_audio_extensions = {".flac", ".m4a", ".mp3", ".ogg", ".wav"}
 _ASSET_MANIFEST_READ_LIMIT = 64 * 1024
 _VOICE_MANIFEST_READ_LIMIT = 16 * 1024 * 1024
+
+
+class _ModelResponse(Protocol):
+    @property
+    def headers(self) -> Mapping[str, str]: ...
+
+    def read(self, size: int) -> bytes: ...
+
+    def getcode(self) -> int: ...
+
+
+class _ModelOpener(Protocol):
+    def __call__(
+        self, request: Request, *, timeout: int
+    ) -> AbstractContextManager[_ModelResponse]: ...
 
 
 class AssetError(RuntimeError):
@@ -64,7 +80,7 @@ class ModelAssetManager:
         self,
         storage_root: str | os.PathLike[str] | None = None,
         *,
-        opener: Callable[..., Any] | None = None,
+        opener: _ModelOpener | None = None,
         catalog_loader: Callable[[str], ModelAsset] | None = None,
     ) -> None:
         self.storage_root = (
