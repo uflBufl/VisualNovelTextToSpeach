@@ -237,10 +237,12 @@ class GenerationTimelineLog:
         try:
             generation = int(generation)
             occurred_at = float(occurred_at)
-        except (TypeError, ValueError) as error:
+        except (TypeError, ValueError, OverflowError) as error:
             raise ValueError(
                 "Timeline generation and timestamp must be numeric"
             ) from error
+        if not math.isfinite(occurred_at):
+            raise ValueError("Timeline timestamp must be finite")
         if generation < 1:
             return False
         if session_id is not None:
@@ -547,6 +549,8 @@ class PerformanceLog(RuntimeSupportLog):
     def record(
         self, operation: str, elapsed_ms: float, outcome: str, **details: object
     ) -> None:
+        if not math.isfinite(elapsed_ms):
+            return
         if outcome == "complete" and elapsed_ms < 100:
             return
         self.add(
@@ -1900,6 +1904,8 @@ def sanitize_event(entry: SupportDetails) -> SupportDocument:
 
 
 def _sanitize_event_value(value: object) -> object:
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
     if value is None or isinstance(value, (bool, int, float)):
         return value
     return _redact_game_import_text(value)
@@ -1939,6 +1945,8 @@ def _sanitize_game_import_value(key: str, value: object) -> object:
 
 def _sanitize_game_import_structure(value: object, depth: int = 0) -> object:
     if depth >= 2:
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
         return None
     if value is None or isinstance(value, (bool, int, float)):
         return value
@@ -2040,7 +2048,7 @@ def redact_text(value: object) -> str:
 def sanitize_diagnostic(snapshot: object) -> SupportDocument:
     if snapshot is None:
         return {"available": False}
-    return {
+    values = {
         "available": True,
         "confidence": getattr(snapshot, "confidence", None),
         "preprocessing_profile": getattr(snapshot, "preprocessing_profile", None),
@@ -2056,6 +2064,7 @@ def sanitize_diagnostic(snapshot: object) -> SupportDocument:
         "last_first_audio_ms": getattr(snapshot, "last_first_audio_ms", None),
         "cache_source": getattr(snapshot, "cache_source", None),
     }
+    return {key: _sanitize_event_value(value) for key, value in values.items()}
 
 
 def collect_ocr_metrics(directory: str | Path) -> SupportDocument:
@@ -2080,11 +2089,15 @@ def collect_ocr_metrics(directory: str | Path) -> SupportDocument:
                     attempt_count, (str, int, float)
                 ):
                     raise TypeError("OCR metrics must be numeric")
-                confidences.append(float(confidence))
-                attempts.append(int(attempt_count))
+                confidence = float(confidence)
+                attempt_count = int(attempt_count)
+                if not math.isfinite(confidence):
+                    raise ValueError("OCR confidence must be finite")
+                confidences.append(confidence)
+                attempts.append(attempt_count)
                 profiles[str(payload.get("preprocessing_profile") or "unknown")] += 1
                 resolved += payload.get("resolved") is True
-            except OSError, TypeError, ValueError, json.JSONDecodeError:
+            except OSError, TypeError, ValueError, OverflowError, json.JSONDecodeError:
                 invalid += 1
     return {
         "sample_count": len(confidences),

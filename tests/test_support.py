@@ -33,6 +33,7 @@ from vntts.support import (
     record_game_import,
     record_native_speech,
     redact_text,
+    sanitize_diagnostic,
     sanitize_event,
     sanitize_settings,
     sequence_timeline_stages,
@@ -110,6 +111,22 @@ class NativeSpeechLogTest(unittest.TestCase):
 
 
 class GenerationTimelineLogTest(unittest.TestCase):
+    def test_rejects_non_finite_timestamps_and_omits_invalid_metrics(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "timelines.json"
+            timelines = GenerationTimelineLog(path=path)
+            with self.assertRaisesRegex(ValueError, "timestamp must be finite"):
+                timelines.record("capture", 1, float("nan"))
+            with self.assertRaisesRegex(ValueError, "must be numeric"):
+                timelines.record("capture", float("inf"), 1.0)
+            timelines.record("first-pcm", 1, 1.0, from_text_visible_ms=float("inf"))
+
+            persisted = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(timelines.latency_summary(), {})
+        self.assertIsNone(timelines.snapshot()[0]["events"][0]["from_text_visible_ms"])
+        json.dumps(persisted, allow_nan=False)
+
     def test_keeps_restarted_reader_generations_in_separate_timelines(self):
         timelines = GenerationTimelineLog()
         first_session, second_session = uuid4().hex, uuid4().hex
@@ -410,6 +427,25 @@ class GenerationTimelineLogTest(unittest.TestCase):
 
 
 class RuntimeSupportLogTest(unittest.TestCase):
+    def test_non_finite_metrics_do_not_pollute_persisted_events_or_summary(self):
+        with TemporaryDirectory() as temporary_directory:
+            runtime_path = Path(temporary_directory) / "runtime.log"
+            performance_path = Path(temporary_directory) / "performance.log"
+            runtime = RuntimeSupportLog(path=runtime_path)
+            performance = PerformanceLog(path=performance_path)
+
+            runtime.add("live-scope", "match", best_bounded_similarity=float("nan"))
+            performance.record("scan", float("inf"), "complete")
+            performance.record("scan", 125.0, "complete", bytes_examined=float("nan"))
+
+            persisted = runtime_path.read_text(encoding="utf-8")
+            report = performance.report()
+
+        self.assertIsNone(json.loads(persisted)["best_bounded_similarity"])
+        self.assertEqual(report["summary"]["scan"]["count"], 1)
+        self.assertNotIn("max_bytes_examined", report["summary"]["scan"])
+        json.dumps(report, allow_nan=False)
+
     def test_audio_lifecycle_log_replaces_previous_session_then_appends(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "audio-lifecycle.log"
@@ -489,6 +525,22 @@ class RuntimeSupportLogTest(unittest.TestCase):
             snapshot = preserve_previous_session(directory)
 
         self.assertEqual(snapshot, {"available": False})
+
+    def test_previous_session_omits_non_finite_timeline_details(self):
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            (directory / "generation-timelines.json").write_text(
+                '{"timelines":[{"generation":1,"events":['
+                '{"stage":"first-pcm","elapsed_ms":NaN}]}]}',
+                encoding="utf-8",
+            )
+
+            snapshot = preserve_previous_session(directory)
+
+        self.assertIsNone(
+            snapshot["generation_timelines"][0]["events"][0]["elapsed_ms"]
+        )
+        json.dumps(snapshot, allow_nan=False)
 
     def test_log_is_bounded_and_returns_a_copy(self):
         log = RuntimeSupportLog(
@@ -701,7 +753,11 @@ class GameImportLogTest(unittest.TestCase):
             index=Path.home() / "private" / "index.json",
             roots=[Path.home() / "Games", r"C:\Users\Ada\Games\Reverse1999"],
             missing=["datacfg_1.dat"],
-            cache_state={"narrator_index": True, "bank_count": 4},
+            cache_state={
+                "narrator_index": True,
+                "bank_count": 4,
+                "invalid_metric": float("inf"),
+            },
             stderr_tail=(
                 "failed at D:/Games/Reverse1999; token=do-not-export; "
                 'Authorization: Bearer no-export; {"token":"no-export"}'
@@ -709,7 +765,7 @@ class GameImportLogTest(unittest.TestCase):
         )
 
         event = log.snapshot()[0]
-        serialized = json.dumps(event)
+        serialized = json.dumps(event, allow_nan=False)
         self.assertEqual(
             event["cache_state"], {"narrator_index": True, "bank_count": 4}
         )
@@ -737,6 +793,15 @@ class GameImportLogTest(unittest.TestCase):
 
 
 class SupportBundleBuilderTest(unittest.TestCase):
+    def test_diagnostic_snapshot_excludes_non_finite_metrics(self):
+        snapshot = sanitize_diagnostic(
+            SimpleNamespace(confidence=float("nan"), capture_ms=float("inf"))
+        )
+
+        self.assertIsNone(snapshot["confidence"])
+        self.assertIsNone(snapshot["capture_ms"])
+        json.dumps(snapshot, allow_nan=False)
+
     def test_voice_bindings_report_one_effective_source_and_provenance(self):
         with TemporaryDirectory() as directory:
             library = VoiceLibrary(Path(directory) / "voices")
@@ -1197,13 +1262,21 @@ class SupportBundleBuilderTest(unittest.TestCase):
                 "bad json",
                 encoding="utf-8",
             )
+            (directory / "uncertain-nan.json").write_text(
+                '{"confidence":NaN,"attempts":2}',
+                encoding="utf-8",
+            )
+            (directory / "uncertain-infinity.json").write_text(
+                '{"confidence":50,"attempts":Infinity}',
+                encoding="utf-8",
+            )
 
             metrics = collect_ocr_metrics(directory)
 
         self.assertEqual(metrics["sample_count"], 2)
         self.assertEqual(metrics["resolved_count"], 1)
         self.assertEqual(metrics["pending_count"], 1)
-        self.assertEqual(metrics["invalid_metadata_count"], 1)
+        self.assertEqual(metrics["invalid_metadata_count"], 3)
         self.assertEqual(metrics["average_confidence"], 50)
         self.assertEqual(metrics["average_attempts"], 3)
 
