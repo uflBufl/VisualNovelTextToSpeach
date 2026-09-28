@@ -70,16 +70,14 @@ Planned implementation order after approval:
 
 ## P0 - Play while offline audio is still preparing
 
-- [ ] **Diagnose Stage 1 of `A Fledgling's Brave Fall` from the September 29
-      support archive:** classify each auto-advance stall and manual advance that
-      did not start the next prepared line. Reproduce the actual cursor/OCR/focus
-      transition before fixing it. Preserve the one-key-per-dialogue safety rule;
-      never blindly resend an advance key. The archive contains 21
-      `story-line-no-match` routes and seven dispatched keys with no confirmed
-      successor. Its timeline retains only the last stable-frame observation per
-      line; record bounded counts of candidate resets and stable confirmations
-      so one validation archive can separate unstable pixels from a missed key.
-      Identify which unmatched routes are OCR/nameplate errors.
+- [ ] **Diagnose Stage 1 auto-advance stalls on Windows:** the September 29
+      archive has 21 `story-line-no-match` routes and seven dispatched keys with
+      no confirmed successor. New bounded frame-gate counters now distinguish
+      fingerprint resets from stable confirmations without retaining dialogue.
+      Reproduce one stall and manual advance in the same stage, classify its
+      cursor/OCR/focus transition, and fix the proven boundary. Never blindly
+      resend a key; preserve one key per dialogue. Identify which unmatched
+      routes are OCR/nameplate errors.
 - [ ] **Validate unknown speaker OCR in the affected stage:** the isolated `22`
       nameplate alias now resolves to `???` and is removed from dialogue, while
       legitimate numeric names and numeral-led narration remain intact. Capture
@@ -95,43 +93,32 @@ Planned implementation order after approval:
       in the next support log to isolate any remaining multi-second delay; the
       earlier archive recorded `_wait_for_live_reader` at 5021 ms. Keep a
       stalled start, and investigate any stop timeout before changing limits.
-- [ ] **Honor matching game speech:** investigate why the voiced line `We should
-      all stay on our island.` was also synthesized. Compare the exact on-screen
-      text, configured audio-source policy, bound game audio, its authoritative/
-      full-coverage flags and match evidence. Current import runs only
-      `r1999-bootstrap`; the standalone `r1999-source-audio-semantics` ASR publisher
-      is not integrated, so exact available source clips remain non-authoritative
-      (`source-audio-authority-unavailable` for four exact lines in the archive).
-      Integrate this check in offline preparation for selected stages only, using
-      a managed local model and the existing evidence/index pair. Never decode or
-      transcribe game audio during live reading; never treat `available` alone as
-      full coverage. Gate: one exact ASR match uses game audio without synthetic
-      overlap, one partial cue still uses TTS, and the quoted line is identified
-      against its actual indexed media before claiming it is fixed.
-- [ ] **Reduce prepared-line startup latency:** measure capture, OCR, sequence
-      matching, queueing, decoding and audio-output time in a fully prepared
-      stage. Design sequence-led playback with OCR as a position check, not a
-      full recognition gate for every known line; retain resync and mismatched
-      dialogue safety. The September 29 support archive has `live_sequence_mode=off`
-      and no plan, while self-service pack publication does not currently include
-      a sequence plan, so its existing fast path cannot run. Verify whether the
-      source story steps can prove unique successors; the extracted
-      `previous_text`/`next_text` links are synthetic neighbors, not a control-flow
-      graph. Publish a checksum-bound plan only for proven spans and
-      terminate uncertain branches for manual/OCR recovery. Activate the safe
-      plan by default for self-service packs, without enabling blind key presses.
-      Gate: deterministic replay proves no wrong-line/wrong-speaker/duplicate
-      dispatches across gaps, branches and short/unknown-speaker dialogue;
-      discuss measured playback latency before changing capture cadence.
-- [ ] **Expose stages as preparation units:** verify stage boundaries and line
-      ownership in the story index. Current selections are whole collections;
-      only indexes without collections fall back to chapter groups. Split a
-      collection into stable stage selections where the source provides stage
-      IDs, then show per-stage playable/offline-complete/remaining coverage
-      instead of treating any saved job as ready. Allow selecting only unread
-      stages and publish partial-stage audio safely so Stage 1 is playable while
-      later stages generate. Bind saved selection to the source-index checksum,
-      preserve completed work, and make stage choice editable on restart.
+- [ ] **Validate matching game speech on Windows:** offline preparation now
+      measures selected installed clips and classifies exact timed cues with a
+      pinned local ASR model before generating; untimed or partial cues remain
+      TTS fallbacks. Confirm one exact ASR match uses game audio without
+      synthetic overlap, one partial cue still uses TTS, and identify the
+      indexed media for `We should all stay on our island.` before claiming the
+      reported overlap is fixed. Check that cancelling the one-time model
+      download takes effect after its current file and never blocks a retry.
+- [ ] **Validate sequence-led prepared playback on Windows:** safe linear stages
+      now acquire a checksum-bound raw-step plan in the background; runtime and
+      published packs use audio-auto only with the plan and enabled auto-advance.
+      Branches, gaps, missing bundles and incomplete cumulative coverage fall
+      back to OCR. In stage `314501`, confirm the 107-step plan is acquired,
+      known WAVs start promptly, no wrong speaker/duplicate/unsolicited key occurs,
+      and manual resync still works. Compare capture/OCR/first-PCM timings with
+      the September 29 baseline before changing capture cadence. If plan creation
+      finishes after a very short generation and publication, the pack currently
+      remains in OCR mode; decide whether a later safe successor publication is
+      worth the added complexity only after measuring this case.
+- [ ] **Validate stage preparation on Windows:** multi-stage collections now
+      expose independently selectable source stage IDs with per-selection
+      readiness, and publishing Stage 2 retains Stage 1 audio. Confirm the
+      affected eight-stage story displays eight choices, selecting only an
+      unread stage does not regenerate finished stages, and Stage 1 remains
+      playable after a later stage is prepared. If the source reorders a stage
+      or changes its checksum, verify the saved job is rejected explicitly.
 - [ ] **Validate in a sustained chapter:** an occurrence is now claimed as soon as
       its first PCM is emitted, even if playback is later interrupted. Sequence
       leases and non-sequence generation sealing suppress a second route without
