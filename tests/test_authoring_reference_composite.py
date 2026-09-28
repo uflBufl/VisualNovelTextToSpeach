@@ -266,6 +266,42 @@ class AuthoringReferenceCompositeTest(unittest.TestCase):
                     composite.directory, generation.state, root / "changed-quality"
                 )
 
+    def test_quality_review_rejects_bound_non_object_source_report(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = self.make_report(root)
+            composite = publish_exact_bank_reference_composite(
+                report, "Hotelier", "505401.png", "hotelier.bnk", root / "composite"
+            )
+            generation = run_bulk_generation(
+                composite.directory / "queue.jsonl",
+                root / "generation",
+                _Renderer(),
+                provider="synthetic",
+                model="synthetic-v1",
+                generation_profile="stable",
+            )
+            report.write_text("[]", encoding="utf-8")
+            ledger_path = composite.directory / "composite.json"
+            ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+            ledger["source_candidate_report_sha256"] = hashlib.sha256(b"[]").hexdigest()
+            ledger_path.write_text(json.dumps(ledger, sort_keys=True), encoding="utf-8")
+            evaluation_path = composite.directory / "evaluation.json"
+            evaluation = json.loads(evaluation_path.read_text(encoding="utf-8"))
+            evaluation["source_composite_sha256"] = hashlib.sha256(
+                ledger_path.read_bytes()
+            ).hexdigest()
+            evaluation_path.write_text(
+                json.dumps(evaluation, sort_keys=True), encoding="utf-8"
+            )
+
+            with self.assertRaisesRegex(
+                ReferenceCompositeError, "affected story-line count is invalid"
+            ):
+                publish_composite_quality_review(
+                    composite.directory, generation.state, root / "quality"
+                )
+
     def test_quality_review_keeps_composite_error_for_changed_generated_sample(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

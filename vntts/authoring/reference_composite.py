@@ -361,7 +361,7 @@ def _matching_group(
     report: object, identity: tuple[object, object, object]
 ) -> JsonObject | None:
     if not isinstance(report, dict):
-        raise AttributeError(f"'{type(report).__name__}' object has no attribute 'get'")
+        return None
     groups = report.get("groups", [])
     if not isinstance(groups, list):
         return None
