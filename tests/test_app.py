@@ -2565,6 +2565,24 @@ class TrayApplicationTest(unittest.TestCase):
             self.assertTrue(dialog.advanced_narrator.isChecked())
             delete_dialog(dialog)
 
+    def test_qwen_rejects_manual_narrator_without_transcript(self):
+        with TemporaryDirectory() as directory:
+            reference = Path(directory) / "narrator.wav"
+            reference.touch()
+            dialog = SettingsDialog(
+                AppSettings(
+                    speech_backend="qwen-tts", tts_speaker_wav=str(reference)
+                ),
+                voice_library=VoiceLibrary(Path(directory) / "voices"),
+            )
+            self.assertTrue(
+                any(
+                    widget is dialog.choose_narrator_button and "exact words" in message
+                    for _, widget, message in dialog.validation_errors()
+                )
+            )
+            delete_dialog(dialog)
+
     def test_settings_missing_moss_voice_targets_picker_and_file_is_optional(self):
         empty_directory = TemporaryDirectory()
         self.addCleanup(empty_directory.cleanup)

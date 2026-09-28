@@ -528,6 +528,24 @@ class OnboardingWizardTest(unittest.TestCase):
             self.assertEqual(draft.tts_speaker_wav, str(reference))
             wizard.deleteLater()
 
+    def test_qwen_rejects_manual_narrator_without_transcript(self):
+        with TemporaryDirectory() as directory:
+            reference = Path(directory) / "narrator.wav"
+            reference.touch()
+            wizard = OnboardingWizard(
+                AppSettings(
+                    speech_backend="qwen-tts", tts_speaker_wav=str(reference)
+                )
+            )
+            page = wizard.configuration_page
+            self.assertTrue(
+                any(
+                    widget is page.choose_narrator_button and "exact words" in message
+                    for widget, message in page.validation_errors()
+                )
+            )
+            wizard.deleteLater()
+
     def test_new_setup_defaults_to_window_capture_and_pocket_tts(self):
         wizard = OnboardingWizard(AppSettings())
 

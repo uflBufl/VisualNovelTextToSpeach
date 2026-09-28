@@ -761,6 +761,20 @@ class ConfigurationPage(QWizardPage):
             add(self.terms, "XTTS license: accept the CPML terms.")
         narrator_reference = self.narrator_reference.text().strip()
         narrator_binding = self.voice_library.binding("Narrator")
+        narrator_evidence = (
+            narrator_binding.provenance.get("evidence")
+            if narrator_binding is not None
+            else None
+        )
+        if backend == "qwen-tts" and (
+            not isinstance(narrator_evidence, dict)
+            or not str(narrator_evidence.get("reference_transcript") or "").strip()
+        ):
+            add(
+                self.choose_narrator_button,
+                "Narrator voice: choose a game voice and enter the exact words "
+                "spoken in its reference for Qwen3-TTS.",
+            )
         if (
             narrator_reference
             and narrator_binding is None
@@ -771,14 +785,13 @@ class ConfigurationPage(QWizardPage):
                 "Narrator reference: the selected file does not exist.",
             )
         if (
-            backend in {"moss-tts", "qwen-tts"}
+            backend == "moss-tts"
             and not narrator_reference
             and narrator_binding is None
         ):
             add(
                 self.choose_narrator_button,
-                "Narrator voice: choose a game voice for "
-                f"{'MOSS-TTS' if backend == 'moss-tts' else 'Qwen3-TTS'}. "
+                "Narrator voice: choose a game voice for MOSS-TTS. "
                 "You can listen before choosing.",
             )
         game_pack = self.game_pack.text().strip()
