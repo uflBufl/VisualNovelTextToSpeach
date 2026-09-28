@@ -410,13 +410,3 @@ Planned implementation order after approval:
       exercise deferred activation after settings change. Verify audio continuity,
       that completed lines are not regenerated, keyboard and screen-reader status,
       and the minimum-width layout with increased text scaling.
-
-## Active - Isolate UI catalog story renderers
-
-- [ ] After the concurrent `story-match-recovery` catalog edits settle, split the
-      coupled scenario factories inside `scripts/render_ui_catalog.py:_render_stories`.
-      It still has four targeted complexity findings across the owner, voice editor
-      and offline preparation. Keep Qt imports lazy so `--validate-only` needs no
-      desktop runtime; preserve the current 27 stories / 33 surfaces, screenshot
-      IDs, rendering order and cleanup. Gate: catalog render and tests pass, and
-      these four findings can be removed from the ratchet.
