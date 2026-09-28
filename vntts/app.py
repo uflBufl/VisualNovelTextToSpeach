@@ -1782,6 +1782,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.resume_live_after_unknown_mapping = False
         self.onboarding_cancel_event = Event()
         self.restore_compact_after_calibration = False
+        self.restore_diagnostics_after_calibration = False
         self._notification_recovery: str | None = None
         self._background_notification_shown = False
         self.dashboard = ControlDashboard(self.settings)
@@ -2527,6 +2528,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.show_error(str(error))
             return
         self.restore_compact_after_calibration = self.compact_controller.isVisible()
+        if self.diagnostics_dialog is not None and self.diagnostics_dialog.isVisible():
+            self.restore_diagnostics_after_calibration = True
+            self.diagnostics_dialog.close()
         self.dashboard.hide()
         self.compact_controller.hide()
         if self.readiness_dialog is not None:
@@ -2560,11 +2564,16 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         else:
             self.show_dashboard()
         self.restore_compact_after_calibration = False
+        if self.restore_diagnostics_after_calibration:
+            self.restore_diagnostics_after_calibration = False
+            self.open_diagnostics()
+            self.diagnostics_dialog.request_refresh()
 
     def open_diagnostics(self) -> None:
         if self.diagnostics_dialog is None:
             self.diagnostics_dialog = DiagnosticsDialog()
             self.diagnostics_dialog.refresh_requested.connect(self.refresh_diagnostics)
+            self.diagnostics_dialog.calibration_requested.connect(self.calibrate)
             self.diagnostics_dialog.remediation_requested.connect(
                 self._run_diagnostics_remediation
             )

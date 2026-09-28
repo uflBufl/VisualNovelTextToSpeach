@@ -21,6 +21,7 @@ from vntts.ui_text import copy_text_button, make_text_copyable
 
 class DiagnosticsDialog(QDialog):
     refresh_requested = Signal()
+    calibration_requested = Signal()
     remediation_requested = Signal(str)
     closed = Signal()
 
@@ -51,6 +52,9 @@ class DiagnosticsDialog(QDialog):
         self.enlarge_button = QPushButton("Enlarge capture")
         self.enlarge_button.setEnabled(False)
         self.enlarge_button.clicked.connect(self.enlarge_capture)
+        self.calibrate_button = QPushButton("Change capture region...")
+        self.calibrate_button.setAccessibleName("Change captured dialogue region")
+        self.calibrate_button.clicked.connect(self.calibration_requested.emit)
 
         self.speaker = QLabel("-")
         self.text = QLabel()
@@ -135,6 +139,7 @@ class DiagnosticsDialog(QDialog):
         capture_header = QHBoxLayout()
         capture_header.addWidget(QLabel("Captured dialogue region"))
         capture_header.addStretch()
+        capture_header.addWidget(self.calibrate_button)
         capture_header.addWidget(self.enlarge_button)
         body = QWidget()
         body_layout = QVBoxLayout(body)

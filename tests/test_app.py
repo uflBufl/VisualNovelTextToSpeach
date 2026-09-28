@@ -4089,6 +4089,46 @@ class TrayApplicationTest(unittest.TestCase):
         )
         tray_application.shutdown()
 
+    def test_diagnostics_can_change_region_and_refresh_after_calibration(self):
+        controller = Mock()
+        controller.get_latest_diagnostic.return_value = None
+        geometry = WindowGeometry(100, 200, 1600, 900)
+        controller.get_capture_geometry.return_value = geometry
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(capture_mode="window"),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray_application.open_diagnostics()
+        dialog = tray_application.diagnostics_dialog
+        self.assertTrue(dialog.calibrate_button.isVisible())
+        self.assertEqual(
+            dialog.calibrate_button.accessibleName(),
+            "Change captured dialogue region",
+        )
+        overlay = Mock()
+
+        with (
+            patch("vntts.app.show_calibration_overlay", return_value=overlay) as show,
+            patch(
+                "vntts.app.QTimer.singleShot",
+                side_effect=lambda _delay, callback: callback(),
+            ),
+            patch.object(dialog, "request_refresh") as refresh,
+        ):
+            dialog.calibrate_button.click()
+            self.assertFalse(dialog.isVisible())
+            show.assert_called_once_with(
+                geometry, save_region=tray_application._save_calibration_region
+            )
+
+            overlay.closed.connect.call_args.args[0]()
+
+            self.assertTrue(dialog.isVisible())
+            refresh.assert_called_once_with()
+
+        tray_application.shutdown()
+
     def test_calibration_updates_the_active_game_profile(self):
         with TemporaryDirectory() as temporary_directory:
             store = GameProfileStore(Path(temporary_directory) / "profiles.json")
