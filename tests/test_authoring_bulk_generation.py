@@ -2737,6 +2737,17 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 )
             after = failed.state.read_bytes()
             published_wavs = list((output / "audio").rglob("*.wav"))
+            for seed in (True, "1"):
+                with self.subTest(seed=seed):
+                    tampered = json.loads(after)
+                    tampered["items"][item["queue_id"]]["seed"] = seed
+                    failed.state.write_text(
+                        json.dumps(tampered, sort_keys=True), encoding="utf-8"
+                    )
+                    with self.assertRaisesRegex(
+                        BulkGenerationError, "sentence repair seed must be an integer"
+                    ):
+                        load_generation_state(failed.state, queue)
 
         self.assertEqual(failed.generated, 0)
         self.assertEqual(stored["status"], "failed")

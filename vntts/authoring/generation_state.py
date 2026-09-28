@@ -1744,7 +1744,9 @@ def _validate_sentence_boundary_repair(
         _integer(value, f"State item {queue_id!r} sentence repair seed")
     outer_seed = result.get("seed")
     if outer_seed is not None:
-        assert isinstance(outer_seed, int)
+        outer_seed = _integer(
+            outer_seed, f"State item {queue_id!r} sentence repair seed"
+        )
     if outer_seed is not None and seeds != [
         outer_seed + index for index in range(len(seeds))
     ]:
