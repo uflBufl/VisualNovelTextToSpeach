@@ -47,6 +47,21 @@ class VoiceLibraryTest(unittest.TestCase):
             with self.assertRaisesRegex(VoiceLibraryError, "Unsupported"):
                 VoiceLibrary(root).bindings()
 
+    def test_malformed_alternative_checksum_uses_library_error(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "voice.wav"
+            write_wav(reference, b"\x00\x00")
+            library = VoiceLibrary(root / "library")
+            library.discover("Role", reference)
+            document = json.loads(library.path.read_text(encoding="utf-8"))
+            group = next(iter(document["alternatives"].values()))
+            group["items"][0]["sha256"] = {}
+            library.path.write_text(json.dumps(document), encoding="utf-8")
+
+            with self.assertRaisesRegex(VoiceLibraryError, "checksum is invalid"):
+                library.alternatives("Role")
+
     def test_concurrent_role_updates_are_both_retained(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory) / "library"

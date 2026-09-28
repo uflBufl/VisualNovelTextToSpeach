@@ -967,11 +967,13 @@ def _validate_alternative_group(identity: object, group: object) -> None:
     checksums = [
         item.get("sha256") for item in group["items"] if isinstance(item, dict)
     ]
-    if len(checksums) != len(group["items"]) or len(set(checksums)) != len(checksums):
+    if len(checksums) != len(group["items"]):
+        raise VoiceLibraryError("Voice alternatives must have unique checksums")
+    if any(not _is_sha256(checksum) for checksum in checksums):
+        raise VoiceLibraryError("Voice alternative checksum is invalid")
+    if len(set(checksums)) != len(checksums):
         raise VoiceLibraryError("Voice alternatives must have unique checksums")
     for item in group["items"]:
-        if not _is_sha256(item["sha256"]):
-            raise VoiceLibraryError("Voice alternative checksum is invalid")
         _validate_provenance(item.get("discovery"))
 
 
