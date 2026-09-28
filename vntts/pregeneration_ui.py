@@ -106,6 +106,10 @@ from vntts.pregeneration_voices import (
     pregeneration_narrator_source_id,
     resolve_pregeneration_settings,
 )
+from vntts.prepared_sequence import (
+    PreparedSequenceError,
+    prepare_sequence_for_prepared_story,
+)
 from vntts.qt_audio import QtPcmPlayer
 from vntts.release_backends import speech_backend_options
 from vntts.settings import AppSettings
@@ -148,6 +152,21 @@ class _SemanticVoicePlan:
     plan: VoicePlan
     job: PregenerationJob
     content: GameContent
+
+
+def _prepare_runtime_sequence(
+    generation_input: PregenerationInput, cancellation: Event
+) -> Path | None:
+    """Worker-safe optional playback setup; never makes preparation fail."""
+    try:
+        plan = prepare_sequence_for_prepared_story(
+            generation_input.story_index,
+            generation_input.directory / "live-sequence.json",
+            cancellation=cancellation,
+        )
+    except PreparedSequenceError:
+        return None
+    return plan.path
 
 
 class _StoryTree(QTreeWidget):
@@ -287,6 +306,8 @@ class OfflineAudioPreparationDialog(QDialog):
         self.voice_panel.saveFailed.connect(lambda: self.cancel_button.setEnabled(True))
         self.input_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.input_runner.finished.connect(self._generation_input_finished)
+        self.sequence_runner = LatestTaskRunner(self, thread_pool=thread_pool)
+        self.sequence_runner.finished.connect(self._prepared_sequence_finished)
         self.generation_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.generation_runner.finished.connect(self._generation_finished)
         self.recovery_runner = LatestTaskRunner(self, thread_pool=thread_pool)
@@ -303,6 +324,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self.import_runner,
             self.voice_runner,
             self.input_runner,
+            self.sequence_runner,
             self.generation_runner,
             self.recovery_runner,
             self.publication_runner,
@@ -349,6 +371,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._prepared_voice_manifest: str | Path | None = None
         self._prepared_voice_job: str | None = None
         self._generation_input: PregenerationInput | None = None
+        self._prepared_sequence_plan: Path | None = None
         self._generation_result: OfflineGenerationResult | None = None
         self._recovery_result: OfflineRecoveryResult | None = None
         self._pack_result: OfflinePackResult | None = None
@@ -2253,8 +2276,17 @@ class OfflineAudioPreparationDialog(QDialog):
             game_pack=None,
             story_index=str(generation_input.story_index),
             voice_manifest=str(generation_input.voice_manifest),
-            live_sequence_plan=None,
-            live_sequence_mode="off",
+            live_sequence_plan=(
+                str(self._prepared_sequence_plan)
+                if self._prepared_sequence_plan is not None
+                else None
+            ),
+            live_sequence_mode=(
+                "audio-auto"
+                if self._prepared_sequence_plan is not None
+                and self.settings.auto_advance_enabled
+                else "off"
+            ),
             live_speaker_corpus=None,
             generated_audio_manifest=str(manifest),
             audio_source_policy="prefer-game-audio",
@@ -4014,6 +4046,7 @@ class OfflineAudioPreparationDialog(QDialog):
     def _start_generation_input(self, plan: VoicePlan) -> None:
         self.preparing_inputs = True
         self._generation_input = None
+        self._prepared_sequence_plan = None
         self._set_import_controls(False)
         self.cancel_button.setText("Cancel preparation")
         self._show_waiting_phase(
@@ -4097,6 +4130,7 @@ class OfflineAudioPreparationDialog(QDialog):
             return
         assert _is_generation_input_result(prepared)
         self._generation_input, changes, resources = prepared
+        self._start_prepared_sequence(self._generation_input)
         assert self._job is not None
         self._changes_rows = (
             (
@@ -4165,6 +4199,24 @@ class OfflineAudioPreparationDialog(QDialog):
             self._voice_plan,
             self.voice_cancel_event,
         )
+
+    def _start_prepared_sequence(self, generation_input: PregenerationInput) -> None:
+        """Best-effort plan preparation never delays audio generation."""
+        self.sequence_runner.start(
+            _prepare_runtime_sequence,
+            generation_input,
+            self.voice_cancel_event,
+        )
+
+    def _prepared_sequence_finished(
+        self, result: object, error: Exception | None
+    ) -> None:
+        if error is not None or not isinstance(result, Path):
+            return
+        generation_input = self._generation_input
+        if generation_input is None or result.parent != generation_input.directory:
+            return
+        self._prepared_sequence_plan = result
 
     def _generation_finished(self, result: object, error: Exception | None) -> None:
         self._stop_generation_progress()
@@ -4307,6 +4359,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self._generation_input,
             generation_result,
             self.voice_cancel_event,
+            self._prepared_sequence_plan,
         )
 
     def _publication_finished(self, result: object, error: Exception | None) -> None:
@@ -4451,6 +4504,7 @@ class OfflineAudioPreparationDialog(QDialog):
             or self.generating
             or self.recovering
             or self.publishing_pack
+            or self.sequence_runner.active
         ):
             self._close_after_voice_cancel = True
             self.voice_cancel_event.set()
@@ -4466,6 +4520,8 @@ class OfflineAudioPreparationDialog(QDialog):
                 if self.generating
                 else "offline preparation"
                 if self.preparing_inputs
+                else "playback sequence preparation"
+                if self.sequence_runner.active
                 else "voice selection"
                 if self.auditioning_voices
                 else "voice matching"
@@ -4494,6 +4550,7 @@ class OfflineAudioPreparationDialog(QDialog):
             or self.generating
             or self.recovering
             or self.publishing_pack
+            or self.sequence_runner.active
         ):
             self._cancel_or_reject()
             event.ignore()
@@ -4511,6 +4568,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.discovery_runner.cancel()
         self.voice_runner.cancel()
         self.input_runner.cancel()
+        self.sequence_runner.cancel()
         self.generation_runner.cancel()
         self.recovery_runner.cancel()
         self.publication_runner.cancel()
@@ -4562,6 +4620,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 self.generating,
                 self.recovering,
                 self.publishing_pack,
+                self.sequence_runner.active,
                 self.activating_saved,
             )
         )

@@ -4516,6 +4516,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--prepared-sequence-worker",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     arguments, qt_arguments = parser.parse_known_args(
         sys.argv[1:] if argv is None else argv
     )
@@ -4536,6 +4541,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         from vntts.authoring.cli_generation import main as generation_main
 
         return generation_main(qt_arguments)
+    if arguments.prepared_sequence_worker:
+        from r1999extractor.live_sequence import main as live_sequence_main
+
+        return live_sequence_main(qt_arguments)
     if arguments.package_self_test:
         return run_package_self_test(arguments.package_self_test_report).exit_code
     if arguments.release_smoke_test_image or arguments.release_smoke_test_window_title:

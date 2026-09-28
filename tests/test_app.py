@@ -584,6 +584,34 @@ class TrayApplicationTest(unittest.TestCase):
         semantics.assert_called_once_with(["--story-index", "/tmp/timed-story.jsonl"])
         qt_application.assert_not_called()
 
+    def test_packaged_prepared_sequence_worker_runs_without_creating_qt(self):
+        package = ModuleType("r1999extractor")
+        package.__path__ = []
+        sequence_module = ModuleType("r1999extractor.live_sequence")
+        sequence = Mock(return_value=0)
+        sequence_module.main = sequence
+        with (
+            patch.dict(
+                "sys.modules",
+                {
+                    "r1999extractor": package,
+                    "r1999extractor.live_sequence": sequence_module,
+                },
+            ),
+            patch("vntts.app.QApplication") as qt_application,
+        ):
+            result = main(
+                [
+                    "--prepared-sequence-worker",
+                    "--story-index",
+                    "/tmp/story-index.jsonl",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        sequence.assert_called_once_with(["--story-index", "/tmp/story-index.jsonl"])
+        qt_application.assert_not_called()
+
     def test_packaged_generation_worker_runs_without_creating_qt(self):
         with (
             patch(

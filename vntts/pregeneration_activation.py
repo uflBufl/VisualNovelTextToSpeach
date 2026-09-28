@@ -99,6 +99,12 @@ class OfflinePackActivator:
             imported.story_index
         ).dialogue
         candidate = imported.apply_to(current_settings).updated(
+            live_sequence_mode=(
+                "audio-auto"
+                if imported.live_sequence_plan is not None
+                and current_settings.auto_advance_enabled
+                else "off"
+            ),
             audio_source_policy=(
                 "prefer-game-audio"
                 if any(

@@ -666,7 +666,7 @@ class LiveReplayTest(unittest.TestCase):
         )
         self.assertGreater(canonical_full["first_pcm_before_canonical_full_ms"], 0)
 
-    def test_sequence_audio_manual_uses_bounded_ocr_for_skip_and_choice(self):
+    def test_sequence_branch_uses_bounded_ocr_without_sending_a_key(self):
         with TemporaryDirectory() as temporary_directory:
             story_lines = [
                 {
@@ -779,6 +779,8 @@ class LiveReplayTest(unittest.TestCase):
             )
         )
         self.assertEqual(report["sequence"]["observed"]["bounded_recoveries"], 2)
+        self.assertEqual(report["sequence"]["observed"]["key_dispatch_attempts"], 0)
+        self.assertEqual(report["sequence"]["observed"]["confirmed_key_dispatches"], 0)
         self.assertEqual(
             report["sequence"]["observed"]["event_ids"],
             ["branch-1", "branch-3", "branch-right"],

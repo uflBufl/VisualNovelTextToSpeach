@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 import shutil
 from collections.abc import Iterable
@@ -19,6 +20,12 @@ from vntts_artifacts.generated_audio import (
     GeneratedAudioManifestError,
     load_generated_audio_document,
     write_generated_audio_manifest,
+)
+from vntts_artifacts.live_sequence import (
+    LiveSequencePlan,
+    LiveSequencePlanError,
+    load_live_sequence_plan,
+    write_live_sequence_plan,
 )
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
@@ -392,6 +399,7 @@ class OfflinePackPublisher:
         generation_input: PregenerationInput,
         generation_result: OfflineGenerationResult,
         cancel_event: Cancellation | None = None,
+        live_sequence_plan: Path | None = None,
     ) -> OfflinePackResult:
         _validate_inputs(job, generation_input, generation_result)
         _raise_if_cancelled(cancel_event)
@@ -414,7 +422,12 @@ class OfflinePackPublisher:
             if base is None
             else base.pack.extensions["vntts.self-service"]["identity"]
         )
-        identity = _identity(generation_input, state_sha256, base_identity)
+        identity = _identity(
+            generation_input,
+            state_sha256,
+            base_identity,
+            _optional_sha256(live_sequence_plan),
+        )
         destination = (
             generation_input.directory.parent / "game-packs" / (f"pack-{identity[:24]}")
         )
@@ -454,6 +467,7 @@ class OfflinePackPublisher:
                 story_copy = staging / "story" / "story-index.jsonl"
                 voice_copy = staging / "voices" / "voice-manifest.json"
                 generated_copy = staging / "generated" / "manifest.json"
+                sequence_copy = staging / "story" / "live-sequence.json"
                 phase_started, cpu_started = perf_counter(), process_time()
                 if base is None:
                     _copy_prepared_file(
@@ -492,6 +506,14 @@ class OfflinePackPublisher:
                         voice_copy,
                     )
                 _verify_prepared_inputs(generation_input)
+                staged_sequence = _stage_live_sequence(
+                    base,
+                    live_sequence_plan,
+                    generation_input.story_index,
+                    story_copy,
+                    published_story,
+                    sequence_copy,
+                )
                 _record_publication_phase(
                     "story-and-voices", phase_started, cpu_started
                 )
@@ -558,6 +580,8 @@ class OfflinePackPublisher:
                     "voice_manifest": voice_copy,
                     "generated_audio": generated_copy,
                 }
+                if staged_sequence is not None:
+                    components["live_sequence_plan"] = staged_sequence
                 pack_metadata = {
                     "game": {
                         "id": published_story.game or job.game,
@@ -896,6 +920,7 @@ def _identity(
     generation_input: PregenerationInput,
     state_sha256: str,
     base_pack_identity: str | None = None,
+    live_sequence_sha256: str | None = None,
 ) -> str:
     payload = {
         "schema_version": 1,
@@ -908,7 +933,83 @@ def _identity(
     }
     if base_pack_identity is not None:
         payload["base_pack_identity"] = base_pack_identity
+    if live_sequence_sha256 is not None:
+        payload["live_sequence_sha256"] = live_sequence_sha256
     return str(canonical_document_sha256(payload))
+
+
+def _optional_sha256(path: Path | None) -> str | None:
+    if path is None or not path.is_file():
+        return None
+    try:
+        return sha256_file(path)
+    except OSError:
+        return None
+
+
+def _stage_live_sequence(
+    base: GamePackImport | None,
+    current_path: Path | None,
+    current_story: Path,
+    staged_story: Path,
+    published_story: StoryIndexDocument,
+    destination: Path,
+) -> Path | None:
+    """Bind only a complete, linear sequence to the exact staged story bytes."""
+    if current_path is None:
+        return None
+    try:
+        current_document, current_plan = _safe_sequence_document(
+            current_path, current_story
+        )
+        documents = [current_document]
+        plans = [current_plan]
+        if base is not None:
+            if base.live_sequence_plan is None:
+                return None
+            base_document, base_plan = _safe_sequence_document(
+                base.live_sequence_plan, base.story_index
+            )
+            if base_plan.source_extract_sha256 != current_plan.source_extract_sha256:
+                return None
+            if {chapter.chapter for chapter in base_plan.chapters} & {
+                chapter.chapter for chapter in current_plan.chapters
+            }:
+                return None
+            documents.insert(0, base_document)
+            plans.insert(0, base_plan)
+        chapters = [
+            chapter for document in documents for chapter in document["chapters"]
+        ]
+        if {chapter.chapter for plan in plans for chapter in plan.chapters} != {
+            record.chapter for record in published_story.records
+        }:
+            return None
+        document = copy.deepcopy(documents[0])
+        document["chapters"] = chapters
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        write_live_sequence_plan(destination, document, staged_story)
+        _safe_sequence_document(destination, staged_story)
+        return destination
+    except OSError, ValueError, LiveSequencePlanError, json.JSONDecodeError:
+        return None
+
+
+def _safe_sequence_document(
+    path: Path, story_index: Path
+) -> tuple[JsonObject, LiveSequencePlan]:
+    plan = load_live_sequence_plan(path, story_index)
+    if plan.game_id != "reverse1999":
+        raise LiveSequencePlanError("Live sequence is not for Reverse: 1999")
+    for event in plan.events.values():
+        if event.control == "manual" or (
+            event.control != "terminal" and len(event.successors) != 1
+        ):
+            raise LiveSequencePlanError("Live sequence is not uniquely automatic")
+    document = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(document, dict) or not isinstance(document.get("chapters"), list):
+        raise LiveSequencePlanError("Live sequence plan document is malformed")
+    return document, plan
 
 
 def _load_incremental_base(

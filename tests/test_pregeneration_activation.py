@@ -25,7 +25,7 @@ from vntts.pregeneration_activation import (
     OfflinePackActivationError,
     OfflinePackActivator,
 )
-from vntts.pregeneration_pack import OfflinePackPublisher
+from vntts.pregeneration_pack import OfflinePackPublisher, OfflinePackResult
 from vntts.settings import AppSettings
 
 
@@ -35,6 +35,52 @@ def published_pack(root):
 
 
 class OfflinePackActivatorTest(unittest.TestCase):
+    def test_safe_pack_sequence_uses_audio_auto_only_when_auto_advance_is_enabled(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            pack = OfflinePackResult(
+                identity="a" * 64,
+                directory=root,
+                manifest=root / "game-pack.json",
+                imported=Mock(),
+                approved=0,
+                live_fallbacks=0,
+            )
+            imported = Mock()
+            imported.pack.extensions = {
+                "vntts.self-service": {"identity": pack.identity}
+            }
+            imported.live_sequence_plan = root / "story" / "live-sequence.json"
+            imported.apply_to.side_effect = lambda settings: settings.updated(
+                game_pack=str(pack.manifest)
+            )
+            controller = Mock(is_ready=False)
+            controller.apply_settings.return_value = True
+            for enabled, expected in ((True, "audio-auto"), (False, "off")):
+                with (
+                    self.subTest(auto_advance_enabled=enabled),
+                    patch(
+                        "vntts.pregeneration_activation.import_game_pack",
+                        return_value=imported,
+                    ),
+                    patch.object(
+                        ChapterVoicePreloader,
+                        "load_optional",
+                        return_value=Mock(dialogue=()),
+                    ),
+                ):
+                    result = OfflinePackActivator(
+                        save_settings=lambda _settings: root / "settings.json"
+                    ).activate(
+                        AppSettings(
+                            live_sequence_mode="off",
+                            auto_advance_enabled=enabled,
+                        ),
+                        pack,
+                        controller,
+                    )
+                    self.assertEqual(result.settings.live_sequence_mode, expected)
+
     def test_mixed_pack_activation_routes_original_and_generated_without_live_synthesis(
         self,
     ):

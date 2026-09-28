@@ -8,6 +8,10 @@ from unittest.mock import patch
 
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.game_pack import GamePackError
+from vntts_artifacts.live_sequence import (
+    load_live_sequence_plan,
+    write_live_sequence_plan,
+)
 from vntts_artifacts.story_index import (
     load_story_index_document,
     write_story_index_document,
@@ -33,6 +37,7 @@ from vntts.pregeneration_pack import (
     _copy_file,
     _ensure_pack_disk_space,
     _link_verified_file,
+    _stage_live_sequence,
     inspect_story_audio,
     load_saved_pack,
 )
@@ -204,6 +209,177 @@ def fixture(
 
 
 class OfflinePackPublisherTest(unittest.TestCase):
+    def test_branch_sequence_is_left_out_of_the_staged_pack(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story = root / "story-index.jsonl"
+            write_story_index_document(
+                story,
+                {"game": "Reverse: 1999", "language": "en"},
+                [
+                    {
+                        "record_type": "line",
+                        "line_id": "reverse1999:1:1",
+                        "chapter": "1",
+                        "sequence": 1,
+                        "speaker": "A",
+                        "text": "One.",
+                        "kind": "dialogue",
+                    },
+                    {
+                        "record_type": "line",
+                        "line_id": "reverse1999:1:2",
+                        "chapter": "1",
+                        "sequence": 2,
+                        "speaker": "B",
+                        "text": "Two.",
+                        "kind": "dialogue",
+                    },
+                ],
+            )
+            plan_path = root / "branch.json"
+            write_live_sequence_plan(
+                plan_path,
+                {
+                    "schema": "vntts.live-sequence-plan",
+                    "schema_version": 1,
+                    "game_id": "reverse1999",
+                    "producer": {"name": "test", "version": "1"},
+                    "story_index_sha256": sha256_file(story),
+                    "source_extract_sha256": "a" * 64,
+                    "chapters": [
+                        {
+                            "chapter": "1",
+                            "entry_event_ids": ["one"],
+                            "events": [
+                                {
+                                    "event_id": "one",
+                                    "sequence": 1,
+                                    "kind": "speech",
+                                    "control": "manual",
+                                    "successors": ["two", "other"],
+                                    "line_id": "reverse1999:1:1",
+                                },
+                                {
+                                    "event_id": "two",
+                                    "sequence": 2,
+                                    "kind": "speech",
+                                    "control": "terminal",
+                                    "successors": [],
+                                    "line_id": "reverse1999:1:2",
+                                },
+                                {
+                                    "event_id": "other",
+                                    "sequence": 3,
+                                    "kind": "transition",
+                                    "control": "terminal",
+                                    "successors": [],
+                                },
+                            ],
+                        }
+                    ],
+                },
+                story,
+            )
+
+            staged = _stage_live_sequence(
+                None,
+                plan_path,
+                story,
+                story,
+                load_story_index_document(story),
+                root / "staged.json",
+            )
+
+        self.assertIsNone(staged)
+
+    def test_cumulative_sequence_is_rebound_to_final_story_bytes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base_story = root / "base.jsonl"
+            current_story = root / "current.jsonl"
+            final_story = root / "final.jsonl"
+            for path, chapter in ((base_story, "1"), (current_story, "2")):
+                write_story_index_document(
+                    path,
+                    {"game": "Reverse: 1999", "language": "en"},
+                    [
+                        {
+                            "record_type": "line",
+                            "line_id": f"reverse1999:{chapter}:1",
+                            "chapter": chapter,
+                            "sequence": 1,
+                            "speaker": "A",
+                            "text": f"Chapter {chapter}.",
+                            "kind": "dialogue",
+                        }
+                    ],
+                )
+            write_story_index_document(
+                final_story,
+                {"game": "Reverse: 1999", "language": "en"},
+                [
+                    *(
+                        record.to_record()
+                        for record in load_story_index_document(base_story).records
+                    ),
+                    *(
+                        record.to_record()
+                        for record in load_story_index_document(current_story).records
+                    ),
+                ],
+            )
+            plans = []
+            for story, chapter in ((base_story, "1"), (current_story, "2")):
+                path = root / f"{chapter}.json"
+                write_live_sequence_plan(
+                    path,
+                    {
+                        "schema": "vntts.live-sequence-plan",
+                        "schema_version": 1,
+                        "game_id": "reverse1999",
+                        "producer": {"name": "test", "version": "1"},
+                        "story_index_sha256": sha256_file(story),
+                        "source_extract_sha256": "a" * 64,
+                        "chapters": [
+                            {
+                                "chapter": chapter,
+                                "entry_event_ids": [f"{chapter}-one"],
+                                "events": [
+                                    {
+                                        "event_id": f"{chapter}-one",
+                                        "sequence": 1,
+                                        "kind": "speech",
+                                        "control": "terminal",
+                                        "successors": [],
+                                        "line_id": f"reverse1999:{chapter}:1",
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    story,
+                )
+                plans.append(path)
+            base = type(
+                "Base", (), {"live_sequence_plan": plans[0], "story_index": base_story}
+            )()
+
+            staged = _stage_live_sequence(
+                base,
+                plans[1],
+                current_story,
+                final_story,
+                load_story_index_document(final_story),
+                root / "staged.json",
+            )
+
+            self.assertIsNotNone(staged)
+            plan = load_live_sequence_plan(staged, final_story)
+            self.assertEqual(
+                tuple(chapter.chapter for chapter in plan.chapters), ("1", "2")
+            )
+
     def test_copy_rejects_symlinked_source(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
