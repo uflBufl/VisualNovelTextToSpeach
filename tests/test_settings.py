@@ -146,12 +146,14 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(settings.live_idle_flush_ms, 700)
 
     def test_speech_backend_can_be_selected_from_environment(self):
-        settings = AppSettings().with_environment_overrides(
-            {"VNTTS_SPEECH_BACKEND": "chatterbox-nano"}
-        )
+        for backend in ("chatterbox-nano", "qwen-tts"):
+            with self.subTest(backend=backend):
+                settings = AppSettings().with_environment_overrides(
+                    {"VNTTS_SPEECH_BACKEND": backend}
+                )
 
-        self.assertEqual(settings.speech_backend, "chatterbox-nano")
-        self.assertEqual(settings.offline_speech_backend, "chatterbox-nano")
+                self.assertEqual(settings.speech_backend, backend)
+                self.assertEqual(settings.offline_speech_backend, backend)
 
     def test_environment_override_keeps_split_engines_independent(self):
         saved = AppSettings(

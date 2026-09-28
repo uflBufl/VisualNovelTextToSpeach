@@ -517,7 +517,13 @@ class AppSettings:
                 and (
                     live_field != "speech_backend"
                     or configured
-                    in {"coqui-xtts", "chatterbox-nano", "moss-tts", "pocket-tts"}
+                    in {
+                        "coqui-xtts",
+                        "chatterbox-nano",
+                        "moss-tts",
+                        "pocket-tts",
+                        "qwen-tts",
+                    }
                 )
                 and getattr(self, live_field) == getattr(self, offline_field)
             ):
