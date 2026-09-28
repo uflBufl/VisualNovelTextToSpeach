@@ -910,18 +910,20 @@ class MossCppBackendTest(unittest.TestCase):
         self.assertIn('"native_rss_peak_bytes": 1024', report)
         self.assertIn('"reference_sample_rate": 48000', report)
         self.assertNotIn(backend._diagnostic_salt.hex(), report)
-        self.assertIn('"gen_backbone_s": 0.5', report)
-        self.assertIn('"gen_frame_decoder_s": 0.6', report)
-        self.assertIn('"gen_input_embedding_s": 0.02', report)
+        for field, value in (
+            ("gen_backbone_s", 0.5),
+            ("gen_frame_decoder_s", 0.6),
+            ("gen_input_embedding_s", 0.02),
+        ):
+            self.assertIn(f'"{field}": {value}', report)
         for field in (
             "reference_prepare_s",
             "http_round_trip_s",
             "response_pcm_decode_s",
         ):
             self.assertIn(f'"{field}":', report)
-        self.assertNotIn(first.text, report)
-        self.assertNotIn(str(self.reference), report)
-        self.assertNotIn(str(directory), report)
+        for private_value in (first.text, str(self.reference), str(directory)):
+            self.assertNotIn(private_value, report)
         for index in range(25):
             self.native_log.add("test", str(index))
         self.assertEqual(len(self.native_log.snapshot()), 20)
