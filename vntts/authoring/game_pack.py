@@ -775,7 +775,6 @@ def _semantic_evidence_metadata(
     if controls.semantic_evidence_document is None:
         return None
     entries = controls.semantic_evidence_document["entries"]
-    assert isinstance(entries, list)
     return {
         "path": "story/source-audio-semantic-evidence.json",
         "sha256": controls.semantic_evidence_sha256,

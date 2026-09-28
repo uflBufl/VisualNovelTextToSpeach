@@ -7,7 +7,7 @@ import json
 import re
 import unicodedata
 from pathlib import Path
-from typing import TypeAlias, TypedDict, TypeGuard, cast
+from typing import Literal, TypeAlias, TypedDict, TypeGuard, cast
 
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import (
@@ -26,10 +26,25 @@ WORD_PATTERN = re.compile(r"[^\W_]+(?:['’][^\W_]+)*", flags=re.UNICODE)
 JsonDocument: TypeAlias = dict[str, object]
 
 
+class SourceAudioSemanticEvidenceEntry(TypedDict):
+    entry_id: str
+    locale: str
+    media_sha256: str
+    displayed_text_sha256: str
+    normalized_displayed_text_sha256: str
+    observed_transcript: str
+    normalized_observed_text_sha256: str
+    verdict: Literal["full", "partial"]
+    reason: Literal["exact-normalized-asr-transcript", "asr-transcript-mismatch"]
+    method: Literal["local-asr-exact-normalized-transcript"]
+    model_sha256: str
+    source_line_ids: list[str]
+
+
 class SourceAudioSemanticEvidence(TypedDict):
     evidence_id: str
     generated_at: str
-    entries: list[JsonDocument]
+    entries: list[SourceAudioSemanticEvidenceEntry]
 
 
 class SourceAudioSemanticEvidenceError(RuntimeError):
