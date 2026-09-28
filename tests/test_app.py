@@ -299,19 +299,6 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.show_compact_action.text(), "Compact controls"
         )
         self.assertEqual(tray_application.live_action.text(), "Start reading")
-        self.assertEqual(tray_application.pause_action.text(), "Pause speech")
-        self.assertEqual(
-            tray_application.skip_action.text(),
-            "Skip current speech",
-        )
-        self.assertEqual(tray_application.repeat_action.text(), "Repeat last speech")
-        self.assertEqual(
-            tray_application.clear_queue_action.text(),
-            "Clear speech queue",
-        )
-        self.assertEqual(
-            tray_application.emergency_stop_action.text(), "Emergency stop"
-        )
         self.assertEqual(
             tray_application.calibrate_action.text(),
             "Calibrate dialogue region...",
@@ -359,19 +346,18 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertFalse(tray_application.read_action.isEnabled())
         self.assertFalse(tray_application.live_action.isEnabled())
         self.assertFalse(tray_application.sequence_resync_action.isVisible())
-        self.assertFalse(tray_application.pause_action.isEnabled())
         top_level = {
             action.text()
             for action in tray_application.menu.actions()
             if not action.isSeparator()
         }
-        self.assertIn("Playback", top_level)
+        self.assertIn("Reading", top_level)
         self.assertIn("Setup", top_level)
         self.assertIn("Support", top_level)
         self.assertNotIn("Settings...", top_level)
-        self.assertIn(
-            tray_application.repeat_action,
-            tray_application.playback_menu.actions(),
+        self.assertNotIn(
+            "Emergency stop",
+            {action.text() for action in tray_application.playback_menu.actions()},
         )
         self.assertIn(
             tray_application.readiness_action,
@@ -397,31 +383,31 @@ class TrayApplicationTest(unittest.TestCase):
         )
         tray_application._controller_ready = True
         cases = (
-            ("idle", False, {}, (True, True, False, False, False, False)),
-            ("live", True, {}, (True, True, True, False, False, True)),
+            ("idle", False, {}, (True, True)),
+            ("live", True, {}, (False, True)),
             (
                 "speaking",
                 False,
                 {"speaking": True},
-                (True, True, True, True, False, True),
+                (False, True),
             ),
             (
                 "paused",
                 False,
                 {"paused": True},
-                (True, True, True, False, False, True),
+                (False, True),
             ),
             (
                 "queued",
                 False,
                 {"queued": True},
-                (True, True, True, False, False, True),
+                (False, True),
             ),
             (
                 "replayable",
                 False,
                 {"replayable": True},
-                (True, True, False, False, True, False),
+                (True, True),
             ),
         )
         for name, live, snapshot, expected in cases:
@@ -434,10 +420,6 @@ class TrayApplicationTest(unittest.TestCase):
                     for action in (
                         tray_application.read_action,
                         tray_application.live_action,
-                        tray_application.pause_action,
-                        tray_application.skip_action,
-                        tray_application.repeat_action,
-                        tray_application.emergency_stop_action,
                     )
                 )
                 dashboard_state = tuple(
@@ -445,10 +427,6 @@ class TrayApplicationTest(unittest.TestCase):
                     for button in (
                         tray_application.dashboard.read_button,
                         tray_application.dashboard.live_button,
-                        tray_application.dashboard.pause_button,
-                        tray_application.dashboard.skip_button,
-                        tray_application.dashboard.repeat_button,
-                        tray_application.dashboard.stop_button,
                     )
                 )
                 compact_state = tuple(
@@ -456,15 +434,17 @@ class TrayApplicationTest(unittest.TestCase):
                     for button in (
                         tray_application.compact_controller.read_button,
                         tray_application.compact_controller.live_button,
-                        tray_application.compact_controller.pause_button,
-                        tray_application.compact_controller.skip_button,
-                        tray_application.compact_controller.repeat_button,
-                        tray_application.compact_controller.stop_button,
                     )
                 )
                 self.assertEqual(tray_state, expected)
                 self.assertEqual(dashboard_state, expected)
                 self.assertEqual(compact_state, expected)
+                self.assertEqual(
+                    tray_application.live_action.text(),
+                    "Stop reading"
+                    if name in {"live", "speaking", "paused", "queued"}
+                    else "Start reading",
+                )
         tray_application.shutdown()
 
     def test_status_refresh_preserves_voice_picker_action_lock(self):
@@ -1526,7 +1506,7 @@ class TrayApplicationTest(unittest.TestCase):
         controller.toggle_live.assert_called_once_with()
         tray_application.shutdown()
 
-    def test_repeated_live_start_coalesces_scope_identification(self):
+    def test_second_reading_toggle_cancels_scope_identification(self):
         controller = Mock(is_live_running=False)
         controller.unresolved_live_speakers.return_value = None
         tray_application = TrayApplication(
@@ -1538,9 +1518,12 @@ class TrayApplicationTest(unittest.TestCase):
         tray_application.live_scope_runner = runner
 
         self.assertFalse(tray_application.toggle_live())
+        self.assertEqual(tray_application.live_action.text(), "Stop reading")
         self.assertFalse(tray_application.toggle_live())
 
         runner.start.assert_called_once_with(controller.identify_live_scope)
+        runner.cancel.assert_called_once_with()
+        controller.emergency_stop.assert_called_once_with()
         controller.toggle_live.assert_not_called()
         tray_application.shutdown()
 
@@ -1577,6 +1560,30 @@ class TrayApplicationTest(unittest.TestCase):
         tray_application._live_scope_finished(True, None)
 
         runner.cancel.assert_called_once_with()
+        controller.emergency_stop.assert_called_once_with()
+        controller.toggle_live.assert_not_called()
+        tray_application.shutdown()
+
+    def test_stop_reading_uses_immediate_stop_for_live_and_one_time_speech(self):
+        controller = Mock(is_live_running=True)
+        controller.live_reader.runtime_control_snapshot.return_value = {}
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+
+        self.assertFalse(tray_application.toggle_live())
+        controller.emergency_stop.assert_called_once_with()
+        controller.toggle_live.assert_not_called()
+
+        controller.reset_mock()
+        controller.is_live_running = False
+        controller.live_reader.runtime_control_snapshot.return_value = {
+            "speaking": True,
+            "queued": True,
+        }
+        self.assertFalse(tray_application.toggle_live())
         controller.emergency_stop.assert_called_once_with()
         controller.toggle_live.assert_not_called()
         tray_application.shutdown()
@@ -3069,27 +3076,6 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(tray_application.status_action.text(), "Speech queue cleared")
         tray_application.shutdown()
 
-    def test_tray_speech_controls_delegate_to_controller(self):
-        controller = Mock()
-        controller.toggle_speech_pause.return_value = True
-        tray_application = TrayApplication(
-            self.application,
-            AppSettings(),
-            controller_factory=Mock(return_value=controller),
-        )
-
-        tray_application.toggle_speech_pause()
-        tray_application.skip_current_speech()
-        tray_application.repeat_last_speech()
-        tray_application.clear_speech_queue()
-
-        controller.toggle_speech_pause.assert_called_once_with()
-        controller.skip_current_speech.assert_called_once_with()
-        controller.repeat_last_speech.assert_called_once_with()
-        controller.clear_speech_queue.assert_called_once_with()
-        self.assertEqual(tray_application.pause_action.text(), "Resume speech")
-        tray_application.shutdown()
-
     def test_tray_can_toggle_auto_advance_without_restarting_live_mode(self):
         controller = Mock()
         tray_application = TrayApplication(
@@ -3107,7 +3093,76 @@ class TrayApplicationTest(unittest.TestCase):
 
         controller.set_auto_advance_enabled.assert_called_once_with(True)
         self.assertTrue(tray_application.settings.auto_advance_enabled)
+        self.assertTrue(tray_application.dashboard.auto_advance_check.isChecked())
         save.assert_called_once_with(tray_application.settings)
+        tray_application.shutdown()
+
+    def test_dashboard_can_toggle_auto_advance_while_reading(self):
+        controller = Mock()
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(
+                capture_mode="window",
+                game_window_title="Reverse: 1999",
+                auto_advance_enabled=False,
+            ),
+            controller_factory=Mock(return_value=controller),
+        )
+
+        with patch("vntts.app.TrayApplication._save_settings_candidate") as save:
+            tray_application.dashboard.auto_advance_check.setChecked(True)
+
+        self.assertTrue(tray_application.auto_advance_action.isChecked())
+        self.assertTrue(tray_application.settings.auto_advance_enabled)
+        controller.set_auto_advance_enabled.assert_called_once_with(True)
+        save.assert_called_once_with(tray_application.settings)
+        tray_application.shutdown()
+
+    def test_auto_advance_waits_for_running_configuration_apply(self):
+        controller = Mock()
+        controller.settings = AppSettings(capture_mode="screen")
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(capture_mode="window", auto_advance_enabled=False),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray_application._controller_busy = True
+        tray_application._update_auto_advance_action()
+
+        self.assertFalse(tray_application.dashboard.auto_advance_check.isEnabled())
+        self.assertFalse(tray_application.auto_advance_action.isEnabled())
+        with patch("vntts.app.TrayApplication._save_settings_candidate") as save:
+            tray_application.toggle_auto_advance(True)
+
+        save.assert_not_called()
+        controller.set_auto_advance_enabled.assert_not_called()
+        self.assertFalse(tray_application.settings.auto_advance_enabled)
+        self.assertFalse(tray_application.dashboard.auto_advance_check.isChecked())
+        self.assertIn("Try again when ready", tray_application.status_action.text())
+
+        tray_application._controller_busy = False
+        tray_application._update_auto_advance_action()
+        self.assertTrue(tray_application.dashboard.auto_advance_check.isEnabled())
+        tray_application.shutdown()
+
+    def test_failed_dashboard_auto_advance_write_restores_checkbox(self):
+        controller = Mock()
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(capture_mode="window", auto_advance_enabled=False),
+            controller_factory=Mock(return_value=controller),
+        )
+
+        with patch(
+            "vntts.app.TrayApplication._save_settings_candidate",
+            side_effect=OSError("read-only directory"),
+        ):
+            tray_application.dashboard.auto_advance_check.setChecked(True)
+
+        self.assertFalse(tray_application.dashboard.auto_advance_check.isChecked())
+        self.assertFalse(tray_application.auto_advance_action.isChecked())
+        self.assertFalse(tray_application.settings.auto_advance_enabled)
+        controller.set_auto_advance_enabled.assert_not_called()
         tray_application.shutdown()
 
     def test_failed_auto_advance_write_restores_action_without_runtime_change(self):
@@ -3129,6 +3184,7 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.auto_advance_action.setChecked(True)
 
         self.assertFalse(tray_application.auto_advance_action.isChecked())
+        self.assertFalse(tray_application.dashboard.auto_advance_check.isChecked())
         self.assertFalse(tray_application.settings.auto_advance_enabled)
         controller.set_auto_advance_enabled.assert_not_called()
         self.assertIn("read-only directory", tray_application.status_action.text())
@@ -3156,6 +3212,12 @@ class TrayApplicationTest(unittest.TestCase):
 
                 self.assertFalse(tray_application.auto_advance_action.isEnabled())
                 self.assertFalse(tray_application.auto_advance_action.isChecked())
+                self.assertFalse(
+                    tray_application.dashboard.auto_advance_check.isEnabled()
+                )
+                self.assertFalse(
+                    tray_application.dashboard.auto_advance_check.isChecked()
+                )
                 self.assertTrue(tray_application.auto_advance_reason_action.isVisible())
                 self.assertIn(
                     expected_reason,
@@ -3636,11 +3698,6 @@ class TrayApplicationTest(unittest.TestCase):
             {
                 AppSettings().read_hotkey,
                 AppSettings().live_hotkey,
-                AppSettings().pause_hotkey,
-                AppSettings().skip_hotkey,
-                AppSettings().repeat_hotkey,
-                AppSettings().clear_queue_hotkey,
-                AppSettings().emergency_stop_hotkey,
             },
         )
         listener_factory.return_value.start.assert_called_once_with()
@@ -3682,9 +3739,6 @@ class TrayApplicationTest(unittest.TestCase):
         for button in (
             tray_application.dashboard.live_button,
             tray_application.dashboard.read_button,
-            tray_application.dashboard.pause_button,
-            tray_application.dashboard.skip_button,
-            tray_application.dashboard.repeat_button,
         ):
             self.assertFalse(button.isEnabled())
         self.assertIn(
@@ -3698,7 +3752,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertTrue(tray_application.pregeneration_action.isEnabled())
         tray_application.shutdown()
 
-    def test_graceful_live_stop_clears_paused_ui_before_restart(self):
+    def test_stopped_reading_clears_paused_ui_before_restart(self):
         tray_application = TrayApplication(
             self.application,
             AppSettings(),
@@ -3706,16 +3760,12 @@ class TrayApplicationTest(unittest.TestCase):
         )
         tray_application.set_live(True)
         tray_application.set_speech_paused(True)
-        self.assertEqual(tray_application.dashboard.pause_button.text(), "Resume")
+        self.assertEqual(tray_application.dashboard.live_button.text(), "Stop reading")
 
         tray_application.set_live(False)
-        self.assertEqual(tray_application.pause_action.text(), "Pause speech")
-        self.assertEqual(tray_application.dashboard.pause_button.text(), "Pause")
-        self.assertEqual(
-            tray_application.compact_controller.pause_button.text(), "Pause"
-        )
+        self.assertEqual(tray_application.dashboard.live_button.text(), "Start reading")
         tray_application.set_live(True)
-        self.assertEqual(tray_application.dashboard.pause_button.text(), "Pause")
+        self.assertEqual(tray_application.dashboard.live_button.text(), "Stop reading")
         tray_application.shutdown()
 
     def test_quit_during_initial_start_forces_late_controller_cleanup(self):

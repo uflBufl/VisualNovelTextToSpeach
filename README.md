@@ -40,7 +40,8 @@ Pocket built-in voices need no account. Pocket game-voice cloning requires accep
 the linked upstream model terms and signing in to Hugging Face; the checkbox does
 not accept those terms for you. Other engines have their own model requirements.
 
-Use **Pause**, **Skip**, **Replay** or **Emergency stop** during playback.
+Use **Stop reading** to immediately end reading and all current or queued speech.
+**Read current dialogue** speaks the visible line once when reading is stopped.
 **Compact controls** opens the floating strip; **Full controls** returns to the
 main window. **More setup options -> Settings** opens settings by category.
 If controls remain unavailable, use **Check readiness** for the required fix.

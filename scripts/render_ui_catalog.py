@@ -211,6 +211,7 @@ def _render_stories(
 
     settings = AppSettings(
         onboarding_completed=True,
+        capture_mode="window",
         speech_backend="moss-tts",
         tts_profile="stable",
         game_window_title="Reverse: 1999",
@@ -273,6 +274,7 @@ def _render_stories(
         dashboard.show_reading()
         dashboard.set_status("Loading the reading engine and voices.")
         dashboard.set_loading(True)
+        dashboard.set_auto_advance_configuration(settings, busy=True)
         return dashboard
 
     def dashboard_waiting() -> Any:
@@ -281,9 +283,52 @@ def _render_stories(
         dashboard.set_runtime_controls(RuntimeControlState(ready=True, live=True))
         return dashboard
 
+    def dashboard_auto_advance_off() -> Any:
+        dashboard = dashboard_reading()
+        dashboard.set_configuration(
+            replace(settings, auto_advance_enabled=False, auto_advance_key="right")
+        )
+        return dashboard
+
+    def dashboard_auto_advance_unavailable() -> Any:
+        dashboard = dashboard_reading()
+        dashboard.set_configuration(replace(settings, capture_mode="screen"))
+        return dashboard
+
+    def dashboard_auto_advance_manual() -> Any:
+        dashboard = dashboard_reading()
+        dashboard.set_configuration(
+            replace(settings, live_sequence_mode="audio-manual")
+        )
+        return dashboard
+
+    def dashboard_auto_advance_unavailable_compact() -> Any:
+        dashboard = dashboard_auto_advance_unavailable()
+        dashboard.resize(620, 440)
+        font = dashboard.font()
+        font.setPointSize(font.pointSize() + 4)
+        dashboard.setFont(font)
+        return dashboard
+
+    def dashboard_auto_advance_focus() -> Any:
+        dashboard = dashboard_long_values()
+        QTimer.singleShot(0, dashboard.auto_advance_check.setFocus)
+        return dashboard
+
+    def dashboard_auto_advance_settings_route() -> Any:
+        dashboard = dashboard_reading()
+        dashboard.setup_more_button.setChecked(True)
+        dashboard.resize(620, 440)
+        font = dashboard.font()
+        font.setPointSize(font.pointSize() + 4)
+        dashboard.setFont(font)
+        return dashboard
+
     def dashboard_paused() -> Any:
         dashboard = dashboard_reading()
-        dashboard.set_status("Reading paused. Resume to hear the next dialogue.")
+        dashboard.set_status(
+            "Speech paused during speaker recovery. Stop reading ends speech now."
+        )
         dashboard.set_runtime_controls(
             RuntimeControlState(
                 ready=True, live=True, paused=True, queued=True, replayable=True
@@ -344,8 +389,19 @@ def _render_stories(
         )
         return dashboard
 
-    def dashboard_long_values_scrolled() -> Any:
+    def dashboard_long_capture() -> Any:
         dashboard = dashboard_long_values()
+        dashboard.set_configuration(
+            replace(
+                settings,
+                game_window_title="Reverse: 1999 - A Very Long Selected Game Window Title",
+            )
+        )
+        dashboard.set_speech_identity(settings, narrator="Centurion")
+        return dashboard
+
+    def dashboard_long_values_scrolled() -> Any:
+        dashboard = dashboard_long_capture()
         dashboard.voice.setText(
             "Believer IV voice from a long user-provided reference recording"
         )
@@ -1809,6 +1865,12 @@ def _render_stories(
         "dashboard.stories-ready": dashboard_stories,
         "dashboard.reading-loading": dashboard_loading,
         "dashboard.reading-active": dashboard_reading,
+        "dashboard.auto-advance-off": dashboard_auto_advance_off,
+        "dashboard.auto-advance-unavailable": dashboard_auto_advance_unavailable,
+        "dashboard.auto-advance-manual": dashboard_auto_advance_manual,
+        "dashboard.auto-advance-unavailable-compact": dashboard_auto_advance_unavailable_compact,
+        "dashboard.auto-advance-focus": dashboard_auto_advance_focus,
+        "dashboard.auto-advance-settings-route": dashboard_auto_advance_settings_route,
         "dashboard.reading-waiting": dashboard_waiting,
         "dashboard.reading-paused": dashboard_paused,
         "dashboard.reading-stopped": dashboard_stopped,
@@ -1816,6 +1878,7 @@ def _render_stories(
         "dashboard.story-position-recovery": dashboard_story_recovery,
         "dashboard.story-position-manual": dashboard_story_manual,
         "dashboard.reading-long-values": dashboard_long_values,
+        "dashboard.reading-long-capture": dashboard_long_capture,
         "dashboard.reading-long-values-scrolled": dashboard_long_values_scrolled,
         "dashboard.setup-expanded": dashboard_setup,
         "compact-controller.sequence-recovery": compact_sequence_recovery,
@@ -1825,6 +1888,7 @@ def _render_stories(
         "settings.capture-window": settings_capture_window,
         "settings.advanced-capture": lambda: settings_section(1, advanced=True),
         "settings.playback": lambda: settings_section(3),
+        "settings.playback-advanced": lambda: settings_section(3, advanced=True),
         "settings.application": lambda: settings_section(4),
         "settings.checkbox-focus": settings_checkbox_focus,
         "settings.advanced-speech": lambda: settings_section(2, advanced=True),

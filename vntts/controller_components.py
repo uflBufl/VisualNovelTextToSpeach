@@ -701,7 +701,7 @@ class LiveSessionComponent:
         controller = self.controller
         reader = controller.live_reader
         schedule = controller.schedule_dialog_read
-        if reader is None or schedule is None:
+        if reader is None or schedule is None or reader.is_running:
             return False
         reader.resume_after_emergency()
         accepted = schedule()
@@ -890,7 +890,7 @@ class LiveSessionComponent:
         stopped = reader.emergency_stop()
         controller.allow_unscoped_live_reading = False
         controller._set_backend_live_mode(False)
-        controller.status_handler("Emergency stop: live reading and speech stopped")
+        controller.status_handler("Reading and speech stopped")
         return bool(stopped)
 
     def set_auto_advance_enabled(self, enabled: bool) -> bool:

@@ -58,6 +58,7 @@ class DurableSettingsMixin:
         settings: AppSettings
         controller: _Controller
         dashboard: _Dashboard
+        _controller_busy: bool
         profile_store: GameProfileStore
         signals: _Signals
         onboarding_wizard: _OnboardingWizard | None
@@ -92,6 +93,10 @@ class DurableSettingsMixin:
             return self._settings_path
 
     def toggle_auto_advance(self, enabled: bool) -> None:
+        if self._controller_busy:
+            self._update_auto_advance_action()
+            self.set_status("Reading controls are updating. Try again when ready.")
+            return
         allowed, effective, reason = auto_advance_control_state(
             self.settings.capture_mode,
             self.settings.live_sequence_mode,

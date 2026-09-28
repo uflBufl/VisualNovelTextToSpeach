@@ -223,6 +223,15 @@ class ControllerComponentsTest(unittest.TestCase):
         for name in migrated:
             self.assertFalse(hasattr(AppController, name), name)
 
+    def test_read_once_does_not_resume_emergency_during_live_shutdown(self):
+        controller = Mock()
+        controller.live_reader.is_running = True
+
+        self.assertFalse(LiveSessionComponent(controller).read_once())
+
+        controller.live_reader.resume_after_emergency.assert_not_called()
+        controller.schedule_dialog_read.assert_not_called()
+
     def test_auto_advance_enable_fails_closed_without_capture_authority(self):
         for capture_mode, sequence_mode, expected_reason in (
             ("screen", "off", "selected game window"),

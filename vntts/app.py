@@ -124,15 +124,7 @@ from vntts.release_smoke_test import (
     configure_release_smoke_arguments,
     run_release_smoke_test,
 )
-from vntts.runtime_config import (
-    get_clear_queue_hotkey,
-    get_emergency_stop_hotkey,
-    get_hotkey,
-    get_live_hotkey,
-    get_pause_hotkey,
-    get_repeat_hotkey,
-    get_skip_hotkey,
-)
+from vntts.runtime_config import get_hotkey, get_live_hotkey
 from vntts.runtime_paths import configure_bundled_dependencies
 from vntts.settings import (
     AppSettings,
@@ -372,19 +364,9 @@ class SettingsDialog(QDialog):
     def _build_capture_controls(self, settings: AppSettings) -> QHBoxLayout:
         self.read_hotkey = HotkeyRecorder(settings.read_hotkey)
         self.live_hotkey = HotkeyRecorder(settings.live_hotkey)
-        self.pause_hotkey = HotkeyRecorder(settings.pause_hotkey)
-        self.skip_hotkey = HotkeyRecorder(settings.skip_hotkey)
-        self.repeat_hotkey = HotkeyRecorder(settings.repeat_hotkey)
-        self.clear_queue_hotkey = HotkeyRecorder(settings.clear_queue_hotkey)
-        self.emergency_stop_hotkey = HotkeyRecorder(settings.emergency_stop_hotkey)
         self.hotkey_recorders = (
             self.read_hotkey,
             self.live_hotkey,
-            self.pause_hotkey,
-            self.skip_hotkey,
-            self.repeat_hotkey,
-            self.clear_queue_hotkey,
-            self.emergency_stop_hotkey,
         )
         self.macos_hotkey_notice = QLabel(
             f"<b>macOS controls</b><br>{macos_hotkey_limitation}"
@@ -679,12 +661,7 @@ class SettingsDialog(QDialog):
         if sys.platform == "darwin":
             shortcuts_form.addRow(self.macos_hotkey_notice)
         shortcuts_form.addRow("Read current dialogue hotkey", self.read_hotkey)
-        shortcuts_form.addRow("Live reading hotkey", self.live_hotkey)
-        shortcuts_form.addRow("Pause or resume hotkey", self.pause_hotkey)
-        shortcuts_form.addRow("Skip speech hotkey", self.skip_hotkey)
-        shortcuts_form.addRow("Replay last speech hotkey", self.repeat_hotkey)
-        shortcuts_form.addRow("Clear queue hotkey", self.clear_queue_hotkey)
-        shortcuts_form.addRow("Emergency stop hotkey", self.emergency_stop_hotkey)
+        shortcuts_form.addRow("Start / stop reading hotkey", self.live_hotkey)
         return shortcuts_form
 
     def _build_capture_form(
@@ -1430,11 +1407,6 @@ class SettingsDialog(QDialog):
                 **asdict(self.original_settings),
                 "read_hotkey": hotkeys["Read once"],
                 "live_hotkey": hotkeys["Live reading"],
-                "pause_hotkey": hotkeys["Pause or resume"],
-                "skip_hotkey": hotkeys["Skip speech"],
-                "repeat_hotkey": hotkeys["Repeat speech"],
-                "clear_queue_hotkey": hotkeys["Clear queue"],
-                "emergency_stop_hotkey": hotkeys["Emergency stop"],
                 "screenshot_directory": self.screenshot_directory.text().strip(),
                 "ocr_diagnostics_directory": (
                     self.ocr_diagnostics_directory.text().strip()
@@ -1532,11 +1504,6 @@ class SettingsDialog(QDialog):
         return {
             "Read once": self.read_hotkey.hotkey(),
             "Live reading": self.live_hotkey.hotkey(),
-            "Pause or resume": self.pause_hotkey.hotkey(),
-            "Skip speech": self.skip_hotkey.hotkey(),
-            "Repeat speech": self.repeat_hotkey.hotkey(),
-            "Clear queue": self.clear_queue_hotkey.hotkey(),
-            "Emergency stop": self.emergency_stop_hotkey.hotkey(),
         }
 
 
@@ -1769,11 +1736,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.auto_advance_action.setChecked(self.settings.auto_advance_enabled)
         self.auto_advance_reason_action = QAction()
         self.auto_advance_reason_action.setEnabled(False)
-        self.pause_action = QAction("Pause speech")
-        self.skip_action = QAction("Skip current speech")
-        self.repeat_action = QAction("Repeat last speech")
-        self.clear_queue_action = QAction("Clear speech queue")
-        self.emergency_stop_action = QAction("Emergency stop")
         self.calibrate_action = QAction("Calibrate dialogue region...")
         self.diagnostics_action = QAction("Live diagnostics")
         self.readiness_action = QAction("Check readiness")
@@ -1806,11 +1768,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         self.sequence_resync_action.setVisible(sequence_controls_visible)
         self.sequence_expected_action.setVisible(sequence_controls_visible)
-        self.pause_action.setEnabled(False)
-        self.skip_action.setEnabled(False)
-        self.repeat_action.setEnabled(False)
-        self.clear_queue_action.setEnabled(False)
-        self.emergency_stop_action.setEnabled(False)
         self.voice_preview_action.setEnabled(False)
         self.menu.addAction(self.show_dashboard_action)
         self.menu.addAction(self.show_compact_action)
@@ -1819,13 +1776,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.menu.addSeparator()
         self.menu.addAction(self.read_action)
         self.menu.addAction(self.live_action)
-        self.menu.addAction(self.emergency_stop_action)
-        self.playback_menu = self.menu.addMenu("Playback")
-        self.playback_menu.addAction(self.pause_action)
-        self.playback_menu.addAction(self.skip_action)
-        self.playback_menu.addAction(self.repeat_action)
-        self.playback_menu.addAction(self.clear_queue_action)
-        self.playback_menu.addSeparator()
+        self.playback_menu = self.menu.addMenu("Reading")
         self.playback_menu.addAction(self.sequence_resync_action)
         self.playback_menu.addAction(self.sequence_expected_action)
         self.playback_menu.addAction(self.auto_advance_action)
@@ -1868,11 +1819,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.choose_expected_sequence_event
         )
         self.auto_advance_action.toggled.connect(self.toggle_auto_advance)
-        self.pause_action.triggered.connect(self.toggle_speech_pause)
-        self.skip_action.triggered.connect(self.skip_current_speech)
-        self.repeat_action.triggered.connect(self.repeat_last_speech)
-        self.clear_queue_action.triggered.connect(self.clear_speech_queue)
-        self.emergency_stop_action.triggered.connect(self.emergency_stop)
         self.calibrate_action.triggered.connect(self.calibrate)
         self.diagnostics_action.triggered.connect(self.open_diagnostics)
         self.readiness_action.triggered.connect(self.open_readiness)
@@ -1924,15 +1870,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.dashboard.main_section_changed.connect(self._save_main_section)
         self.dashboard.read_requested.connect(self.read_once)
         self.dashboard.live_requested.connect(self.toggle_live)
+        self.dashboard.auto_advance_requested.connect(self.toggle_auto_advance)
         self.dashboard.reading_setup_requested.connect(self.prepare_reading)
         self.dashboard.sequence_resync_requested.connect(self.choose_sequence_position)
         self.dashboard.sequence_expected_requested.connect(
             self.choose_expected_sequence_event
         )
-        self.dashboard.pause_requested.connect(self.toggle_speech_pause)
-        self.dashboard.skip_requested.connect(self.skip_current_speech)
-        self.dashboard.repeat_requested.connect(self.repeat_last_speech)
-        self.dashboard.stop_requested.connect(self.emergency_stop)
         self.dashboard.pregeneration_requested.connect(self.open_pregeneration)
         self.dashboard.readiness_requested.connect(self.open_readiness)
         self.dashboard.calibration_requested.connect(self.calibrate)
@@ -1945,10 +1888,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.dashboard.hidden_to_background.connect(self.notify_background_mode)
         self.compact_controller.read_requested.connect(self.read_once)
         self.compact_controller.live_requested.connect(self.toggle_live)
-        self.compact_controller.pause_requested.connect(self.toggle_speech_pause)
-        self.compact_controller.skip_requested.connect(self.skip_current_speech)
-        self.compact_controller.repeat_requested.connect(self.repeat_last_speech)
-        self.compact_controller.stop_requested.connect(self.emergency_stop)
         self.compact_controller.sequence_expected_requested.connect(
             self.choose_expected_sequence_event
         )
@@ -2068,10 +2007,22 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.auto_advance_action.blockSignals(True)
         self.auto_advance_action.setChecked(enabled)
         self.auto_advance_action.blockSignals(False)
-        self.auto_advance_action.setEnabled(allowed)
-        self.auto_advance_action.setToolTip(reason)
-        self.auto_advance_reason_action.setText(reason)
-        self.auto_advance_reason_action.setVisible(not allowed)
+        availability_reason = (
+            reason
+            if not allowed
+            else (
+                "Reading controls are updating. Try again when ready."
+                if self._controller_busy
+                else ""
+            )
+        )
+        self.auto_advance_action.setEnabled(allowed and not self._controller_busy)
+        self.auto_advance_action.setToolTip(availability_reason or reason)
+        self.auto_advance_reason_action.setText(availability_reason)
+        self.auto_advance_reason_action.setVisible(bool(availability_reason))
+        self.dashboard.set_auto_advance_configuration(
+            self.settings, busy=self._controller_busy
+        )
 
     def _application_icon(self) -> QIcon:
         return create_application_icon(self.application.style())
@@ -2235,47 +2186,34 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.hotkey_listener.stop()
         read_hotkey = get_hotkey(self.settings)
         live_hotkey = get_live_hotkey(self.settings)
-        pause_hotkey = get_pause_hotkey(self.settings)
-        skip_hotkey = get_skip_hotkey(self.settings)
-        repeat_hotkey = get_repeat_hotkey(self.settings)
-        clear_queue_hotkey = get_clear_queue_hotkey(self.settings)
-        emergency_stop_hotkey = get_emergency_stop_hotkey(self.settings)
         validate_hotkey_assignments(
             {
                 "Read once": read_hotkey,
                 "Live reading": live_hotkey,
-                "Pause or resume": pause_hotkey,
-                "Skip speech": skip_hotkey,
-                "Repeat speech": repeat_hotkey,
-                "Clear queue": clear_queue_hotkey,
-                "Emergency stop": emergency_stop_hotkey,
             }
         )
         listener = keyboard.GlobalHotKeys(
             {
                 read_hotkey: self.read_once,
                 live_hotkey: self.toggle_live,
-                pause_hotkey: self.toggle_speech_pause,
-                skip_hotkey: self.skip_current_speech,
-                repeat_hotkey: self.repeat_last_speech,
-                clear_queue_hotkey: self.clear_speech_queue,
-                emergency_stop_hotkey: self.emergency_stop,
             }
         )
         self.hotkey_listener = listener
         listener.start()
 
     def read_once(self) -> None:
-        if self.narrator_dialog is not None:
+        if not self._runtime_control_state().can_read:
             return
         self.controller.read_once()
 
     def toggle_live(self) -> bool:
+        state = self._runtime_control_state()
+        if state.active:
+            self.emergency_stop()
+            return False
         if self.narrator_dialog is not None:
             return False
-        if not self.controller.is_live_running:
-            return self._start_live_with_available_scope()
-        return self._toggle_controller_live()
+        return self._start_live_with_available_scope()
 
     def choose_sequence_position(self) -> bool:
         options = self.controller.live_sequence_anchor_options()
@@ -2400,6 +2338,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._live_scope_generation = self._lifecycle_generation
         self.set_status("Identifying the current story chapter...")
         self.live_scope_runner.start(identify)
+        self._apply_controller_action_state()
         return False
 
     def _live_scope_finished(
@@ -2407,6 +2346,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     ) -> None:
         generation = self._live_scope_generation
         self._live_scope_generation = None
+        self._apply_controller_action_state()
         if not self._lifecycle_is_current(generation):
             return
         if error is not None:
@@ -2489,22 +2429,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             )
         self.signals.live_changed.emit(False)
         return False
-
-    def toggle_speech_pause(self) -> None:
-        if self.narrator_dialog is not None:
-            return
-        self.signals.speech_paused_changed.emit(self.controller.toggle_speech_pause())
-
-    def skip_current_speech(self) -> None:
-        self.controller.skip_current_speech()
-
-    def repeat_last_speech(self) -> None:
-        if self.narrator_dialog is not None:
-            return
-        self.controller.repeat_last_speech()
-
-    def clear_speech_queue(self) -> None:
-        self.controller.clear_speech_queue()
 
     def emergency_stop(self) -> None:
         if self.narrator_dialog is not None:
@@ -4042,6 +3966,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         return RuntimeControlState(
             ready=bool(enabled),
             live=live if isinstance(live, bool) else self._reported_live,
+            starting=self._live_scope_generation is not None,
             paused=bool(snapshot.get("paused", self._reported_speech_paused)),
             speaking=bool(snapshot.get("speaking", False)),
             queued=bool(snapshot.get("queued", False)),
@@ -4069,15 +3994,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         controls = (
             (self.read_action, state.can_read, "read"),
             (self.live_action, state.can_toggle_live, "live"),
-            (self.pause_action, state.can_pause, "pause"),
-            (self.skip_action, state.can_skip, "skip"),
-            (self.repeat_action, state.can_replay, "replay"),
-            (self.clear_queue_action, state.can_clear_queue, "queue"),
-            (self.emergency_stop_action, state.can_emergency_stop, "emergency"),
         )
         for action, enabled, control in controls:
             action.setEnabled(enabled)
             action.setToolTip("" if enabled else state.reason_for(control))
+        self.live_action.setText("Stop reading" if state.active else "Start reading")
         self.sequence_resync_action.setEnabled(state.ready)
         self.dashboard.set_runtime_controls(state)
         self.compact_controller.set_runtime_controls(state)
@@ -4163,11 +4084,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._lifecycle_generation = self.session_owner.begin(cancellation)
         self._controller_busy = True
         self._apply_controller_action_state()
+        self._update_auto_advance_action()
         return self._lifecycle_generation
 
     def _finish_controller_lifecycle(self) -> None:
         self._controller_busy = False
         self._apply_controller_action_state()
+        self._update_auto_advance_action()
 
     def _lifecycle_is_current(self, generation: int | None) -> bool:
         return (
@@ -4202,7 +4125,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def set_speech_paused(self, paused: bool) -> None:
         self._reported_speech_paused = bool(paused)
-        self.pause_action.setText("Resume speech" if paused else "Pause speech")
         self.dashboard.set_paused(paused)
         self.compact_controller.set_paused(paused)
         self._apply_runtime_control_state(self._runtime_control_state())

@@ -1528,8 +1528,9 @@ class MainTest(unittest.TestCase):
             read_hotkey="<ctrl>+h",
             live_hotkey="<ctrl>+l",
         )
-        controller = Mock()
+        controller = Mock(is_live_running=False)
         controller.start.return_value = True
+        controller.live_reader.runtime_control_snapshot.return_value = {}
 
         with (
             patch("vntts.main.load_app_settings", return_value=settings),
@@ -1539,25 +1540,25 @@ class MainTest(unittest.TestCase):
             result = main()
 
         self.assertEqual(result, 0)
-        listen_for_hotkeys.assert_called_once_with(
-            "<ctrl>+h",
-            "<ctrl>+l",
-            settings.pause_hotkey,
-            settings.skip_hotkey,
-            settings.repeat_hotkey,
-            settings.clear_queue_hotkey,
-            settings.emergency_stop_hotkey,
-            controller.read_once,
-            controller.toggle_live,
-            controller.toggle_speech_pause,
-            controller.skip_current_speech,
-            controller.repeat_last_speech,
-            controller.clear_speech_queue,
-            controller.emergency_stop,
-        )
-        live_hotkey_callback = listen_for_hotkeys.call_args.args[8]
+        args = listen_for_hotkeys.call_args.args
+        self.assertEqual(args[:2], ("<ctrl>+h", "<ctrl>+l"))
+        self.assertEqual(len(args), 4)
+        args[2]()
+        controller.read_once.assert_called_once_with()
+        live_hotkey_callback = args[3]
         live_hotkey_callback()
         controller.toggle_live.assert_called_once_with()
+        controller.is_live_running = True
+        live_hotkey_callback()
+        controller.emergency_stop.assert_called_once_with()
+        controller.is_live_running = False
+        controller.live_reader.runtime_control_snapshot.return_value = {
+            "speaking": True
+        }
+        args[2]()
+        controller.read_once.assert_called_once_with()
+        live_hotkey_callback()
+        self.assertEqual(controller.emergency_stop.call_count, 2)
         controller.shutdown.assert_called_once_with()
 
     def test_main_handles_keyboard_interrupt_without_traceback(self):
@@ -1727,7 +1728,7 @@ class MainTest(unittest.TestCase):
         controller.live_reader.emergency_stop.assert_called_once_with()
         self.assertEqual(
             statuses[-1],
-            "Emergency stop: live reading and speech stopped",
+            "Reading and speech stopped",
         )
 
     def test_controller_lists_and_previews_character_voices_on_speech_executor(self):
