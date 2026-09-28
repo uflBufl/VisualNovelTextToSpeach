@@ -416,6 +416,52 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             stored["live_fallback"]["evidence"]["base_result_sha256"],
         )
 
+    def test_loader_rejects_non_integer_persisted_schema_versions(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            renderer = SyntheticRenderer([SynthesisCompletion.LIMITED])
+            renderer.name = "pocket-tts"
+            renderer.model_name = "pocket-tts"
+            failed = run_bulk_generation(
+                queue,
+                root / "output",
+                renderer,
+                provider="pocket-tts",
+                model="pocket-tts",
+                generation_profile="default",
+                retries=0,
+            )
+            original = json.loads(failed.state.read_text(encoding="utf-8"))
+
+            for version in (True, 1.0):
+                forged = json.loads(json.dumps(original))
+                forged["schema_version"] = version
+                failed.state.write_text(json.dumps(forged), encoding="utf-8")
+                with self.assertRaisesRegex(BulkGenerationError, "Unsupported"):
+                    load_generation_state(failed.state, queue)
+
+                forged = json.loads(json.dumps(original))
+                forged["items"][item["queue_id"]]["failure"]["schema_version"] = version
+                failed.state.write_text(json.dumps(forged), encoding="utf-8")
+                with self.assertRaisesRegex(BulkGenerationError, "typed failure"):
+                    load_generation_state(failed.state, queue)
+
+            failed.state.write_text(json.dumps(original), encoding="utf-8")
+            authorize_live_fallback(
+                failed.state,
+                queue,
+                item["queue_id"],
+                reason="automatic_recovery_exhausted",
+                model="pocket-tts",
+            )
+            forged = json.loads(failed.state.read_text(encoding="utf-8"))
+            forged["items"][item["queue_id"]]["live_fallback"]["schema_version"] = 8.0
+            failed.state.write_text(json.dumps(forged), encoding="utf-8")
+            with self.assertRaisesRegex(BulkGenerationError, "live fallback decision"):
+                load_generation_state(failed.state, queue)
+
     def test_exhausted_moss_failure_becomes_evidenced_live_fallback(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

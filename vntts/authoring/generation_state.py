@@ -117,6 +117,13 @@ StateObject: TypeAlias = dict[str, object]
 QueueById: TypeAlias = dict[str, VoiceGenerationQueueItem]
 
 
+def _has_exact_schema_version(document: StateObject, expected: int) -> bool:
+    return (
+        type(document.get("schema_version")) is int
+        and document.get("schema_version") == expected
+    )
+
+
 def load_stable_generation_queue(
     queue_path: str | Path,
 ) -> tuple[VoiceGenerationQueue, str]:
@@ -140,7 +147,7 @@ def load_stable_generation_queue(
 def _validate_live_fallback_evidence(
     evidence: object, previous_result_sha256: object
 ) -> None:
-    if isinstance(evidence, dict) and evidence.get("schema_version") == 2:
+    if isinstance(evidence, dict) and _has_exact_schema_version(evidence, 2):
         return _validate_render_review_fallback_evidence(
             evidence, previous_result_sha256
         )
@@ -155,7 +162,7 @@ def _validate_live_fallback_evidence(
             "hypotheses",
         }
         or evidence.get("schema") != LIVE_FALLBACK_EVIDENCE_SCHEMA
-        or evidence.get("schema_version") != 1
+        or not _has_exact_schema_version(evidence, 1)
         or evidence.get("base_result_sha256") != previous_result_sha256
     ):
         raise BulkGenerationError("Live fallback evidence authority is malformed")
@@ -222,7 +229,7 @@ def _validate_render_review_fallback_evidence(
             "hypotheses",
         }
         or evidence.get("schema") != LIVE_FALLBACK_EVIDENCE_SCHEMA
-        or evidence.get("schema_version") != 2
+        or not _has_exact_schema_version(evidence, 2)
         or evidence.get("base_result_sha256") != previous_result_sha256
     ):
         raise BulkGenerationError("Live fallback review evidence is malformed")
@@ -282,7 +289,7 @@ def _validate_render_review_fallback_evidence(
             or review.get("reference_sha256") != hypothesis["reference_sha256"]
             or review.get("result_sha256") != hypothesis["result_sha256"]
             or decision.get("schema") != "vntts.authoring-render-hypothesis-decision"
-            or decision.get("schema_version") != 1
+            or not _has_exact_schema_version(decision, 1)
             or decision.get("review_id") != hypothesis["review_id"]
             or decision.get("review_sha256") != hypothesis["review_sha256"]
             or decision.get("reference_sha256") != hypothesis["reference_sha256"]
@@ -304,7 +311,7 @@ def _validate_state_document(
     queue_sha256: str | None,
 ) -> None:
     schema_pair = (state.get("schema"), state.get("schema_version"))
-    if schema_pair not in {
+    if type(state.get("schema_version")) is not int or schema_pair not in {
         (STATE_SCHEMA, STATE_VERSION),
         (LEGACY_STATE_SCHEMA, LEGACY_STATE_VERSION),
     }:
@@ -430,7 +437,7 @@ def _validate_state_active(state: StateObject, queue_by_id: QueueById | None) ->
 def _validate_failure_record(
     failure: object, queue_id: str, *, result: StateObject | None = None
 ) -> None:
-    if not isinstance(failure, dict) or failure.get("schema_version") != 1:
+    if not isinstance(failure, dict) or not _has_exact_schema_version(failure, 1):
         raise BulkGenerationError(f"State item {queue_id!r} typed failure is invalid")
     if failure.get("kind") not in FAILURE_KINDS:
         raise BulkGenerationError(f"State item {queue_id!r} failure kind is invalid")
@@ -483,7 +490,7 @@ def _validate_pause_diagnosis(
     if (
         not isinstance(diagnosis, dict)
         or set(diagnosis) != expected_fields
-        or diagnosis.get("schema_version") != PAUSE_DIAGNOSIS_VERSION
+        or not _has_exact_schema_version(diagnosis, PAUSE_DIAGNOSIS_VERSION)
         or diagnosis.get("analysis_version")
         not in {
             LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION,
@@ -610,6 +617,10 @@ def _validate_live_fallback_structure(decision: StateObject, queue_id: str) -> o
         "decided_at",
     }
     version = decision.get("schema_version")
+    if type(version) is not int:
+        raise BulkGenerationError(
+            f"State item {queue_id!r} live fallback decision is malformed"
+        )
     expected_fields = (
         common_fields | {"evidence"}
         if version
@@ -882,7 +893,7 @@ def _validate_audio_event_omission(
         or not isinstance(decision, dict)
         or set(decision) != fields
         or decision.get("schema") != AUDIO_EVENT_OMISSION_SCHEMA
-        or decision.get("schema_version") != AUDIO_EVENT_OMISSION_VERSION
+        or not _has_exact_schema_version(decision, AUDIO_EVENT_OMISSION_VERSION)
         or decision.get("reason") != AUDIO_EVENT_OMISSION_REASON
         or decision.get("queue_id") != queue_id
         or not isinstance(authority, dict)
@@ -956,7 +967,7 @@ def _validate_missing_voice_live_fallback_evidence(
         not isinstance(evidence, dict)
         or set(evidence) != fields
         or evidence.get("schema") != MISSING_VOICE_LIVE_FALLBACK_EVIDENCE_SCHEMA
-        or evidence.get("schema_version") != 1
+        or not _has_exact_schema_version(evidence, 1)
         or evidence.get("queue_id") != queue_id
         or evidence.get("requested_voice_character") != requested_voice_character
         or evidence.get("decision_origin") != "automatic_no_complete_candidate"
@@ -1018,7 +1029,7 @@ def _validate_known_role_live_fallback_evidence(
         not isinstance(evidence, dict)
         or set(evidence) != fields
         or evidence.get("schema") != KNOWN_ROLE_LIVE_FALLBACK_EVIDENCE_SCHEMA
-        or evidence.get("schema_version") != 1
+        or not _has_exact_schema_version(evidence, 1)
         or evidence.get("queue_id") != queue_id
         or evidence.get("source_character") != source_character
         or evidence.get("synthesis_character") != requested_synthesis_character
@@ -1084,7 +1095,7 @@ def _validate_audio_event_projection_live_fallback_evidence(
         or set(evidence) != fields
         or evidence.get("schema")
         != AUDIO_EVENT_PROJECTION_LIVE_FALLBACK_EVIDENCE_SCHEMA
-        or evidence.get("schema_version") != 1
+        or not _has_exact_schema_version(evidence, 1)
         or evidence.get("queue_id") != queue_id
         or evidence.get("base_result_sha256") != previous_result_sha256
         or evidence.get("synthesis_character") != requested_voice_character
@@ -1182,7 +1193,7 @@ def _validate_reviewed_rejection_live_fallback_evidence(
         not isinstance(evidence, dict)
         or set(evidence) != fields
         or evidence.get("schema") != REVIEWED_REJECTION_LIVE_FALLBACK_EVIDENCE_SCHEMA
-        or evidence.get("schema_version") != 1
+        or not _has_exact_schema_version(evidence, 1)
         or evidence.get("queue_id") != queue_id
         or evidence.get("base_result_sha256") != previous_result_sha256
         or evidence.get("synthesis_character") != requested_voice_character
@@ -1284,7 +1295,7 @@ def _validate_automatic_recovery_live_fallback_evidence(
         not isinstance(evidence, dict)
         or set(evidence) != fields
         or evidence.get("schema") != AUTOMATIC_RECOVERY_LIVE_FALLBACK_EVIDENCE_SCHEMA
-        or evidence.get("schema_version") != 1
+        or not _has_exact_schema_version(evidence, 1)
         or evidence.get("queue_id") != queue_id
         or evidence.get("base_result_sha256") != previous_result_sha256
         or not isinstance(base_result, dict)
@@ -1416,8 +1427,10 @@ def _validate_source_reference_binding(
             "queue_voice_overrides_sha256"
         ),
     }
-    if set(source_binding) != set(expected) or any(
-        source_binding.get(field) != value for field, value in expected.items()
+    if (
+        not _has_exact_schema_version(source_binding, 1)
+        or set(source_binding) != set(expected)
+        or any(source_binding.get(field) != value for field, value in expected.items())
     ):
         raise BulkGenerationError(
             f"State item {queue_id!r} source-reference binding conflicts"
@@ -1453,7 +1466,7 @@ def _validate_narrator_fallback(
             f"State item {queue_id!r} synthesis fallback is malformed"
         )
     if (
-        fallback.get("schema_version") != 1
+        not _has_exact_schema_version(fallback, 1)
         or fallback.get("kind") != "missing_voice_to_narrator"
     ):
         raise BulkGenerationError(
@@ -1654,7 +1667,7 @@ def _validate_failure_repair_record(
     repair = result.get("failure_repair")
     if repair is None:
         return
-    if not isinstance(repair, dict) or repair.get("schema_version") != 1:
+    if not isinstance(repair, dict) or not _has_exact_schema_version(repair, 1):
         raise BulkGenerationError(
             f"State item {queue_id!r} failure repair is malformed"
         )
@@ -1908,6 +1921,7 @@ def _validate_offline_fallback_authority(source: StateObject, queue_id: str) -> 
         not isinstance(authority, dict)
         or set(authority) != set(expected)
         or authority.get("kind") not in {"failed_voice_review", "failed_prompt_review"}
+        or not _has_exact_schema_version(authority, 1)
         or any(authority.get(field) != value for field, value in expected.items())
     ):
         raise BulkGenerationError(
@@ -2277,7 +2291,9 @@ def _validate_reviewed_waveform_publication_structure(
     if (
         set(publication) != fields
         or publication.get("schema") != REVIEWED_WAVEFORM_PUBLICATION_SCHEMA
-        or publication.get("schema_version") != REVIEWED_WAVEFORM_PUBLICATION_VERSION
+        or not _has_exact_schema_version(
+            publication, REVIEWED_WAVEFORM_PUBLICATION_VERSION
+        )
         or publication.get("reason") != REVIEWED_WAVEFORM_PUBLICATION_REASON
         or publication.get("publication_scope") != "exact_reviewed_waveform"
         or publication.get("synthesis_reproducibility") is not False
