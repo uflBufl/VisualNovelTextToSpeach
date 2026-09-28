@@ -367,8 +367,9 @@ class MossTTSBackendTest(unittest.TestCase):
             cache_policy=SynthesisCachePolicy.BYPASS,
         )
 
-        first = backend.render(request).collect()
-        second = backend.render(request).collect()
+        with patch.object(backend, "_persistent_cache_key", side_effect=AssertionError):
+            first = backend.render(request).collect()
+            second = backend.render(request).collect()
 
         self.assertEqual(first.diagnostics.cache_source, "fresh-generation")
         self.assertEqual(second.diagnostics.cache_source, "fresh-generation")
@@ -378,6 +379,16 @@ class MossTTSBackendTest(unittest.TestCase):
             initialization.mock_calls,
             [unittest.mock.call.ensure_codec(), unittest.mock.call.random.seed(11)] * 2,
         )
+
+        backend.persistent_audio_cache.max_entries = 0
+        disabled_request = SynthesisRequest(
+            voice="Narrator", text="Memory cache without durable storage."
+        )
+        with patch.object(backend, "_persistent_cache_key", side_effect=AssertionError):
+            disabled = backend.render(disabled_request).collect()
+            memory = backend.render(disabled_request).collect()
+        self.assertEqual(disabled.diagnostics.cache_source, "fresh-generation")
+        self.assertEqual(memory.diagnostics.cache_source, "memory-cache")
 
     def test_refresh_cache_skips_read_then_replaces_reusable_audio(self):
         backend, model, _output = self.create_backend()

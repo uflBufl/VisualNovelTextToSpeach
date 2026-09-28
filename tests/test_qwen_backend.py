@@ -131,16 +131,21 @@ class QwenBackendTest(unittest.TestCase):
                 )
                 self.assertEqual(backend.device, "cuda")
                 self.assertIs(backend.torch, fake_torch)
-                for _ in range(2):
-                    result = backend.render(
-                        SynthesisRequest(
-                            voice="Narrator",
-                            text="A new line.",
-                            cache_policy=SynthesisCachePolicy.BYPASS,
+                with patch.object(
+                    backend, "_persistent_cache_key", side_effect=AssertionError
+                ):
+                    for _ in range(2):
+                        result = backend.render(
+                            SynthesisRequest(
+                                voice="Narrator",
+                                text="A new line.",
+                                cache_policy=SynthesisCachePolicy.BYPASS,
+                            )
+                        ).collect()
+                        self.assertEqual(
+                            result.completion, SynthesisCompletion.COMPLETE
                         )
-                    ).collect()
-                    self.assertEqual(result.completion, SynthesisCompletion.COMPLETE)
-                    self.assertEqual(result.sample_rate, 24000)
+                        self.assertEqual(result.sample_rate, 24000)
             self.assertEqual(len(prompts), 1)
             self.assertEqual(prompts[0]["ref_text"], "The original words.")
             self.assertFalse(prompts[0]["x_vector_only_mode"])

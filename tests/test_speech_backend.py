@@ -463,15 +463,24 @@ class ChatterboxNanoBackendTest(unittest.TestCase):
         refreshed = backend.render(
             SynthesisRequest(**base, cache_policy=SynthesisCachePolicy.REFRESH)
         ).collect()
-        bypassed = backend.render(
-            SynthesisRequest(**base, cache_policy=SynthesisCachePolicy.BYPASS)
-        ).collect()
+        with patch.object(backend, "_persistent_cache_key", side_effect=AssertionError):
+            bypassed = backend.render(
+                SynthesisRequest(**base, cache_policy=SynthesisCachePolicy.BYPASS)
+            ).collect()
+            backend.persistent_audio_cache.max_entries = 0
+            disabled_request = SynthesisRequest(
+                **{**base, "text": "Memory cache without durable storage."}
+            )
+            disabled = backend.render(disabled_request).collect()
+            disabled_memory = backend.render(disabled_request).collect()
 
         self.assertEqual(fresh.diagnostics.cache_source, "fresh-generation")
         self.assertEqual(memory.diagnostics.cache_source, "memory-cache")
         self.assertEqual(refreshed.diagnostics.cache_source, "fresh-generation")
         self.assertEqual(bypassed.diagnostics.cache_source, "fresh-generation")
-        self.assertEqual(len(model.generated), 3)
+        self.assertEqual(disabled.diagnostics.cache_source, "fresh-generation")
+        self.assertEqual(disabled_memory.diagnostics.cache_source, "memory-cache")
+        self.assertEqual(len(model.generated), 4)
 
     def test_cancelled_generation_is_not_returned_or_cached(self):
         cancelled = Event()
@@ -920,15 +929,24 @@ class PocketTTSBackendTest(unittest.TestCase):
         refreshed = backend.render(
             SynthesisRequest(**base, cache_policy=SynthesisCachePolicy.REFRESH)
         ).collect()
-        bypassed = backend.render(
-            SynthesisRequest(**base, cache_policy=SynthesisCachePolicy.BYPASS)
-        ).collect()
+        with patch.object(backend, "_persistent_cache_key", side_effect=AssertionError):
+            bypassed = backend.render(
+                SynthesisRequest(**base, cache_policy=SynthesisCachePolicy.BYPASS)
+            ).collect()
+            backend.persistent_audio_cache.max_entries = 0
+            disabled_request = SynthesisRequest(
+                **{**base, "text": "Memory cache without durable storage."}
+            )
+            disabled = backend.render(disabled_request).collect()
+            disabled_memory = backend.render(disabled_request).collect()
 
         self.assertEqual(fresh.diagnostics.cache_source, "fresh-generation")
         self.assertEqual(memory.diagnostics.cache_source, "memory-cache")
         self.assertEqual(refreshed.diagnostics.cache_source, "fresh-generation")
         self.assertEqual(bypassed.diagnostics.cache_source, "fresh-generation")
-        self.assertEqual(len(model.stream_calls), 3)
+        self.assertEqual(disabled.diagnostics.cache_source, "fresh-generation")
+        self.assertEqual(disabled_memory.diagnostics.cache_source, "memory-cache")
+        self.assertEqual(len(model.stream_calls), 4)
 
     def test_seeded_pocket_render_is_rejected_instead_of_silently_ignored(self):
         backend, _model, _audio_output = self.create_backend()

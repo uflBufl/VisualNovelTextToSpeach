@@ -80,7 +80,7 @@ def _read_cached_audio(
     memory: BoundedCache[_CacheKey, AudioArray],
     persistent: PersistentAudioCache,
     key: _CacheKey,
-    persistent_key: str,
+    persistent_key: str | None,
     policy: SynthesisCachePolicy,
 ) -> tuple[AudioArray | None, str]:
     if policy is not SynthesisCachePolicy.USE:
@@ -88,11 +88,25 @@ def _read_cached_audio(
     audio = memory.get(key)
     if audio is not None:
         return audio, "memory-cache"
+    if persistent_key is None:
+        return None, "fresh-generation"
     audio = persistent.get(persistent_key)
     if audio is not None:
         memory.put(key, audio)
         return audio, "persistent-cache"
     return None, "fresh-generation"
+
+
+def _store_cached_audio(
+    memory: BoundedCache[_CacheKey, AudioArray],
+    persistent: PersistentAudioCache,
+    key: _CacheKey,
+    persistent_key: str | None,
+    audio: AudioArray,
+) -> None:
+    memory.put(key, audio)
+    if persistent_key is not None:
+        persistent.put(persistent_key, audio)
 
 
 class _ChatterboxTensor(Protocol):
@@ -250,7 +264,7 @@ class PocketTTSPreparedSpeech:
     voice_state: object
     text: str
     cache_key: tuple[str, str]
-    persistent_cache_key: str
+    persistent_cache_key: str | None
     cached_audio: AudioArray | None = None
     cache_source: str = "fresh-generation"
     generation_profile: str = "default"
@@ -263,7 +277,7 @@ class MossTTSPreparedSpeech:
     prompt_audio_codes: object
     text: str
     cache_key: tuple[str, str, str, int | None]
-    persistent_cache_key: str
+    persistent_cache_key: str | None
     max_tokens: int
     max_audio_seconds: float
     cached_audio: AudioArray | None = None
@@ -692,7 +706,12 @@ class ChatterboxNanoVoiceRouterBackend(SynchronousPcmPlaybackMixin):
     ) -> Generator[SynthesisChunk, None, SynthesisResult]:
         normalized_character = normalize_character_name(request.voice) or "narrator"
         cache_key = normalized_character, spoken_text
-        persistent_key = self._persistent_cache_key(request.voice, spoken_text)
+        persistent_key = (
+            self._persistent_cache_key(request.voice, spoken_text)
+            if cache_policy is not SynthesisCachePolicy.BYPASS
+            and self.persistent_audio_cache.max_entries > 0
+            else None
+        )
         started = self.clock()
         with self.synthesis_lock:
             audio, cache_source = _read_cached_audio(
@@ -719,8 +738,13 @@ class ChatterboxNanoVoiceRouterBackend(SynchronousPcmPlaybackMixin):
                     completion = SynthesisCompletion.CANCELLED
                     audio = None
                 elif cache_policy is not SynthesisCachePolicy.BYPASS:
-                    self.audio_cache.put(cache_key, audio)
-                    self.persistent_audio_cache.put(persistent_key, audio)
+                    _store_cached_audio(
+                        self.audio_cache,
+                        self.persistent_audio_cache,
+                        cache_key,
+                        persistent_key,
+                        audio,
+                    )
 
         elapsed_ms = (self.clock() - started) * 1000
         first_chunk_ms: float = (
@@ -1160,7 +1184,12 @@ class PocketTTSVoiceRouterBackend:
             ) from error
         voice_key, source = self._resolve_voice_source(request.voice)
         cache_key = voice_key, spoken_text
-        persistent_key = self._persistent_cache_key(voice_key, spoken_text, source)
+        persistent_key = (
+            self._persistent_cache_key(voice_key, spoken_text, source)
+            if cache_policy is not SynthesisCachePolicy.BYPASS
+            and self.persistent_audio_cache.max_entries > 0
+            else None
+        )
         cached_audio, cache_source = _read_cached_audio(
             self.audio_cache,
             self.persistent_audio_cache,
@@ -1227,8 +1256,10 @@ class PocketTTSVoiceRouterBackend:
                 and prepared.cache_policy is not SynthesisCachePolicy.BYPASS
             ):
                 cached_audio = pcm.reshape(-1)
-                self.audio_cache.put(prepared.cache_key, cached_audio)
-                self.persistent_audio_cache.put(
+                _store_cached_audio(
+                    self.audio_cache,
+                    self.persistent_audio_cache,
+                    prepared.cache_key,
                     prepared.persistent_cache_key,
                     cached_audio,
                 )
@@ -1414,8 +1445,10 @@ class PocketTTSVoiceRouterBackend:
                     and payload.cache_policy is not SynthesisCachePolicy.BYPASS
                 ):
                     cached_audio = result.pcm.reshape(-1)
-                    self.audio_cache.put(payload.cache_key, cached_audio)
-                    self.persistent_audio_cache.put(
+                    _store_cached_audio(
+                        self.audio_cache,
+                        self.persistent_audio_cache,
+                        payload.cache_key,
                         payload.persistent_cache_key,
                         cached_audio,
                     )
@@ -1857,13 +1890,18 @@ class MossTTSVoiceRouterBackend:
         voice_key, source = self._resolve_voice_source(request.voice)
         max_tokens, max_audio_seconds = moss_generation_limits(spoken_text)
         cache_key = voice_key, spoken_text, profile, request.seed
-        persistent_key = self._persistent_cache_key(
-            voice_key,
-            spoken_text,
-            source,
-            seed=request.seed,
-            generation_profile=profile,
-            generation_options=generation_options,
+        persistent_key = (
+            self._persistent_cache_key(
+                voice_key,
+                spoken_text,
+                source,
+                seed=request.seed,
+                generation_profile=profile,
+                generation_options=generation_options,
+            )
+            if cache_policy is not SynthesisCachePolicy.BYPASS
+            and self.persistent_audio_cache.max_entries > 0
+            else None
         )
         cached_audio, cache_source = _read_cached_audio(
             self.audio_cache,
@@ -1951,8 +1989,13 @@ class MossTTSVoiceRouterBackend:
                 and prepared.cached_audio is None
                 and prepared.cache_policy is not SynthesisCachePolicy.BYPASS
             ):
-                self.audio_cache.put(prepared.cache_key, pcm)
-                self.persistent_audio_cache.put(prepared.persistent_cache_key, pcm)
+                _store_cached_audio(
+                    self.audio_cache,
+                    self.persistent_audio_cache,
+                    prepared.cache_key,
+                    prepared.persistent_cache_key,
+                    pcm,
+                )
             return SynthesisResult(
                 pcm=pcm,
                 sample_rate=self.sample_rate,
@@ -2185,8 +2228,10 @@ class MossTTSVoiceRouterBackend:
                     and payload.cached_audio is None
                     and payload.cache_policy is not SynthesisCachePolicy.BYPASS
                 ):
-                    self.audio_cache.put(payload.cache_key, result.pcm)
-                    self.persistent_audio_cache.put(
+                    _store_cached_audio(
+                        self.audio_cache,
+                        self.persistent_audio_cache,
+                        payload.cache_key,
                         payload.persistent_cache_key,
                         result.pcm,
                     )
