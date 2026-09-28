@@ -327,12 +327,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/game_narrator_ui.py",
-      "scope": "GameNarratorDialog._finished",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/game_pack.py",
       "scope": "_source_audio_semantic_evidence",
       "count": 1
@@ -873,12 +867,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/game_narrator_ui.py",
-      "scope": "GameNarratorDialog._finished",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/generated_audio.py",
       "scope": "GeneratedAudioFallbackBackend.prepare_route",
       "count": 1
@@ -1367,12 +1355,6 @@
       "code": "PLR0915",
       "path": "vntts/game_audio_decoder.py",
       "scope": "ensure_game_decoder",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/game_narrator_ui.py",
-      "scope": "GameNarratorDialog._finished",
       "count": 1
     },
     {

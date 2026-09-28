@@ -1945,162 +1945,190 @@ class GameNarratorDialog(QDialog):
         )
         self.cancel_button.adjustSize()
         if operation == "warm":
-            if self.references.currentData() != self._warming_reference:
-                self._warm_selected()
-                self._update()
-                return
-            queued = self._queued_action
-            self._queued_action = None
-            if error is None:
-                self.status.setText(
-                    "Original reference ready. Press Play original to listen."
-                )
-                if queued:
-                    self._candidate_action(queued)
-            elif isinstance(error, DecoderSetupRequired):
-                # Browsing must not open an installation prompt without a user action.
-                self.status.setText(
-                    "Audio decoder setup needed. Press Play to set it up."
-                )
-                if queued and confirm_decoder_setup(self, error):
-                    self.importer.allow_decoder_homebrew = True
-                    self._candidate_action(queued)
-            else:
-                self.status.setText(
-                    f"{error}\nPress Play to retry or choose another reference."
-                )
-            self._update()
+            self._finish_warm(error)
             return
         if error is not None:
+            if self._finish_error(operation, error):
+                return
+        elif self._finish_success(operation, result):
+            return
+        self._update()
+
+    def _finish_warm(self, error: Exception | None) -> None:
+        if self.references.currentData() != self._warming_reference:
+            self._warm_selected()
+            self._update()
+            return
+        queued = self._queued_action
+        self._queued_action = None
+        if error is None:
+            self.status.setText(
+                "Original reference ready. Press Play original to listen."
+            )
+            if queued:
+                self._candidate_action(queued)
+        elif isinstance(error, DecoderSetupRequired):
+            # Browsing must not open an installation prompt without a user action.
+            self.status.setText("Audio decoder setup needed. Press Play to set it up.")
+            if queued and confirm_decoder_setup(self, error):
+                self.importer.allow_decoder_homebrew = True
+                self._candidate_action(queued)
+        else:
+            self.status.setText(
+                f"{error}\nPress Play to retry or choose another reference."
+            )
+        self._update()
+
+    def _finish_error(self, operation: str | None, error: Exception) -> bool:
+        from vntts.support import record_game_import
+
+        record_game_import(
+            "voice-dialog",
+            outcome="failed",
+            command_kind=operation,
+            exception_type=type(error).__name__,
+            reason=str(error),
+            traceback_tail="".join(format_exception(error))[-12000:],
+        )
+        if isinstance(error, DecoderSetupRequired) and confirm_decoder_setup(
+            self, error
+        ):
+            self.importer.allow_decoder_homebrew = True
+            if operation is not None:
+                self._candidate_action(operation)
+            return True
+        self.status.setText(
+            (
+                f"{error}\nNothing was assigned. Select Generate preview to "
+                "try again, or Cancel to leave.\n"
+                if operation == "preview"
+                else f"{error}\nRetry, choose a game folder, or cancel. "
+                "Nothing was assigned.\n"
+            )
+            + "Failure details: Support and logs > Export support report."
+        )
+        return False
+
+    def _finish_success(self, operation: str | None, result: object) -> bool:
+        if operation == "impact":
+            self._finish_impact(result)
+        elif operation == "discover":
+            return self._finish_discovery(result)
+        elif operation == "prepare":
+            self._finish_preparation(result)
+        elif operation in {"audio", "preview"}:
+            return self._finish_playback(operation, result)
+        elif operation == "save":
+            self._finish_save(result)
+            return True
+        return False
+
+    def _finish_impact(self, result: object) -> None:
+        if not _is_story_voice_impact(result):
+            raise TypeError("Voice-impact service returned an invalid result")
+        self._show_impact(result)
+        self.status.setText(
+            "Voice comparison complete. Nothing has been saved or generated."
+        )
+
+    def _finish_discovery(self, result: object) -> bool:
+        if not _is_string_tuple(result):
+            raise TypeError("Game importer returned invalid character names")
+        preferred = self.role.currentText()
+        if is_narrator(preferred):
+            binding = self.voice_library.binding(preferred)
+            evidence = binding.provenance.get("evidence") if binding else None
+            saved_character = (
+                evidence.get("selected_character")
+                if isinstance(evidence, dict)
+                else None
+            )
+            preferred = (
+                saved_character
+                if isinstance(saved_character, str)
+                else self._character or ""
+            )
+        with QSignalBlocker(self.characters):
+            self.characters.addItems(result)
+            for index, name in enumerate(result):
+                if normalize_character_name(name) == normalize_character_name(
+                    preferred
+                ):
+                    self.characters.setCurrentIndex(index)
+                    break
+        self._show_known_installation()
+        self.status.setText(
+            "Choose a character to load its voice references."
+            if result
+            else "No voiced characters found. Choose the game folder to reimport."
+        )
+        if not result:
+            return False
+        self._prepare()
+        return True
+
+    def _finish_preparation(self, result: object) -> None:
+        if not isinstance(result, (Path, str)):
+            raise TypeError("Game importer returned an invalid voice manifest")
+        try:
+            self._show_character_candidates(result)
+        except (
+            OSError,
+            ValueError,
+            VoiceManifestError,
+            PregenerationVoiceError,
+        ) as error:
             from vntts.support import record_game_import
 
             record_game_import(
                 "voice-dialog",
                 outcome="failed",
-                command_kind=operation,
+                command_kind="prepare",
                 exception_type=type(error).__name__,
                 reason=str(error),
-                traceback_tail="".join(format_exception(error))[-12000:],
             )
-            if isinstance(error, DecoderSetupRequired) and confirm_decoder_setup(
-                self, error
-            ):
-                self.importer.allow_decoder_homebrew = True
-                if operation is not None:
-                    self._candidate_action(operation)
-                return
             self.status.setText(
-                (
-                    f"{error}\nNothing was assigned. Select Generate preview to "
-                    "try again, or Cancel to leave.\n"
-                    if operation == "preview"
-                    else f"{error}\nRetry, choose a game folder, or cancel. "
-                    "Nothing was assigned.\n"
-                )
-                + "Failure details: Support and logs > Export support report."
+                f"{error}\nRetry, choose a game folder, or cancel. "
+                "Nothing was assigned."
             )
-        elif operation == "impact":
-            if not _is_story_voice_impact(result):
-                raise TypeError("Voice-impact service returned an invalid result")
-            self._show_impact(result)
-            self.status.setText(
-                "Voice comparison complete. Nothing has been saved or generated."
-            )
-        elif operation == "discover":
-            if not _is_string_tuple(result):
-                raise TypeError("Game importer returned invalid character names")
-            preferred = self.role.currentText()
-            if is_narrator(preferred):
-                binding = self.voice_library.binding(preferred)
-                evidence = binding.provenance.get("evidence") if binding else None
-                saved_character = (
-                    evidence.get("selected_character")
-                    if isinstance(evidence, dict)
-                    else None
-                )
-                preferred = (
-                    saved_character
-                    if isinstance(saved_character, str)
-                    else self._character or ""
-                )
-            with QSignalBlocker(self.characters):
-                self.characters.addItems(result)
-                for index, name in enumerate(result):
-                    if normalize_character_name(name) == normalize_character_name(
-                        preferred
-                    ):
-                        self.characters.setCurrentIndex(index)
-                        break
-            self._show_known_installation()
-            self.status.setText(
-                "Choose a character to load its voice references."
-                if result
-                else "No voiced characters found. Choose the game folder to reimport."
-            )
-            if result:
-                self._prepare()
-                return
-        elif operation == "prepare":
-            if not isinstance(result, (Path, str)):
-                raise TypeError("Game importer returned an invalid voice manifest")
-            try:
-                self._show_character_candidates(result)
-            except (
-                OSError,
-                ValueError,
-                VoiceManifestError,
-                PregenerationVoiceError,
-            ) as error:
-                from vntts.support import record_game_import
 
-                record_game_import(
-                    "voice-dialog",
-                    outcome="failed",
-                    command_kind=operation,
-                    exception_type=type(error).__name__,
-                    reason=str(error),
-                )
-                self.status.setText(
-                    f"{error}\nRetry, choose a game folder, or cancel. "
-                    "Nothing was assigned."
-                )
-        elif operation in {"audio", "preview"}:
-            preview_path: object | None = None
-            if operation == "preview":
-                preview_path = getattr(result, "path", None)
-                if preview_path is None:
-                    raise TypeError("Preview service returned an invalid preview")
-                self._preview_reused = getattr(result, "reused", False) is True
-            if not self._playback_requested:
-                self.status.setText("Audio ready. Playback stopped.")
-                self._update()
-                return
-            self.status.setText("Starting playback...")
-            if operation == "audio":
-                if not isinstance(result, OriginalReference):
-                    raise TypeError("Reference loader returned an invalid reference")
-                check = (
-                    "Not suitable for cloning: " + ", ".join(result.rejection_reasons)
-                    if result.rejection_reasons
-                    else "Technical reference checks passed; voice quality is yours to judge."
-                )
-                self.reference_details.setText(
-                    f"Original: {result.character} | {result.duration_seconds:.3f} s\n{check}"
-                )
-                self.reference_details.setToolTip(
-                    f"{result.source_id}\n{result.path}\nSHA-256: {result.sha256}"
-                )
-                self.player.play_bytes(result.payload, source=str(result.path))
-            else:
-                self.player.setSource(QUrl.fromLocalFile(str(preview_path)))
-                self.player.play()
-        elif operation == "save":
-            if not isinstance(result, AppSettings):
-                raise TypeError("Voice binding returned invalid settings")
-            self.result_settings = result
-            self._cleanup()
-            return
-        self._update()
+    def _finish_playback(self, operation: str, result: object) -> bool:
+        preview_path: object | None = None
+        if operation == "preview":
+            preview_path = getattr(result, "path", None)
+            if preview_path is None:
+                raise TypeError("Preview service returned an invalid preview")
+            self._preview_reused = getattr(result, "reused", False) is True
+        if not self._playback_requested:
+            self.status.setText("Audio ready. Playback stopped.")
+            self._update()
+            return True
+        self.status.setText("Starting playback...")
+        if operation == "audio":
+            if not isinstance(result, OriginalReference):
+                raise TypeError("Reference loader returned an invalid reference")
+            check = (
+                "Not suitable for cloning: " + ", ".join(result.rejection_reasons)
+                if result.rejection_reasons
+                else "Technical reference checks passed; voice quality is yours to judge."
+            )
+            self.reference_details.setText(
+                f"Original: {result.character} | {result.duration_seconds:.3f} s\n{check}"
+            )
+            self.reference_details.setToolTip(
+                f"{result.source_id}\n{result.path}\nSHA-256: {result.sha256}"
+            )
+            self.player.play_bytes(result.payload, source=str(result.path))
+        else:
+            self.player.setSource(QUrl.fromLocalFile(str(preview_path)))
+            self.player.play()
+        return False
+
+    def _finish_save(self, result: object) -> None:
+        if not isinstance(result, AppSettings):
+            raise TypeError("Voice binding returned invalid settings")
+        self.result_settings = result
+        self._cleanup()
 
     def _playback_state_changed(self, state: object) -> None:
         if self.runner.active:
