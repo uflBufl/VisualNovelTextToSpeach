@@ -125,85 +125,121 @@ class PlayerSessionOwner:
         *,
         restart: bool = False,
     ) -> tuple[bool, bool]:
-        def operation(_cancellation: Event) -> tuple[bool, bool]:
-            previous_settings = self.controller.settings
-            was_ready = bool(self.controller.is_ready)
+        return self.run(
+            generation,
+            lambda _cancellation: self._configure_runtime(
+                generation, settings, cancellation, restart=restart
+            ),
+            (False, False),
+        )
 
-            def restore_previous_runtime(error: Exception | None = None) -> None:
-                if not self.is_current(generation):
-                    return
-                try:
-                    self.controller.shutdown()
-                    if not self.is_current(generation):
-                        return
-                    if self.controller.apply_settings(previous_settings) is False:
-                        if self.is_current(generation):
-                            raise RuntimeError(
-                                "Unable to restore previous speech settings"
-                            )
-                        return
-                    if not self.is_current(generation):
-                        return
-                    if was_ready:
-                        self.controller.prepare_startup()
-                        if not self.is_current(generation):
-                            self.controller.request_shutdown()
-                            return
-                        if self.controller.start() is False and self.is_current(
-                            generation
-                        ):
-                            raise RuntimeError(
-                                "Unable to restore previous speech runtime"
-                            )
-                except Exception as rollback_error:
-                    if error is None:
-                        raise
-                    raise RuntimeError(
-                        f"{error}; previous speech runtime could not be restored: "
-                        f"{rollback_error}"
-                    ) from rollback_error
+    def _configure_runtime(
+        self,
+        generation: int,
+        settings: AppSettings,
+        cancellation: Event,
+        *,
+        restart: bool,
+    ) -> tuple[bool, bool]:
+        if restart:
+            return self._replace_runtime(generation, settings, cancellation)
+        applied = self.controller.apply_settings(settings, cancellation=cancellation)
+        return self.is_current(generation), applied is not False
 
-            if restart:
-                self.controller.shutdown()
-                if cancellation.is_set() or not self.is_current(generation):
-                    restore_previous_runtime()
-                    return False, False
-            try:
-                applied = self.controller.apply_settings(
-                    settings, cancellation=cancellation
-                )
-            except Exception as error:
-                if restart:
-                    restore_previous_runtime(error)
+    def _replace_runtime(
+        self, generation: int, settings: AppSettings, cancellation: Event
+    ) -> tuple[bool, bool]:
+        previous_settings = self.controller.settings
+        was_ready = bool(self.controller.is_ready)
+        self.controller.shutdown()
+        if cancellation.is_set() or not self.is_current(generation):
+            self._restore_previous_runtime(generation, previous_settings, was_ready)
+            return False, False
+        try:
+            applied = self.controller.apply_settings(
+                settings, cancellation=cancellation
+            )
+        except Exception as error:
+            self._restore_previous_runtime(
+                generation, previous_settings, was_ready, error=error
+            )
+            raise
+        if applied is False:
+            self._restore_previous_runtime(generation, previous_settings, was_ready)
+            return self.is_current(generation), False
+        if cancellation.is_set():
+            self._restore_previous_runtime(generation, previous_settings, was_ready)
+            return False, False
+        if not self.is_current(generation):
+            return False, False
+        return self._start_replacement_runtime(
+            generation, cancellation, previous_settings, was_ready
+        )
+
+    def _start_replacement_runtime(
+        self,
+        generation: int,
+        cancellation: Event,
+        previous_settings: AppSettings,
+        was_ready: bool,
+    ) -> tuple[bool, bool]:
+        try:
+            self.controller.prepare_startup()
+            if cancellation.is_set() or not self.is_current(generation):
+                self.controller.request_shutdown()
+                self._restore_previous_runtime(generation, previous_settings, was_ready)
+                return False, False
+            started = self.controller.start()
+        except Exception as error:
+            self._restore_previous_runtime(
+                generation, previous_settings, was_ready, error=error
+            )
+            raise
+        if cancellation.is_set() or not self.is_current(generation):
+            self.controller.shutdown()
+            self._restore_previous_runtime(generation, previous_settings, was_ready)
+            return False, False
+        if started is False:
+            self._restore_previous_runtime(generation, previous_settings, was_ready)
+        return self.is_current(generation), started is not False
+
+    def _restore_previous_runtime(
+        self,
+        generation: int,
+        previous_settings: AppSettings,
+        was_ready: bool,
+        *,
+        error: Exception | None = None,
+    ) -> None:
+        if not self.is_current(generation):
+            return
+        try:
+            self.controller.shutdown()
+            if not self.is_current(generation):
+                return
+            if self.controller.apply_settings(previous_settings) is False:
+                if self.is_current(generation):
+                    raise RuntimeError("Unable to restore previous speech settings")
+                return
+            if not self.is_current(generation):
+                return
+            if was_ready:
+                self._restart_previous_runtime(generation)
+        except Exception as rollback_error:
+            if error is None:
                 raise
-            if restart and applied is False:
-                restore_previous_runtime()
-                return self.is_current(generation), False
-            if restart:
-                if cancellation.is_set():
-                    restore_previous_runtime()
-                    return False, False
-                if not self.is_current(generation):
-                    return False, False
-                try:
-                    self.controller.prepare_startup()
-                    if cancellation.is_set() or not self.is_current(generation):
-                        self.controller.request_shutdown()
-                        restore_previous_runtime()
-                        return False, False
-                    applied = self.controller.start()
-                except Exception as error:
-                    restore_previous_runtime(error)
-                    raise
-                if cancellation.is_set() or not self.is_current(generation):
-                    self.controller.shutdown()
-                    restore_previous_runtime()
-                    return False, False
-                if applied is False:
-                    restore_previous_runtime()
-            return self.is_current(generation), applied is not False
+            raise RuntimeError(
+                f"{error}; previous speech runtime could not be restored: "
+                f"{rollback_error}"
+            ) from rollback_error
 
-        return self.run(generation, operation, (False, False))
+    def _restart_previous_runtime(self, generation: int) -> None:
+        self.controller.prepare_startup()
+        if not self.is_current(generation):
+            self.controller.request_shutdown()
+            return
+        if self.controller.start() is False and self.is_current(generation):
+            raise RuntimeError("Unable to restore previous speech runtime")
 
     def restart(self, generation: int, settings: AppSettings) -> bool:
         def operation(_cancellation: Event) -> bool:
