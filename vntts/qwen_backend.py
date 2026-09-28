@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from time import monotonic
-from typing import Protocol, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 
 from vntts.audio_output import AudioOutput
 from vntts.services.tts_engine import TTSConfigurationError
@@ -16,7 +16,6 @@ from vntts.speech_backend import (
     MossTTSPreparedSpeech,
     MossTTSVoiceRouterBackend,
     _MossGeneratedChunk,
-    _MossTTSModel,
     _MossTTSModelFactory,
     moss_generation_limits,
 )
@@ -57,6 +56,10 @@ class _QwenTTSModel(Protocol):
         max_tokens: int,
         stream: bool,
     ) -> Iterator[_QwenGeneratedResult]: ...
+
+
+class _QwenTTSModelFactory(Protocol):
+    def __call__(self, model_name: str, *, lazy: bool) -> _QwenTTSModel: ...
 
 
 @dataclass
@@ -101,7 +104,7 @@ class QwenTTSVoiceRouterBackend(MossTTSVoiceRouterBackend):
         language: object = "English",
         model_name: object = None,
         volume: int | float = 1.0,
-        model_factory: _MossTTSModelFactory | None = None,
+        model_factory: _QwenTTSModelFactory | None = None,
         audio_output: AudioOutput | None = None,
         clock: Callable[[], float] = monotonic,
         audio_cache_size: int = 32,
@@ -123,7 +126,7 @@ class QwenTTSVoiceRouterBackend(MossTTSVoiceRouterBackend):
             raise TTSConfigurationError("Qwen MLX requires macOS on Apple Silicon")
         del model_name, generation_profile  # This backend pins one tested model.
         metal_available = False
-        resolved_model_factory: _MossTTSModelFactory
+        resolved_model_factory: _QwenTTSModelFactory
         if model_factory is None:
             import mlx.core as mx
             from huggingface_hub import snapshot_download
@@ -134,7 +137,7 @@ class QwenTTSVoiceRouterBackend(MossTTSVoiceRouterBackend):
             metal_available = True
             model_path = snapshot_download(QWEN_MODEL, revision=QWEN_REVISION)
 
-            def load_qwen_model(model_name: str, *, lazy: bool) -> _MossTTSModel:
+            def load_qwen_model(model_name: str, *, lazy: bool) -> _QwenTTSModel:
                 return load_model(model_path, lazy=lazy)
 
             resolved_model_factory = load_qwen_model
@@ -147,7 +150,9 @@ class QwenTTSVoiceRouterBackend(MossTTSVoiceRouterBackend):
             language=language,
             model_name=model_path,
             volume=volume,
-            model_factory=resolved_model_factory,
+            # The base constructor only needs common model state before Qwen
+            # overrides all MOSS-specific generation and prompt-code hooks.
+            model_factory=cast(_MossTTSModelFactory, resolved_model_factory),
             audio_output=audio_output,
             clock=clock,
             audio_cache_size=audio_cache_size,
