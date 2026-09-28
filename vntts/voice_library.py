@@ -485,14 +485,19 @@ class VoiceLibrary:
 
     def unlink_person(self, alias: str) -> bool:
         """Remove one explicit story-name alias without changing voice data."""
-        identity, _display, _ = _role_identity(alias, None)
+        identity, display, _ = _role_identity(alias, None)
         with self._write_transaction():
             document = self._load()
             alias_key = identity.removesuffix(":")
             canonical = document["person_aliases"].get(alias_key)
             if canonical is None:
                 return False
-            migrations = document["person_link_migrations"].get(alias_key, ())
+            migrations = [
+                {**migration, "role": display}
+                if migration.get("role") == alias_key
+                else migration
+                for migration in document["person_link_migrations"].get(alias_key, ())
+            ]
             _move_linked_voice_data(
                 document,
                 canonical,

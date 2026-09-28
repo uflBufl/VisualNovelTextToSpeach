@@ -421,6 +421,25 @@ class VoiceLibraryTest(unittest.TestCase):
                 library.binding("Aderyn").source_sha256, child_choice.sha256
             )
 
+    def test_v2_link_migration_restores_alias_display_on_unlink(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "voice.wav"
+            write_wav(reference, b"\x00\x00")
+            library = VoiceLibrary(root / "library")
+            library.discover("Aderyn", reference, bind_if_missing=True)
+            library.link_person("Rhiannon", "Aderyn")
+            legacy = json.loads(library.path.read_text(encoding="utf-8"))
+            legacy["version"] = 2
+            legacy.pop("person_link_migrations")
+            library.path.write_text(json.dumps(legacy), encoding="utf-8")
+
+            library.select("Bob", route="narrator")
+            self.assertTrue(library.unlink_person("Aderyn"))
+
+            self.assertEqual(library.binding("Aderyn").role, "Aderyn")
+            self.assertEqual(library.alternatives("Aderyn")[0].role, "Aderyn")
+
     def test_composite_selection_keeps_all_selected_references_in_order(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
