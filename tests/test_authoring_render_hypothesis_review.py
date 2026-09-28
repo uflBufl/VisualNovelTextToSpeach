@@ -274,6 +274,13 @@ class RenderHypothesisReviewTest(unittest.TestCase):
             with self.assertRaisesRegex(RenderHypothesisReviewError, "already decided"):
                 record_render_hypothesis_decision(output, "need_different")
 
+            decision_path = output / "decision.json"
+            decision = json.loads(decision_path.read_text(encoding="utf-8"))
+            decision["schema_version"] = True
+            decision_path.write_text(json.dumps(decision), encoding="utf-8")
+            with self.assertRaisesRegex(RenderHypothesisReviewError, "malformed"):
+                load_render_hypothesis_review(output)
+
     def test_rejects_incomplete_arm_and_ambiguous_reference(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

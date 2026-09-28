@@ -1182,6 +1182,7 @@ def _validate_decision_document(
             "reviewed_at",
         }
         or decision.get("schema") != RENDER_HYPOTHESIS_DECISION_SCHEMA
+        or type(decision.get("schema_version")) is not int
         or decision.get("schema_version") != RENDER_HYPOTHESIS_DECISION_VERSION
         or decision.get("review_id") != review["review_id"]
         or decision.get("review_sha256") != review_sha256
