@@ -165,6 +165,13 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(effective.speech_backend, "coqui-xtts")
         self.assertEqual(effective.offline_speech_backend, "moss-tts")
 
+    def test_qwen_persists_as_live_or_offline_engine(self):
+        for live, offline in (("qwen-tts", "pocket-tts"), ("pocket-tts", "qwen-tts")):
+            settings = AppSettings.from_mapping(
+                {"speech_backend": live, "offline_speech_backend": offline}
+            )
+            self.assertEqual((settings.speech_backend, settings.offline_speech_backend), (live, offline))
+
     def test_invalid_environment_overrides_preserve_saved_settings(self):
         saved = AppSettings(
             live_interval_ms=350,

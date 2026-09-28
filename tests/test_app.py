@@ -2569,19 +2569,42 @@ class TrayApplicationTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             reference = Path(directory) / "narrator.wav"
             reference.touch()
-            dialog = SettingsDialog(
-                AppSettings(
-                    speech_backend="qwen-tts", tts_speaker_wav=str(reference)
-                ),
-                voice_library=VoiceLibrary(Path(directory) / "voices"),
-            )
-            self.assertTrue(
-                any(
-                    widget is dialog.choose_narrator_button and "exact words" in message
-                    for _, widget, message in dialog.validation_errors()
+            for live_backend, offline_backend in (
+                ("qwen-tts", "pocket-tts"),
+                ("pocket-tts", "qwen-tts"),
+            ):
+                dialog = SettingsDialog(
+                    AppSettings(
+                        speech_backend=live_backend,
+                        offline_speech_backend=offline_backend,
+                        tts_speaker_wav=str(reference),
+                    ),
+                    voice_library=VoiceLibrary(Path(directory) / "voices"),
                 )
+                self.assertTrue(
+                    any(
+                        widget is dialog.choose_narrator_button
+                        and "exact words" in message
+                        for _, widget, message in dialog.validation_errors()
+                    )
+                )
+                delete_dialog(dialog)
+
+    def test_offline_qwen_voice_picker_keeps_live_engine(self):
+        original = AppSettings(
+            speech_backend="pocket-tts", offline_speech_backend="qwen-tts"
+        )
+        dialog = SettingsDialog(original)
+        with patch("vntts.app.GameNarratorDialog") as picker:
+            picker.return_value.exec.return_value = QDialog.DialogCode.Accepted
+            picker.return_value.result_settings = original.updated(
+                speech_backend="qwen-tts"
             )
-            delete_dialog(dialog)
+            dialog.choose_narrator()
+            self.assertTrue(picker.call_args.kwargs["use_offline_engine"])
+        self.assertEqual(dialog._raw_settings().speech_backend, "pocket-tts")
+        self.assertEqual(dialog._raw_settings().offline_speech_backend, "qwen-tts")
+        delete_dialog(dialog)
 
     def test_settings_missing_moss_voice_targets_picker_and_file_is_optional(self):
         empty_directory = TemporaryDirectory()

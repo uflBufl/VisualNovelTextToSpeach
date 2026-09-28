@@ -1172,7 +1172,7 @@ class SettingsDialog(QDialog):
             if narrator_binding is not None
             else None
         )
-        if backend == "qwen-tts" and (
+        if "qwen-tts" in {backend, offline_backend} and (
             not isinstance(narrator_evidence, dict)
             or not str(narrator_evidence.get("reference_transcript") or "").strip()
         ):
@@ -1320,33 +1320,39 @@ class SettingsDialog(QDialog):
         )
 
     def choose_narrator(self) -> None:
+        offline_qwen = (
+            self.offline_speech_backend.currentData() == "qwen-tts"
+            and self.speech_backend.currentData() != "qwen-tts"
+        )
         dialog = GameNarratorDialog(
             self._raw_settings(),
             self,
             voice_library=self.voice_library,
-            use_offline_engine=False,
+            use_offline_engine=offline_qwen,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         candidate = dialog.result_settings
         if candidate is None:
             return
-        self.speech_backend.setCurrentIndex(
-            self.speech_backend.findData(candidate.speech_backend)
-        )
-        self.tts_model.setText(candidate.tts_model or "")
-        self.tts_profile.setCurrentText(candidate.tts_profile)
-        self.speaker_announcement_mode.setCurrentIndex(
-            self.speaker_announcement_mode.findData(
-                candidate.effective_speaker_announcement_mode
+        if not offline_qwen:
+            self.speech_backend.setCurrentIndex(
+                self.speech_backend.findData(candidate.speech_backend)
             )
-        )
+            self.tts_model.setText(candidate.tts_model or "")
+            self.tts_profile.setCurrentText(candidate.tts_profile)
+            self.speaker_announcement_mode.setCurrentIndex(
+                self.speaker_announcement_mode.findData(
+                    candidate.effective_speaker_announcement_mode
+                )
+            )
         self.voice_manifest.setText(candidate.voice_manifest or "")
-        self.pocket_gated_model.setChecked(candidate.pocket_gated_model_accepted)
-        with QSignalBlocker(self.narrator_reference):
-            self.narrator_reference.setText(candidate.tts_speaker_wav or "")
-        if not candidate.tts_speaker_wav:
-            self.advanced_narrator.setChecked(False)
+        if not offline_qwen:
+            self.pocket_gated_model.setChecked(candidate.pocket_gated_model_accepted)
+            with QSignalBlocker(self.narrator_reference):
+                self.narrator_reference.setText(candidate.tts_speaker_wav or "")
+            if not candidate.tts_speaker_wav:
+                self.advanced_narrator.setChecked(False)
         self.update_validation_summary()
 
     def _use_narrator_file(self, path: str) -> None:

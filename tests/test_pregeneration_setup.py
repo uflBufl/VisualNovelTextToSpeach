@@ -784,7 +784,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                     dialog.engine_choice.itemData(i)
                     for i in range(dialog.engine_choice.count())
                 ],
-                ["pocket-tts", "coqui-xtts", "chatterbox-nano", "moss-tts"],
+                ["pocket-tts", "coqui-xtts", "chatterbox-nano", "moss-tts", "qwen-tts"],
             )
             dialog.engine_choice.setCurrentIndex(
                 dialog.engine_choice.findData("moss-tts")
