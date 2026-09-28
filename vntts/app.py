@@ -3037,17 +3037,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 f" Matched {len(voice_plan.groups)} voice groups; "
                 f"{voice_plan.narrator_fallback_count} will use narrator."
             )
-        generation_settings = getattr(dialog, "settings", None)
-        if not isinstance(generation_settings, AppSettings):
-            generation_settings = self.settings
-        generation_settings = generation_settings.updated(
-            last_main_section=self.settings.last_main_section
-        )
-        self._start_pregeneration_activation(
-            pack_result,
-            status,
-            generation_settings,
-        )
+        self._start_pregeneration_activation(pack_result, status)
         return job
 
     def _reload_game_narrator(
@@ -3070,7 +3060,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self,
         pack_result: OfflinePackResult,
         success_status: str,
-        generation_settings: AppSettings | None = None,
     ) -> None:
         cancellation = Event()
         generation = self._begin_controller_lifecycle(cancellation)
@@ -3087,7 +3076,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             pack_result,
             cancellation,
             self._pregeneration_activation_restore_runtime,
-            generation_settings,
         )
 
     def _pregeneration_activation_finished(

@@ -269,7 +269,6 @@ class PlayerSessionOwner:
         pack: OfflinePackResult,
         cancellation: Event,
         restart_previous: Event,
-        generation_settings: AppSettings | None,
     ) -> OfflinePackActivationResult | None:
         def save_if_current(candidate: AppSettings) -> str:
             with self._state_lock:
@@ -291,7 +290,6 @@ class PlayerSessionOwner:
                 self.controller,
                 cancellation,
                 restart_previous,
-                generation_settings=generation_settings,
                 save_settings=save_if_current,
             ),
             None,

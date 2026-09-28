@@ -168,11 +168,6 @@ class OfflinePackActivatorTest(unittest.TestCase):
             previous = AppSettings(
                 game_pack="previous-pack.json", tts_speaker_wav="live-narrator.wav"
             )
-            selected = previous.updated(
-                pocket_gated_model_accepted=True,
-                tts_speaker_wav="old-narrator.wav",
-                speech_backend="moss-tts",
-            )
             for failure in (None, "start", "save", "apply"):
                 with self.subTest(failure=failure):
                     controller = Mock(is_ready=failure != "apply")
@@ -191,16 +186,12 @@ class OfflinePackActivatorTest(unittest.TestCase):
                     activator = OfflinePackActivator(save_settings=save)
                     if failure:
                         with self.assertRaises(OfflinePackActivationError):
-                            activator.activate(
-                                previous, pack, controller, generation_settings=selected
-                            )
+                            activator.activate(previous, pack, controller)
                         self.assertEqual(
                             controller.apply_settings.call_args.args, (previous,)
                         )
                     else:
-                        result = activator.activate(
-                            previous, pack, controller, generation_settings=selected
-                        )
+                        result = activator.activate(previous, pack, controller)
                         self.assertFalse(result.settings.pocket_gated_model_accepted)
                         self.assertEqual(result.settings.speech_backend, "pocket-tts")
                         self.assertEqual(

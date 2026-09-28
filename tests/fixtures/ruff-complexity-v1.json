@@ -963,12 +963,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/pregeneration_activation.py",
-      "scope": "OfflinePackActivator.activate",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/pregeneration_generation.py",
       "scope": "OfflineGenerationWorker._execute",
       "count": 1

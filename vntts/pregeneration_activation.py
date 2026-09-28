@@ -74,15 +74,10 @@ class OfflinePackActivator:
         cancellation: _Cancellation | None = None,
         restart_previous: _Cancellation | None = None,
         *,
-        generation_settings: AppSettings | None = None,
         save_settings: Callable[[AppSettings], str | Path] | None = None,
     ) -> OfflinePackActivationResult:
         if not isinstance(current_settings, AppSettings):
             raise OfflinePackActivationError("Current settings are invalid")
-        if generation_settings is not None and not isinstance(
-            generation_settings, AppSettings
-        ):
-            raise OfflinePackActivationError("Generation settings are invalid")
         if not isinstance(pack_result, OfflinePackResult):
             raise OfflinePackActivationError("Offline game pack result is invalid")
         phase_started, cpu_started = perf_counter(), process_time()
