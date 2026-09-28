@@ -3058,26 +3058,7 @@ class AppController:
         sequence_lease = (
             None if chunk.explicit_replay else self._begin_sequence_playback(chunk)
         )
-        if (
-            not chunk.explicit_replay
-            and self._live_sequence_audio_active()
-            and chunk.line_id is not None
-            and sequence_lease is None
-        ):
-            generation = (
-                reader.active_generation if reader is not None else chunk.generation
-            )
-            self.pipeline_event_handler(
-                "sequence-playback-suppressed",
-                generation,
-                monotonic(),
-                line_id=chunk.line_id,
-                reason="cursor-does-not-own-unplayed-line",
-                outcome="suppressed",
-            )
-            self.status_handler(
-                f"Duplicate or stale canonical audio suppressed: {chunk.line_id}"
-            )
+        if self._live_sequence_playback_suppressed(reader, chunk, sequence_lease):
             return False
         if isinstance(audio, PreparedLiveChunkRoutes):
             if (
@@ -3140,29 +3121,7 @@ class AppController:
             }
         )
         try:
-            play_route = getattr(type(self.speech_backend), "play_route", None)
-            play_prepared = getattr(type(self.speech_backend), "play_prepared", None)
-            outcome = (
-                play_route(
-                    self.speech_backend,
-                    audio,
-                    playback_guard=lambda: reader.wait_until_playable(chunk),
-                )
-                if callable(play_route) and isinstance(audio, RouteDecision)
-                else None
-            )
-            if (
-                outcome is None
-                and callable(play_prepared)
-                and isinstance(audio, PreparedPlayback)
-            ):
-                outcome = play_prepared(
-                    self.speech_backend,
-                    audio,
-                    playback_guard=lambda: reader.wait_until_playable(chunk),
-                )
-            if outcome is None:
-                raise TypeError("Speech backend does not implement typed playback")
+            outcome = self._dispatch_live_playback(reader, chunk, audio)
             result = outcome.successful
             audible = isinstance(
                 outcome.first_audio_ms, (int, float)
@@ -3193,39 +3152,7 @@ class AppController:
                 reader.seal_generation(chunk.generation)
             underflowed = outcome.underflowed
             generation_limited = outcome.generation_limited
-            playback_telemetry = {
-                "outcome": outcome.status.value,
-                "underflowed": underflowed,
-                "generation_limited": generation_limited,
-                "synthesis_ms": outcome.synthesis_ms,
-                "playback_ms": outcome.playback_ms,
-                "first_audio_ms": outcome.first_audio_ms,
-                "cache_source": outcome.cache_source,
-                "effective_source": outcome.audio_source,
-                "source_audio_lead_ms": source_audio_lead_ms,
-                "chunk_id": chunk.chunk_id,
-                "chunk_ordinal": chunk.ordinal,
-                "chunk_characters": len(chunk.text),
-            }
-            try:
-                self.pipeline_event_handler(
-                    "playback-completion",
-                    chunk.generation,
-                    monotonic(),
-                    **playback_telemetry,
-                    source_sample_rate=outcome.source_sample_rate,
-                    playback_sample_rate=outcome.playback_sample_rate,
-                    sample_count=outcome.sample_count,
-                    expected_playback_ms=outcome.expected_playback_ms,
-                )
-                self.pipeline_event_handler(
-                    "playback-outcome",
-                    chunk.generation,
-                    monotonic(),
-                    **playback_telemetry,
-                )
-            except Exception as error:
-                self.error_handler(error)
+            self._report_live_playback_outcome(chunk, outcome, source_audio_lead_ms)
             if outcome.status is PlaybackStatus.FAILED:
                 raise AudioPlaybackError(outcome.error or "Audio playback failed")
             if generation_limited:
@@ -3244,6 +3171,100 @@ class AppController:
             audio_lifecycle_context.reset(context_token)
             self._finish_sequence_playback(sequence_lease, outcome)
             self._refresh_diagnostic_metrics(outcome, source)
+
+    def _live_sequence_playback_suppressed(
+        self,
+        reader: LiveDialogReader,
+        chunk: SpeechChunk,
+        sequence_lease: SequenceEventLease | None,
+    ) -> bool:
+        if (
+            chunk.explicit_replay
+            or not self._live_sequence_audio_active()
+            or chunk.line_id is None
+            or sequence_lease is not None
+        ):
+            return False
+        self.pipeline_event_handler(
+            "sequence-playback-suppressed",
+            reader.active_generation,
+            monotonic(),
+            line_id=chunk.line_id,
+            reason="cursor-does-not-own-unplayed-line",
+            outcome="suppressed",
+        )
+        self.status_handler(
+            f"Duplicate or stale canonical audio suppressed: {chunk.line_id}"
+        )
+        return True
+
+    def _dispatch_live_playback(
+        self, reader: LiveDialogReader, chunk: SpeechChunk, audio: object
+    ) -> PlaybackOutcome:
+        play_route = getattr(type(self.speech_backend), "play_route", None)
+        play_prepared = getattr(type(self.speech_backend), "play_prepared", None)
+        outcome = (
+            play_route(
+                self.speech_backend,
+                audio,
+                playback_guard=lambda: reader.wait_until_playable(chunk),
+            )
+            if callable(play_route) and isinstance(audio, RouteDecision)
+            else None
+        )
+        if (
+            outcome is None
+            and callable(play_prepared)
+            and isinstance(audio, PreparedPlayback)
+        ):
+            outcome = play_prepared(
+                self.speech_backend,
+                audio,
+                playback_guard=lambda: reader.wait_until_playable(chunk),
+            )
+        if outcome is None:
+            raise TypeError("Speech backend does not implement typed playback")
+        return outcome
+
+    def _report_live_playback_outcome(
+        self,
+        chunk: SpeechChunk,
+        outcome: PlaybackOutcome,
+        source_audio_lead_ms: int | None,
+    ) -> None:
+        playback_telemetry = {
+            "outcome": outcome.status.value,
+            "underflowed": outcome.underflowed,
+            "generation_limited": outcome.generation_limited,
+            "synthesis_ms": outcome.synthesis_ms,
+            "playback_ms": outcome.playback_ms,
+            "first_audio_ms": outcome.first_audio_ms,
+            "cache_source": outcome.cache_source,
+            "effective_source": outcome.audio_source,
+            "source_audio_lead_ms": source_audio_lead_ms,
+            "chunk_id": chunk.chunk_id,
+            "chunk_ordinal": chunk.ordinal,
+            "chunk_characters": len(chunk.text),
+        }
+        try:
+            self.pipeline_event_handler(
+                "playback-completion",
+                chunk.generation,
+                monotonic(),
+                **playback_telemetry,
+                source_sample_rate=outcome.source_sample_rate,
+                playback_sample_rate=outcome.playback_sample_rate,
+                sample_count=outcome.sample_count,
+                expected_playback_ms=outcome.expected_playback_ms,
+            )
+            self.pipeline_event_handler(
+                "playback-outcome",
+                chunk.generation,
+                monotonic(),
+                **playback_telemetry,
+            )
+        except Exception as error:
+            self.error_handler(error)
 
     def _prepare_speaker_announcement(
         self, chunk: SpeechChunk, dialogue_route: object

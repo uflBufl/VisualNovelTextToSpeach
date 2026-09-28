@@ -1341,12 +1341,6 @@
     },
     {
       "code": "PLR0915",
-      "path": "vntts/controller.py",
-      "scope": "AppController._play_live_chunk",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
       "path": "vntts/diagnostics_ui.py",
       "scope": "DiagnosticsDialog.__init__",
       "count": 1
