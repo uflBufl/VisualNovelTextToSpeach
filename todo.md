@@ -5,6 +5,11 @@
 - [ ] Resolve the official `qwen-tts==0.1.1` dependency audit findings without silently suppressing known vulnerabilities.
 - [ ] Render and time one Matilda reference on the RTX 2070 Super 8 GB. Check that the UI reports CUDA and the correct GPU.
 
+## Active - Finish repeated UI scanability rollout
+
+- [ ] Revisit the current story tree: story title, readiness, line count, and diagnostics are still concatenated in one cell. Separate primary identity from state and detail without overwriting the in-progress grouping work.
+- [ ] Validate the integrated voice-route layout on Windows at normal and enlarged text sizes: wheel and keyboard navigation must reach the last route and Inspect/Edit/Generate actions; clicking or double-clicking a row must select and inspect that character. Check all-or-none portraits when game references are mixed, and retain screenshots.
+
 ## Active - Review remaining source-extraction UI
 
 - [ ] In `reverse1999-extractor`, reduce empty Character Story table/portrait space so review and A/B actions are easier to reach, and scale table headers with enlarged text.
@@ -415,3 +420,7 @@ Planned implementation order after approval:
       exercise deferred activation after settings change. Verify audio continuity,
       that completed lines are not regenerated, keyboard and screen-reader status,
       and the minimum-width layout with increased text scaling.
+
+## Investigate intermittent macOS Qt test crash
+
+- [ ] A macOS changed-test run intermittently terminated with `shiboken6` `mainThreadDeletionHandler` SIGSEGV during pure-Python `test_player_session` after UI tests. The exact final 10-test sequence passed 10 times, the full onboarding/person/player sequence passed five times, and a later 2734-test selector passed. Reproduce and bisect an earlier Qt owner in the remainder shard with faulthandler before changing cleanup; retain the crash log in `.codex/investigations/` if it becomes repeatable. Gate: a narrowed failing sequence and a deterministic cleanup check.

@@ -8,7 +8,8 @@ version = "0.1.0"
 description = "Desktop app for converting visual novel text to speech"
 readme = "README.md"
 requires-python = ">=3.14"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 
 authors = [
     { name = "Eugene" },
@@ -126,7 +127,7 @@ extend-exclude = ["exps", "README.md"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I"]
-extend-select = ["B007", "B905", "RUF059"]
+extend-select = ["B004", "B007", "B905", "RUF059"]
 
 [tool.mypy]
 python_version = "3.14"

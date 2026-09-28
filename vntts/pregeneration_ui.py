@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -741,6 +742,17 @@ class OfflineAudioPreparationDialog(QDialog):
         self.voice_routes.setIconSize(QSize(64, 64))
         self.voice_routes.setAccessibleName("Planned character voice routes")
         self.voice_routes.setMinimumHeight(90)
+        self.voice_routes.setAlternatingRowColors(True)
+        self.voice_routes_header = QWidget()
+        header = QGridLayout(self.voice_routes_header)
+        self.voice_routes_header_layout = header
+        header.setContentsMargins(8, 0, 8, 0)
+        for column, title in enumerate(("Character", "Voice", "Choice", "Coverage")):
+            label = QLabel(title)
+            label.setStyleSheet("font-weight: 600;")
+            header.addWidget(label, 0, column)
+        for column, stretch in enumerate((3, 3, 2, 2)):
+            header.setColumnStretch(column, stretch)
         self.choose_character_voice = QPushButton("Edit selected role in Voices...")
         self.choose_character_voice.setAccessibleName("Change selected character voice")
         self.choose_character_voice.setToolTip(
@@ -805,15 +817,21 @@ class OfflineAudioPreparationDialog(QDialog):
         confirmation_layout.addWidget(self.narrator_controls)
         confirmation_layout.addWidget(self.voice_route_summary)
         confirmation_layout.addWidget(self.show_all_voice_routes)
+        confirmation_layout.addWidget(self.voice_routes_header)
         confirmation_layout.addWidget(self.voice_routes)
         confirmation_layout.addWidget(self.identity_suggestion)
-        route_actions = QHBoxLayout()
-        route_actions.addWidget(self.back_to_story_selection)
-        route_actions.addStretch()
-        route_actions.addWidget(self.link_identity)
-        route_actions.addWidget(self.unlink_identity)
-        route_actions.addWidget(self.inspect_character_voice)
-        route_actions.addWidget(self.choose_character_voice)
+        route_actions = QVBoxLayout()
+        identity_actions = QHBoxLayout()
+        identity_actions.addWidget(self.back_to_story_selection)
+        identity_actions.addStretch()
+        identity_actions.addWidget(self.link_identity)
+        identity_actions.addWidget(self.unlink_identity)
+        route_actions.addLayout(identity_actions)
+        voice_actions = QHBoxLayout()
+        voice_actions.addStretch()
+        voice_actions.addWidget(self.inspect_character_voice)
+        voice_actions.addWidget(self.choose_character_voice)
+        route_actions.addLayout(voice_actions)
         confirmation_layout.addLayout(route_actions)
         confirmation_layout.addWidget(self.voice_confirmation_status)
 
@@ -1535,7 +1553,14 @@ class OfflineAudioPreparationDialog(QDialog):
         show_portraits = bool(groups) and all(
             group.portrait_image and group.portrait_image_sha256 for group in groups
         )
+        self.voice_routes_header_layout.setContentsMargins(
+            8 + (self.voice_routes.iconSize().width() + 6 if show_portraits else 0),
+            0,
+            8,
+            0,
+        )
         self.voice_routes.setVisible(bool(visible))
+        self.voice_routes_header.setVisible(bool(visible))
         for group in sorted(
             visible,
             key=lambda value: (
@@ -1554,6 +1579,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 in suggested_roles,
             )
             self.voice_routes.addItem(item)
+            self._set_voice_route_card(item)
             if item.data(Qt.ItemDataRole.UserRole) == selected_character:
                 self.voice_routes.setCurrentItem(item)
         if self.voice_routes.currentItem() is None and self.voice_routes.count():
@@ -1591,7 +1617,7 @@ class OfflineAudioPreparationDialog(QDialog):
             None,
         )
         duration = (
-            f", {candidate.reference_duration_seconds:.1f} s"
+            f", {candidate.reference_duration_seconds:.1f}\u00a0s"
             if candidate is not None
             and candidate.reference_duration_seconds is not None
             else ""
@@ -1604,9 +1630,9 @@ class OfflineAudioPreparationDialog(QDialog):
         status = (
             "voice choice needed"
             if group.route == "needs-audition"
-            else "approved"
-            if group.resolution == "saved-player-decision"
-            else "narrator"
+            else "chosen by you"
+            if group.resolution.startswith("saved-")
+            else "automatic fallback"
             if group.route == "narrator"
             else "automatic"
         )
@@ -1639,6 +1665,17 @@ class OfflineAudioPreparationDialog(QDialog):
             item.setData(Qt.ItemDataRole.AccessibleDescriptionRole, action)
         item.setData(Qt.ItemDataRole.UserRole, routing_role)
         item.setData(int(Qt.ItemDataRole.UserRole) + 1, group.group_id)
+        item.setData(
+            int(Qt.ItemDataRole.UserRole) + 2,
+            (
+                display_role,
+                route,
+                status,
+                f"{lines} line{'s' if lines != 1 else ''}; "
+                f"{references} reference{'s' if references != 1 else ''}{duration}",
+                _voice_resolution_label(group.resolution),
+            ),
+        )
         if show_portraits and group.portrait_image and group.portrait_image_sha256:
             try:
                 if sha256_file(group.portrait_image) == group.portrait_image_sha256:
@@ -1648,6 +1685,37 @@ class OfflineAudioPreparationDialog(QDialog):
             except OSError:
                 pass
         return item
+
+    def _set_voice_route_card(self, item: QListWidgetItem) -> None:
+        role, voice, status, coverage, explanation = item.data(
+            int(Qt.ItemDataRole.UserRole) + 2
+        )
+        card = QWidget()
+        card.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        layout = QGridLayout(card)
+        layout.setContentsMargins(8, 6, 8, 6)
+        for column, value in enumerate((role, voice, status, coverage)):
+            label = QLabel(value)
+            label.setWordWrap(True)
+            label.setSizePolicy(
+                QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+            )
+            if column in (0, 2):
+                font = label.font()
+                font.setBold(True)
+                label.setFont(font)
+            layout.addWidget(label, 0, column)
+        detail = QLabel(explanation)
+        detail.setWordWrap(True)
+        layout.addWidget(detail, 1, 1, 1, 3)
+        for column, stretch in enumerate((3, 3, 2, 2)):
+            layout.setColumnStretch(column, stretch)
+        item.setSizeHint(card.sizeHint())
+        summary = item.text()
+        item.setData(Qt.ItemDataRole.AccessibleTextRole, summary)
+        item.setToolTip(summary)
+        item.setText("")
+        self.voice_routes.setItemWidget(item, card)
 
     def _narrator_choice_changed(self, _index: int | None = None) -> None:
         source_id = self.narrator_choice.currentData()

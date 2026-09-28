@@ -408,7 +408,7 @@ def validate_reviewed_rejection_fallback_workspace(
     batch = workspace.get("reviewed_rejection_live_fallback")
     if batch is None:
         return
-    batch = _validated_rejection_batch(batch)
+    batch, ledgers = _validated_rejection_batch(batch)
     root = Path(directory)
     _validate_rejection_authority_snapshots(root, batch)
     base_state = load_workspace_json(
@@ -451,7 +451,7 @@ def validate_reviewed_rejection_fallback_workspace(
             overrides,
             reference_sha256s,
         )
-        for ledger in cast(list[object], batch.get("items", []))
+        for ledger in ledgers
     ]
     if not observed or observed != expected:
         raise AuthoringWorkbenchError(
@@ -462,7 +462,7 @@ def validate_reviewed_rejection_fallback_workspace(
     )
 
 
-def _validated_rejection_batch(value: object) -> dict[str, object]:
+def _validated_rejection_batch(value: object) -> tuple[dict[str, object], list[object]]:
     batch = value
     fields = {
         "schema",
@@ -484,6 +484,7 @@ def _validated_rejection_batch(value: object) -> dict[str, object]:
         or batch.get("schema") != SCHEMA
         or batch.get("schema_version") != SCHEMA_VERSION
         or batch.get("reason") != REASON
+        or not isinstance(batch.get("items"), list)
         or batch.get("batch_id")
         != canonical_document_sha256(
             {key: value for key, value in batch.items() if key != "batch_id"}
@@ -498,7 +499,7 @@ def _validated_rejection_batch(value: object) -> dict[str, object]:
         "voice_manifest_sha256",
     ):
         require_workspace_sha256(batch.get(field), f"Reviewed-rejection {field}")
-    return batch
+    return batch, batch["items"]
 
 
 def _validate_rejection_authority_snapshots(

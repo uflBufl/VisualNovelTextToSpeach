@@ -725,6 +725,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.review_scope.setWordWrap(True)
         self.current_review = QLabel("Current review: none")
         self.current_review.setAccessibleName("Current review line speaker and status")
+        self.current_review.setTextFormat(Qt.TextFormat.PlainText)
         self.current_review.setWordWrap(True)
         self.review_text = QLabel()
         self.review_text.setAccessibleName("Full text of selected dialogue line")
@@ -747,8 +748,8 @@ class AuthoringWorkbenchDialog(QDialog):
         self.review_table.setHorizontalHeaderLabels(
             [
                 "Line",
-                "Source speaker",
-                "Effective voice",
+                "Speaker",
+                "Voice used",
                 "Status",
                 "Attempts",
                 "Collection",
@@ -768,8 +769,8 @@ class AuthoringWorkbenchDialog(QDialog):
         self.review_table.horizontalHeader().setSectionResizeMode(
             7, QHeaderView.ResizeMode.Stretch
         )
-        self.review_table.setColumnHidden(6, True)
-        self.review_table.setColumnHidden(8, True)
+        self.review_table.horizontalHeader().moveSection(7, 0)
+        self._show_technical_review_columns(False)
         return review_filters
 
     def _build_action_controls(self) -> tuple[QGridLayout, QHBoxLayout]:
@@ -883,10 +884,10 @@ class AuthoringWorkbenchDialog(QDialog):
         self.technical.setAccessibleName("Technical process details")
         self.show_technical_columns = QCheckBox("Show technical review columns")
         self.show_technical_columns.setAccessibleName(
-            "Show technical and queue ID review columns"
+            "Show line ID, technical and queue ID review columns"
         )
         self.show_technical_columns.setAccessibleDescription(
-            "Reveal the Technical and Queue ID columns in the review table"
+            "Reveal the Line ID, Technical, and Queue ID columns in the review table"
         )
         self.process_log = QPlainTextEdit()
         self.process_log.setReadOnly(True)
@@ -1870,10 +1871,19 @@ class AuthoringWorkbenchDialog(QDialog):
                     review.queue_id,
                 )
             ):
-                self.review_table.setItem(row, column, QTableWidgetItem(value))
+                cell = QTableWidgetItem(value)
+                cell.setToolTip(value)
+                self.review_table.setItem(row, column, cell)
             cast(QTableWidgetItem, self.review_table.item(row, 0)).setData(256, review)
-        for column, width in enumerate((190, 120, 120, 110, 80, 120, 260)):
-            self.review_table.setColumnWidth(column, width)
+        metrics = self.review_table.fontMetrics()
+        for column, width in enumerate((190, 120, 120, 160, 110, 120, 260)):
+            label = self.review_table.horizontalHeaderItem(column)
+            minimum = metrics.horizontalAdvance(label.text()) + 24 if label else 0
+            if column == 3:
+                minimum = max(
+                    minimum, metrics.horizontalAdvance("Awaiting review") + 24
+                )
+            self.review_table.setColumnWidth(column, max(width, minimum))
 
     @staticmethod
     def _review_status_label(review: ReviewItem) -> str:
@@ -2345,9 +2355,9 @@ class AuthoringWorkbenchDialog(QDialog):
                 else ""
             )
             self.current_review.setText(
-                f"Selected: {selected.line_id} | {self._review_status_label(selected)} | "
-                f"{selected.attempts} "
-                f"{'attempt' if selected.attempts == 1 else 'attempts'}{technical}"
+                f"Speaker in game: {selected.speaker}\n"
+                f"Voice used: {self._effective_review_voice(selected)}\n"
+                f"Status: {self._review_status_label(selected)}{technical}"
             )
             self.review_text.setText(f"Line text: {selected.text}")
         self.current_review.setVisible(selected is not None)
@@ -2743,6 +2753,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.copy_diagnostics.setVisible(checked)
 
     def _show_technical_review_columns(self, checked: bool) -> None:
+        self.review_table.setColumnHidden(0, not checked)
         self.review_table.setColumnHidden(6, not checked)
         self.review_table.setColumnHidden(8, not checked)
 

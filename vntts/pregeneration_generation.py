@@ -392,6 +392,8 @@ class OfflineGenerationWorker:
                             "Offline speech generation was cancelled"
                         ) from None
         finally:
+            if process.poll() is None:
+                terminate_process(process)
             self._process = None
         if process.returncode:
             detail = last_output_line(stderr) or last_output_line(stdout)

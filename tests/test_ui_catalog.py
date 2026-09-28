@@ -8,6 +8,68 @@ from tempfile import TemporaryDirectory
 
 
 class UiCatalogTest(unittest.TestCase):
+    def test_authoring_review_catalog_covers_focus_and_long_names(self):
+        root = Path(__file__).resolve().parents[1]
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "catalog"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/render_ui_catalog.py",
+                    "--output",
+                    str(output),
+                    "--surface",
+                    "authoring-workbench",
+                ],
+                cwd=root,
+                env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for state in (
+                "review",
+                "review-play-focus",
+                "review-long-names",
+                "review-long-names-second",
+                "compact",
+                "compact-actions",
+            ):
+                path = output / "screenshots" / f"authoring-workbench.{state}.png"
+                self.assertGreater(path.stat().st_size, 0)
+
+    def test_voice_route_catalog_covers_portraits_and_compact_actions(self):
+        root = Path(__file__).resolve().parents[1]
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "catalog"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/render_ui_catalog.py",
+                    "--output",
+                    str(output),
+                    "--surface",
+                    "offline-preparation",
+                ],
+                cwd=root,
+                env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for state in (
+                "voice-confirmation",
+                "voice-confirmation-portraits",
+                "voice-confirmation-mixed-portraits",
+                "voice-confirmation-compact",
+                "voice-confirmation-compact-scrolled",
+                "voice-confirmation-compact-last-route",
+            ):
+                path = output / "screenshots" / f"offline-preparation.{state}.png"
+                self.assertGreater(path.stat().st_size, 0)
+
     def test_legacy_reason_review_packet_covers_listening_failure_and_compact(self):
         root = Path(__file__).resolve().parents[1]
         with TemporaryDirectory() as directory:

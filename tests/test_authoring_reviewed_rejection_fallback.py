@@ -14,13 +14,16 @@ from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 from tests import test_authoring_audio_event_projection_fallback
 from tests.test_authoring_workbench import create_test_workspace
 from tests.test_generated_audio import FakeAudioOutput
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
 from vntts.authoring.game_pack import _decision_records
 from vntts.authoring.generation_manifest import write_generated_manifest_from_state
 from vntts.authoring.reviewed_rejection_fallback import (
     _downstream_overlay_queue_ids,
+    _validated_rejection_batch,
     create_reviewed_rejection_fallback_workspace,
 )
+from vntts.authoring.workbench import AuthoringWorkbenchError
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.generated_audio import (
     GeneratedAudioFallbackBackend,
@@ -152,6 +155,25 @@ class ReviewedRejectionFallbackTests(unittest.TestCase):
             state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
             with self.assertRaises(BulkGenerationError):
                 load_generation_state(state_path, result.directory / "queue.jsonl")
+
+    def test_rejects_non_list_batch_items(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, _queue_item = self._base(root / "source")
+            result = create_reviewed_rejection_fallback_workspace(
+                base, root / "workspaces"
+            )
+            workspace = json.loads(
+                (result.directory / "workspace.json").read_text(encoding="utf-8")
+            )
+            batch = workspace["reviewed_rejection_live_fallback"]
+            batch["items"] = 42
+            batch["batch_id"] = canonical_document_sha256(
+                {key: value for key, value in batch.items() if key != "batch_id"}
+            )
+
+        with self.assertRaisesRegex(AuthoringWorkbenchError, "batch is malformed"):
+            _validated_rejection_batch(batch)
 
     def test_new_identity_uses_ordinary_manifest_character_route(self):
         with TemporaryDirectory() as directory:

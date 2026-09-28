@@ -9,7 +9,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QPixmap  # noqa: E402
-from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel, QMessageBox  # noqa: E402
 from vntts_artifacts.file_integrity import sha256_file  # noqa: E402
 
 from tests.test_pregeneration_audition import (  # noqa: E402
@@ -1219,6 +1220,88 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
                 decisions.choice_for(group.group_id, group.decision_context_sha256)
             )
 
+    def test_voice_plan_separates_role_voice_status_and_coverage(self):
+        with TemporaryDirectory() as temporary_directory:
+            dialog, _pool, plan, group, _decisions, _store = (
+                self._inspected_voice_dialog(Path(temporary_directory))
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog._voice_plan = plan
+            dialog._show_voice_confirmation(plan)
+            item = dialog.voice_routes.item(0)
+            card = dialog.voice_routes.itemWidget(item)
+            assert card is not None
+            labels = [label.text() for label in card.findChildren(QLabel)]
+            self.assertEqual(labels[0], group.character)
+            self.assertEqual(labels[1], "Narrator fallback until reviewed")
+            self.assertEqual(labels[2], "voice choice needed")
+            self.assertIn("lines", labels[3])
+            self.assertEqual(item.text(), "")
+            self.assertIn(
+                group.character,
+                item.data(Qt.ItemDataRole.AccessibleTextRole),
+            )
+
+            narrator_fallback = replace(
+                group,
+                route="narrator",
+                resolution="automatic-narrator-fallback",
+            )
+            saved_fallback = replace(
+                narrator_fallback,
+                resolution="saved-player-decision",
+            )
+            self.assertEqual(
+                dialog._voice_route_item(
+                    narrator_fallback, show_portraits=False, suggested_link=False
+                ).data(int(Qt.ItemDataRole.UserRole) + 2)[2],
+                "automatic fallback",
+            )
+            self.assertEqual(
+                dialog._voice_route_item(
+                    saved_fallback, show_portraits=False, suggested_link=False
+                ).data(int(Qt.ItemDataRole.UserRole) + 2)[2],
+                "chosen by you",
+            )
+
+    def test_voice_route_card_supports_mouse_keyboard_and_double_click(self):
+        with TemporaryDirectory() as temporary_directory:
+            dialog, _pool, plan, group, _decisions, _store = (
+                self._inspected_voice_dialog(Path(temporary_directory))
+            )
+            self.addCleanup(dialog.deleteLater)
+            plan, _second = with_second_group(plan, group)
+            dialog._voice_plan = plan
+            dialog._show_voice_confirmation(plan)
+            dialog.resize(1000, 760)
+            dialog.show()
+            self.application.processEvents()
+
+            routes = dialog.voice_routes
+            routes.scrollToItem(routes.item(1))
+            second = routes.visualItemRect(routes.item(1)).center()
+            QTest.mouseClick(routes.viewport(), Qt.MouseButton.LeftButton, pos=second)
+            self.assertEqual(routes.currentRow(), 1)
+            self.assertTrue(dialog.inspect_character_voice.isEnabled())
+            self.assertTrue(dialog.choose_character_voice.isEnabled())
+
+            routes.setCurrentRow(0)
+            routes.setFocus()
+            QTest.keyClick(routes, Qt.Key.Key_Down)
+            self.assertEqual(routes.currentRow(), 1)
+            second = routes.visualItemRect(routes.item(1)).center()
+            self.assertTrue(routes.viewport().rect().contains(second))
+            self.assertIs(routes.itemAt(second), routes.item(1))
+            double_clicked = Mock()
+            routes.itemDoubleClicked.connect(double_clicked)
+            QTest.mouseClick(routes.viewport(), Qt.MouseButton.LeftButton, pos=second)
+            QTest.mouseDClick(routes.viewport(), Qt.MouseButton.LeftButton, pos=second)
+            self.assertTrue(double_clicked.called)
+            self.assertTrue(
+                dialog.inspecting_voice_plan, dialog.voice_confirmation_status.text()
+            )
+            self.assertIn("Inspect selected voice", dialog.step.text())
+
     def test_inspector_back_during_preview_returns_after_worker_stops(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1342,16 +1425,19 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             self.assertIn("font-weight: 600", dialog.voice_route_summary.styleSheet())
             for row in range(dialog.voice_routes.count()):
                 item = dialog.voice_routes.item(row)
+                accessible_text = item.data(Qt.ItemDataRole.AccessibleTextRole)
                 if item.data(Qt.ItemDataRole.UserRole) == "Rhiannon":
-                    self.assertTrue(item.text().startswith("REVIEW VOICE: "))
-                    self.assertIn("Narrator fallback until reviewed", item.text())
+                    self.assertTrue(accessible_text.startswith("REVIEW VOICE: "))
+                    self.assertIn("Narrator fallback until reviewed", accessible_text)
                     self.assertTrue(item.font().bold())
                     self.assertIn(
                         "Inspect selected voice",
                         item.data(Qt.ItemDataRole.AccessibleDescriptionRole),
                     )
                 if item.data(Qt.ItemDataRole.UserRole) == "Aderyn":
-                    self.assertTrue(item.text().startswith("POSSIBLE SAME PERSON: "))
+                    self.assertTrue(
+                        accessible_text.startswith("POSSIBLE SAME PERSON: ")
+                    )
                     self.assertIn(
                         "Link same person",
                         item.data(Qt.ItemDataRole.AccessibleDescriptionRole),
