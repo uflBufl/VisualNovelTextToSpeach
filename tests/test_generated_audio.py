@@ -2,15 +2,18 @@ import hashlib
 import json
 import unittest
 import wave
+from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Thread, current_thread
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import numpy as np
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import (
     GeneratedAudioIndex,
+    GeneratedAudioManifestError,
     text_sha256,
     write_generated_audio_manifest,
 )
@@ -29,6 +32,9 @@ from vntts.generated_audio import (
     PreparedGeneratedAudio,
     PreparedSourceAudioPassThrough,
     SourceAudioRoute,
+    _audio_event_omission_index,
+    _live_fallback_index,
+    _narrator_fallback_role,
     recorded_voice_identity,
 )
 from vntts.playback import PreparedPlayback, outcome_for_prepared
@@ -999,6 +1005,75 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertIsNone(library)
         self.assertEqual(len(warnings), 1)
         self.assertIn("live fallback ledger is malformed", warnings[0])
+
+    def test_runtime_metadata_rejects_non_integer_schema_versions(self):
+        for loader, key in (
+            (_live_fallback_index, "vntts.authoring.live_fallback"),
+            (_audio_event_omission_index, "vntts.authoring.audio_event_omission"),
+        ):
+            for version in (True, 1.0):
+                with self.subTest(key=key, version=version):
+                    with self.assertRaisesRegex(ValueError, "ledger is malformed"):
+                        loader(
+                            {
+                                key: {
+                                    "schema_version": version,
+                                    "mode": "explicit",
+                                    "entries": [],
+                                }
+                            }
+                        )
+
+        with TemporaryDirectory() as directory:
+            library = self.create_live_fallback_library(Path(directory))
+            ledger = deepcopy(library.index.metadata["vntts.authoring.live_fallback"])
+            for version in (True, 1.0):
+                with self.subTest(entry_version=version):
+                    entry = ledger["entries"][0]
+                    entry["schema_version"] = version
+                    entry["decision_sha256"] = canonical_document_sha256(
+                        {
+                            key: value
+                            for key, value in entry.items()
+                            if key != "decision_sha256"
+                        }
+                    )
+                    with self.assertRaisesRegex(ValueError, "schema is unsupported"):
+                        _live_fallback_index({"vntts.authoring.live_fallback": ledger})
+
+    def test_narrator_provenance_rejects_non_integer_schema_versions(self):
+        document = {
+            "speaker": "Ada",
+            "requested_voice_character": "Ada",
+            "voice_character": "Narrator",
+            "synthesis_fallback": {
+                "schema_version": 1,
+                "kind": "missing_voice_to_narrator",
+                "policy": {
+                    "schema_version": 1,
+                    "mode": "narrator_roles",
+                    "roles": ["Ada"],
+                },
+                "source_voice_character": "Ada",
+                "synthesis_voice_character": "Narrator",
+                "narrator_character": "Centurion",
+            },
+        }
+        self.assertEqual(
+            _narrator_fallback_role(SimpleNamespace(document=document)), "Ada"
+        )
+        for field in ("fallback", "policy"):
+            for version in (True, 1.0):
+                with self.subTest(field=field, version=version):
+                    forged = deepcopy(document)
+                    fallback = forged["synthesis_fallback"]
+                    target = fallback if field == "fallback" else fallback["policy"]
+                    target["schema_version"] = version
+                    with self.assertRaisesRegex(
+                        GeneratedAudioManifestError,
+                        "Narrator fallback provenance is inconsistent",
+                    ):
+                        _narrator_fallback_role(SimpleNamespace(document=forged))
 
     def test_route_wrapper_has_no_payload_only_or_mutable_metric_facade(self):
         backend = GeneratedAudioFallbackBackend(

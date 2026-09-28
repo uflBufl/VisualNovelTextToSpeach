@@ -537,6 +537,10 @@ def _manifest_signature(path: Path) -> tuple[int, int, int] | None:
     return stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size
 
 
+def _has_schema_version(value: object, version: int) -> bool:
+    return type(value) is int and value == version
+
+
 def _narrator_fallback_role(entry: GeneratedAudioEntryLike) -> str | None:
     document = getattr(entry, "document", None)
     if not isinstance(document, dict):
@@ -568,7 +572,7 @@ def _narrator_fallback_role(entry: GeneratedAudioEntryLike) -> str | None:
     source = fallback.get("source_voice_character")
     policy = fallback.get("policy")
     if (
-        fallback.get("schema_version") != 1
+        not _has_schema_version(fallback.get("schema_version"), 1)
         or fallback.get("kind") != "missing_voice_to_narrator"
         or not isinstance(source, str)
         or not source.strip()
@@ -578,7 +582,7 @@ def _narrator_fallback_role(entry: GeneratedAudioEntryLike) -> str | None:
         or not isinstance(fallback.get("narrator_character"), str)
         or not fallback["narrator_character"].strip()
         or not isinstance(policy, dict)
-        or policy.get("schema_version") != 1
+        or not _has_schema_version(policy.get("schema_version"), 1)
         or policy.get("mode") != "narrator_roles"
         or not isinstance(policy.get("roles"), list)
         or source not in policy["roles"]
@@ -1492,7 +1496,7 @@ def _live_fallback_index(
     if (
         not isinstance(value, dict)
         or set(value) != {"schema_version", "mode", "entries"}
-        or value.get("schema_version") != 1
+        or not _has_schema_version(value.get("schema_version"), 1)
         or value.get("mode") != "explicit"
         or not isinstance(value.get("entries"), list)
     ):
@@ -1517,7 +1521,9 @@ def _live_fallback_index(
     for raw in value["entries"]:
         version = raw.get("schema_version") if isinstance(raw, dict) else None
         fields = common_fields | (
-            {"evidence"} if version in {2, 3, 4, 5, 6, 7, 8} else set()
+            {"evidence"}
+            if type(version) is int and version in {2, 3, 4, 5, 6, 7, 8}
+            else set()
         )
         if not isinstance(raw, dict) or set(raw) != fields:
             raise ValueError("Generated-audio live fallback entry is malformed")
@@ -1532,16 +1538,11 @@ def _live_fallback_index(
                 raise ValueError(
                     "Generated-audio live fallback text fields must be non-empty"
                 )
-        if raw["schema"] != "vntts.authoring-live-fallback-decision" or version not in {
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7,
-            8,
-        }:
+        if (
+            raw["schema"] != "vntts.authoring-live-fallback-decision"
+            or type(version) is not int
+            or version not in range(1, 9)
+        ):
             raise ValueError("Generated-audio live fallback schema is unsupported")
         for field in ("text_sha256", "decision_sha256"):
             value_hash = raw[field]
@@ -1697,7 +1698,7 @@ def _validate_automatic_recovery_fallback_evidence(
         or set(evidence) != fields
         or evidence.get("schema")
         != "vntts.self-service-automatic-recovery-live-fallback-evidence"
-        or evidence.get("schema_version") != 1
+        or not _has_schema_version(evidence.get("schema_version"), 1)
         or evidence.get("queue_id") != queue_id
         or evidence.get("base_result_sha256") != previous_result_sha256
         or not is_lowercase_sha256(evidence.get("queue_sha256"))
@@ -1748,7 +1749,7 @@ def _audio_event_omission_index(
     if (
         not isinstance(value, dict)
         or set(value) != {"schema_version", "mode", "entries"}
-        or value.get("schema_version") != 1
+        or not _has_schema_version(value.get("schema_version"), 1)
         or value.get("mode") != "explicit"
         or not isinstance(value.get("entries"), list)
     ):
@@ -1781,7 +1782,7 @@ def _audio_event_omission_index(
             not isinstance(raw, dict)
             or set(raw) != fields
             or raw.get("schema") != "vntts.authoring-audio-event-omission"
-            or raw.get("schema_version") != 1
+            or not _has_schema_version(raw.get("schema_version"), 1)
             or raw.get("reason") != "no_validated_source_or_supported_generator"
             or not isinstance(authority, dict)
             or set(authority) != authority_fields
@@ -1837,7 +1838,9 @@ def _audio_event_omission_index(
 def _validate_live_fallback_evidence(
     evidence: object, previous_result_sha256: str | None
 ) -> None:
-    if isinstance(evidence, dict) and evidence.get("schema_version") == 2:
+    if isinstance(evidence, dict) and _has_schema_version(
+        evidence.get("schema_version"), 2
+    ):
         return _validate_render_review_fallback_evidence(
             evidence, previous_result_sha256
         )
@@ -1852,7 +1855,7 @@ def _validate_live_fallback_evidence(
         not isinstance(evidence, dict)
         or set(evidence) != fields
         or evidence.get("schema") != "vntts.authoring-live-fallback-evidence"
-        or evidence.get("schema_version") != 1
+        or not _has_schema_version(evidence.get("schema_version"), 1)
         or evidence.get("base_result_sha256") != previous_result_sha256
         or not is_lowercase_sha256(evidence.get("queue_sha256"))
         or not is_lowercase_sha256(evidence.get("base_result_sha256"))
@@ -1936,7 +1939,7 @@ def _validate_missing_voice_live_fallback_evidence(
         or set(evidence) != fields
         or evidence.get("schema")
         != "vntts.authoring-missing-voice-live-fallback-evidence"
-        or evidence.get("schema_version") != 1
+        or not _has_schema_version(evidence.get("schema_version"), 1)
         or evidence.get("queue_id") != queue_id
         or evidence.get("requested_voice_character") != requested_voice_character
         or evidence.get("decision_origin") != "automatic_no_complete_candidate"
@@ -1991,7 +1994,7 @@ def _validate_known_role_live_fallback_evidence(
         not isinstance(evidence, dict)
         or set(evidence) != fields
         or evidence.get("schema") != "vntts.authoring-known-role-live-fallback-evidence"
-        or evidence.get("schema_version") != 1
+        or not _has_schema_version(evidence.get("schema_version"), 1)
         or evidence.get("queue_id") != queue_id
         or evidence.get("source_character") != source_character
         or evidence.get("synthesis_character") != synthesis_character
@@ -2050,7 +2053,7 @@ def _validate_audio_event_projection_fallback_evidence(
         or set(evidence) != fields
         or evidence.get("schema")
         != "vntts.authoring-audio-event-projection-live-fallback-evidence"
-        or evidence.get("schema_version") != 1
+        or not _has_schema_version(evidence.get("schema_version"), 1)
         or evidence.get("queue_id") != queue_id
         or evidence.get("source_character") != source_character
         or evidence.get("synthesis_character") != synthesis_character
@@ -2128,7 +2131,7 @@ def _validate_reviewed_rejection_fallback_evidence(
         or set(evidence) != fields
         or evidence.get("schema")
         != "vntts.authoring-reviewed-rejection-live-fallback-evidence"
-        or evidence.get("schema_version") != 1
+        or not _has_schema_version(evidence.get("schema_version"), 1)
         or evidence.get("queue_id") != queue_id
         or evidence.get("source_character") != source_character
         or evidence.get("synthesis_character") != synthesis_character
@@ -2200,7 +2203,7 @@ def _validate_render_review_fallback_evidence(
         not isinstance(evidence, dict)
         or set(evidence) != fields
         or evidence.get("schema") != "vntts.authoring-live-fallback-evidence"
-        or evidence.get("schema_version") != 2
+        or not _has_schema_version(evidence.get("schema_version"), 2)
         or evidence.get("base_result_sha256") != previous_result_sha256
         or not is_lowercase_sha256(evidence.get("queue_sha256"))
         or not is_lowercase_sha256(evidence.get("base_result_sha256"))
@@ -2254,7 +2257,7 @@ def _validate_render_review_fallback_evidence(
             or review.get("reference_sha256") != hypothesis["reference_sha256"]
             or review.get("result_sha256") != hypothesis["result_sha256"]
             or decision.get("schema") != "vntts.authoring-render-hypothesis-decision"
-            or decision.get("schema_version") != 1
+            or not _has_schema_version(decision.get("schema_version"), 1)
             or decision.get("review_id") != hypothesis["review_id"]
             or decision.get("review_sha256") != hypothesis["review_sha256"]
             or decision.get("reference_sha256") != hypothesis["reference_sha256"]
