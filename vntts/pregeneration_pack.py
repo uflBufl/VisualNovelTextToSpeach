@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from time import perf_counter, process_time
-from typing import Protocol
+from typing import Protocol, cast
 
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.game_pack import GamePackError, write_game_pack
@@ -979,7 +979,9 @@ def _stage_live_sequence(
             documents.insert(0, base_document)
             plans.insert(0, base_plan)
         chapters = [
-            chapter for document in documents for chapter in document["chapters"]
+            chapter
+            for document in documents
+            for chapter in cast(list[object], document["chapters"])
         ]
         if {chapter.chapter for plan in plans for chapter in plan.chapters} != {
             record.chapter for record in published_story.records
