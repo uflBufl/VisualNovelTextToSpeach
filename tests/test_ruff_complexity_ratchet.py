@@ -52,7 +52,10 @@ class RuffComplexityRatchetTest(unittest.TestCase):
 
         self.assertEqual(
             failures,
-            ["new Ruff complexity finding: C901 module.py introduced (1 > 0)"],
+            [
+                "new Ruff complexity finding: C901 module.py introduced (1 > 0)",
+                "stale Ruff complexity allowance: C901 module.py removed (1 > 0)",
+            ],
         )
 
     def test_extra_finding_at_an_existing_identity_fails(self):
@@ -121,7 +124,7 @@ class RuffComplexityRatchetTest(unittest.TestCase):
         self.assertEqual(reads, 1)
         self.assertEqual(parses, 1)
 
-    def test_removing_baseline_findings_is_allowed(self):
+    def test_removed_finding_requires_retiring_baseline_allowance(self):
         baseline = {
             "schema_version": 1,
             "findings": [
@@ -133,7 +136,10 @@ class RuffComplexityRatchetTest(unittest.TestCase):
                 }
             ],
         }
-        self.assertEqual(check_findings(Path.cwd(), baseline, []), [])
+        self.assertEqual(
+            check_findings(Path.cwd(), baseline, []),
+            ["stale Ruff complexity allowance: PLR0915 module.py removed (1 > 0)"],
+        )
 
 
 if __name__ == "__main__":

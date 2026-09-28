@@ -118,9 +118,17 @@ def check_findings(
         for identity, count in current.items()
         if count > allowed[identity]
     )
+    stale = sorted(
+        (identity, count, current[identity])
+        for identity, count in allowed.items()
+        if current[identity] < count
+    )
     return [
         f"new Ruff complexity finding: {code} {path} {scope} ({count} > {allowed})"
         for (code, path, scope), count, allowed in unexpected
+    ] + [
+        f"stale Ruff complexity allowance: {code} {path} {scope} ({count} > {actual})"
+        for (code, path, scope), count, actual in stale
     ]
 
 

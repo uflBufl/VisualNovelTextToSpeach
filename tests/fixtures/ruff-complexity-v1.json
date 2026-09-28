@@ -63,18 +63,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/app.py",
-      "scope": "TrayApplication.run_onboarding_test",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/app.py",
-      "scope": "TrayApplication.run_onboarding_test.run_test",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/authoring/cohort_bundle_ui.py",
       "scope": "CohortReviewBundleDialog._update_actions",
       "count": 1
@@ -269,12 +257,6 @@
       "code": "C901",
       "path": "vntts/authoring/workbench_ui.py",
       "scope": "AuthoringWorkbenchDialog._update_review_actions",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/workspace_config.py",
-      "scope": "workspace_config_fingerprint",
       "count": 1
     },
     {
@@ -514,12 +496,6 @@
     {
       "code": "C901",
       "path": "vntts/moss_delay_backend.py",
-      "scope": "MossTTSDelayVoiceRouterBackend.__init__",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/moss_delay_backend.py",
       "scope": "MossTTSDelayVoiceRouterBackend._render_chunks",
       "count": 1
     },
@@ -729,12 +705,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/app.py",
-      "scope": "TrayApplication.run_onboarding_test.run_test",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/authoring/cohort_bundle_ui.py",
       "scope": "CohortReviewBundleDialog._update_actions",
       "count": 1
@@ -851,12 +821,6 @@
       "code": "PLR0912",
       "path": "vntts/authoring/workbench_ui.py",
       "scope": "AuthoringWorkbenchDialog._update_review_actions",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/workspace_config.py",
-      "scope": "workspace_config_fingerprint",
       "count": 1
     },
     {
@@ -1347,12 +1311,6 @@
     },
     {
       "code": "PLR0915",
-      "path": "vntts/authoring/source_reference_quality_ui.py",
-      "scope": "SourceReferenceQualityDialog._load_next",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
       "path": "vntts/authoring/terminal_conflict_review_ui.py",
       "scope": "TerminalConflictReviewDialog.__init__",
       "count": 1
@@ -1493,12 +1451,6 @@
       "code": "PLR0915",
       "path": "vntts/ocr_review_ui.py",
       "scope": "OCRReviewDialog.__init__",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/pregeneration_activation.py",
-      "scope": "OfflinePackActivator.activate",
       "count": 1
     },
     {
