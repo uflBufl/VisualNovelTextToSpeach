@@ -19,6 +19,7 @@ from vntts.authoring.authority import (
 )
 from vntts.authoring.publication import (
     AtomicPublicationError,
+    no_replace_destination,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -209,7 +210,7 @@ def publish_terminal_conflict_successor(
     """Publish a read-only successor that retains every historical occurrence."""
     reconciliation_path = Path(reconciliation_path).expanduser().resolve()
     resolution_root = _directory(resolution_directory, "terminal conflict resolution")
-    output = Path(output_directory).expanduser().resolve()
+    output = no_replace_destination(output_directory)
     inputs = _load_successor_inputs(reconciliation_path, resolution_root)
     if inputs.resolution["source_report_id"] != inputs.report["report_id"]:
         raise TerminalConflictSuccessorError(

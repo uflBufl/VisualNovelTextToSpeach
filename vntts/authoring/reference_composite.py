@@ -27,7 +27,11 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_manifest
 
 from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
-from vntts.authoring.publication import rename_directory_no_replace, staged_directory
+from vntts.authoring.publication import (
+    no_replace_destination,
+    rename_directory_no_replace,
+    staged_directory,
+)
 from vntts.authoring.source_reference_quality_records import (
     QUALITY_REVIEW_SCHEMA,
     QUALITY_REVIEW_VERSION,
@@ -131,7 +135,7 @@ def publish_composite_quality_review(
     """Publish one self-contained review card for an exact-bank composite run."""
     composite_directory = Path(composite_directory).expanduser().resolve()
     state_path = Path(state_path).expanduser().resolve()
-    output = Path(output).expanduser().resolve()
+    output = no_replace_destination(output)
     if output.exists() or output.is_symlink():
         raise ReferenceCompositeError(f"Composite quality output exists: {output}")
     inputs = _load_composite_review_inputs(composite_directory)
@@ -401,7 +405,7 @@ def publish_exact_bank_reference_composite(
 ) -> ReferenceCompositeResult:
     """Publish all clips for one exact complete-bank identity plus a composite."""
     report_path = Path(report_path).expanduser().resolve()
-    output = Path(output).expanduser().resolve()
+    output = no_replace_destination(output)
     character = _text(character, "Character")
     portrait = _text(portrait, "Portrait")
     source_bank = _text(source_bank, "Source bank")

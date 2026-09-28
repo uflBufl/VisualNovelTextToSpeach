@@ -33,6 +33,7 @@ from vntts.authoring.authority import (
 )
 from vntts.authoring.publication import (
     AtomicPublicationError,
+    no_replace_destination,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -87,7 +88,7 @@ def publish_source_audio_event_review(
     queue_path = Path(queue_path).expanduser().resolve()
     source_story_index = Path(source_story_index).expanduser().resolve()
     source_audio = Path(source_audio).expanduser().resolve()
-    output = Path(output).expanduser().resolve()
+    output = no_replace_destination(output)
     if output.exists() or output.is_symlink():
         raise AudioEventReviewError(f"Audio-event review output exists: {output}")
     try:
@@ -196,8 +197,11 @@ def publish_source_audio_event_review(
 
 def load_audio_event_review(directory: str | Path) -> AudioEventReview:
     """Load and verify every immutable byte in one audio-event review."""
-    directory = Path(directory).expanduser().resolve()
-    if directory.is_symlink() or not directory.is_dir():
+    supplied = Path(directory).expanduser()
+    if supplied.is_symlink():
+        raise AudioEventReviewError(f"Audio-event review is unavailable: {supplied}")
+    directory = supplied.resolve()
+    if not directory.is_dir():
         raise AudioEventReviewError(f"Audio-event review is unavailable: {directory}")
     try:
         review_snapshot = capture_authority_file(

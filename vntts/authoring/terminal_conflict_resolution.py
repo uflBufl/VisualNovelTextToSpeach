@@ -20,6 +20,7 @@ from vntts.authoring.authority import (
 )
 from vntts.authoring.publication import (
     AtomicPublicationError,
+    no_replace_destination,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -193,7 +194,7 @@ def publish_terminal_conflict_resolution(
 ) -> TerminalConflictResolution:
     """Publish exact completed decisions without changing any source workspace."""
     review_root = _directory(review_directory, "terminal conflict review")
-    output = Path(output_directory).expanduser().resolve()
+    output = no_replace_destination(output_directory)
     inputs = _load_resolution_inputs(review_root)
     decisions: dict[str, TerminalConflictReviewDecision] = {
         item["case_id"]: item for item in inputs.progress["decisions"]

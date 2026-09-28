@@ -28,7 +28,11 @@ from vntts.authoring.missing_voice_reuse_review import (
     MissingVoiceReuseReviewError,
     load_missing_voice_reuse_review,
 )
-from vntts.authoring.publication import rename_directory_no_replace, staged_directory
+from vntts.authoring.publication import (
+    no_replace_destination,
+    rename_directory_no_replace,
+    staged_directory,
+)
 from vntts.authoring.source_reference_bindings import (
     MISSING_VOICE_REUSE_APPROVED_BINDING_VERSION,
     MISSING_VOICE_REUSE_BINDING_FIELD,
@@ -268,7 +272,11 @@ def publish_missing_voice_reuse_binding(
     successor = copy.deepcopy(source_document)
     successor[MISSING_VOICE_REUSE_BINDING_FIELD] = binding
 
-    output = Path(output_directory).expanduser().resolve()
+    output = no_replace_destination(output_directory)
+    if output.is_symlink():
+        raise MissingVoiceReuseBindingError(
+            f"Missing-voice binding output exists: {output}"
+        )
     if output.exists():
         try:
             _validate_binding_bundle(output, document, binding)

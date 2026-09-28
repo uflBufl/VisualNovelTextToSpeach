@@ -25,6 +25,7 @@ from vntts.authoring.authority import (
     write_json_document_no_replace,
 )
 from vntts.authoring.bulk_generation import BulkGenerationError, sha256_control_path
+from vntts.authoring.publication import no_replace_destination
 from vntts.authoring.robustness_corpus import (
     SpeechRobustnessCorpusError,
     load_speech_robustness_corpus,
@@ -644,7 +645,7 @@ def write_speech_robustness_asr_report(
         raise SpeechRobustnessAsrError(
             "ASR report publication requires validated corpus authority"
         )
-    output = Path(output_path).expanduser().resolve()
+    output = no_replace_destination(output_path)
     try:
         output.relative_to(report.corpus_directory)
     except ValueError:

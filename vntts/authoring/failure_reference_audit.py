@@ -32,7 +32,11 @@ from vntts.authoring.bulk_generation import (
     normalized_failure_record,
 )
 from vntts.authoring.private_files import private_file_is_restricted
-from vntts.authoring.publication import rename_directory_no_replace, staged_directory
+from vntts.authoring.publication import (
+    no_replace_destination,
+    rename_directory_no_replace,
+    staged_directory,
+)
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     load_workspace_authority,
@@ -242,7 +246,7 @@ def publish_failure_reference_audit(
 ) -> FailureReferenceAudit:
     """Publish one immutable task over every exact reference-comparison failure."""
     workspace = Path(workspace_directory).expanduser().resolve()
-    output = Path(output_directory).expanduser().resolve()
+    output = no_replace_destination(output_directory)
     if output.exists() or output.is_symlink():
         raise FailureReferenceAuditError(f"Reference audit output exists: {output}")
     source = _load_audit_publication_source(workspace)

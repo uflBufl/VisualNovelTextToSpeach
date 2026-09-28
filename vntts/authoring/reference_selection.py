@@ -16,6 +16,7 @@ from vntts_artifacts.voice_manifest import (
 )
 
 from vntts.authoring.authority import write_json_document_no_replace
+from vntts.authoring.publication import no_replace_destination
 from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.reference_quality import ReferenceQualityReport, analyze_reference_bytes
 
@@ -94,7 +95,7 @@ def select_voice_reference(
             f"Reference number {reference_number} exceeds {len(candidates)} candidates"
         )
     source_path = snapshot["manifest_path"]
-    output = Path(output_path).expanduser().resolve()
+    output = no_replace_destination(output_path)
     if output == source_path:
         raise ReferenceSelectionError(
             "Reference selection must publish a new manifest path"

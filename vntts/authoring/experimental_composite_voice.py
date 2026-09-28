@@ -21,7 +21,11 @@ from vntts_artifacts.voice_manifest import (
 )
 
 from vntts.authoring.authority import canonical_document_sha256
-from vntts.authoring.publication import rename_directory_no_replace, staged_directory
+from vntts.authoring.publication import (
+    no_replace_destination,
+    rename_directory_no_replace,
+    staged_directory,
+)
 from vntts.authoring.reference_composite import (
     COMPOSITE_EVALUATION_SCHEMA,
     COMPOSITE_EVALUATION_VERSION,
@@ -130,7 +134,7 @@ def publish_experimental_composite_voice_input(
     source_manifest = Path(source_manifest).expanduser().resolve()
     composite_directory = Path(composite_directory).expanduser().resolve()
     quality_review = Path(quality_review).expanduser().resolve()
-    output = Path(output_directory).expanduser().resolve()
+    output = no_replace_destination(output_directory)
     voice_character = _text(voice_character, "Experimental voice character")
 
     try:

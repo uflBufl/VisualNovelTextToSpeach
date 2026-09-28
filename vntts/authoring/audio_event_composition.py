@@ -24,6 +24,7 @@ from vntts.authoring.authority import (
 )
 from vntts.authoring.publication import (
     AtomicPublicationError,
+    no_replace_destination,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -71,7 +72,7 @@ def publish_audio_event_composition(
 ) -> AudioEventComposition:
     """Publish one exact, no-transform event-only composition candidate."""
     review_root = _safe_directory(review_directory, "audio-event review")
-    output = Path(output_directory).expanduser().resolve()
+    output = no_replace_destination(output_directory)
     if output.exists() or output.is_symlink():
         loaded = load_audio_event_composition(output)
         if loaded.review_id == load_audio_event_review(review_root).review_id:

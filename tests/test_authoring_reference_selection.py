@@ -59,6 +59,17 @@ def write_manifest(root):
 
 
 class AuthoringReferenceSelectionTest(unittest.TestCase):
+    def test_dangling_symlink_output_is_not_redirected(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = write_manifest(root)
+            target = root / "redirected.json"
+            output = root / "selected.json"
+            symlink_or_skip(output, target)
+            with self.assertRaisesRegex(ReferenceSelectionError, "output exists"):
+                select_voice_reference(manifest, "Hero", 2, output)
+            self.assertFalse(target.exists())
+
     def test_provenance_rejects_non_integer_schema_version(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

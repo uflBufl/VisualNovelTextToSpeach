@@ -20,6 +20,12 @@ class AtomicPublicationError(RuntimeError):
     """Raised when the platform cannot provide no-replace publication."""
 
 
+def no_replace_destination(value: str | Path) -> Path:
+    """Canonicalize the parent while preserving the leaf for atomic no-replace."""
+    requested = Path(value).expanduser()
+    return requested.parent.resolve() / requested.name
+
+
 @contextmanager
 def staged_directory(parent: str | Path, *, prefix: str) -> Iterator[Path]:
     """Yield a temporary publication directory and always clean leftovers."""
@@ -146,6 +152,7 @@ def rename_directory_no_replace(source: str | Path, destination: str | Path) -> 
 __all__ = [
     "AtomicPublicationError",
     "generation_publication_leases",
+    "no_replace_destination",
     "publish_single_base_successor",
     "rename_directory_no_replace",
     "staged_directory",

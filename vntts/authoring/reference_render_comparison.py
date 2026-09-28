@@ -35,7 +35,11 @@ from vntts.authoring.listening import (
     create_listening_session_from_reports,
     load_listening_session,
 )
-from vntts.authoring.publication import rename_directory_no_replace, staged_directory
+from vntts.authoring.publication import (
+    no_replace_destination,
+    rename_directory_no_replace,
+    staged_directory,
+)
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 from vntts.synthesis import SynthesisChunkStream, SynthesisRequest
 from vntts.voices import CharacterVoiceRegistry
@@ -399,7 +403,7 @@ def publish_reference_render_comparison(
         raise ReferenceRenderComparisonError(
             "Reference render publication requires a loaded plan"
         )
-    output = Path(output_directory).expanduser().resolve()
+    output = no_replace_destination(output_directory)
     if output.exists() or output.is_symlink():
         raise ReferenceRenderComparisonError(
             f"Reference render destination already exists: {output}"

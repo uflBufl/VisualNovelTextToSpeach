@@ -43,7 +43,11 @@ from vntts.authoring.listening import (
     create_listening_session_from_reports,
     load_listening_session,
 )
-from vntts.authoring.publication import rename_directory_no_replace, staged_directory
+from vntts.authoring.publication import (
+    no_replace_destination,
+    rename_directory_no_replace,
+    staged_directory,
+)
 from vntts.authoring.source_reference_bindings import (
     SOURCE_REFERENCE_BINDINGS_FIELD,
     SOURCE_REFERENCE_BINDINGS_MULTI_VERSION,
@@ -164,7 +168,7 @@ def import_source_reference_review(
     report_path, report_payload, report = _read_json(report_path, "candidate report")
     review_path, review_payload, review = _read_json(review_path, "candidate review")
     story_index_path = Path(story_index_path).expanduser().resolve()
-    output = Path(output).expanduser().resolve()
+    output = no_replace_destination(output)
     if output.exists() or output.is_symlink():
         raise SourceReferenceReviewError(
             f"Source-reference plan output exists: {output}"
@@ -848,7 +852,7 @@ def publish_source_reference_bindings(
         plan, selected_variant_ids or ()
     )
 
-    output = Path(output).expanduser().resolve()
+    output = no_replace_destination(output)
     if output.exists() or output.is_symlink():
         raise SourceReferenceReviewError(
             f"Source-reference bindings output exists: {output}"
@@ -1043,7 +1047,7 @@ def publish_source_reference_binding_successor(
     base_binding_manifest = Path(base_binding_manifest).expanduser().resolve()
     plan_directory = Path(plan_directory).expanduser().resolve()
     quality_review = Path(quality_review).expanduser().resolve()
-    output = Path(output).expanduser().resolve()
+    output = no_replace_destination(output)
     if output.exists() or output.is_symlink():
         raise SourceReferenceReviewError(
             f"Source-reference bindings output exists: {output}"
@@ -1279,7 +1283,7 @@ def publish_source_reference_binding_retirement(
     """Publish an immutable successor with exact selected variants retired."""
     requested = _retirement_request(variant_ids, reason)
     base_binding_manifest = Path(base_binding_manifest).expanduser().resolve()
-    output = Path(output).expanduser().resolve()
+    output = no_replace_destination(output)
     if output.exists() or output.is_symlink():
         raise SourceReferenceReviewError(
             f"Source-reference bindings output exists: {output}"
@@ -1588,7 +1592,7 @@ def publish_source_reference_evaluation(
     plan = load_source_reference_plan(plan_directory)
     plan_path = plan_directory / "plan.json"
     plan_sha256 = sha256_file(plan_path)
-    output = Path(output).expanduser().resolve()
+    output = no_replace_destination(output)
     if output.exists() or output.is_symlink():
         raise SourceReferenceReviewError(
             f"Source-reference evaluation output exists: {output}"
@@ -2015,7 +2019,7 @@ def publish_source_reference_listening_reports(
     comparison_sha256 = hashlib.sha256(comparison_payload).hexdigest()
     state_path = Path(state_path).expanduser().resolve()
     state_sha256 = sha256_file(state_path)
-    output = Path(output).expanduser().resolve()
+    output = no_replace_destination(output)
     if output.exists() or output.is_symlink():
         raise SourceReferenceReviewError(
             f"Source-reference listening reports output exists: {output}"

@@ -38,6 +38,7 @@ from vntts.authoring.bulk_generation import (
 )
 from vntts.authoring.publication import (
     AtomicPublicationError,
+    no_replace_destination,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -579,7 +580,7 @@ def publish_terminal_conflict_review(
 ) -> TerminalConflictReview:
     """Publish exact distinct WAV choices for every current terminal conflict."""
     inputs = _review_publication_input(Path(reconciliation_path).expanduser().resolve())
-    output = Path(output_directory).expanduser().resolve()
+    output = no_replace_destination(output_directory)
 
     output.parent.mkdir(parents=True, exist_ok=True)
     output_exists = output.exists() or output.is_symlink()

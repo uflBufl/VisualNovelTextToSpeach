@@ -22,7 +22,11 @@ from vntts.authoring.bulk_generation import (
     BulkGenerationError,
 )
 from vntts.authoring.generation_state import validate_generation_state_document
-from vntts.authoring.publication import rename_directory_no_replace, staged_directory
+from vntts.authoring.publication import (
+    no_replace_destination,
+    rename_directory_no_replace,
+    staged_directory,
+)
 from vntts.authoring.source_reference_quality_records import (
     QUALITY_DECISIONS,
     QUALITY_REVIEW_SCHEMA,
@@ -102,7 +106,7 @@ def publish_source_reference_quality_review(
     plan_directory = Path(plan_directory).expanduser().resolve()
     evaluation_directory = Path(evaluation_directory).expanduser().resolve()
     state_path = Path(state_path).expanduser().resolve()
-    output = Path(output).expanduser().resolve()
+    output = no_replace_destination(output)
     if portrait_directory is not None:
         portrait_directory = Path(portrait_directory).expanduser().resolve()
         if not portrait_directory.is_dir():

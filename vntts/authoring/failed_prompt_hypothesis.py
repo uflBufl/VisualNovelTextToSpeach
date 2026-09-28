@@ -26,6 +26,7 @@ from vntts.authoring.missing_voice_reuse_review import (
     MissingVoiceReuseReviewError,
     load_missing_voice_reuse_review,
 )
+from vntts.authoring.publication import no_replace_destination
 
 FAILED_PROMPT_SELECTION_SCHEMA = "vntts.authoring-failed-prompt-selection"
 FAILED_PROMPT_SELECTION_VERSION = 1
@@ -60,7 +61,7 @@ def publish_failed_prompt_hypothesis_selection(
     """Publish selection authority only; never mutate a manifest or audio state."""
     plan_path = Path(plan_path).expanduser().resolve()
     session_path = Path(session_path).expanduser().resolve()
-    output = Path(output).expanduser().resolve()
+    output = no_replace_destination(output)
     try:
         plan = load_missing_voice_reuse_plan(plan_path)
         document = _validate_plan(plan)

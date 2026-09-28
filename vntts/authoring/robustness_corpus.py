@@ -44,6 +44,7 @@ from vntts.authoring.cohort_review import (
 )
 from vntts.authoring.publication import (
     AtomicPublicationError,
+    no_replace_destination,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -1549,7 +1550,7 @@ def load_speech_robustness_corpus(
 def _publication_output(
     output_directory: str | Path, decision_inputs: Sequence[str | Path]
 ) -> Path:
-    output = Path(output_directory).expanduser().resolve()
+    output = no_replace_destination(output_directory)
     output.parent.mkdir(parents=True, exist_ok=True)
     for decision_input in decision_inputs:
         source = Path(decision_input).expanduser().resolve()
@@ -1586,6 +1587,10 @@ def _existing_corpus_result(
     samples: Sequence[_SampleRecord],
     failures: Sequence[_FailureRecord],
 ) -> SpeechRobustnessCorpusResult | None:
+    if output.is_symlink():
+        raise SpeechRobustnessCorpusError(
+            f"Robustness corpus destination is a symlink: {output}"
+        )
     if not output.exists():
         return None
     loaded = load_speech_robustness_corpus(output)

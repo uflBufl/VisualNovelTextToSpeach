@@ -11,6 +11,7 @@ import numpy as np
 from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 
+from tests.symlink_support import symlink_or_skip
 from vntts.authoring.audio_event_review import (
     AudioEventReviewError,
     load_audio_event_review,
@@ -91,6 +92,24 @@ def publish(root, *, text="Tsk!", sample_count=1_200):
 
 
 class AudioEventReviewTest(unittest.TestCase):
+    def test_publication_rejects_dangling_symlink_output(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "redirected"
+            symlink_or_skip(root / "review", target, target_is_directory=True)
+            with self.assertRaisesRegex(AudioEventReviewError, "output exists"):
+                publish(root)
+            self.assertFalse(target.exists())
+
+    def test_public_loader_rejects_symlink_directory(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            result, _queue, _audio = publish(root)
+            link = root / "review-link"
+            symlink_or_skip(link, result.directory, target_is_directory=True)
+            with self.assertRaisesRegex(AudioEventReviewError, "unavailable"):
+                load_audio_event_review(link)
+
     def test_publishes_self_contained_speaker_neutral_tongue_click(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
