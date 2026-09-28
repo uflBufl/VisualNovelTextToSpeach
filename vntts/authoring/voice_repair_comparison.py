@@ -1125,6 +1125,7 @@ def _validate_plan_header(document: object) -> None:
     if (
         not isinstance(document, dict)
         or document.get("schema") != VOICE_REPAIR_COMPARISON_SCHEMA
+        or type(document.get("schema_version")) is not int
         or document.get("schema_version") != VOICE_REPAIR_COMPARISON_VERSION
     ):
         raise VoiceRepairComparisonError(
@@ -1192,6 +1193,17 @@ def _validate_plan_structure(document: JsonObject, sections: _PlanSections) -> N
 
 
 def _validate_plan_counts(document: JsonObject, sections: _PlanSections) -> None:
+    count_fields = (
+        "approved_count",
+        "target_count",
+        "comparison_ready_target_count",
+        "unbound_target_count",
+        "variant_count",
+        "candidate_count",
+        "comparison_sample_count",
+    )
+    if any(type(document.get(field)) is not int for field in count_fields):
+        raise VoiceRepairComparisonError("Comparison plan counts must be integers")
     if document.get("approved_count") != len(sections.approved) or document.get(
         "target_count"
     ) != len(sections.targets):

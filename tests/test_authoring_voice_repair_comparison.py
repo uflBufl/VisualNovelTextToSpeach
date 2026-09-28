@@ -126,6 +126,45 @@ class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
 
         self.assertEqual(loaded.plan_id, plan.plan_id)
 
+    def test_plan_rejects_non_integer_schema_and_counts(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, workspace, _state_path = self.create_rejected_workspace(root)
+            plan = build_voice_repair_comparison_plan(workspace, "Rhiannon")
+            output = root / "plan.json"
+
+            for field, value in (
+                ("schema_version", True),
+                ("schema_version", 1.0),
+                *(
+                    (field, float(plan.document[field]))
+                    for field in (
+                        "approved_count",
+                        "target_count",
+                        "comparison_ready_target_count",
+                        "unbound_target_count",
+                        "variant_count",
+                        "candidate_count",
+                        "comparison_sample_count",
+                    )
+                ),
+            ):
+                with self.subTest(field=field, value=value):
+                    document = plan.to_dict()
+                    document[field] = value
+                    document["plan_id"] = _canonical_sha256(
+                        {
+                            key: item
+                            for key, item in document.items()
+                            if key != "plan_id"
+                        }
+                    )
+                    output.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        VoiceRepairComparisonError, "integer|schema"
+                    ):
+                        load_voice_repair_comparison_plan(output)
+
     def test_absent_target_does_not_require_review_projection(self):
         with TemporaryDirectory() as directory:
             _fixture, workspace, state_path = self.create_rejected_workspace(
