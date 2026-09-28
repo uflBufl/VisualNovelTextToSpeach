@@ -147,8 +147,10 @@ class AutoAdvanceFakeFrameHarness:
         dialog_observed=None,
         frame_recheck_required=None,
         frame_recheck_interval_seconds=0.6,
+        frame_render_fingerprint=None,
         ocr_purpose=None,
         frame_observed=None,
+        tracker_options=None,
     ):
         self.clock = FakeClock()
         self.completed_observations = Queue()
@@ -171,6 +173,7 @@ class AutoAdvanceFakeFrameHarness:
             playback_executor=self.playback_executor,
             capture_frame=Mock(),
             recognize_frame=self._recognize,
+            frame_render_fingerprint=frame_render_fingerprint,
             frame_presence=lambda frame: frame.get("visible", True),
             frame_recheck_required=frame_recheck_required,
             ocr_purpose=ocr_purpose,
@@ -192,6 +195,7 @@ class AutoAdvanceFakeFrameHarness:
             tracker_options={
                 "clock": self.clock,
                 "idle_flush_seconds": 0.1,
+                **(tracker_options or {}),
             },
             auto_advance=self._advance,
             auto_advance_delay_seconds=0.2,
@@ -237,6 +241,10 @@ class AutoAdvanceFakeFrameHarness:
         with self.reader.pause_condition:
             self.reader.latest_frame = frame
             self.reader.latest_frame_fingerprint = fingerprint
+            render_fingerprint = self.reader.frame_render_fingerprint
+            self.reader.latest_render_fingerprint = (
+                render_fingerprint(frame) if render_fingerprint else None
+            )
             self.reader.latest_frame_visible = visible
             self.reader.latest_frame_complete = complete
             self.reader.frame_version += 1
@@ -456,6 +464,53 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
         self.assertEqual(rechecks[-1]["recheck_interval_ms"], 600)
         self.assertNotIn("text", rechecks[-1])
         self.assertEqual(harness.errors, [])
+
+    def test_generated_route_rechecks_new_glyphs_with_same_compact_fingerprint(self):
+        partial = "ae You DO have shillings ]"
+        full = "You DO have shillings, don't you, miss?"
+        harness = AutoAdvanceFakeFrameHarness(
+            frame_render_fingerprint=lambda frame: frame["background"],
+            tracker_options={
+                "complete_dialogue_only": True,
+                "early_dialogue_resolver": (
+                    lambda _character, text: full if text == full else None
+                ),
+            },
+        )
+        harness.start()
+        self.addCleanup(harness.stop)
+
+        harness.push("Hotelier", partial, background="partial")
+        harness.push("Hotelier", partial, background="partial")
+        harness.push("Hotelier", full, background="full")
+        harness.push("Hotelier", full, background="full")
+
+        self.assertEqual(
+            [frame["text"] for frame in harness.recognized_frames],
+            [partial, full],
+        )
+        self.assertEqual(
+            harness.speech_executor.jobs[0][2][0].text,
+            full,
+        )
+        self.assertEqual(harness.errors, [])
+
+    def test_live_tts_keeps_compact_ocr_cache_during_render_changes(self):
+        harness = AutoAdvanceFakeFrameHarness(
+            frame_render_fingerprint=lambda frame: frame["background"],
+        )
+        harness.start()
+        self.addCleanup(harness.stop)
+
+        harness.push("Alice", "First", background="partial")
+        harness.push(
+            "Alice",
+            "First words appeared",
+            background="full",
+            expected=("Alice", "First"),
+        )
+
+        self.assertEqual(len(harness.recognized_frames), 1)
 
     def test_stable_frame_route_waits_for_minimum_settled_time(self):
         route_calls = []
@@ -2606,6 +2661,42 @@ class LiveDialogReaderTest(unittest.TestCase):
             stop_event.wait.call_args_list,
             [call(0.6), call(0.1)],
         )
+
+    def test_generated_render_change_bypasses_idle_capture_interval(self):
+        stop_event = Mock()
+        stop_event.is_set.side_effect = [False, True]
+        reader = self.create_reader(
+            interval_seconds=0.2,
+            capture_frame=Mock(return_value="new render"),
+            frame_fingerprint=lambda _frame: "same glyphs",
+            frame_render_fingerprint=lambda frame: frame,
+            tracker_options={"complete_dialogue_only": True},
+        )
+        reader.latest_frame_fingerprint = "same glyphs"
+        reader.latest_render_fingerprint = "old render"
+        reader.next_capture_interval = 0.6
+
+        reader._run_capture(stop_event)
+
+        stop_event.wait.assert_called_once_with(0.1)
+
+    def test_hidden_dialogue_keeps_idle_capture_interval(self):
+        stop_event = Mock()
+        stop_event.is_set.side_effect = [False, True]
+        reader = self.create_reader(
+            interval_seconds=0.2,
+            capture_frame=Mock(return_value="moving background"),
+            frame_fingerprint=lambda _frame: "same glyphs",
+            frame_render_fingerprint=lambda frame: frame,
+            frame_presence=lambda _frame: False,
+            tracker_options={"complete_dialogue_only": True},
+        )
+        reader.latest_frame_fingerprint = "same glyphs"
+        reader.next_capture_interval = 0.6
+
+        reader._run_capture(stop_event)
+
+        stop_event.wait.assert_called_once_with(0.6)
 
     def test_unchanged_fingerprint_preserves_adaptive_idle_interval(self):
         stop_event = Mock()

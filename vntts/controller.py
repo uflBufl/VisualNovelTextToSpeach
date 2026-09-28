@@ -819,6 +819,7 @@ class AppController:
         backend = self.speech_backend
         if not isinstance(backend, GeneratedAudioFallbackBackend):
             return None
+        # Unprepared story lines must still count: they may share this prefix.
         line = self.chapter_voice_preloader.resolve_unique_prefix(
             character,
             text,
@@ -1041,6 +1042,7 @@ class AppController:
             self.history.finish_current()
             self.dialog_handler("Narrator", "")
             return True
+        observed_character = character or "Narrator"
         character = self._canonical_observed_character(character, text)
         canonical_routing = False
         with self.story_cursor_lock:
@@ -1114,7 +1116,11 @@ class AppController:
         self.dialog_handler(character or "Narrator", preview)
         if speech_deferred:
             return False
-        return (character, text) if canonical_routing else True
+        return (
+            (character, text)
+            if canonical_routing or character != observed_character
+            else True
+        )
 
     def _canonical_sequence_line_locked(
         self, event_id: str | None, *, observed_line_id: str | None = None

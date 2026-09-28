@@ -35,6 +35,7 @@ from vntts.generated_audio import (
 from vntts.live import (
     AdaptiveSpeechBackpressure,
     CanonicalDialogRoute,
+    IncrementalDialogTracker,
     SilentDialogRoute,
     SpeechChunk,
 )
@@ -1046,6 +1047,86 @@ class MainTest(unittest.TestCase):
         )
 
         self.assertEqual(character, "Hotelier")
+
+    def test_corrected_nameplate_reaches_generated_route(self):
+        full = "You know, we once had a guest who insisted on bringing his horse."
+        partial = "You know, we once had a guest"
+        line = ChapterDialogue(
+            "line-1", "chapter-1", 1, "Hotelier", full, text_sha256(full)
+        )
+        preloader = ChapterVoicePreloader((line,))
+        controller = AppController(
+            AppSettings(audio_source_policy="prefer-generated"),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+        )
+        controller._offer_unknown_speaker_mapping = Mock(return_value=False)
+        controller._prime_observed_voice = Mock()
+        controller._prime_likely_chapter_voice = Mock()
+        live_backend = Mock(
+            name="live-test",
+            capabilities=SpeechBackendCapabilities(True, False, True),
+        )
+        library = Mock(runtime_progress=False)
+        library.find_audio_event_omission.return_value = None
+        library.find_with_preflight.return_value = (
+            PreparedGeneratedAudio(
+                line.line_id, line.text_sha256, np.zeros(1, dtype=np.float32), 24_000
+            ),
+            "generated-audio-entry-verified",
+        )
+        backend = GeneratedAudioFallbackBackend(
+            live_backend, library, preloader, audio_output=Mock()
+        )
+        controller.speech_backend = backend
+        tracker = IncrementalDialogTracker(
+            **controller._get_live_configuration()["tracker_options"]
+        )
+
+        observation = controller._dialog_observed("Hoteller", partial)
+        self.assertEqual(observation, ("Hotelier", partial))
+        tracker.observe(*observation)
+        chunks = tracker.observe(*observation)
+
+        self.assertEqual(
+            [(chunk.character, chunk.text) for chunk in chunks],
+            [("Hotelier", full)],
+        )
+        route = backend.prepare_route(chunks[0].character, chunks[0].text)
+        self.assertIsInstance(route, GeneratedAudioRoute)
+        self.assertEqual(route.trace.line_id, line.line_id)
+        live_backend.prepare_playback.assert_not_called()
+
+    def test_early_generated_prefix_waits_for_unprepared_ambiguous_line(self):
+        prefix = "The long shared introduction goes "
+        first_text = prefix + "left."
+        second_text = prefix + "right."
+        first = ChapterDialogue(
+            "line-1", "chapter-1", 1, "Hotelier", first_text, text_sha256(first_text)
+        )
+        second = ChapterDialogue(
+            "line-2", "chapter-1", 2, "Hotelier", second_text, text_sha256(second_text)
+        )
+        preloader = ChapterVoicePreloader((first, second))
+        controller = AppController(
+            AppSettings(audio_source_policy="prefer-generated"),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+        )
+        live_backend = Mock(
+            name="live-test",
+            capabilities=SpeechBackendCapabilities(True, False, True),
+        )
+        backend = GeneratedAudioFallbackBackend(
+            live_backend, Mock(), preloader, audio_output=Mock()
+        )
+        backend.has_generated_line = Mock(side_effect=lambda line: line == first)
+        controller.speech_backend = backend
+
+        self.assertIsNone(
+            controller._resolve_early_indexed_dialogue("Hotelier", prefix)
+        )
+        backend.has_generated_line.assert_not_called()
 
     def test_controller_passes_initialized_tts_to_dialog_scheduler(self):
         tts = Mock()

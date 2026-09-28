@@ -784,6 +784,9 @@ class LiveDialogReader:
                 captured_at = self.stable_frame_clock()
                 with self.pause_condition:
                     fingerprint_changed = fingerprint != self.latest_frame_fingerprint
+                    render_changed = (
+                        render_fingerprint != self.latest_render_fingerprint
+                    )
                     replaced = self.frame_version > self.processed_frame_version
                     self.latest_frame = frame
                     self.latest_frame_fingerprint = fingerprint
@@ -809,7 +812,15 @@ class LiveDialogReader:
                         last_capture_at=monotonic(),
                     )
                     interval = self.next_capture_interval
-                    if fingerprint_changed or recheck_required:
+                    if (
+                        fingerprint_changed
+                        or recheck_required
+                        or (
+                            visible
+                            and render_changed
+                            and self.tracker_options.get("complete_dialogue_only")
+                        )
+                    ):
                         # The OCR worker updates the adaptive interval after it
                         # consumes this frame. Do not sleep once more on the
                         # previous static-dialogue interval before giving the
@@ -833,6 +844,7 @@ class LiveDialogReader:
             **self.adaptive_options,
         )
         cached_fingerprint = object()
+        cached_render_fingerprint = object()
         cached_completion = object()
         cached_observation: Observation = (None, "")
         last_frame_recheck_at = None
@@ -850,6 +862,7 @@ class LiveDialogReader:
                     break
                 frame = self.latest_frame
                 fingerprint = self.latest_frame_fingerprint
+                render_fingerprint = self.latest_render_fingerprint
                 visible = self.latest_frame_visible
                 complete = self.latest_frame_complete
                 self.processed_frame_version = self.frame_version
@@ -883,11 +896,17 @@ class LiveDialogReader:
                     awaiting_post_advance_dialog = (
                         self.pending_auto_advance_generation == self.active_generation
                     )
+                render_changed = bool(
+                    self.tracker_options.get("complete_dialogue_only")
+                    and self.frame_render_fingerprint is not None
+                    and render_fingerprint != cached_render_fingerprint
+                )
                 if (
                     fingerprint == cached_fingerprint
                     and complete == cached_completion
                     and not awaiting_post_advance_dialog
                     and not recheck_now
+                    and not render_changed
                 ):
                     character, text = cached_observation
                     route_kind = "cached"
@@ -920,24 +939,28 @@ class LiveDialogReader:
                     character, text = None, ""
                     route_kind = "canonical"
                     cached_fingerprint = fingerprint
+                    cached_render_fingerprint = render_fingerprint
                     cached_completion = complete
                     cached_observation = (character, text)
                 elif isinstance(frame_route, CanonicalDialogRoute):
                     character, text = frame_route.character, frame_route.text
                     route_kind = "canonical"
                     cached_fingerprint = fingerprint
+                    cached_render_fingerprint = render_fingerprint
                     cached_completion = complete
                     cached_observation = (character, text)
                 elif isinstance(frame_route, tuple) and len(frame_route) == 2:
                     character, text = frame_route
                     route_kind = "canonical"
                     cached_fingerprint = fingerprint
+                    cached_render_fingerprint = render_fingerprint
                     cached_completion = complete
                     cached_observation = (character, text)
                 elif frame_route is None and (
                     fingerprint != cached_fingerprint
                     or awaiting_post_advance_dialog
                     or recheck_now
+                    or render_changed
                 ):
                     if self.ocr_purpose() is None:
                         self.frame_observed(
@@ -953,6 +976,7 @@ class LiveDialogReader:
                     character, text = self.recognize_frame(frame)
                     route_kind = "ocr"
                     cached_fingerprint = fingerprint
+                    cached_render_fingerprint = render_fingerprint
                     cached_completion = complete
                     cached_observation = (character, text)
                     with self.state_lock:
