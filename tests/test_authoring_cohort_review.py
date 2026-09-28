@@ -114,6 +114,41 @@ class AuthoringCohortReviewTest(unittest.TestCase):
             with self.assertRaisesRegex(CohortReviewError, "thresholds are invalid"):
                 load_cohort_review_plan(path)
 
+    def test_plan_rejects_non_integer_versions_and_counts(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state, _queue_id = self.create_pending_workspace(root)
+            plan = build_cohort_review_plan(workspace).document
+
+            def assert_rejected(mutate):
+                document = deepcopy(plan)
+                mutate(document)
+                document["plan_id"] = _canonical_sha256(
+                    {key: value for key, value in document.items() if key != "plan_id"}
+                )
+                path = root / "forged-plan.json"
+                path.write_text(json.dumps(document), encoding="utf-8")
+                with self.assertRaisesRegex(CohortReviewError, "must be an integer"):
+                    load_cohort_review_plan(path)
+
+            assert_rejected(lambda value: value.__setitem__("schema_version", True))
+
+            def legacy_policy_version(value):
+                value["policy"]["schema_version"] = 1.0
+                value["policy"].pop("attention_thresholds")
+
+            assert_rejected(legacy_policy_version)
+            assert_rejected(lambda value: value.__setitem__("cohort_count", True))
+            assert_rejected(lambda value: value.__setitem__("pending_item_count", 1.0))
+            assert_rejected(lambda value: value.__setitem__("sample_item_count", True))
+            assert_rejected(lambda value: value.__setitem__("blocked_item_count", 1.0))
+            assert_rejected(
+                lambda value: value["cohorts"][0].__setitem__("item_count", True)
+            )
+            assert_rejected(
+                lambda value: value["cohorts"][0].__setitem__("attention_count", 1.0)
+            )
+
     def test_terminal_item_is_not_planned_again(self):
         with TemporaryDirectory() as directory:
             workspace, state_path, _queue_id = self.create_pending_workspace(
@@ -412,6 +447,44 @@ class AuthoringCohortReviewTest(unittest.TestCase):
             loaded = load_cohort_review_decision(path)
 
         self.assertNotIn("defect_reasons", loaded.document["sample_assessments"][0])
+
+    def test_decision_rejects_non_integer_schema_versions(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state_path, queue_id = self.create_pending_workspace(root)
+            plan = build_cohort_review_plan(workspace)
+            decision = build_cohort_review_decision(
+                plan,
+                plan.document["cohorts"][0]["cohort_id"],
+                "rejected",
+                reviewed_queue_ids=[queue_id],
+            ).document
+
+            def assert_rejected(mutate):
+                document = deepcopy(decision)
+                mutate(document)
+                document["decision_id"] = _canonical_sha256(
+                    {
+                        key: value
+                        for key, value in document.items()
+                        if key != "decision_id"
+                    }
+                )
+                path = root / "forged-decision.json"
+                path.write_text(json.dumps(document), encoding="utf-8")
+                with self.assertRaisesRegex(CohortReviewError, "must be an integer"):
+                    load_cohort_review_decision(path)
+
+            def legacy_schema_version(value):
+                value["schema_version"] = True
+                value.pop("item_review_statuses")
+                for assessment in value["sample_assessments"]:
+                    assessment.pop("defect_reasons")
+
+            assert_rejected(legacy_schema_version)
+            assert_rejected(
+                lambda value: value["plan_policy"].__setitem__("schema_version", 1.0)
+            )
 
     def test_split_decision_binds_each_individually_sampled_target(self):
         with TemporaryDirectory() as directory:

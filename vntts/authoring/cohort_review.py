@@ -1044,6 +1044,13 @@ def _plan_identity_and_document(document: object) -> tuple[str, JsonObject]:
     if not isinstance(document, dict):
         raise CohortReviewError("Cohort review plan must be an object")
     plan_id = _plan_document_identity(document)
+    for field, label in (
+        ("cohort_count", "Cohort count"),
+        ("pending_item_count", "Pending item count"),
+        ("sample_item_count", "Sample item count"),
+        ("blocked_item_count", "Blocked item count"),
+    ):
+        _required_integer(document.get(field), label)
     _plan_cohort_ids(document)
     _plan_policy(document)
     return plan_id, document
@@ -1052,7 +1059,10 @@ def _plan_identity_and_document(document: object) -> tuple[str, JsonObject]:
 def _plan_document_identity(document: JsonObject) -> str:
     if document.get("schema") != COHORT_REVIEW_PLAN_SCHEMA:
         raise CohortReviewError("Cohort review plan schema is unsupported")
-    if document.get("schema_version") != COHORT_REVIEW_PLAN_VERSION:
+    if (
+        _required_integer(document.get("schema_version"), "Cohort review plan version")
+        != COHORT_REVIEW_PLAN_VERSION
+    ):
         raise CohortReviewError("Cohort review plan version is unsupported")
     plan_id = _required_sha256(document.get("plan_id"), "Plan ID")
     actual = canonical_document_sha256(
@@ -1072,6 +1082,8 @@ def _plan_cohort_ids(document: JsonObject) -> None:
         if not isinstance(cohort, dict):
             raise CohortReviewError("Cohort review plan cohort must be an object")
         cohort_ids.append(_required_sha256(cohort.get("cohort_id"), "Cohort ID"))
+        _required_integer(cohort.get("item_count"), "Cohort item count")
+        _required_integer(cohort.get("attention_count"), "Cohort attention count")
     if len(set(cohort_ids)) != len(cohort_ids):
         raise CohortReviewError("Cohort review plan cohort IDs must be unique")
 
@@ -1080,7 +1092,9 @@ def _plan_policy(document: JsonObject) -> None:
     policy = document.get("policy")
     if not isinstance(policy, dict):
         raise CohortReviewError("Cohort review plan policy must be an object")
-    policy_version = policy.get("schema_version")
+    policy_version = _required_integer(
+        policy.get("schema_version"), "Cohort review plan policy version"
+    )
     if policy_version not in SUPPORTED_COHORT_REVIEW_POLICY_VERSIONS:
         raise CohortReviewError("Cohort review plan policy version is unsupported")
     if policy.get("attention_rule") != "all technical flags":
@@ -1253,7 +1267,9 @@ def _validated_decision_document(document: object) -> JsonObject:
 def _decision_document_header(document: JsonObject) -> tuple[int, str]:
     if document.get("schema") != COHORT_REVIEW_DECISION_SCHEMA:
         raise CohortReviewError("Cohort review decision schema is unsupported")
-    version = document.get("schema_version")
+    version = _required_integer(
+        document.get("schema_version"), "Cohort review decision version"
+    )
     if version not in SUPPORTED_COHORT_REVIEW_DECISION_VERSIONS:
         raise CohortReviewError("Cohort review decision version is unsupported")
     claimed = _required_sha256(document.get("decision_id"), "Decision ID")
@@ -1272,10 +1288,12 @@ def _decision_document_header(document: JsonObject) -> tuple[int, str]:
 
 def _decision_document_policy(document: JsonObject) -> int:
     policy = document.get("plan_policy")
-    if (
-        not isinstance(policy, dict)
-        or policy.get("schema_version") not in SUPPORTED_COHORT_REVIEW_POLICY_VERSIONS
-    ):
+    if not isinstance(policy, dict):
+        raise CohortReviewError("Cohort review decision policy is invalid")
+    policy_version = _required_integer(
+        policy.get("schema_version"), "Cohort review decision policy version"
+    )
+    if policy_version not in SUPPORTED_COHORT_REVIEW_POLICY_VERSIONS:
         raise CohortReviewError("Cohort review decision policy is invalid")
     current_samples = policy.get("clean_samples_per_bucket")
     if (
