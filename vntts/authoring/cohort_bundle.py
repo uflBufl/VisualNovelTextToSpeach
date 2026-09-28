@@ -9,7 +9,7 @@ import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, NotRequired, TypeAlias, TypedDict, TypeIs
+from typing import NotRequired, TypeAlias, TypedDict, TypeIs
 
 from vntts_artifacts.atomic_io import atomic_write_json
 
@@ -155,7 +155,7 @@ class _CurrentSourceSnapshot(TypedDict):
     queue_sha256: str
     state_path: Path
     queue: dict[str, dict[str, object]]
-    items: dict[str, dict[str, object]]
+    items: dict[str, object]
     state_sha256: str
     artifacts: list[tuple[Path, str, str]]
 
@@ -183,6 +183,10 @@ class _DecisionDocument(TypedDict, total=False):
 
 def _is_text_list(value: object) -> TypeIs[list[str]]:
     return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def _is_json_object(value: object) -> TypeIs[dict[str, object]]:
+    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
 
 
 def _is_object_list(value: object) -> TypeIs[list[dict[str, object]]]:
@@ -452,7 +456,7 @@ class _LoadedSampleSource:
     queue_sha256: str
     state_sha256: str
     queue_records: dict[str, dict[str, object]]
-    state_items: dict[str, Any]
+    state_items: dict[str, object]
 
 
 def build_cohort_review_bundle(
@@ -1137,11 +1141,10 @@ def _current_source_snapshot(source: _SourceDocument) -> _CurrentSourceSnapshot:
         raise CohortReviewError("Bundle source queue changed")
     state_payload = _read_bytes(state_path, "bundle state")
     state = _decode_json(state_payload, "bundle state")
-    if (
-        not isinstance(state, dict)
-        or state.get("queue_sha256") != queue_sha256
-        or not isinstance(state.get("items"), dict)
-    ):
+    if not isinstance(state, dict):
+        raise CohortReviewError("Bundle source state identity changed")
+    state_items = state.get("items")
+    if state.get("queue_sha256") != queue_sha256 or not _is_json_object(state_items):
         raise CohortReviewError("Bundle source state identity changed")
     return {
         "output": output,
@@ -1151,7 +1154,7 @@ def _current_source_snapshot(source: _SourceDocument) -> _CurrentSourceSnapshot:
         "queue_sha256": queue_sha256,
         "state_path": state_path,
         "queue": _decode_queue_records(queue_payload),
-        "items": state["items"],
+        "items": state_items,
         "state_sha256": hashlib.sha256(state_payload).hexdigest(),
         "artifacts": [],
     }
@@ -1386,7 +1389,7 @@ def _observed_cohort_outcomes(
         queue_id = item["queue_id"]
         queue_item = current["queue"].get(queue_id)
         result = current["items"].get(queue_id)
-        if not isinstance(queue_item, dict) or not isinstance(result, dict):
+        if queue_item is None or not _is_json_object(result):
             raise CohortReviewError(f"Bundle cohort item disappeared: {queue_id}")
         text = queue_item.get("text")
         if (
@@ -1616,7 +1619,10 @@ def _load_sample_source(source: _SourceDocument) -> _LoadedSampleSource:
     if state_sha256 != source["plan"]["state_sha256"]:
         raise CohortReviewError("Bundle source state changed")
     state = _decode_json(state_payload, "bundle state")
-    if not isinstance(state, dict) or not isinstance(state.get("items"), dict):
+    if not isinstance(state, dict):
+        raise CohortReviewError("Bundle source state items are invalid")
+    state_items = state.get("items")
+    if not _is_json_object(state_items):
         raise CohortReviewError("Bundle source state items are invalid")
     if state.get("queue_sha256") != queue_sha256:
         raise CohortReviewError("Bundle source state queue identity changed")
@@ -1625,7 +1631,7 @@ def _load_sample_source(source: _SourceDocument) -> _LoadedSampleSource:
         queue_sha256=queue_sha256,
         state_sha256=state_sha256,
         queue_records=_decode_queue_records(queue_payload),
-        state_items=state["items"],
+        state_items=state_items,
     )
 
 
@@ -1685,7 +1691,7 @@ def _review_item_from_sample(
 ) -> ReviewItem:
     queue_item = loaded.queue_records.get(queue_id)
     result = loaded.state_items.get(queue_id)
-    if not isinstance(queue_item, dict) or not isinstance(result, dict):
+    if queue_item is None or not _is_json_object(result):
         raise CohortReviewError(f"Bundle sample disappeared: {queue_id}")
     text = queue_item.get("text")
     if (
@@ -1712,7 +1718,7 @@ def _bound_sample_review_item(
     cohort: _BundleCohort,
     sample: _BundleSample,
     queue_item: dict[str, object],
-    result: dict[str, Any],
+    result: dict[str, object],
     text: str,
     audio: Path,
 ) -> ReviewItem:
@@ -1727,6 +1733,12 @@ def _bound_sample_review_item(
     words = len(re.findall(r"[\w’'-]+", text, flags=re.UNICODE))
     baseline_wpm = sample.get("pace_baseline_wpm")
     pace_ratio = sample.get("pace_ratio")
+    seed = result.get("seed")
+    if seed is not None and type(seed) is not int:
+        raise CohortReviewError(f"Bundle sample seed is invalid: {queue_id}")
+    last_error = result.get("last_error")
+    if last_error is not None and not isinstance(last_error, str):
+        raise CohortReviewError(f"Bundle sample last_error is invalid: {queue_id}")
     return ReviewItem(
         queue_id=queue_id,
         line_id=str(queue_item.get("line_id") or sample["line_id"]),
@@ -1736,8 +1748,8 @@ def _bound_sample_review_item(
         status="generated",
         review_status="pending_review",
         attempts=_attempt_count(result),
-        seed=result.get("seed"),
-        last_error=result.get("last_error"),
+        seed=seed if type(seed) is int else None,
+        last_error=last_error,
         audio=audio,
         authority=ReviewAuthority(
             queue_sha256=loaded.queue_sha256,
@@ -1770,8 +1782,11 @@ def _bound_sample_review_item(
     )
 
 
-def _attempt_count(result: Mapping[str, Any]) -> int:
-    return int(result.get("attempts") or 0)
+def _attempt_count(result: Mapping[str, object]) -> int:
+    attempts = result.get("attempts", 0)
+    if type(attempts) is not int or attempts < 0:
+        raise CohortReviewError("Bundle sample attempts are invalid")
+    return attempts
 
 
 def _assert_sample_source_unchanged(loaded: _LoadedSampleSource) -> None:
