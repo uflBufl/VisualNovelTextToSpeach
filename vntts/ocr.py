@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
-from typing import Protocol
+from time import monotonic
+from typing import Protocol, TypeVar
 from uuid import uuid4
 
 import pytesseract
@@ -29,6 +30,39 @@ class VoiceRegistry(Protocol):
 
 OcrTextRecognizer = Callable[..., str]
 OcrDataRecognizer = Callable[..., OcrData]
+_OcrValue = TypeVar("_OcrValue")
+
+
+def _call_ocr(
+    recognizer: Callable[..., _OcrValue],
+    image: Image.Image,
+    remaining_timeout: Callable[[], float | None],
+    **options: object,
+) -> _OcrValue:
+    timeout = remaining_timeout()
+    if timeout is not None:
+        options["timeout"] = timeout
+    return recognizer(image, **options)
+
+
+def _ocr_budget(
+    timeout: float | None, cancelled: Callable[[], bool] | None
+) -> Callable[[], float | None]:
+    if timeout is not None and timeout <= 0:
+        raise ValueError("OCR timeout must be positive")
+    deadline = monotonic() + timeout if timeout is not None else None
+
+    def remaining() -> float | None:
+        if cancelled is not None and cancelled():
+            raise RuntimeError("OCR preview cancelled")
+        if deadline is None:
+            return None
+        seconds = deadline - monotonic()
+        if seconds <= 0:
+            raise TimeoutError("OCR preview timed out")
+        return seconds
+
+    return remaining
 
 
 def configure_tesseract_process_environment() -> None:
@@ -300,7 +334,10 @@ def recognize_dialog_image_result(
     minimum_confidence: float = default_minimum_ocr_confidence,
     profiles: Sequence[OCRPreprocessingProfile] = default_ocr_profiles,
     language: str = "eng",
+    timeout: float | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> OCRResult:
+    remaining_timeout = _ocr_budget(timeout, cancelled)
     combine_outputs = recognize_text is None and recognize_data is None
     if recognize_text is None:
         recognize_text = pytesseract.image_to_string
@@ -309,6 +346,7 @@ def recognize_dialog_image_result(
 
     best_result = None
     for attempt, profile in enumerate(profiles, start=1):
+        remaining_timeout()
         processed_image = preprocess_dialog_image(image, profile)
         result = _recognize_preprocessed_dialog(
             processed_image,
@@ -319,6 +357,7 @@ def recognize_dialog_image_result(
             attempt,
             language,
             combine_outputs,
+            remaining_timeout,
         )
         if best_result is None or _result_rank(result) > _result_rank(best_result):
             best_result = result
@@ -339,13 +378,18 @@ def _recognize_preprocessed_dialog(
     attempt: int,
     language: str,
     combine_outputs: bool,
+    remaining_timeout: Callable[[], float | None],
 ) -> OCRResult:
     if combine_outputs:
-        recognized_text, data = _recognize_psm6_text_data(image, language)
+        recognized_text, data = _recognize_psm6_text_data(
+            image, language, remaining_timeout
+        )
     else:
         recognized_text = None
-        data = recognize_data(
+        data = _call_ocr(
+            recognize_data,
             image,
+            remaining_timeout,
             config="--psm 6",
             output_type=pytesseract.Output.DICT,
             lang=language,
@@ -361,8 +405,10 @@ def _recognize_preprocessed_dialog(
         # PSM 6 is reliable for paragraph text but can merge a long decorative
         # separator into the short nameplate above it. Sparse-layout analysis
         # keeps those regions independent and recovers names such as Fatutu.
-        sparse_data = recognize_data(
+        sparse_data = _call_ocr(
+            recognize_data,
             image,
+            remaining_timeout,
             config="--psm 11",
             output_type=pytesseract.Output.DICT,
             lang=language,
@@ -377,10 +423,14 @@ def _recognize_preprocessed_dialog(
         character, speaker_line = speaker
         dialog_image = crop_dialog_text(image, speaker_line)
         if combine_outputs:
-            dialog_text, dialog_data = _recognize_psm6_text_data(dialog_image, language)
+            dialog_text, dialog_data = _recognize_psm6_text_data(
+                dialog_image, language, remaining_timeout
+            )
         else:
-            dialog_text = recognize_text(
+            dialog_text = _call_ocr(
+                recognize_text,
                 dialog_image,
+                remaining_timeout,
                 config="--psm 6",
                 lang=language,
             )
@@ -388,8 +438,10 @@ def _recognize_preprocessed_dialog(
         dialog_lines = clean_dialog_lines(dialog_text)
         if dialog_lines:
             if dialog_data is None:
-                dialog_data = recognize_data(
+                dialog_data = _call_ocr(
+                    recognize_data,
                     dialog_image,
+                    remaining_timeout,
                     config="--psm 6",
                     output_type=pytesseract.Output.DICT,
                     lang=language,
@@ -404,8 +456,10 @@ def _recognize_preprocessed_dialog(
             )
 
     if recognized_text is None:
-        recognized_text = recognize_text(
+        recognized_text = _call_ocr(
+            recognize_text,
             image,
+            remaining_timeout,
             config="--psm 6",
             lang=language,
         )
@@ -419,7 +473,11 @@ def _recognize_preprocessed_dialog(
     )
 
 
-def _recognize_psm6_text_data(image: Image.Image, language: str) -> tuple[str, OcrData]:
+def _recognize_psm6_text_data(
+    image: Image.Image,
+    language: str,
+    remaining_timeout: Callable[[], float | None],
+) -> tuple[str, OcrData]:
     """Read the same PSM 6 text and TSV from one Tesseract process."""
     with pytesseract_runtime.save(image) as (base, input_filename):
         pytesseract_runtime.run_tesseract(
@@ -428,6 +486,7 @@ def _recognize_psm6_text_data(image: Image.Image, language: str) -> tuple[str, O
             extension="txt tsv",
             lang=language,
             config="-c tessedit_create_tsv=1 --psm 6",
+            timeout=remaining_timeout() or 0,
         )
         text = pytesseract_runtime._read_output(f"{base}.txt")
         data = pytesseract_runtime.file_to_dict(

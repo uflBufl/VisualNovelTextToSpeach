@@ -281,10 +281,6 @@ Planned implementation order after approval:
       region. Deny region-file write permission and confirm the selected pixels,
       error and retry remain visible; retry after restoring permission. Check that
       an active profile and global region agree after each success/failure.
-- [ ] **Investigate OCR cancellation under repeated calibration retries:** close
-      or redraw while a real OCR subprocess is stalled and measure whether old
-      workers continue consuming the global thread pool. If reproducible, add
-      a bounded OCR timeout/cancellation path without changing live OCR behavior.
 - [ ] **Validate uncertain OCR review on real macOS and Windows hosts:** at 200%
       text scaling, correct one speaker-only and one text-only sample, inspect a
       wide/tall screenshot with both scrollbars, retry after read-only storage,

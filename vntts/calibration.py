@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from threading import Event
 from typing import Protocol
 
 import mss
@@ -47,6 +48,7 @@ class _CalibrationReviewer(Protocol):
 
 
 ReviewerFactory = Callable[[Image.Image], _CalibrationReviewer]
+CALIBRATION_OCR_TIMEOUT_SECONDS = 10.0
 _active_overlay: DialogRegionOverlay | None
 
 
@@ -95,7 +97,7 @@ class CalibrationReviewDialog(QDialog):
         thread_pool: QThreadPool | None = None,
     ) -> None:
         super().__init__(parent)
-        self.recognizer = recognizer
+        self._ocr_cancelled = Event()
         self.runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.runner.finished.connect(self._recognition_finished)
         self.setWindowTitle("Confirm dialogue capture")
@@ -169,7 +171,20 @@ class CalibrationReviewDialog(QDialog):
         self.setTabOrder(self.result_text, self.save_button)
         self.setTabOrder(self.save_button, self.retry_button)
         self.setTabOrder(self.retry_button, self.cancel_button)
-        self.runner.start(self.recognizer, image.copy())
+        self._start_recognition(image.copy(), recognizer)
+
+    def _start_recognition(
+        self, image: Image.Image, recognizer: Callable[[Image.Image], OCRResult]
+    ) -> None:
+        if recognizer is recognize_dialog_image_result:
+            self.runner.start(
+                recognizer,
+                image,
+                timeout=CALIBRATION_OCR_TIMEOUT_SECONDS,
+                cancelled=self._ocr_cancelled.is_set,
+            )
+        else:
+            self.runner.start(recognizer, image)
 
     def _recognition_finished(self, result: object, error: Exception | None) -> None:
         self.progress.hide()
@@ -191,16 +206,20 @@ class CalibrationReviewDialog(QDialog):
         self.save_button.setText("Save region")
         self.save_button.setEnabled(True)
 
-    def closeEvent(self, event: QCloseEvent) -> None:
+    def _cancel_recognition(self) -> None:
+        self._ocr_cancelled.set()
         self.runner.cancel()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self._cancel_recognition()
         super().closeEvent(event)
 
     def done(self, result: int) -> None:
-        self.runner.cancel()
+        self._cancel_recognition()
         super().done(result)
 
     def reject(self) -> None:
-        self.runner.cancel()
+        self._cancel_recognition()
         super().reject()
 
 

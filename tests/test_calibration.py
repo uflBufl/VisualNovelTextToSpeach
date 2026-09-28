@@ -1,16 +1,19 @@
 import os
+import shlex
 import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PIL import Image  # noqa: E402
-from PySide6.QtCore import QPoint, QRect, Qt, QTimer  # noqa: E402
+from PySide6.QtCore import QPoint, QRect, Qt, QThreadPool, QTimer  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog, QTextEdit  # noqa: E402
+from pytesseract import pytesseract as pytesseract_runtime  # noqa: E402
 
 from vntts.calibration import (  # noqa: E402
     CalibrationReviewDialog,
@@ -132,6 +135,39 @@ class DialogRegionOverlayTest(unittest.TestCase):
                 self.application.processEvents()
                 self.assertNotIn("Late text", dialog.result_text.toPlainText())
                 dialog.deleteLater()
+
+    @unittest.skipIf(os.name == "nt", "Requires a POSIX OCR executable fixture")
+    def test_cancelled_review_releases_stalled_ocr_subprocess(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            started = root / "started"
+            executable = root / "stall-ocr"
+            executable.write_text(
+                f"#!/bin/sh\ntouch {shlex.quote(str(started))}\nexec sleep 5\n"
+            )
+            executable.chmod(0o755)
+            pool = QThreadPool()
+            pool.setMaxThreadCount(1)
+            try:
+                with (
+                    patch.object(pytesseract_runtime, "tesseract_cmd", str(executable)),
+                    patch("vntts.calibration.CALIBRATION_OCR_TIMEOUT_SECONDS", 1.5),
+                    patch(
+                        "vntts.ocr.preprocess_dialog_image",
+                        side_effect=lambda image, _profile: image,
+                    ),
+                ):
+                    dialog = CalibrationReviewDialog(
+                        Image.new("RGB", (320, 100), "black"), thread_pool=pool
+                    )
+                    self.wait_for(started.exists)
+                    dialog.reject()
+                    self.assertFalse(dialog.runner.active)
+                    self.assertTrue(pool.waitForDone(3_000))
+                    self.assertEqual(pool.activeThreadCount(), 0)
+                    dialog.deleteLater()
+            finally:
+                pool.waitForDone(6_000)
 
     def test_failed_ocr_requires_explicit_capture_only_save(self):
         dialog = CalibrationReviewDialog(
