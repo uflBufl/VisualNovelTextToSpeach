@@ -88,6 +88,7 @@ def _changed_modules(changed):
             else:
                 return None, f"unmapped Python file changed: {path}"
         elif path.startswith(("docs/", ".github/")) or path in {
+            "AGENTS.md",
             "README.md",
             "todo.md",
             ".gitignore",
