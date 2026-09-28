@@ -1,5 +1,10 @@
 # TODO
 
+## Active - Refactor Debt: persisted metadata
+
+- [ ] Investigate a v2 source-reference plan that copies and binds report/review/story authority. The v1 reader now checks internal queue and cluster identities, but originals can be removed after publication, so it cannot cross-check a consistently forged plan against them. Gate: decide whether that stronger guarantee is required; if so, migrate writer and reader while retaining portable v1 loading.
+- [ ] Continue the class-level persisted-version audit through public readers, starting with `source_audio_semantics.py`, `live_replay.py`, and `authoring/workspace_authority.py`. Qualify remaining textual comparisons before changing them; a matching integer alone is not evidence of invalid acceptance.
+
 ## Active - Qwen voice cloning on Windows
 
 - [ ] Resolve the official `qwen-tts==0.1.1` dependency audit findings without silently suppressing known vulnerabilities.
