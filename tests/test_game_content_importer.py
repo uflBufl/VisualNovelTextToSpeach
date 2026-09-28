@@ -593,6 +593,23 @@ class Reverse1999GameImporterTest(unittest.TestCase):
         finally:
             timeout.cancel()
 
+    def test_communication_failure_reaps_owned_importer(self):
+        class BrokenPipeProcess(RunningProcess):
+            def communicate(self, timeout=None):
+                if not self.terminated:
+                    raise OSError("importer pipe failed")
+                self.returncode = -15
+                return "", ""
+
+        process = BrokenPipeProcess()
+        importer = Reverse1999GameImporter(popen_factory=Mock(return_value=process))
+
+        with self.assertRaisesRegex(OSError, "importer pipe failed"):
+            importer._run(("worker",), None)
+
+        self.assertTrue(process.terminated)
+        self.assertEqual(process.returncode, -15)
+
     def test_frozen_app_uses_its_hidden_provider_worker_entrypoint(self):
         importer = Reverse1999GameImporter()
 

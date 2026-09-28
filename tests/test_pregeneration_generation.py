@@ -31,6 +31,12 @@ class FinishedProcess:
     def communicate(self, timeout=None):
         return self.stdout, self.stderr
 
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        return self.returncode
+
     def terminate(self):
         self.terminated = True
         self.returncode = -15
@@ -48,6 +54,11 @@ class RunningProcess(FinishedProcess):
         if self.terminated or self.killed:
             return "", ""
         raise subprocess.TimeoutExpired(("worker",), timeout)
+
+
+class FailingProcess(RunningProcess):
+    def communicate(self, timeout=None):
+        raise OSError("captured output failed")
 
 
 def generation_inputs(root, *, backend="pocket-tts", model=None):
@@ -608,6 +619,19 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
         self.assertTrue(process.terminated)
         self.assertFalse(process.killed)
         self.assertTrue(raised.exception.__suppress_context__)
+
+    def test_communicate_failure_terminates_the_owned_worker(self):
+        with TemporaryDirectory() as temporary_directory:
+            generation_input, plan = generation_inputs(Path(temporary_directory))
+            process = FailingProcess()
+
+            with self.assertRaisesRegex(OSError, "captured output failed"):
+                OfflineGenerationWorker(
+                    command=("worker",), popen_factory=Mock(return_value=process)
+                ).generate(generation_input, plan)
+
+        self.assertTrue(process.terminated)
+        self.assertTrue(process.killed)
 
     def test_frozen_app_uses_hidden_generation_worker(self):
         worker = OfflineGenerationWorker()

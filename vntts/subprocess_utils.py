@@ -6,17 +6,25 @@ import subprocess
 def terminate_process(
     process: subprocess.Popen[str] | subprocess.Popen[bytes], *, timeout: float = 5
 ) -> None:
-    process.terminate()
+    try:
+        process.terminate()
+    except OSError:
+        pass
     try:
         process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
+        return
+    except subprocess.TimeoutExpired, OSError, ValueError:
+        pass
+    try:
         process.kill()
-        try:
-            process.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            # ponytail: kill is the strongest local action; leave OS cleanup
-            # rather than hanging shutdown forever.
-            pass
+    except OSError:
+        pass
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired, OSError:
+        # ponytail: kill is the strongest local action; leave OS cleanup
+        # rather than hanging shutdown forever.
+        pass
 
 
 def last_output_line(value: object) -> str | None:
