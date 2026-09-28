@@ -1312,7 +1312,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             first.deleteLater()
             second.deleteLater()
 
-    def test_process_restart_resumes_only_the_cancelled_line(self):
+    def test_reopened_dialog_resumes_only_the_cancelled_line(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             content = inspect_story_index(write_story_index(root / "content"))

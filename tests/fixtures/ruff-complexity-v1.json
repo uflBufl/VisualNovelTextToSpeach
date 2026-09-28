@@ -1203,6 +1203,12 @@
     },
     {
       "code": "PLR0915",
+      "path": "tests/test_self_service_pregeneration.py",
+      "scope": "SelfServicePregenerationJourneyTest.test_reopened_dialog_resumes_only_the_cancelled_line",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
       "path": "vntts/app.py",
       "scope": "TrayApplication.shutdown",
       "count": 1
