@@ -1161,10 +1161,10 @@ def _corpus_version(document: JsonDocument) -> int:
     version = document.get("schema_version")
     if (
         document.get("schema") != SPEECH_ROBUSTNESS_CORPUS_SCHEMA
+        or type(version) is not int
         or version not in SUPPORTED_SPEECH_ROBUSTNESS_CORPUS_VERSIONS
     ):
         raise SpeechRobustnessCorpusError("Robustness corpus schema is unsupported")
-    assert isinstance(version, int)
     return version
 
 

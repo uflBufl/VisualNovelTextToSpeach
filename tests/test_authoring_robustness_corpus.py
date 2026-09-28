@@ -95,6 +95,25 @@ def _canonical_sha256(document):
 
 
 class AuthoringRobustnessCorpusTest(unittest.TestCase):
+    def test_public_reader_rejects_boolean_schema_version(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state_path, queue_id = _pending_workspace(root / "reviewed")
+            _decision(workspace, queue_id)
+            result = publish_speech_robustness_corpus(
+                [workspace / "cohort-reviews"], [], root / "corpus"
+            )
+            corpus_path = result.directory / "corpus.json"
+            document = json.loads(corpus_path.read_text(encoding="utf-8"))
+            document["schema_version"] = True
+            document["corpus_id"] = _canonical_sha256(
+                {key: value for key, value in document.items() if key != "corpus_id"}
+            )
+            corpus_path.write_text(json.dumps(document), encoding="utf-8")
+
+            with self.assertRaisesRegex(SpeechRobustnessCorpusError, "unsupported"):
+                load_speech_robustness_corpus(result.directory)
+
     def test_version_three_preserves_exact_human_defect_reasons(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
