@@ -4,6 +4,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
+from vntts_artifacts.file_integrity import sha256_file
+
 from vntts.pregeneration_generation import (
     OfflineGenerationError,
     OfflineGenerationResult,
@@ -11,9 +13,11 @@ from vntts.pregeneration_generation import (
 from vntts.pregeneration_queue import PregenerationInput
 from vntts.pregeneration_recovery import (
     OfflineRecoveryBatch,
+    OfflineRecoveryError,
     OfflineRecoveryPlan,
     OfflineRecoveryResult,
     OfflineRecoveryWorker,
+    _ordered_generation_queue_ids,
     plan_automatic_recovery,
 )
 from vntts.pregeneration_voices import VoicePlan
@@ -66,6 +70,21 @@ def inputs(root):
 
 
 class OfflineRecoveryPlanTest(unittest.TestCase):
+    def test_recovery_rejects_a_changed_voice_manifest_before_loading_the_queue(self):
+        with TemporaryDirectory() as temporary_directory:
+            generation_input, _result, voice_plan = inputs(Path(temporary_directory))
+            manifest = generation_input.voice_manifest
+            manifest.write_text("original voices", encoding="utf-8")
+            generation_input = replace(
+                generation_input,
+                queue_sha256=sha256_file(generation_input.queue),
+                voice_manifest_sha256=sha256_file(manifest),
+            )
+            manifest.write_text("changed voices", encoding="utf-8")
+
+            with self.assertRaisesRegex(OfflineRecoveryError, "voice manifest changed"):
+                _ordered_generation_queue_ids(generation_input, voice_plan)
+
     def test_groups_only_safe_actions_and_defers_ambiguous_work(self):
         with TemporaryDirectory() as temporary_directory:
             generation_input, result, _voice_plan = inputs(Path(temporary_directory))

@@ -455,6 +455,11 @@ def _ordered_generation_queue_ids(
     try:
         if sha256_file(generation_input.queue) != generation_input.queue_sha256:
             raise OfflineRecoveryError("Offline generation queue changed")
+        if (
+            sha256_file(generation_input.voice_manifest)
+            != generation_input.voice_manifest_sha256
+        ):
+            raise OfflineRecoveryError("Offline voice manifest changed")
         queue = VoiceGenerationQueue.load(generation_input.queue)
         voices = CharacterVoiceRegistry.from_file(generation_input.voice_manifest)
         projections = set(generation_input.audio_event_projection_queue_ids)
