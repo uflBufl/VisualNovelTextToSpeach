@@ -1078,9 +1078,13 @@ def _save_reference_selection(
 
 def _load_comparison_document(root: Path) -> JsonDocument:
     document = _read_comparison_document(root)
-    controls, arms, reports = _comparison_inventory(document)
+    controls, arms, reports, queue_ids, pair_ids = _comparison_inventory(document)
     _validate_comparison_controls(root, controls)
-    _validate_comparison_arms(root, arms, reports)
+    shared = _validate_comparison_arms(root, arms, reports, queue_ids)
+    if pair_ids != sorted(shared):
+        raise ReferenceRenderComparisonError(
+            "Reference render comparison complete pairs changed"
+        )
     return document
 
 
@@ -1093,6 +1097,7 @@ def _read_comparison_document(root: Path) -> JsonDocument:
     if (
         not isinstance(document, dict)
         or document.get("schema") != REFERENCE_RENDER_SCHEMA
+        or type(document.get("schema_version")) is not int
         or document.get("schema_version") != REFERENCE_RENDER_VERSION
         or document.get("comparison_id")
         != canonical_document_sha256(
@@ -1107,7 +1112,7 @@ def _read_comparison_document(root: Path) -> JsonDocument:
 
 def _comparison_inventory(
     document: JsonDocument,
-) -> tuple[list[object], list[object], list[object]]:
+) -> tuple[list[object], list[object], list[object], list[str], list[str]]:
     controls = document.get("controls")
     arms = document.get("arms")
     reports = document.get("reports")
@@ -1132,7 +1137,13 @@ def _comparison_inventory(
         raise ReferenceRenderComparisonError(
             "Reference render comparison inventory is invalid"
         )
-    return controls, arms, reports
+    return (
+        controls,
+        arms,
+        reports,
+        [value for value in queue_ids if isinstance(value, str)],
+        [value for value in complete_pair_queue_ids if isinstance(value, str)],
+    )
 
 
 def _validate_comparison_controls(root: Path, controls: list[object]) -> None:
@@ -1149,10 +1160,11 @@ def _validate_comparison_controls(root: Path, controls: list[object]) -> None:
 
 
 def _validate_comparison_arms(
-    root: Path, arms: list[object], reports: list[object]
-) -> None:
+    root: Path, arms: list[object], reports: list[object], queue_ids: list[str]
+) -> set[str]:
     arm_reports: list[str] = []
     arm_ids: set[str] = set()
+    shared: set[str] | None = None
     for arm in arms:
         arm_id = _comparison_arm_id(arm)
         if arm_id in arm_ids:
@@ -1160,12 +1172,14 @@ def _validate_comparison_arms(
                 "Reference render comparison arm IDs repeat"
             )
         arm_ids.add(arm_id)
-        report = _validate_comparison_arm(root, arm, arm_id)
+        report, complete = _validate_comparison_arm(root, arm, arm_id, queue_ids)
         arm_reports.append(report)
+        shared = complete if shared is None else shared & complete
     if arm_reports != reports or len(set(reports)) != len(reports):
         raise ReferenceRenderComparisonError(
             "Reference render comparison report inventory changed"
         )
+    return shared or set()
 
 
 def _comparison_arm_id(arm: object) -> str:
@@ -1176,7 +1190,9 @@ def _comparison_arm_id(arm: object) -> str:
     return _safe_id(arm.get("arm_id"), "arm ID")
 
 
-def _validate_comparison_arm(root: Path, arm: object, arm_id: str) -> str:
+def _validate_comparison_arm(
+    root: Path, arm: object, arm_id: str, queue_ids: list[str]
+) -> tuple[str, set[str]]:
     if not isinstance(arm, dict):
         raise ReferenceRenderComparisonError(
             "Reference render comparison arm is invalid"
@@ -1192,12 +1208,32 @@ def _validate_comparison_arm(root: Path, arm: object, arm_id: str) -> str:
         raise ReferenceRenderComparisonError(
             "Reference render comparison renders are invalid"
         )
+    render_ids: list[str] = []
+    complete_ids: set[str] = set()
     for render in renders:
-        _validate_comparison_render(root, arm_id, render)
-    return report_relative
+        render_id, complete = _validate_comparison_render(root, arm_id, render)
+        render_ids.append(render_id)
+        if complete:
+            complete_ids.add(render_id)
+    if render_ids != queue_ids:
+        raise ReferenceRenderComparisonError(
+            "Reference render comparison render IDs changed"
+        )
+    if (
+        type(arm.get("complete_count")) is not int
+        or arm.get("complete_count") != len(complete_ids)
+        or type(arm.get("failure_count")) is not int
+        or arm.get("failure_count") != len(renders) - len(complete_ids)
+    ):
+        raise ReferenceRenderComparisonError(
+            "Reference render comparison arm counts changed"
+        )
+    return report_relative, complete_ids
 
 
-def _validate_comparison_render(root: Path, arm_id: str, render: object) -> None:
+def _validate_comparison_render(
+    root: Path, arm_id: str, render: object
+) -> tuple[str, bool]:
     if not isinstance(render, dict) or render.get("outcome") not in {
         "complete",
         "error",
@@ -1205,8 +1241,9 @@ def _validate_comparison_render(root: Path, arm_id: str, render: object) -> None
         raise ReferenceRenderComparisonError(
             "Reference render comparison outcome is invalid"
         )
+    render_id = _required_text(render.get("id"), "render ID")
     if render.get("outcome") != "complete":
-        return
+        return render_id, False
     audio = _contained_file(root / "arms" / arm_id, render.get("audio"))
     if sha256_file(audio) != _required_sha256(
         render.get("audio_sha256"), "rendered audio hash"
@@ -1214,6 +1251,7 @@ def _validate_comparison_render(root: Path, arm_id: str, render: object) -> None
         raise ReferenceRenderComparisonError(
             "Reference render comparison audio changed"
         )
+    return render_id, True
 
 
 def _selected_listening_trial(

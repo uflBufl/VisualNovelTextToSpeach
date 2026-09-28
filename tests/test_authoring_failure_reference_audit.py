@@ -32,6 +32,7 @@ from vntts.authoring.reference_render_comparison import (
     ReferenceRenderComparisonError,
     create_reference_render_listening,
     import_reference_render_preference,
+    load_reference_render_comparison_document,
     load_reference_render_plan,
     publish_reference_render_comparison,
 )
@@ -536,6 +537,31 @@ class FailureReferenceAuditTest(unittest.TestCase):
             )
             session = create_reference_render_listening(
                 comparison.directory, root / "listening", seed=7
+            )
+
+            comparison_path = comparison.directory / "comparison.json"
+            original_comparison = json.loads(comparison_path.read_text())
+            for field, value in (
+                ("schema_version", True),
+                ("schema_version", 1.0),
+                ("complete_count", True),
+                ("failure_count", 0.0),
+                ("complete_pair_queue_ids", []),
+                ("queue_ids", ["another-queue-id"]),
+            ):
+                with self.subTest(field=field, value=value):
+                    forged = json.loads(json.dumps(original_comparison))
+                    if field in {"complete_count", "failure_count"}:
+                        forged["arms"][0][field] = value
+                    else:
+                        forged[field] = value
+                    forged.pop("comparison_id")
+                    forged["comparison_id"] = _canonical_sha256(forged)
+                    comparison_path.write_text(json.dumps(forged), encoding="utf-8")
+                    with self.assertRaises(ReferenceRenderComparisonError):
+                        load_reference_render_comparison_document(comparison.directory)
+            comparison_path.write_text(
+                json.dumps(original_comparison), encoding="utf-8"
             )
 
             self.assertEqual(comparison.arm_count, 2)
