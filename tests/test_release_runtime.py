@@ -238,7 +238,7 @@ class ReleaseRuntimeTest(unittest.TestCase):
                 calls.append(command)
                 if command[1:3] == ["python", "install"]:
                     managed = Path(command[command.index("--install-dir") + 1])
-                    distribution = managed / "cpython-3.13-test"
+                    distribution = managed / "cpython-3.14-test"
                     (distribution / "Lib/site-packages").mkdir(parents=True)
                     (distribution / "python.exe").write_bytes(b"python")
                 elif command[1] == "export":
@@ -254,7 +254,7 @@ class ReleaseRuntimeTest(unittest.TestCase):
                     project,
                     destination,
                     backend="qwen-tts",
-                    python_version="3.13",
+                    python_version="3.14",
                     platform_name="win32",
                     append=True,
                     run=runner,

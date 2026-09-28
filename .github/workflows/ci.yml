@@ -26,17 +26,17 @@ jobs:
           - {backend: chatterbox-nano, os: ubuntu-latest}
           - {backend: moss-tts-delay, os: windows-latest}
           - {backend: moss-tts-delay, os: ubuntu-latest}
-          - {backend: qwen-tts, os: windows-latest, python: "3.13"}
+          - {backend: qwen-tts, os: windows-latest}
           - {backend: moss-soundeffect-v2, os: ubuntu-latest}
     steps:
       - uses: actions/checkout@v5
 
       - uses: astral-sh/setup-uv@v9.0.0
         with:
-          python-version: "${{ matrix.python || '3.14' }}"
+          python-version: "3.14"
 
       - name: Install locked runtime dependencies
-        run: uv sync --project backends/${{ matrix.backend }} --locked --python ${{ matrix.python || '3.14' }} --no-dev
+        run: uv sync --project backends/${{ matrix.backend }} --locked --python 3.14 --no-dev
 
       - name: Check imports and CPU-host refusal without model weights
         timeout-minutes: 5

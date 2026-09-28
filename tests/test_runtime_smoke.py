@@ -142,6 +142,15 @@ class RuntimeSmokeTest(unittest.TestCase):
             {row["os"] for row in rows if row["backend"] == "pocket-tts"},
             {"macos-15", "windows-latest", "ubuntu-latest"},
         )
+        setup_uv = next(
+            step
+            for step in job["steps"]
+            if step.get("uses", "").startswith("astral-sh/setup-uv")
+        )
+        self.assertEqual(setup_uv["with"]["python-version"], "3.14")
+        self.assertNotIn(
+            "python", next(row for row in rows if row["backend"] == "qwen-tts")
+        )
         self.assertFalse(job["strategy"]["fail-fast"])
         self.assertGreater(job["timeout-minutes"], 0)
         install = next(
