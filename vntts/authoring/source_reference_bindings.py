@@ -205,6 +205,7 @@ def _known_role_reuse_header(value: object) -> tuple[JsonObject, str, str]:
         not isinstance(value, dict)
         or set(value) != fields
         or value.get("schema") != KNOWN_ROLE_REUSE_BINDING_SCHEMA
+        or type(value.get("schema_version")) is not int
         or value.get("schema_version") != KNOWN_ROLE_REUSE_BINDING_VERSION
         or value.get("mode") != "explicit_role_reuse"
         or value.get("authority") != KNOWN_ROLE_REUSE_AUTHORITY
@@ -431,6 +432,8 @@ def _source_reference_overrides_from_manifest(
     if not isinstance(value, dict):
         raise SourceReferenceBindingError("Source-reference bindings must be an object")
     version = value.get("schema_version")
+    if type(version) is not int:
+        raise SourceReferenceBindingError("Source-reference binding version is invalid")
     plan_sha256s = _source_reference_plan_sha256s(value, version)
     selected_voices = _source_reference_selected_voices(value, version, plan_sha256s)
     known_queue_ids = None if queue_ids is None else set(queue_ids)
@@ -661,6 +664,7 @@ def _missing_voice_reuse_overrides_from_manifest(
     mode = value.get("mode")
     if (
         value.get("schema") != MISSING_VOICE_REUSE_BINDING_SCHEMA
+        or type(version) is not int
         or version not in SUPPORTED_MISSING_VOICE_REUSE_BINDING_VERSIONS
         or (version, mode)
         not in {
@@ -1003,6 +1007,8 @@ def retired_source_reference_variants_from_manifest(
     if not isinstance(value, dict):
         return ()
     version = value.get("schema_version")
+    if type(version) is not int:
+        raise SourceReferenceBindingError("Source-reference binding version is invalid")
     if version != SOURCE_REFERENCE_BINDINGS_RETIREMENT_VERSION:
         return ()
     sources = value.get("sources")

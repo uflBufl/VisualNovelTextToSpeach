@@ -77,6 +77,26 @@ class AuthoringSourceReferenceBindingsTest(unittest.TestCase):
             {"queue:source": "Source variant", "queue:reuse": "Centurion"},
         )
 
+    def test_rejects_noninteger_source_binding_version(self):
+        for version in (True, 1.0):
+            with self.subTest(version=version):
+                document = self.document()
+                document[SOURCE_REFERENCE_BINDINGS_FIELD]["schema_version"] = version
+                with self.assertRaisesRegex(
+                    SourceReferenceBindingError, "binding version"
+                ):
+                    queue_voice_overrides_from_manifest(document)
+
+    def test_rejects_noninteger_missing_voice_reuse_binding_version(self):
+        for version in (True, 1.0):
+            with self.subTest(version=version):
+                document = self.document()
+                document[MISSING_VOICE_REUSE_BINDING_FIELD]["schema_version"] = version
+                with self.assertRaisesRegex(
+                    SourceReferenceBindingError, "Unsupported missing-voice reuse"
+                ):
+                    queue_voice_overrides_from_manifest(document)
+
     def test_binding_layers_cannot_overlap_queue_ids(self):
         document = self.document()
         document = copy.deepcopy(document)
