@@ -27,9 +27,11 @@ from vntts.pregeneration_audition import (  # noqa: E402
     VoiceAuditionPreviewService,
 )
 from vntts.pregeneration_audition_ui import VoiceAuditionPanel  # noqa: E402
+from vntts.pregeneration_queue import PregenerationQueueError  # noqa: E402
 from vntts.pregeneration_setup import (  # noqa: E402
     ContentDiscovery,
     PregenerationJobStore,
+    StoryContentChanged,
     inspect_story_index,
 )
 from vntts.pregeneration_ui import OfflineAudioPreparationDialog  # noqa: E402
@@ -1122,7 +1124,8 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             ),
         )
         voice_plan_store = Mock()
-        voice_plan_store.create.side_effect = (plan, resolved)
+        voice_plan_store.create.return_value = plan
+        voice_plan_store.apply_saved_choice.return_value = resolved
         library = VoiceLibrary(root / "voice-library")
         for name in ("rhiannon.wav", "centurion.wav"):
             library.discover(
@@ -1429,7 +1432,7 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
                 )
             )
 
-    def test_inspected_automatic_voice_can_be_saved_and_replanned(self):
+    def test_inspected_voice_updates_route_without_replanning_or_checking_audio(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             dialog, pool, plan, group, decisions, voice_plan_store = (
@@ -1470,16 +1473,45 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             pool.tasks.pop().run()
             self.application.processEvents()
             self.assertFalse(dialog.auditioning_voices)
-            self.assertFalse(dialog._awaiting_voice_confirmation)
-            self.assertTrue(dialog.preparing_inputs)
-            self.assertEqual(voice_plan_store.create.call_count, 2)
+            self.assertTrue(dialog._awaiting_voice_confirmation)
+            self.assertFalse(dialog.preparing_inputs)
+            self.assertEqual(voice_plan_store.create.call_count, 1)
+            voice_plan_store.apply_saved_choice.assert_called_once()
+            self.assertEqual(dialog.voice_plan().groups[0].route, "voice")
             self.assertEqual(
                 decisions.choice_for(group.group_id, group.decision_context_sha256),
                 group.candidates[0].source_id,
             )
+            self.assertEqual(len(pool.tasks), 0)
+            dialog.narrator_choice.addItem("Marius", "preset:marius")
+            dialog.narrator_choice.setCurrentIndex(dialog.narrator_choice.count() - 1)
+            dialog.continue_button.click()
+            self.assertTrue(dialog.preparing_inputs)
             self.assertEqual(len(pool.tasks), 1)
             dialog.voice_panel.shutdown()
             dialog.deleteLater()
+
+    def test_deferred_input_check_recovers_a_changed_story(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            dialog, pool, _plan, _group, _decisions, _store = (
+                self._inspected_voice_dialog(root)
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog.stories.item(0).setCheckState(0, Qt.CheckState.Checked)
+            dialog.continue_button.click()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            pool.tasks.clear()
+            cause = StoryContentChanged("Story content checksum changed")
+            error = PregenerationQueueError("Unable to read selected dialogue")
+            error.__cause__ = cause
+
+            dialog._generation_input_finished(None, error)
+
+            self.assertTrue(dialog._recovering_stale_job)
+            self.assertTrue(dialog.planning_voices)
+            self.assertEqual(len(pool.tasks), 1)
 
 
 if __name__ == "__main__":

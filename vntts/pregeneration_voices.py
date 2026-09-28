@@ -7,7 +7,7 @@ import json
 import math
 import wave
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from time import perf_counter, process_time
@@ -57,7 +57,12 @@ from vntts.services.tts_engine import default_tts_profile, get_tts_profile
 from vntts.settings import AppSettings
 from vntts.support import record_background_operation
 from vntts.versioned_json import read_versioned_json, write_versioned_json
-from vntts.voice_library import VoiceBindingRollback, VoiceLibrary, VoiceSelection
+from vntts.voice_library import (
+    VoiceBinding,
+    VoiceBindingRollback,
+    VoiceLibrary,
+    VoiceSelection,
+)
 from vntts.voices import (
     CharacterVoice,
     CharacterVoiceRegistry,
@@ -322,6 +327,7 @@ class VoiceDecisionStore:
         self.remember_many(((group, source_id),))
 
     def remember_many(self, selections: Iterable[tuple[VoiceGroup, str]]) -> None:
+        started, cpu_started = perf_counter(), process_time()
         selections = tuple(selections)
         if not selections:
             raise PregenerationVoiceError("At least one voice choice is required")
@@ -368,6 +374,7 @@ class VoiceDecisionStore:
                                 "Voice bindings changed concurrently; rollback was skipped"
                             )
                 raise
+        _record_plan_phase("save-decision", started, cpu_started)
 
     def _library_selections(
         self,
@@ -824,6 +831,102 @@ class VoicePlanStore:
     def path_for(self, job: PregenerationJob) -> Path:
         return Path(self.job_store.path_for(job.job_id)).parent / "voice-plan.json"
 
+    def apply_saved_choice(
+        self,
+        job: PregenerationJob,
+        plan: VoicePlan,
+        settings: AppSettings,
+        selection: tuple[VoiceGroup, str],
+    ) -> VoicePlan:
+        """Update one saved character choice without rediscovering every voice."""
+        started, cpu_started = perf_counter(), process_time()
+        if (
+            plan.job_id != job.job_id
+            or plan.story_index_sha256 != job.story_index_sha256
+        ):
+            raise PregenerationVoiceError("Voice plan belongs to a different story")
+        controls = _synthesis_controls(settings)
+        if _digest(controls) != plan.synthesis_controls_sha256:
+            raise PregenerationVoiceError(
+                "Voice settings changed; rematch voices first"
+            )
+        group, source_id = _validated_decision_selections((selection,))[0]
+        if group not in plan.groups:
+            raise PregenerationVoiceError("Selected voice is not in the current plan")
+        candidate = (
+            group.narrator_candidate
+            if source_id == default_voice_choice_id
+            else next(
+                (
+                    value
+                    for value in (*group.candidates, *group.candidate_inventory)
+                    if value.source_id == source_id
+                ),
+                None,
+            )
+        )
+        if source_id != default_voice_choice_id and candidate is None:
+            raise PregenerationVoiceError("Selected voice is no longer available")
+        registry = CharacterVoiceRegistry()
+        if plan.voice_manifest is not None:
+            manifest = Path(plan.voice_manifest)
+            if sha256_file(manifest) != plan.voice_manifest_sha256:
+                raise PregenerationVoiceError("Character voice inventory changed")
+            registry = CharacterVoiceRegistry.from_file(manifest)
+        selected = (
+            _candidate_from_source(candidate.source_id, registry)
+            if candidate is not None
+            else None
+        )
+        if candidate is not None and selected is None:
+            raise PregenerationVoiceError("Selected voice is no longer available")
+        identity = (
+            _candidate_identity((source_id, selected))
+            if candidate and selected
+            else None
+        )
+        if (
+            candidate is not None
+            and identity is not None
+            and tuple(identity["references"]) != candidate.reference_sha256s
+        ):
+            raise PregenerationVoiceError("Selected voice reference changed")
+        route = "narrator" if source_id == default_voice_choice_id else "voice"
+        identity_key = (normalize_character_name(group.character), group.variant_key)
+        groups = tuple(
+            replace(
+                value,
+                route=route,
+                source_id=source_id,
+                source_character=(
+                    selected.source_character or selected.character
+                    if selected is not None
+                    else None
+                ),
+                source_speaker=selected.speaker if selected is not None else None,
+                reference_sha256s=tuple(identity["references"]) if identity else (),
+                control_sha256=_digest({"controls": controls, "selected": identity}),
+                resolution="saved-voice-assignment",
+                candidates=() if route == "narrator" else value.candidates,
+                candidate_inventory=(
+                    value.candidate_inventory
+                    if candidate is None
+                    or any(
+                        item.source_id == candidate.source_id
+                        for item in value.candidate_inventory
+                    )
+                    else (*value.candidate_inventory, candidate)
+                ),
+            )
+            if (normalize_character_name(value.character), value.variant_key)
+            == identity_key
+            else value
+            for value in plan.groups
+        )
+        updated = self._persist_plan(job, replace(plan, groups=groups))
+        _record_plan_phase("saved-choice", started, cpu_started)
+        return updated
+
     def _saved_independent_groups(
         self, controls: SynthesisControls
     ) -> tuple[JsonObject, ...]:
@@ -902,6 +1005,14 @@ class VoicePlanStore:
             and variant_key is not None
         ):
             binding = self.voice_library.binding(routing_role)
+        if (
+            binding is not None
+            and not is_narrator(character)
+            and voice_binding_source_id(binding) == assignment_source
+        ):
+            assignment_source = (
+                _saved_original_source(binding, registry) or assignment_source
+            )
         manually_selected_source = (
             assignment_source
             if binding is not None and binding.provenance.get("method") == "manual"
@@ -1148,6 +1259,8 @@ class VoicePlanStore:
                         only_if_unbound=True,
                         rollback=rollback,
                     )
+                    source_id = narrator_candidate.source_id
+                    candidate = _candidate_from_source(source_id, registry)
         selected_identity = _candidate_identity(
             (source_id, candidate) if candidate is not None else None
         )
@@ -1546,6 +1659,32 @@ def _effective_assignment_source(
                 "built-in Pocket voice, or select another engine."
             )
         return source_id
+    return None
+
+
+def _saved_original_source(
+    binding: VoiceBinding, registry: CharacterVoiceRegistry
+) -> str | None:
+    """Prefer the stable game source while it still has the saved WAV bytes."""
+    if binding.route != "voice" or binding.provenance.get("method") != "manual":
+        return None
+    evidence = binding.provenance.get("evidence")
+    source_id = evidence.get("source_id") if isinstance(evidence, dict) else None
+    if not isinstance(source_id, str) or not source_id:
+        return None
+    try:
+        voice = _candidate_from_source(source_id, registry)
+        if (
+            voice is not None
+            and tuple(
+                hashlib.sha256(read_voice_reference_bytes(voice, path)).hexdigest()
+                for path in voice.references
+            )
+            == binding.source_sha256s
+        ):
+            return source_id
+    except OSError, PregenerationVoiceError, VoiceManifestError:
+        pass
     return None
 
 

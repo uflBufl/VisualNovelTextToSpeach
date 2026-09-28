@@ -98,6 +98,16 @@ class VoiceAuditionPanel(QGroupBox):
     cancelled = Signal()
     saveFailed = Signal()
 
+    @property
+    def saved_inspection_choice(self) -> PendingDecision | None:
+        if (
+            self._inspection_mode
+            and self._save_succeeded
+            and len(self._pending_decisions) == 1
+        ):
+            return self._pending_decisions[0]
+        return None
+
     def __init__(
         self,
         decisions: _VoiceDecisionRecorder,

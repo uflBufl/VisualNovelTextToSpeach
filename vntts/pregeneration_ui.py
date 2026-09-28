@@ -314,6 +314,8 @@ class OfflineAudioPreparationDialog(QDialog):
         self.auditioning_voices = False
         self.inspecting_voice_plan = False
         self.replanning_voice_decisions = False
+        self._fast_voice_choice_pending = False
+        self._generate_after_input = False
         self.preparing_inputs = False
         self.generating = False
         self.recovering = False
@@ -1790,6 +1792,10 @@ class OfflineAudioPreparationDialog(QDialog):
         self._awaiting_voice_confirmation = False
         self.pocket_voice_cloning.setEnabled(False)
         self.voice_confirmation.hide()
+        if self._generation_input is None:
+            self._generate_after_input = True
+            self._start_generation_input(self._voice_plan)
+            return
         self._start_generation()
 
     def _discover_content(self) -> ContentDiscovery:
@@ -3698,23 +3704,9 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _voice_plan_finished(self, plan: object, error: Exception | None) -> None:
         self.planning_voices = False
-        if (
-            error is not None
-            and self._job is not None
-            and not self._close_after_voice_cancel
-            and not self._stale_job_retry_attempted
-            and _story_index_was_replaced(error)
-        ):
-            self._stale_job_retry_attempted = True
-            self._recovering_stale_job = True
-            self.planning_voices = True
-            self._show_waiting_phase(
-                "Updating changed game stories",
-                "The installed game content changed while choosing voices. "
-                "Refreshing the same story selection...",
-                "Cancel stops voice matching. Saved voice choices remain available.",
-            )
-            self.discovery_runner.start(self._refresh_stale_voice_job, self._job)
+        fast_choice = self._fast_voice_choice_pending
+        self._fast_voice_choice_pending = False
+        if self._recover_stale_voice_job(error):
             return
         error = self._voice_plan_completion_error(plan, error)
         if self._show_voice_plan_error(error):
@@ -3723,6 +3715,14 @@ class OfflineAudioPreparationDialog(QDialog):
         self._stale_job_retry_attempted = False
         self._voice_plan = plan
         self.replanning_voice_decisions = False
+        if fast_choice:
+            self._generation_input = None
+            self._changes_rows = (
+                (
+                    "Voice choices",
+                    "Saved. Existing audio will be checked when generation starts.",
+                ),
+            )
         if (
             plan.synthesis_backend != "pocket-tts"
             and any(group.route == "narrator" for group in plan.groups)
@@ -3736,7 +3736,32 @@ class OfflineAudioPreparationDialog(QDialog):
                 else "Choose a narrator before generation."
             )
             return
+        if fast_choice:
+            self._show_voice_confirmation(plan)
+            return
         self._start_generation_input(plan)
+
+    def _recover_stale_voice_job(self, error: Exception | None) -> bool:
+        if (
+            error is None
+            or self._job is None
+            or self._close_after_voice_cancel
+            or self._stale_job_retry_attempted
+            or not _story_index_was_replaced(error)
+        ):
+            return False
+        self._stale_job_retry_attempted = True
+        self._recovering_stale_job = True
+        self.planning_voices = True
+        self._set_import_controls(False)
+        self._show_waiting_phase(
+            "Updating changed game stories",
+            "The installed game content changed while choosing voices. "
+            "Refreshing the same story selection...",
+            "Cancel stops voice matching. Saved voice choices remain available.",
+        )
+        self.discovery_runner.start(self._refresh_stale_voice_job, self._job)
+        return True
 
     def _voice_plan_completion_error(
         self, plan: object, error: Exception | None
@@ -3803,6 +3828,11 @@ class OfflineAudioPreparationDialog(QDialog):
         return None
 
     def _voice_auditions_completed(self) -> None:
+        fast_choice = (
+            self.voice_panel.saved_inspection_choice
+            if self.inspecting_voice_plan
+            else None
+        )
         self.auditioning_voices = False
         self.inspecting_voice_plan = False
         self.replanning_voice_decisions = True
@@ -3810,6 +3840,25 @@ class OfflineAudioPreparationDialog(QDialog):
         self.voice_confirmation.hide()
         self.cancel_button.setText("Cancel voice matching")
         self.cancel_button.setEnabled(True)
+        if (
+            fast_choice is not None
+            and self._job is not None
+            and self._voice_plan is not None
+        ):
+            self._fast_voice_choice_pending = True
+            self._show_waiting_phase(
+                "Applying selected voice",
+                "Saving the selected voice route...",
+                "The voice choice is saved. Reopen this story to continue if cancelled.",
+            )
+            self.voice_runner.start(
+                self.voice_plan_store.apply_saved_choice,
+                self._job,
+                self._voice_plan,
+                resolve_pregeneration_settings(self.settings),
+                fast_choice,
+            )
+            return
         self._show_waiting_phase(
             "Applying voice choices",
             "Applying your saved voice choices...",
@@ -3904,6 +3953,8 @@ class OfflineAudioPreparationDialog(QDialog):
     def _generation_input_finished(
         self, prepared: object, error: Exception | None
     ) -> None:
+        generate_after_input = self._generate_after_input
+        self._generate_after_input = False
         self.preparing_inputs = False
         self.cancel_button.setText("Cancel")
         self.cancel_button.setEnabled(True)
@@ -3913,6 +3964,8 @@ class OfflineAudioPreparationDialog(QDialog):
             return
         if error is None and not _is_generation_input_result(prepared):
             error = TypeError("Offline preparation returned an invalid input")
+        if self._recover_stale_voice_job(error):
+            return
         if error is not None:
             self.selection_panel.setVisible(True)
             self._preparation_paused("Preparation paused", error)
@@ -3978,6 +4031,9 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         self._set_import_controls(False)
         assert self._voice_plan is not None
+        if generate_after_input:
+            self._start_generation()
+            return
         self._show_voice_confirmation(self._voice_plan)
 
     def _start_generation(self) -> None:
