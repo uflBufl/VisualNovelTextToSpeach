@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import re
 import shutil
 from collections.abc import Iterable, Iterator
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
+from threading import Lock, RLock
+
+from vntts.authoring.advisory_lock import AdvisoryLockBusyError, exclusive_advisory_lock
 
 _JOB_ID = re.compile(r"[0-9a-f]{24}")
 _PACK_ID = re.compile(r"pack-[0-9a-f]{24}")
@@ -17,6 +22,46 @@ _MAX_REFERENCE_DOCUMENT_BYTES = 4 * 1024 * 1024
 _MAX_CANDIDATE_TREE_ENTRIES = 4 * 1024
 _MAX_CANDIDATES = 64
 _MAX_DELETIONS = 8
+_ACTIVE_CLAIM = re.compile(r"\.active-[0-9]+\.guard")
+_GC_GUARD = ".voice-candidate-gc.guard"
+
+# Kept module-visible so tests can release process-lifetime claims before a
+# temporary directory is removed.
+_candidate_claims = ExitStack()
+_claimed_paths: set[Path] = set()
+_claims_lock = RLock()
+_root_guard_lock = Lock()
+
+
+class _VoiceCandidateCacheGuard:
+    def __init__(self, root: Path) -> None:
+        self.root = root
+
+    def claim(self, manifest_path: str | Path) -> None:
+        _claim_candidate(self.root, manifest_path)
+
+
+@contextmanager
+def voice_candidate_cache_guard(
+    candidate_root: str | Path, *, blocking: bool = True
+) -> Iterator[_VoiceCandidateCacheGuard]:
+    """Serialize candidate extraction/claiming with cache collection."""
+    root = Path(candidate_root).expanduser()
+    root.mkdir(parents=True, exist_ok=True)
+    if _unsafe(root):
+        raise ValueError("Voice candidate root must not be a symlink")
+    root = root.resolve(strict=True)
+    with _thread_root_lock(root, blocking=blocking):
+        with exclusive_advisory_lock(root / _GC_GUARD, blocking=blocking):
+            yield _VoiceCandidateCacheGuard(root)
+
+
+def claim_voice_candidate_cache(
+    candidate_root: str | Path, manifest_path: str | Path
+) -> None:
+    """Keep an extracted candidate cache alive until this process exits."""
+    with voice_candidate_cache_guard(candidate_root) as guard:
+        guard.claim(manifest_path)
 
 
 def prune_obsolete_voice_candidate_caches(
@@ -35,32 +80,47 @@ def prune_obsolete_voice_candidate_caches(
     if _unsafe(root) or not root.is_dir() or _unsafe(jobs):
         return ()
     try:
-        root = root.resolve(strict=True)
-        candidates = _candidate_directories(root)
-        if not candidates:
-            return ()
-        if len(candidates) > _MAX_CANDIDATES or not all(
-            _safe_candidate_tree(directory) for directory in candidates
-        ):
-            return ()
-        referenced = _protected_candidates(root, protected_paths)
-        if referenced is None:
-            return ()
-        references = _references_in_jobs(root, jobs)
-        if references is None:
-            return ()
-        referenced.update(references)
-    except OSError, ValueError:
+        with voice_candidate_cache_guard(root, blocking=False) as guard:
+            root = guard.root
+            candidates = _candidate_directories(root)
+            if not candidates:
+                return ()
+            if len(candidates) > _MAX_CANDIDATES or not all(
+                _safe_candidate_tree(directory) for directory in candidates
+            ):
+                return ()
+            referenced = _candidate_references(root, jobs, candidates, protected_paths)
+            if referenced is None:
+                return ()
+
+            removed: list[Path] = []
+            for directory in candidates:
+                if directory.name in referenced or len(removed) == _MAX_DELETIONS:
+                    continue
+                if not _remove_candidate(directory):
+                    return tuple(removed)
+                removed.append(directory)
+            return tuple(removed)
+    except AdvisoryLockBusyError, OSError, ValueError:
         return ()
 
-    removed: list[Path] = []
-    for directory in candidates:
-        if directory.name in referenced or len(removed) == _MAX_DELETIONS:
-            continue
-        if not _remove_candidate(directory):
-            return tuple(removed)
-        removed.append(directory)
-    return tuple(removed)
+
+def _candidate_references(
+    root: Path,
+    jobs: Path,
+    candidates: tuple[Path, ...],
+    protected_paths: Iterable[str | Path],
+) -> set[str] | None:
+    referenced = _protected_candidates(root, protected_paths)
+    if referenced is None:
+        return None
+    active = _active_candidate_claims(candidates)
+    if active is None:
+        return None
+    references = _references_in_jobs(root, jobs)
+    if references is None:
+        return None
+    return referenced | active | references
 
 
 def _remove_candidate(directory: Path) -> bool:
@@ -72,6 +132,70 @@ def _remove_candidate(directory: Path) -> bool:
     except OSError:
         return False
     return True
+
+
+def _claim_candidate(root: Path, manifest_path: str | Path) -> None:
+    manifest = Path(manifest_path).expanduser()
+    if _unsafe(manifest) or _unsafe(manifest.parent):
+        raise ValueError("Voice candidate manifest must not be a symlink")
+    manifest = manifest.resolve(strict=True)
+    try:
+        relative = manifest.relative_to(root)
+    except ValueError as error:
+        raise ValueError(
+            "Voice candidate manifest is outside its cache root"
+        ) from error
+    if (
+        len(relative.parts) != 2
+        or relative.name != "manifest.json"
+        or _unsafe(manifest)
+        or _unsafe(manifest.parent)
+        or not manifest.is_file()
+    ):
+        raise ValueError("Voice candidate manifest has an unexpected layout")
+    claim = manifest.parent / f".active-{os.getpid()}.guard"
+    if _unsafe(claim):
+        raise ValueError("Voice candidate claim must not be a symlink")
+    with _claims_lock:
+        if claim in _claimed_paths:
+            return
+        _candidate_claims.enter_context(exclusive_advisory_lock(claim, blocking=True))
+        _claimed_paths.add(claim)
+        _candidate_claims.callback(_claimed_paths.discard, claim)
+
+
+def _active_candidate_claims(candidates: Iterable[Path]) -> set[str] | None:
+    active: set[str] = set()
+    for directory in candidates:
+        try:
+            claims = tuple(
+                path
+                for path in directory.iterdir()
+                if _ACTIVE_CLAIM.fullmatch(path.name)
+            )
+        except OSError:
+            return None
+        for claim in claims:
+            if _unsafe(claim) or not claim.is_file():
+                return None
+            try:
+                with exclusive_advisory_lock(claim, blocking=False):
+                    pass
+            except AdvisoryLockBusyError:
+                active.add(directory.name)
+            except OSError:
+                return None
+    return active
+
+
+@contextmanager
+def _thread_root_lock(root: Path, *, blocking: bool) -> Iterator[None]:
+    if not _root_guard_lock.acquire(blocking=blocking):
+        raise AdvisoryLockBusyError(str(root))
+    try:
+        yield
+    finally:
+        _root_guard_lock.release()
 
 
 def _candidate_directories(root: Path) -> tuple[Path, ...] | None:
@@ -227,4 +351,11 @@ def _unsafe(path: Path) -> bool:
     return path.is_symlink() or path.is_junction()
 
 
-__all__ = ["prune_obsolete_voice_candidate_caches"]
+atexit.register(_candidate_claims.close)
+
+
+__all__ = [
+    "claim_voice_candidate_cache",
+    "prune_obsolete_voice_candidate_caches",
+    "voice_candidate_cache_guard",
+]

@@ -42,6 +42,7 @@ from vntts.pregeneration_setup import (
     load_verified_story_index_document,
 )
 from vntts.subprocess_utils import last_output_line, terminate_process
+from vntts.voice_candidate_cache import voice_candidate_cache_guard
 from vntts.voices import is_narrator, synthesis_character_for_line
 
 
@@ -684,27 +685,32 @@ class Reverse1999GameImporter:
             arguments.extend(("--narrator-line-id", narrator_line_id))
         for role in roles:
             arguments.extend(("--voice-candidate-role", role))
-        stdout, _stderr = self._run(arguments, cancel_event, environment=environment)
-        try:
-            result = json.loads(last_output_line(stdout) or "")
-            selected = Path(result["voice_manifest"]).expanduser().absolute()
-            root = (self.output_root / "reverse1999" / "voice-candidates").absolute()
-            relative = selected.relative_to(root)
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
-            raise GameContentImportError(
-                "Reverse: 1999 voice preparation returned an invalid result"
-            ) from error
-        try:
-            return contained_regular_file(
-                root,
-                relative.as_posix(),
-                "voice candidate manifest",
-                error_type=GameContentImportError,
+        root = (self.output_root / "reverse1999" / "voice-candidates").absolute()
+        with voice_candidate_cache_guard(root) as cache:
+            stdout, _stderr = self._run(
+                arguments, cancel_event, environment=environment
             )
-        except GameContentImportError as error:
-            raise GameContentImportError(
-                "Reverse: 1999 voice preparation produced no usable manifest"
-            ) from error
+            try:
+                result = json.loads(last_output_line(stdout) or "")
+                selected = Path(result["voice_manifest"]).expanduser().absolute()
+                relative = selected.relative_to(root)
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+                raise GameContentImportError(
+                    "Reverse: 1999 voice preparation returned an invalid result"
+                ) from error
+            try:
+                manifest = contained_regular_file(
+                    cache.root,
+                    relative.as_posix(),
+                    "voice candidate manifest",
+                    error_type=GameContentImportError,
+                )
+                cache.claim(manifest)
+                return manifest
+            except (GameContentImportError, OSError, ValueError) as error:
+                raise GameContentImportError(
+                    "Reverse: 1999 voice preparation produced no usable manifest"
+                ) from error
 
     def _decode_narrator(
         self,

@@ -709,6 +709,44 @@ class Reverse1999GameImporterTest(unittest.TestCase):
         ]
         self.assertEqual(roles, ["Rhiannon"])
 
+    def test_voice_candidate_preparation_blocks_concurrent_prune(self):
+        from vntts.voice_candidate_cache import prune_obsolete_voice_candidate_caches
+
+        with TemporaryDirectory() as temporary_directory:
+            base = Path(temporary_directory)
+            output = base / "imports"
+            root = output / "reverse1999" / "voice-candidates"
+            candidate = root / ("a" * 24)
+            candidate.mkdir(parents=True)
+            manifest = candidate / "manifest.json"
+            manifest.write_text("{}", encoding="utf-8")
+            jobs = base / "jobs"
+            jobs.mkdir()
+            importer = Reverse1999GameImporter(
+                command=("r1999-bootstrap",), output_root=output
+            )
+
+            def prepare(*_args, **_kwargs):
+                self.assertEqual(prune_obsolete_voice_candidate_caches(root, jobs), ())
+                self.assertTrue(candidate.exists())
+                return json.dumps({"voice_manifest": str(manifest)}), ""
+
+            with (
+                patch(
+                    "vntts.game_content_importer.ensure_game_decoder",
+                    return_value=base / "vgmstream-cli",
+                ),
+                patch.object(importer, "_run", side_effect=prepare),
+                patch("vntts.voice_candidate_cache._claim_candidate"),
+            ):
+                self.assertEqual(
+                    importer.prepare_voice_roles(("Rhiannon",)), manifest.resolve()
+                )
+            self.assertEqual(
+                prune_obsolete_voice_candidate_caches(root, jobs),
+                (candidate.resolve(),),
+            )
+
     def test_voice_candidate_manifest_must_not_be_a_symlink(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

@@ -1,10 +1,16 @@
 import hashlib
 import json
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
+from unittest.mock import patch
 
 from tests.symlink_support import symlink_or_skip
+from vntts import voice_candidate_cache as cache
 from vntts.voice_candidate_cache import prune_obsolete_voice_candidate_caches
 
 
@@ -60,6 +66,78 @@ class VoiceCandidateCacheTest(unittest.TestCase):
 
         self.assertEqual(removed, (old.resolve(),))
         self.assertTrue(published.exists())
+
+    def test_current_process_claim_keeps_candidate_until_release(self) -> None:
+        claimed = self._candidate("claimed")
+        with (
+            ExitStack() as claims,
+            patch.object(cache, "_candidate_claims", claims),
+            patch.object(cache, "_claimed_paths", set()),
+        ):
+            cache.claim_voice_candidate_cache(self.root, claimed / "manifest.json")
+            self.assertEqual(
+                prune_obsolete_voice_candidate_caches(self.root, self.jobs), ()
+            )
+            self.assertTrue(claimed.exists())
+        self.assertEqual(
+            prune_obsolete_voice_candidate_caches(self.root, self.jobs),
+            (claimed.resolve(),),
+        )
+
+    def test_another_process_claim_keeps_candidate_until_exit(self) -> None:
+        claimed = self._candidate("claimed")
+        obsolete = self._candidate("obsolete")
+        ready = Path(self.temporary.name) / "claimed-ready"
+        script = (
+            "from pathlib import Path\n"
+            "import sys\n"
+            "from vntts.voice_candidate_cache import claim_voice_candidate_cache\n"
+            "root, manifest, ready = map(Path, sys.argv[1:])\n"
+            "claim_voice_candidate_cache(root, manifest)\n"
+            "ready.write_text('ready')\n"
+            "sys.stdin.read()\n"
+        )
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                script,
+                str(self.root),
+                str(claimed / "manifest.json"),
+                str(ready),
+            ],
+            stdin=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            deadline = time.monotonic() + 5
+            while (
+                not ready.exists()
+                and process.poll() is None
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.01)
+            self.assertTrue(
+                ready.exists(),
+                process.stderr.read().decode()
+                if process.poll() is not None
+                else "claim timed out",
+            )
+            self.assertEqual(
+                prune_obsolete_voice_candidate_caches(self.root, self.jobs),
+                (obsolete.resolve(),),
+            )
+            self.assertTrue(claimed.exists())
+        finally:
+            assert process.stdin is not None
+            process.stdin.close()
+            process.wait(timeout=5)
+            assert process.stderr is not None
+            process.stderr.close()
+        self.assertEqual(
+            prune_obsolete_voice_candidate_caches(self.root, self.jobs),
+            (claimed.resolve(),),
+        )
 
     def test_malformed_saved_reference_defers_cleanup(self) -> None:
         old = self._candidate("old")
