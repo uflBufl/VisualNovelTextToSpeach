@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from time import monotonic
-from typing import Any, Protocol, cast, runtime_checkable
+from typing import Any, ClassVar, Protocol, cast, runtime_checkable
 
 from vntts.audio_output import AudioOutput
 from vntts.services.tts_engine import TTSConfigurationError
@@ -129,7 +129,7 @@ class QwenTTSVoiceRouterBackend(MossTTSVoiceRouterBackend):
     """Reuse the project's bounded renderer and playback with Qwen conditioning."""
 
     name = "qwen-tts"
-    _generation_profiles = {"stable": {}}
+    _generation_profiles: ClassVar[Mapping[str, Mapping[str, float]]] = {"stable": {}}
     capabilities = SpeechBackendCapabilities(
         voice_cloning=True,
         streaming=False,

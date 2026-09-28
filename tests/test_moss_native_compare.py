@@ -10,6 +10,7 @@ from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import patch
 
 from scripts import moss_native_compare as compare
@@ -20,7 +21,7 @@ from vntts.synthesis import SynthesisCachePolicy, SynthesisCompletion
 
 
 class _FailedBackend(_FakeBackend):
-    instances = []
+    instances: ClassVar[list["_FailedBackend"]] = []
 
     def render(self, request):
         self.requests.append(request)
@@ -31,7 +32,7 @@ class _FailedBackend(_FakeBackend):
 
 
 class _CancelledBackend(_FakeBackend):
-    instances = []
+    instances: ClassVar[list["_CancelledBackend"]] = []
 
     def render(self, request):
         self.requests.append(request)
@@ -42,7 +43,7 @@ class _CancelledBackend(_FakeBackend):
 
 
 class _LimitedBackend(_FakeBackend):
-    instances = []
+    instances: ClassVar[list["_LimitedBackend"]] = []
 
     def render(self, request):
         self.requests.append(request)

@@ -8,7 +8,7 @@ from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
 from time import monotonic
 from types import MethodType
-from typing import Protocol, TypeAlias, TypedDict, TypeGuard, TypeVar
+from typing import ClassVar, Protocol, TypeAlias, TypedDict, TypeGuard, TypeVar
 
 import numpy as np
 from numpy.typing import NDArray
@@ -1665,7 +1665,7 @@ class MossTTSVoiceRouterBackend:
     """High-fidelity Apple Silicon voice cloning with streaming playback."""
 
     # Local v1.5 MLX's upstream sampling avoids low-temperature silence loops.
-    _generation_profiles = {
+    _generation_profiles: ClassVar[Mapping[str, Mapping[str, float]]] = {
         **moss_tts_generation_profiles,
         "stable": {
             **moss_tts_generation_profiles["stable"],

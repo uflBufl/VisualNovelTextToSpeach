@@ -15,7 +15,10 @@ from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
 
 class Response(io.BytesIO):
     status = 200
-    headers = {}
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self.headers: dict[str, str] = {}
 
 
 def archive_bytes(entries):

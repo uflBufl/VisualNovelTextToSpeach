@@ -6,6 +6,7 @@ import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from typing import ClassVar
 
 import numpy as np
 
@@ -44,7 +45,7 @@ class _Stream:
 
 
 class _FakeBackend:
-    instances = []
+    instances: ClassVar[list["_FakeBackend"]] = []
 
     def __init__(self, _registry, **options):
         self.registry = _registry

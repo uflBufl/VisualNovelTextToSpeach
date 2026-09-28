@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Literal, NotRequired, Protocol, TypedDict, cast
+from typing import ClassVar, Literal, NotRequired, Protocol, TypedDict, cast
 
 from PySide6.QtCore import QEvent, QObject, Qt, QThreadPool, QTimer, QUrl, Signal
 from PySide6.QtGui import QCloseEvent, QDesktopServices, QKeySequence, QMouseEvent
@@ -143,7 +143,7 @@ class SeekSlider(QSlider):
 
 
 class ModelListeningDialog(QDialog):
-    side_colors: dict[Side, dict[str, str]] = {
+    side_colors: ClassVar[Mapping[Side, Mapping[str, str]]] = {
         "a": {"normal": "#2563eb", "disabled": "#1e3a5f", "border": "#bfdbfe"},
         "b": {"normal": "#ea580c", "disabled": "#5f301f", "border": "#fed7aa"},
     }

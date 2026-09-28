@@ -25,7 +25,7 @@ from tempfile import SpooledTemporaryFile, TemporaryDirectory
 from threading import Event, Lock, Thread
 from time import monotonic
 from types import SimpleNamespace
-from typing import BinaryIO, Protocol, TypeAlias, TypedDict, TypeGuard
+from typing import BinaryIO, ClassVar, Protocol, TypeAlias, TypedDict, TypeGuard
 
 import numpy as np
 import soundfile as sf
@@ -742,7 +742,7 @@ def _integer_setting(name: str, default: int, minimum: int, maximum: int) -> int
 class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
     # Qualified with the Windows native Centurion probe and listening approval.
     # Keep Delay defaults independent; its shared stable profile remains 0.8.
-    _generation_profiles = {
+    _generation_profiles: ClassVar[Mapping[str, Mapping[str, float]]] = {
         **moss_tts_generation_profiles,
         "stable": {
             **moss_tts_generation_profiles["stable"],
