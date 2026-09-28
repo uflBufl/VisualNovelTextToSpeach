@@ -1305,6 +1305,10 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
                 character="Aderyn",
                 routing_role="Aderyn",
                 line_ids=("line:aderyn",),
+                route="voice",
+                source_id=rhiannon.candidates[0].source_id,
+                source_character=rhiannon.candidates[0].source_character,
+                resolution="known-character-voice",
             )
             suggestion = PersonLinkSuggestion(
                 left_role="Aderyn",
@@ -1326,9 +1330,27 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             dialog._show_voice_confirmation(plan)
             dialog.show_all_voice_routes.setChecked(True)
             self.assertEqual(dialog.voice_routes.count(), 2)
+            self.assertIn(
+                "1 voice uses Narrator until reviewed",
+                dialog.voice_route_summary.text(),
+            )
+            self.assertIn("font-weight: 600", dialog.voice_route_summary.styleSheet())
             for row in range(dialog.voice_routes.count()):
                 item = dialog.voice_routes.item(row)
+                if item.data(Qt.ItemDataRole.UserRole) == "Rhiannon":
+                    self.assertTrue(item.text().startswith("REVIEW VOICE: "))
+                    self.assertIn("Narrator fallback until reviewed", item.text())
+                    self.assertTrue(item.font().bold())
+                    self.assertIn(
+                        "Inspect selected voice",
+                        item.data(Qt.ItemDataRole.AccessibleDescriptionRole),
+                    )
                 if item.data(Qt.ItemDataRole.UserRole) == "Aderyn":
+                    self.assertTrue(item.text().startswith("POSSIBLE SAME PERSON: "))
+                    self.assertIn(
+                        "Link same person",
+                        item.data(Qt.ItemDataRole.AccessibleDescriptionRole),
+                    )
                     dialog.voice_routes.setCurrentRow(row)
                     break
 

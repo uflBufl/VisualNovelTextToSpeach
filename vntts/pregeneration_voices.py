@@ -1666,6 +1666,10 @@ def _requires_audition(
 ) -> bool:
     if candidates and candidates[0].match_score < _CLEAR_WINNER_SCORE:
         return True
+    if candidates and all(
+        candidate.candidate_origin == STORY_LINE_ROUTE for candidate in candidates
+    ):
+        return False
     if len(candidates) < 2 or len(records) <= 1:
         return False
     first, second = candidates[:2]

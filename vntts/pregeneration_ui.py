@@ -709,6 +709,9 @@ class OfflineAudioPreparationDialog(QDialog):
         self.voice_route_summary = QLabel()
         self.voice_route_summary.setWordWrap(True)
         self.inspect_character_voice = QPushButton("Inspect selected voice")
+        self.inspect_character_voice.setAccessibleDescription(
+            "Listen to a role's game references and choose its voice."
+        )
         self.inspect_character_voice.setEnabled(False)
         self.inspect_character_voice.clicked.connect(self._inspect_character_voice)
         self.voice_routes.currentItemChanged.connect(
@@ -1456,10 +1459,18 @@ class OfflineAudioPreparationDialog(QDialog):
                 )
             )
         ]
+        needs_review = sum(group.route == "needs-audition" for group in groups)
         self.voice_route_summary.setText(
-            f"{len(exceptions)} of {len(groups)} voice roles use a substitute or have a suggested review."
+            f"{needs_review} voice {'uses' if needs_review == 1 else 'roles use'} "
+            "Narrator until reviewed. Select a marked role and click Inspect "
+            "selected voice to choose a character voice."
+            if needs_review
+            else f"{len(exceptions)} of {len(groups)} voice roles use a substitute or have a suggested review."
             if exceptions
             else "No character voice substitutions. Narrator is shown above."
+        )
+        self.voice_route_summary.setStyleSheet(
+            "font-weight: 600;" if needs_review else ""
         )
         visible = exceptions if self.show_all_voice_routes.isChecked() else groups
         show_portraits = bool(groups) and all(
@@ -1475,7 +1486,14 @@ class OfflineAudioPreparationDialog(QDialog):
                 value.group_id,
             ),
         ):
-            item = self._voice_route_item(group, show_portraits=show_portraits)
+            item = self._voice_route_item(
+                group,
+                show_portraits=show_portraits,
+                suggested_link=normalize_character_name(
+                    group.routing_role or group.character
+                )
+                in suggested_roles,
+            )
             self.voice_routes.addItem(item)
             if item.data(Qt.ItemDataRole.UserRole) == selected_character:
                 self.voice_routes.setCurrentItem(item)
@@ -1484,7 +1502,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._update_identity_actions()
 
     def _voice_route_item(
-        self, group: VoiceGroup, *, show_portraits: bool
+        self, group: VoiceGroup, *, show_portraits: bool, suggested_link: bool
     ) -> QListWidgetItem:
         routing_role = group.routing_role or group.character
         display_role = (
@@ -1494,7 +1512,9 @@ class OfflineAudioPreparationDialog(QDialog):
             else group.character
         )
         lines = len(group.line_ids)
-        if group.route == "narrator":
+        if group.route == "needs-audition":
+            route = "Narrator fallback until reviewed"
+        elif group.route == "narrator":
             source = self.narrator_choice.currentText()
             route = (
                 source
@@ -1523,7 +1543,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 route += f" ({candidate.source_excerpts[0][:55]})"
         references = len(group.reference_sha256s)
         status = (
-            "review suggested"
+            "voice choice needed"
             if group.route == "needs-audition"
             else "approved"
             if group.resolution == "saved-player-decision"
@@ -1531,12 +1551,33 @@ class OfflineAudioPreparationDialog(QDialog):
             if group.route == "narrator"
             else "automatic"
         )
+        attention = group.route == "needs-audition"
+        prefix = (
+            "REVIEW VOICE: "
+            if attention
+            else "POSSIBLE SAME PERSON: "
+            if suggested_link
+            else ""
+        )
         item = QListWidgetItem(
-            f"{display_role} -> {route} | {status} | {lines} "
+            f"{prefix}{display_role} -> {route} | {status} | {lines} "
             f"line{'s' if lines != 1 else ''} | {references} reference"
             f"{'s' if references != 1 else ''}{duration}\n"
             f"{_voice_resolution_label(group.resolution)}"
         )
+        if prefix:
+            font = item.font()
+            font.setBold(True)
+            item.setFont(font)
+            action = (
+                "Select this role and click Inspect selected voice to choose a "
+                "character voice. Continuing without a choice uses Narrator."
+                if attention
+                else "Optional: select this role and click Link same person."
+            )
+            item.setToolTip(action)
+            item.setData(Qt.ItemDataRole.AccessibleTextRole, item.text())
+            item.setData(Qt.ItemDataRole.AccessibleDescriptionRole, action)
         item.setData(Qt.ItemDataRole.UserRole, routing_role)
         item.setData(int(Qt.ItemDataRole.UserRole) + 1, group.group_id)
         if show_portraits and group.portrait_image and group.portrait_image_sha256:
@@ -4239,7 +4280,7 @@ def _story_type_label(kind: str) -> str:
 
 def _voice_resolution_label(resolution: str) -> str:
     return {
-        "ambiguous-voice-evidence": "Several plausible game voices; narrator is the safe default",
+        "ambiguous-voice-evidence": "Several plausible game voices; choose one to replace Narrator fallback",
         "automatic-incidental-role": "Best available voice for this minor role",
         "automatic-narrator-fallback": "No usable character voice; using narrator",
         "exact-source-voice-binding": "Exact game dialogue voice binding",
