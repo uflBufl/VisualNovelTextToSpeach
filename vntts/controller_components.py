@@ -317,12 +317,7 @@ class RuntimeLifecycleComponent:
                 and not controller.settings.pocket_gated_model_accepted
                 and isinstance(registry, CharacterVoiceRegistry)
             ):
-                for name, voice in registry.voices.items():
-                    if voice.references:
-                        registry.assignments[name] = None
-                for name, assigned_voice in tuple(registry.assignments.items()):
-                    if assigned_voice is not None and assigned_voice.references:
-                        registry.assignments[name] = None
+                self._exclude_unaccepted_pocket_references(registry)
             backend_factory = {
                 "chatterbox-nano": controller.chatterbox_backend_factory,
                 "moss-tts": controller.moss_backend_factory,
@@ -387,6 +382,17 @@ class RuntimeLifecycleComponent:
         except Exception as error:
             controller.error_handler(TTSInitializationError(str(error)))
             return False
+
+    @staticmethod
+    def _exclude_unaccepted_pocket_references(
+        registry: CharacterVoiceRegistry,
+    ) -> None:
+        for name, voice in registry.voices.items():
+            if voice.references:
+                registry.assignments[name] = None
+        for name, assigned_voice in tuple(registry.assignments.items()):
+            if assigned_voice is not None and assigned_voice.references:
+                registry.assignments[name] = None
 
     def _initialize_voice_routing(self, use_xtts: bool) -> bool:
         controller = self.controller
