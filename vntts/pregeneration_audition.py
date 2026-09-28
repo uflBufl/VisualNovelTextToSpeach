@@ -86,8 +86,10 @@ class _BackendFactory(Protocol):
         cache_root: Path,
         *,
         model_name: str | None = None,
+        language: str | None = None,
         startup_cancellation: _Cancellation | None = None,
         startup_progress: Callable[[str], object] | None = None,
+        terms_accepted: bool = False,
         allow_gated_model_access: bool = False,
     ) -> _PreviewBackend: ...
 

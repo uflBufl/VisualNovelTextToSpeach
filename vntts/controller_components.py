@@ -318,8 +318,8 @@ class RuntimeLifecycleComponent:
                 for name, voice in registry.voices.items():
                     if voice.references:
                         registry.assignments[name] = None
-                for name, voice in tuple(registry.assignments.items()):
-                    if voice is not None and voice.references:
+                for name, assigned_voice in tuple(registry.assignments.items()):
+                    if assigned_voice is not None and assigned_voice.references:
                         registry.assignments[name] = None
             backend_factory = {
                 "chatterbox-nano": controller.chatterbox_backend_factory,
