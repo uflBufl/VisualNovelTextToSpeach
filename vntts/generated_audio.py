@@ -2141,6 +2141,7 @@ def _validate_reviewed_rejection_fallback_evidence(
         or canonical_document_sha256(base_result) != evidence.get("base_result_sha256")
         or not isinstance(references, list)
         or not references
+        or any(not isinstance(digest, str) for digest in references)
         or references != sorted(set(references))
     ):
         raise ValueError(
@@ -2173,6 +2174,11 @@ def _validate_reviewed_rejection_fallback_evidence(
             not isinstance(rebase, dict)
             or rebase.get("target_route_status") != "active"
             or rebase.get("target_effective_character") != synthesis_character
+            or not isinstance(rebase.get("target_reference_sha256s"), list)
+            or any(
+                not isinstance(digest, str)
+                for digest in rebase["target_reference_sha256s"]
+            )
             or sorted(set(rebase.get("target_reference_sha256s", []))) != references
         ):
             raise ValueError("Generated-audio reviewed-rejection config route changed")

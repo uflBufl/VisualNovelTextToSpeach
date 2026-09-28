@@ -1194,6 +1194,7 @@ def _validate_reviewed_rejection_live_fallback_evidence(
         or evidence.get("route_source") not in {"config_rebase", "voice_manifest"}
         or not isinstance(references, list)
         or not references
+        or any(not isinstance(digest, str) for digest in references)
         or references != sorted(set(references))
     ):
         raise BulkGenerationError(
@@ -1231,6 +1232,11 @@ def _validate_reviewed_rejection_live_fallback_evidence(
             or rebase.get("target_route_status") != "active"
             or rebase.get("target_effective_character")
             != evidence["synthesis_character"]
+            or not isinstance(rebase.get("target_reference_sha256s"), list)
+            or any(
+                not isinstance(digest, str)
+                for digest in rebase["target_reference_sha256s"]
+            )
             or sorted(set(rebase.get("target_reference_sha256s", []))) != references
         ):
             raise BulkGenerationError(
@@ -2319,6 +2325,7 @@ def _validate_reviewed_waveform_publication_metadata(
     if (
         not isinstance(narrator_references, list)
         or not narrator_references
+        or any(not isinstance(digest, str) for digest in narrator_references)
         or narrator_references != sorted(set(narrator_references))
     ):
         raise BulkGenerationError(
@@ -2397,7 +2404,11 @@ def _validate_reviewed_waveform_route(route: object, queue_id: str) -> None:
         f"Reviewed-waveform {queue_id!r} effective character",
     )
     references = route.get("reference_sha256s")
-    if not isinstance(references, list) or references != sorted(set(references)):
+    if (
+        not isinstance(references, list)
+        or any(not isinstance(digest, str) for digest in references)
+        or references != sorted(set(references))
+    ):
         raise BulkGenerationError(
             f"Reviewed-waveform references are not canonical for {queue_id!r}"
         )
