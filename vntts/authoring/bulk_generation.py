@@ -2562,8 +2562,7 @@ def _execute_generation_item(
             BulkGenerationSourceChangedError,
             BulkGenerationProvenanceError,
         ):
-            if attempt.partial.exists():
-                attempt.partial.unlink()
+            attempt.partial.unlink(missing_ok=True)
             raise
         except Exception as error:
             if run.state.get("active") is None:
@@ -2571,8 +2570,7 @@ def _execute_generation_item(
             try:
                 run.lease.assert_owned()
             except BulkGenerationError:
-                if attempt.partial.exists():
-                    attempt.partial.unlink()
+                attempt.partial.unlink(missing_ok=True)
                 raise
             failure = _store_failed_generation_attempt(
                 run,
