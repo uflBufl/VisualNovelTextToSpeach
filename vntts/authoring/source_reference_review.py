@@ -421,6 +421,19 @@ def _validate_plan_cluster(
             f"Duplicate source-reference cluster: {cluster_id}"
         )
     seen_clusters.add(cluster_id)
+    character = _text(cluster.get("character"), f"cluster {cluster_index} character")
+    portrait = cluster.get("portrait")
+    if portrait is not None and (not isinstance(portrait, str) or not portrait.strip()):
+        raise SourceReferenceReviewError(
+            f"Plan cluster {cluster_index} portrait is invalid"
+        )
+    source_bank = _text(
+        cluster.get("source_bank"), f"cluster {cluster_index} source bank"
+    )
+    if cluster_id != _cluster_id(character, portrait, source_bank):
+        raise SourceReferenceReviewError(
+            f"Plan cluster {cluster_index} ID does not match its identity"
+        )
     references = cluster.get("references")
     if not isinstance(references, list) or not references:
         raise SourceReferenceReviewError(
@@ -429,7 +442,11 @@ def _validate_plan_cluster(
     for reference_index, reference in enumerate(references):
         _validate_plan_reference(directory, reference, cluster_index, reference_index)
     _validate_plan_queue_items(
-        cluster.get("queue_items"), cluster_index, seen_queue_ids
+        cluster.get("queue_items"),
+        cluster_index,
+        character,
+        portrait,
+        seen_queue_ids,
     )
 
 
@@ -453,7 +470,11 @@ def _validate_plan_reference(
 
 
 def _validate_plan_queue_items(
-    queue_items: object, cluster_index: int, seen_queue_ids: set[str]
+    queue_items: object,
+    cluster_index: int,
+    character: str,
+    portrait: str | None,
+    seen_queue_ids: set[str],
 ) -> None:
     if not isinstance(queue_items, list):
         raise SourceReferenceReviewError(
@@ -465,6 +486,25 @@ def _validate_plan_queue_items(
                 f"Plan cluster {cluster_index} queue item is invalid"
             )
         queue_id = _text(item.get("queue_id"), "plan queue ID")
+        line_id = _text(item.get("line_id"), "plan queue line ID")
+        text_hash = _sha256(item.get("text_sha256"), "plan queue text hash")
+        if queue_id != expected_voice_generation_queue_id(line_id, text_hash):
+            raise SourceReferenceReviewError(
+                "Plan queue ID does not match its line and text hash"
+            )
+        queue_character = _text(
+            item.get("voice_character"), "plan queue voice character"
+        )
+        if normalize_character_name(queue_character) != normalize_character_name(
+            character
+        ):
+            raise SourceReferenceReviewError(
+                "Plan queue voice character does not match its cluster"
+            )
+        if item.get("portrait") != portrait:
+            raise SourceReferenceReviewError(
+                "Plan queue portrait does not match its cluster"
+            )
         if queue_id in seen_queue_ids:
             raise SourceReferenceReviewError(
                 f"Queue ID belongs to multiple source-reference clusters: {queue_id}"

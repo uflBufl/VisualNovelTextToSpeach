@@ -511,6 +511,39 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
             with self.assertRaisesRegex(SourceReferenceReviewError, "changed"):
                 load_source_reference_plan(result.directory)
 
+    def test_plan_loader_enforces_queue_authority_without_source_inputs(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            report, review, story = self.write_inputs(root)
+            result = import_source_reference_review(
+                report, review, story, root / "imported-plan"
+            )
+            plan_path = result.directory / "plan.json"
+            original = plan_path.read_text(encoding="utf-8")
+            report.unlink()
+            review.unlink()
+            story.unlink()
+
+            self.assertEqual(
+                load_source_reference_plan(result.directory)["schema"],
+                REFERENCE_PLAN_SCHEMA,
+            )
+            for field, value, message in (
+                ("queue_id", "forged-queue-id", "does not match its line"),
+                ("character", "Forged Hero", "does not match its identity"),
+            ):
+                with self.subTest(field=field):
+                    document = json.loads(original)
+                    cluster = document["clusters"][0]
+                    if field == "queue_id":
+                        cluster["queue_items"][0][field] = value
+                    else:
+                        cluster[field] = value
+                    plan_path.write_text(json.dumps(document), encoding="utf-8")
+
+                    with self.assertRaisesRegex(SourceReferenceReviewError, message):
+                        load_source_reference_plan(result.directory)
+
     def test_refuses_to_replace_existing_output(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
