@@ -43,50 +43,48 @@ def _module_files():
     }
 
 
+def _add_known_module(found, known, name):
+    while name:
+        if name in known:
+            found.add(name)
+        name = name.rpartition(".")[0]
+
+
+def _import_names(node, package):
+    if isinstance(node, ast.Import):
+        return (alias.name for alias in node.names)
+    if isinstance(node, ast.ImportFrom):
+        name = "." * node.level + (node.module or "")
+        origin = importlib.util.resolve_name(name, package) if node.level else name
+        return (origin, *(f"{origin}.{alias.name}" for alias in node.names))
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        value = node.value.replace("/", ".").removesuffix(".py")
+        return (value,) if value.startswith(SOURCE_DIRS) else ()
+    return ()
+
+
 def _imports(path, module, known):
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     found = set()
-
-    def add(name):
-        while name:
-            if name in known:
-                found.add(name)
-            name = name.rpartition(".")[0]
-
     package = module if path.name == "__init__.py" else module.rpartition(".")[0]
     for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                add(alias.name)
-        elif isinstance(node, ast.ImportFrom):
-            name = "." * node.level + (node.module or "")
-            origin = importlib.util.resolve_name(name, package) if node.level else name
-            add(origin)
-            for alias in node.names:
-                add(f"{origin}.{alias.name}")
-        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-            value = node.value.replace("/", ".")
-            if value.endswith(".py"):
-                value = value[:-3]
-            if value.startswith(SOURCE_DIRS):
-                add(value)
+        for name in _import_names(node, package):
+            _add_known_module(found, known, name)
     return found
 
 
-def select_test_modules(changed, modules=None):
-    modules = _module_files() if modules is None else modules
+def _changed_modules(changed):
     full = sorted(changed & FULL_SUITE_FILES)
     if full:
         return None, f"shared configuration changed: {', '.join(full)}"
-
-    changed_modules = set()
+    result = set()
     for path in changed:
         if path == "ui-catalog.json":
-            changed_modules.add("scripts.render_ui_catalog")
+            result.add("scripts.render_ui_catalog")
         elif path.endswith(".py"):
             module = _module_name(path)
             if module:
-                changed_modules.add(module)
+                result.add(module)
             else:
                 return None, f"unmapped Python file changed: {path}"
         elif path.startswith(("docs/", ".github/")) or path in {
@@ -97,22 +95,40 @@ def select_test_modules(changed, modules=None):
             continue
         else:
             return None, f"unmapped project file changed: {path}"
+    return result, None
 
-    known = set(modules) | changed_modules
+
+def _reverse_dependencies(modules, known):
     reverse = defaultdict(set)
-    try:
-        for module, path in modules.items():
-            for imported in _imports(path, module, known):
-                reverse[imported].add(module)
-    except (OSError, SyntaxError, ImportError, ValueError) as error:
-        return None, f"cannot map Python imports: {error}"
+    for module, path in modules.items():
+        for imported in _imports(path, module, known):
+            reverse[imported].add(module)
+    return reverse
 
-    reached = set(changed_modules)
-    queue = deque(changed_modules)
+
+def _reachable_modules(reverse, starts):
+    reached = set(starts)
+    queue = deque(starts)
     while queue:
         for dependent in reverse[queue.popleft()] - reached:
             reached.add(dependent)
             queue.append(dependent)
+    return reached
+
+
+def select_test_modules(changed, modules=None):
+    modules = _module_files() if modules is None else modules
+    changed_modules, reason = _changed_modules(changed)
+    if reason:
+        return None, reason
+
+    known = set(modules) | changed_modules
+    try:
+        reverse = _reverse_dependencies(modules, known)
+    except (OSError, SyntaxError, ImportError, ValueError) as error:
+        return None, f"cannot map Python imports: {error}"
+
+    reached = _reachable_modules(reverse, changed_modules)
     selected = sorted(
         module
         for module in reached
@@ -122,12 +138,7 @@ def select_test_modules(changed, modules=None):
     for module in changed_modules:
         if not module.startswith(("vntts.", "scripts.")):
             continue
-        seen = {module}
-        pending = deque([module])
-        while pending:
-            for dependent in reverse[pending.popleft()] - seen:
-                seen.add(dependent)
-                pending.append(dependent)
+        seen = _reachable_modules(reverse, (module,))
         if not seen.intersection(selected):
             uncovered.append(module)
     if uncovered:

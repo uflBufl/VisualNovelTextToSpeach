@@ -1590,6 +1590,72 @@
       "path": "vntts/tts_benchmark.py",
       "scope": "_benchmark_backend_staged",
       "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "scripts/render_ui_catalog.py",
+      "scope": "_render_stories.ocr_review",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "scripts/run_ci_unittests.py",
+      "scope": "_run_sharded_full_discovery",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "scripts/run_ci_unittests.py",
+      "scope": "main",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/workbench_ui.py",
+      "scope": "AuthoringWorkbenchDialog._apply_projection",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/workbench_ui.py",
+      "scope": "AuthoringWorkbenchDialog._build_workbench_layout",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/dashboard_ui.py",
+      "scope": "ControlDashboard._build_status_widgets",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/macos_ui.py",
+      "scope": "MacOSPermissionsDialog.__init__",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/onboarding_ui.py",
+      "scope": "DiagnosticsPage.__init__",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/profiles_ui.py",
+      "scope": "GameProfilesDialog.__init__",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/app.py",
+      "scope": "TrayApplication._narrator_finished",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/app.py",
+      "scope": "TrayApplication._narrator_finished",
+      "count": 1
     }
   ]
 }

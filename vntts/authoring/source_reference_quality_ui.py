@@ -356,46 +356,52 @@ class SourceReferenceQualityDialog(QDialog):
         self.completed_audio.clear()
         self.generated.clear()
         if self.current is None:
-            completion_height = max(200, self.fontMetrics().height() * 10)
-            self.setMinimumHeight(completion_height)
-            self.resize(self.width(), completion_height)
-            self.decision_context.set_context(
-                {
-                    "purpose": "Judge whether source audio is safe for voice cloning",
-                    "effect": "Review complete; no further decision is required",
-                }
-            )
-            self.portrait_image.clear()
-            self.portrait_image.setVisible(False)
-            self.identity.setText("Review complete")
-            self.reference_details.clear()
-            self.reference_details.setVisible(False)
-            self.play_reference.setVisible(False)
-            self.generated_label.setVisible(False)
-            self.generated.setVisible(False)
-            self.generated_details.clear()
-            self.generated_details.setVisible(False)
-            self.play_generated.setVisible(False)
-            self.stop.setVisible(False)
-            self.failures.clear()
-            self.technical_toggle.setVisible(False)
-            self.decision_context.setVisible(False)
-            self.evidence_progress.setText("All required decisions are saved.")
-            self.status.setText(
-                "All cluster decisions are saved. Only accepted references may be "
-                "published into queue bindings."
-            )
-            self._set_actions_enabled(False)
-            self.play_reference.setEnabled(False)
-            self.play_generated.setEnabled(False)
-            for button in (
-                self.accept_button,
-                self.reject_reference,
-                self.needs_sample,
-            ):
-                button.setVisible(False)
+            self._show_completed_review()
             return
+        self._show_current_review(total)
 
+    def _show_completed_review(self) -> None:
+        completion_height = max(200, self.fontMetrics().height() * 10)
+        self.setMinimumHeight(completion_height)
+        self.resize(self.width(), completion_height)
+        self.decision_context.set_context(
+            {
+                "purpose": "Judge whether source audio is safe for voice cloning",
+                "effect": "Review complete; no further decision is required",
+            }
+        )
+        self.portrait_image.clear()
+        self.portrait_image.setVisible(False)
+        self.identity.setText("Review complete")
+        self.reference_details.clear()
+        self.reference_details.setVisible(False)
+        self.play_reference.setVisible(False)
+        self.generated_label.setVisible(False)
+        self.generated.setVisible(False)
+        self.generated_details.clear()
+        self.generated_details.setVisible(False)
+        self.play_generated.setVisible(False)
+        self.stop.setVisible(False)
+        self.failures.clear()
+        self.technical_toggle.setVisible(False)
+        self.decision_context.setVisible(False)
+        self.evidence_progress.setText("All required decisions are saved.")
+        self.status.setText(
+            "All cluster decisions are saved. Only accepted references may be "
+            "published into queue bindings."
+        )
+        self._set_actions_enabled(False)
+        self.play_reference.setEnabled(False)
+        self.play_generated.setEnabled(False)
+        for button in (
+            self.accept_button,
+            self.reject_reference,
+            self.needs_sample,
+        ):
+            button.setVisible(False)
+
+    def _show_current_review(self, total: int) -> None:
+        assert self.current is not None
         self.setMinimumHeight(500)
 
         for widget in (
