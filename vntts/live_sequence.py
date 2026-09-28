@@ -289,7 +289,7 @@ class StoryCursor:
 
     def observe_line(self, line_id: object) -> StoryCursorSnapshot:
         """Update a cursor from an exact canonical line observation."""
-        if self.state == StoryCursorState.DESYNCHRONIZED:
+        if self.state in {StoryCursorState.DESYNCHRONIZED, StoryCursorState.PLAYING}:
             return self.snapshot()
         event = self.plan.event_for_line(str(line_id))
         if event is None:
@@ -351,6 +351,8 @@ class StoryCursor:
         self, line_id: object, allowed_event_ids: Iterable[object]
     ) -> StoryCursorSnapshot:
         """Recover only to a line proven to be in the supplied graph window."""
+        if self.state == StoryCursorState.PLAYING:
+            return self.snapshot()
         event = self.plan.event_for_line(str(line_id))
         if event is None:
             return self.desynchronize(f"unplanned-line:{line_id}")

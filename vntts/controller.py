@@ -1500,7 +1500,11 @@ class AppController:
             current = cursor.current_event
             candidate_events = cursor.bounded_visible_successors()
             silent_event = cursor.deterministic_visual_successor()
-            if silent_event is None and self.settings.live_sequence_mode == "shadow":
+            if (
+                silent_event is None
+                and self.settings.live_sequence_mode == "shadow"
+                and cursor.state != StoryCursorState.PLAYING
+            ):
                 silent_event = _unique_silent_sequence_successor(cursor)
             if (
                 silent_event is not None

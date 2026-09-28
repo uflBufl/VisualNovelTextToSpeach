@@ -280,6 +280,19 @@ class StoryCursorTest(unittest.TestCase):
         self.assertEqual(cursor.current_event_id, "event-1")
         self.assertEqual(cursor.state, StoryCursorState.PLAYING)
 
+    def test_observations_cannot_move_cursor_during_playback(self):
+        temporary, cursor = self.create_cursor()
+        self.addCleanup(temporary.cleanup)
+        cursor.anchor_event("event-1")
+        playing = cursor.begin_playback()
+
+        self.assertEqual(cursor.observe_line("synthetic:chapter-1:3"), playing)
+        self.assertEqual(
+            cursor.observe_bounded_line("synthetic:chapter-1:3", ("event-3",)),
+            playing,
+        )
+        self.assertEqual(cursor.snapshot(), playing)
+
     def test_waiting_dispatch_identifies_manual_boundary_without_second_key(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
