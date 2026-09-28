@@ -36,6 +36,9 @@ class _Controller(Protocol):
     @property
     def is_ready(self) -> bool: ...
 
+    @property
+    def is_live_running(self) -> bool: ...
+
     def shutdown(self) -> None: ...
 
     def apply_settings(
@@ -131,6 +134,11 @@ class ConfigurationApplyMixin:
         _controller_busy: bool
         _controller_ready: bool
         _shutting_down: bool
+        live_stop_runner: LatestTaskRunner
+
+        def _stop_live_then(
+            self, continuation: Callable[[], object], status: str
+        ) -> bool: ...
 
         def _begin_controller_lifecycle(
             self, cancellation: Event | None = None
@@ -291,6 +299,14 @@ class ConfigurationApplyMixin:
     def open_settings(self) -> None:
         if self._controller_busy or self._shutting_down:
             self.set_status("Controller reconfiguration is already in progress")
+            return
+        if self.live_stop_runner.active:
+            self.set_status("Live capture is already stopping; please wait")
+            return
+        if self.controller.is_live_running is True:
+            self._stop_live_then(
+                self.open_settings, "Stopping reading before opening Settings..."
+            )
             return
         dialog = self._create_settings_dialog()
         if dialog.exec() != QDialog.DialogCode.Accepted:

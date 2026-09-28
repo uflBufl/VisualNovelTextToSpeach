@@ -390,6 +390,10 @@ class ControlDashboard(QMainWindow):
                 self.loading_blocked_buttons.append(button)
             if label == "Narrator voice":
                 self.narrator_voice_button = button
+            elif label == "Calibrate capture":
+                self.calibrate_button = button
+            elif label == "Settings":
+                self.settings_button = button
         self.quit_button = QPushButton("Quit VNTTS")
         self.quit_button.clicked.connect(self.request_quit)
         setup_secondary.addWidget(self.quit_button)

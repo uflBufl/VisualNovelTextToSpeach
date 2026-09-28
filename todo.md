@@ -1,5 +1,9 @@
 # TODO
 
+## Validate capture changes during background preparation on Windows
+
+- [ ] While a story is preparing and reading is active, confirm Settings and Calibrate capture remain available. Opening either stops only reading, and story preparation continues; after saving a region, restart reading and confirm capture uses the new area.
+
 ## Active - Qwen voice cloning on Windows
 
 - [ ] Resolve the official `qwen-tts==0.1.1` dependency audit findings without silently suppressing known vulnerabilities.

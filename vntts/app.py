@@ -2510,6 +2510,17 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.signals.speech_paused_changed.emit(False)
 
     def calibrate(self) -> None:
+        if self._controller_busy or self._shutting_down:
+            self.set_status("Controller reconfiguration is already in progress")
+            return
+        if self.live_stop_runner.active:
+            self.set_status("Live capture is already stopping; please wait")
+            return
+        if self.controller.is_live_running is True:
+            self._stop_live_then(
+                self.calibrate, "Stopping reading before capture calibration..."
+            )
+            return
         try:
             geometry = self.controller.get_capture_geometry()
         except WindowCaptureError as error:
@@ -4108,6 +4119,16 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         if preparing or choosing_voice:
             for button in self.dashboard.loading_blocked_buttons:
+                if (
+                    preparing
+                    and not choosing_voice
+                    and button
+                    in (
+                        self.dashboard.calibrate_button,
+                        self.dashboard.settings_button,
+                    )
+                ):
+                    continue
                 button.setEnabled(False)
 
     def _apply_controller_action_state(self) -> None:
@@ -4141,6 +4162,14 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.speaker_mapping_action.setEnabled(configuration_enabled)
         for action in self._controller_configuration_actions():
             action.setEnabled(configuration_enabled)
+        capture_configuration_enabled = not (
+            self._controller_busy
+            or self._shutting_down
+            or choosing_voice
+            or self.live_stop_runner.active
+        )
+        self.calibrate_action.setEnabled(capture_configuration_enabled)
+        self.settings_action.setEnabled(capture_configuration_enabled)
         current_sequence_status = getattr(
             self.controller,
             "get_live_sequence_status",
@@ -4166,6 +4195,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.voice_preview_action.setEnabled(available)
         self.speaker_mapping_action.setEnabled(available)
         self.history_action.setEnabled(available)
+        self.calibrate_action.setEnabled(available)
+        self.settings_action.setEnabled(available)
+        self.dashboard.calibrate_button.setEnabled(available)
+        self.dashboard.settings_button.setEnabled(available)
 
     def _begin_controller_lifecycle(self, cancellation: Event | None = None) -> int:
         self._live_scope_generation = None

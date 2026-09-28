@@ -922,6 +922,91 @@ class TrayApplicationTest(unittest.TestCase):
         tray.pregeneration_dialog = None
         tray.shutdown()
 
+    def test_capture_controls_remain_available_during_preparation(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(
+                return_value=Mock(is_ready=True, is_live_running=False)
+            ),
+        )
+        preparation = Mock()
+        preparation.has_pending_work.return_value = True
+        tray.pregeneration_dialog = preparation
+        tray.set_ready(True)
+        tray._preparation_activity_changed(True)
+
+        for control in (
+            tray.calibrate_action,
+            tray.settings_action,
+            tray.dashboard.calibrate_button,
+            tray.dashboard.settings_button,
+        ):
+            self.assertTrue(control.isEnabled())
+        self.assertFalse(tray.assets_action.isEnabled())
+        self.assertFalse(tray.dashboard.setup_primary_button.isEnabled())
+
+        tray.narrator_dialog = Mock()
+        tray._apply_controller_action_state()
+        self.assertFalse(tray.calibrate_action.isEnabled())
+        self.assertFalse(tray.dashboard.settings_button.isEnabled())
+        tray.narrator_dialog = None
+        tray._controller_busy = True
+        tray._apply_controller_action_state()
+        self.assertFalse(tray.settings_action.isEnabled())
+        self.assertFalse(tray.dashboard.calibrate_button.isEnabled())
+        tray._controller_busy = False
+        tray.pregeneration_dialog = None
+        tray.shutdown()
+
+    def test_capture_controls_wait_for_live_stop_without_cancelling_preparation(self):
+        for action in ("calibrate", "open_settings"):
+            with self.subTest(action=action):
+                release = Event()
+                controller = Mock(is_ready=True, is_live_running=True)
+
+                def stop_live():
+                    controller.is_live_running = False
+                    return False
+
+                controller.toggle_live.side_effect = stop_live
+                controller.live_reader.wait.side_effect = lambda **_kwargs: (
+                    release.wait(2)
+                )
+                tray = TrayApplication(
+                    self.application,
+                    AppSettings(),
+                    controller_factory=Mock(return_value=controller),
+                )
+                preparation = Mock()
+                preparation.has_pending_work.return_value = True
+                tray.pregeneration_dialog = preparation
+                tray.set_ready(True)
+                with (
+                    patch.object(tray, "_create_settings_dialog") as settings_dialog,
+                    patch.object(tray, "_open_calibration_overlay") as overlay,
+                ):
+                    settings_dialog.return_value.exec.return_value = (
+                        QDialog.DialogCode.Rejected
+                    )
+                    getattr(tray, action)()
+                    self.assertTrue(tray.live_stop_runner.active)
+                    self.assertFalse(tray.calibrate_action.isEnabled())
+                    self.assertFalse(tray.dashboard.settings_button.isEnabled())
+                    settings_dialog.assert_not_called()
+                    overlay.assert_not_called()
+                    release.set()
+                    if action == "calibrate":
+                        self.wait_until(lambda: overlay.called)
+                    else:
+                        self.wait_until(lambda: settings_dialog.called)
+                controller.toggle_live.assert_called_once_with()
+                preparation._cancel_or_reject.assert_not_called()
+                preparation.reject.assert_not_called()
+                self.assertIs(tray.pregeneration_dialog, preparation)
+                tray.pregeneration_dialog = None
+                tray.shutdown()
+
     def test_narrator_completion_returns_only_to_its_original_preparation(self):
         for result in (QDialog.DialogCode.Accepted, QDialog.DialogCode.Rejected):
             for origin in (0, 1, 2):
