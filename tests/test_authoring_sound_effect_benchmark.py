@@ -95,6 +95,20 @@ def write_corpus(path, *, samples=None):
 
 
 class SoundEffectBenchmarkTest(unittest.TestCase):
+    def test_corpus_rejects_non_integer_schema_version(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "corpus.json"
+            write_corpus(path)
+            original = json.loads(path.read_text(encoding="utf-8"))
+            for version in (True, 1.0):
+                with self.subTest(version=version):
+                    document = {**original, "schema_version": version}
+                    path.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        SoundEffectBenchmarkError, "corpus is invalid"
+                    ):
+                        load_sound_effect_corpus(path)
+
     def test_publishes_exact_multiseed_report_and_pcm(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

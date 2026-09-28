@@ -66,6 +66,7 @@ def load_sound_effect_corpus(path: str | Path) -> SoundEffectCorpus:
     if (
         not isinstance(document, dict)
         or document.get("schema") != CORPUS_SCHEMA
+        or type(document.get("schema_version")) is not int
         or document.get("schema_version") != SCHEMA_VERSION
         or not isinstance(document.get("samples"), list)
         or not document["samples"]
