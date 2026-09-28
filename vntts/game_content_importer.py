@@ -258,6 +258,8 @@ class Reverse1999GameImporter:
         except Exception:
             if backup.is_file():
                 os.replace(backup, story_index)
+            else:
+                story_index.unlink(missing_ok=True)
             raise
         try:
             backup.unlink(missing_ok=True)

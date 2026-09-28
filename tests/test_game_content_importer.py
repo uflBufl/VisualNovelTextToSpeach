@@ -115,6 +115,24 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                     importer.import_installed()
             self.assertEqual(story.read_bytes(), original)
 
+    def test_failed_first_import_removes_rejected_story_catalog(self):
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "import"
+            story = output / "reverse1999" / "story-index.jsonl"
+            importer = Reverse1999GameImporter(
+                command=("extractor",), output_root=output
+            )
+
+            def fail_after_story_write(_arguments, _cancel_event):
+                story.parent.mkdir(parents=True)
+                story.write_bytes(b"partial new catalog")
+                raise GameContentImportError("later importer step failed")
+
+            with patch.object(importer, "_run", side_effect=fail_after_story_write):
+                with self.assertRaisesRegex(GameContentImportError, "later"):
+                    importer.import_installed()
+            self.assertFalse(story.exists())
+
     def test_failed_import_records_saved_source_fallback_and_process_details(self):
         with TemporaryDirectory() as directory:
             output = Path(directory)
