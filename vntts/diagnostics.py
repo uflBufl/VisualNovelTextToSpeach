@@ -95,15 +95,25 @@ def macos_permission_warnings(
     return warnings
 
 
+def _window_unavailable(message: str) -> bool:
+    return "window" in message and any(
+        phrase in message
+        for phrase in (
+            "not found",
+            "not available",
+            "unavailable",
+            "minimized",
+            "closed",
+        )
+    )
+
+
 def diagnostic_error_guidance(
     error: BaseException, *, platform: str | None = None
 ) -> str:
     message = str(error).strip() or error.__class__.__name__
     normalized = message.casefold()
-    if "window" in normalized and any(
-        phrase in normalized
-        for phrase in ("not found", "unavailable", "minimized", "closed")
-    ):
+    if _window_unavailable(normalized):
         return (
             "The selected game window is unavailable. Start or restore the game, "
             "use windowed or borderless mode, and select it again in Settings. "
@@ -136,9 +146,6 @@ def diagnostic_remediation(
         )
     ):
         return "macos-permissions", "Open macOS permissions"
-    if "window" in normalized and any(
-        phrase in normalized
-        for phrase in ("not found", "unavailable", "minimized", "closed", "select")
-    ):
+    if _window_unavailable(normalized) or "select a game window" in normalized:
         return "settings", "Open Settings"
     return None

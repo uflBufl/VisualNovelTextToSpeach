@@ -261,6 +261,25 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertIn("Start or restore the game", guidance)
         self.assertIn("borderless", guidance)
 
+    def test_window_capture_errors_offer_settings_recovery(self):
+        missing = "Game window 'Reverse: 1999' is not available"
+        unselected = "Select a game window in Settings"
+
+        self.assertIn(
+            "Start or restore the game",
+            diagnostic_error_guidance(RuntimeError(missing), platform="win32"),
+        )
+        self.assertEqual(
+            diagnostic_error_guidance(RuntimeError(unselected), platform="win32"),
+            unselected,
+        )
+        for message in (missing, unselected):
+            with self.subTest(message=message):
+                self.assertEqual(
+                    diagnostic_remediation(message, platform="win32"),
+                    ("settings", "Open Settings"),
+                )
+
     def test_warning_exposes_only_its_contextual_typed_remediation(self):
         dialog = DiagnosticsDialog()
         remediations = []
