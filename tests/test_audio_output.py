@@ -43,6 +43,29 @@ class FakeSoundDevice:
     def OutputStream(self, **_options):
         return FakeStream()
 
+    def get_stream(self):
+        return Mock(status=Mock(output_underflow=False))
+
+    def play(self, _audio, _sample_rate, *, latency):
+        del latency
+
+    def wait(self):
+        return None
+
+    def stop(self):
+        return None
+
+
+class IncompleteSoundDevice:
+    __name__ = "sounddevice"
+
+    def query_devices(self, *, kind):
+        del kind
+        return {}
+
+    def OutputStream(self, **_options):
+        return FakeStream()
+
 
 class FailingSoundDevice(FakeSoundDevice):
     def play(self, _audio, _sample_rate, *, latency):
@@ -64,6 +87,11 @@ class ConvenienceSoundDevice(FakeSoundDevice):
 
 
 class AudioOutputLifecycleTest(unittest.TestCase):
+    def test_incomplete_sounddevice_shape_is_not_promoted_to_audio_output(self):
+        incomplete = IncompleteSoundDevice()
+
+        self.assertIs(resolve_audio_output(incomplete), incomplete)
+
     def test_nonfinite_device_rate_falls_back_to_source_rate(self):
         output = Mock()
         output.query_devices.return_value = {"default_samplerate": float("inf")}

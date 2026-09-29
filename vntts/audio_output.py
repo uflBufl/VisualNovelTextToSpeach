@@ -73,8 +73,16 @@ class AudioOutput(PlaybackAudioOutput, Protocol):
 
 
 def _supports_streaming_output(value: object) -> TypeGuard[AudioOutput]:
-    return callable(getattr(value, "query_devices", None)) and callable(
-        getattr(value, "OutputStream", None)
+    return all(
+        callable(getattr(value, name, None))
+        for name in (
+            "query_devices",
+            "play",
+            "wait",
+            "stop",
+            "get_stream",
+            "OutputStream",
+        )
     )
 
 
