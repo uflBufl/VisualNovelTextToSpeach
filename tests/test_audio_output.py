@@ -1,9 +1,10 @@
 import unittest
+from unittest.mock import Mock
 
 import numpy as np
 
 from vntts.audio_lifecycle import audio_lifecycle_context
-from vntts.audio_output import resolve_audio_output
+from vntts.audio_output import match_output_sample_rate, resolve_audio_output
 from vntts.support import configure_audio_lifecycle_log
 
 
@@ -54,6 +55,16 @@ class FailingSoundDevice(FakeSoundDevice):
 
 
 class AudioOutputLifecycleTest(unittest.TestCase):
+    def test_nonfinite_device_rate_falls_back_to_source_rate(self):
+        output = Mock()
+        output.query_devices.return_value = {"default_samplerate": float("inf")}
+        audio = np.zeros(8, dtype=np.float32)
+
+        matched, sample_rate = match_output_sample_rate(output, audio, 24_000)
+
+        self.assertIs(matched, audio)
+        self.assertEqual(sample_rate, 24_000)
+
     def test_failed_convenience_finish_is_not_logged_as_complete(self):
         for method, operation in (("wait", "close"), ("stop", "abort")):
             with self.subTest(method=method):
