@@ -28,6 +28,10 @@ class DiagnosticResult:
         return self.status != "error"
 
 
+def _isolated_runtime_backend(backend: str) -> str:
+    return "moss-tts" if backend == "qwen-tts" and sys.platform == "darwin" else backend
+
+
 class OnboardingDiagnostics:
     def __init__(
         self,
@@ -105,9 +109,7 @@ class OnboardingDiagnostics:
             and moss_cpp_requested(settings.tts_model)
         ):
             ensure_speech_runtime(
-                "moss-tts"
-                if settings.speech_backend == "qwen-tts" and sys.platform == "darwin"
-                else settings.speech_backend,
+                _isolated_runtime_backend(settings.speech_backend),
                 cancellation=cancellation,
                 progress=progress,
             )
@@ -228,10 +230,7 @@ class OnboardingDiagnostics:
             name = isolated_runtime
             try:
                 runtime, _interpreter, _site = resolve_speech_runtime_paths(
-                    "moss-tts"
-                    if settings.speech_backend == "qwen-tts"
-                    and sys.platform == "darwin"
-                    else settings.speech_backend
+                    _isolated_runtime_backend(settings.speech_backend)
                 )
             except Exception as error:
                 return DiagnosticResult(name, "error", str(error), "settings")

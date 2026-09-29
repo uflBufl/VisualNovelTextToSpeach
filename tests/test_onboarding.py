@@ -29,6 +29,33 @@ def granted_permissions():
 
 
 class OnboardingDiagnosticsTest(unittest.TestCase):
+    def test_qwen_setup_and_diagnostics_select_the_same_runtime(self):
+        settings = AppSettings(speech_backend="qwen-tts")
+        diagnostics = OnboardingDiagnostics()
+        progress = Mock()
+        paths = (Path("/runtime"), Path("/runtime/python"), Path("/site"))
+        for platform, expected in (("darwin", "moss-tts"), ("win32", "qwen-tts")):
+            with (
+                self.subTest(platform=platform),
+                patch("vntts.onboarding.sys.platform", platform),
+                patch("vntts.runtime_installation.ensure_speech_runtime") as prepare,
+                patch.object(diagnostics, "run", return_value=()),
+                patch(
+                    "vntts.onboarding.packaged_speech_backend_available",
+                    return_value=True,
+                ),
+                patch(
+                    "vntts.onboarding.resolve_speech_runtime_paths",
+                    return_value=paths,
+                ) as resolve,
+            ):
+                diagnostics.prepare_and_run(
+                    settings, cancellation=None, progress=progress
+                )
+                self.assertEqual(diagnostics._check_model(settings).status, "ok")
+                self.assertEqual(prepare.call_args.args, (expected,))
+                self.assertEqual(resolve.call_args.args, (expected,))
+
     def test_ready_environment_passes_with_valid_voice_pack(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
