@@ -300,6 +300,9 @@ class Reverse1999GameImporter:
             changed = True
         else:
             changed = self._saved_story_inputs_changed(story_index, saved)
+        bank_index = story_index.parent / "english-bank-index.json"
+        if not changed:
+            changed = not bank_index.is_file() or self._bank_index_is_stale(bank_index)
         self._record("story-update-check", changed=changed, index=story_index)
         return changed
 

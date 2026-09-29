@@ -91,14 +91,21 @@ class Reverse1999GameImporterTest(unittest.TestCase):
             importer = Reverse1999GameImporter(output_root=root / "import")
             roots = (resources, configs, audio)
             importer._remember_installation(roots)
+            bank_index = story.parent / "english-bank-index.json"
 
-            self.assertFalse(importer.installed_story_changed())
-            bundle.write_bytes(b"newer story content")
-            self.assertTrue(importer.installed_story_changed())
-            importer._remember_story_inputs(story, roots)
-            self.assertFalse(importer.installed_story_changed())
-            (configs / "datacfg_1.dat").write_bytes(b"new config")
-            self.assertTrue(importer.installed_story_changed())
+            with patch.object(importer, "_bank_index_is_stale", return_value=False):
+                self.assertTrue(importer.installed_story_changed())
+                bank_index.write_text("{}")
+                self.assertFalse(importer.installed_story_changed())
+                bundle.write_bytes(b"newer story content")
+                self.assertTrue(importer.installed_story_changed())
+                importer._remember_story_inputs(story, roots)
+                self.assertFalse(importer.installed_story_changed())
+                (configs / "datacfg_1.dat").write_bytes(b"new config")
+                self.assertTrue(importer.installed_story_changed())
+                importer._remember_story_inputs(story, roots)
+            with patch.object(importer, "_bank_index_is_stale", return_value=True):
+                self.assertTrue(importer.installed_story_changed())
 
     def test_prepares_selected_stage_semantics_as_an_immutable_successor(self):
         with TemporaryDirectory() as directory:

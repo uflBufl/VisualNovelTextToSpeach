@@ -1031,7 +1031,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._story_audio_changed()
         if self._background_discovery:
             self._set_discovery_loading(True)
-            self.discovery_runner.start(self._discover_content)
+            self.discovery_runner.start(self._discover_content_and_check_updates)
             return
         self._apply_discovery(self._discover_content())
 
@@ -1933,6 +1933,14 @@ class OfflineAudioPreparationDialog(QDialog):
             raise TypeError("discovery must return ContentDiscovery")
         return discovery
 
+    def _discover_content_and_check_updates(self) -> tuple[ContentDiscovery, bool]:
+        discovery = self._discover_content()
+        changed = (
+            self.importer.availability().available
+            and self.importer.installed_story_changed()
+        )
+        return discovery, changed
+
     def _refresh_stale_voice_job(
         self, job: PregenerationJob
     ) -> tuple[
@@ -1991,6 +1999,14 @@ class OfflineAudioPreparationDialog(QDialog):
             self._recovering_stale_job = False
             self._stale_voice_job_finished(discovery, error)
             return
+        changed = False
+        if (
+            isinstance(discovery, tuple)
+            and len(discovery) == 2
+            and isinstance(discovery[0], ContentDiscovery)
+            and isinstance(discovery[1], bool)
+        ):
+            discovery, changed = discovery
         if error is None and not isinstance(discovery, ContentDiscovery):
             error = TypeError("Content discovery returned an invalid result")
         if error is not None:
@@ -1998,11 +2014,7 @@ class OfflineAudioPreparationDialog(QDialog):
         assert isinstance(discovery, ContentDiscovery)
         self._apply_discovery(discovery)
         self._set_discovery_loading(False)
-        if (
-            self._background_discovery
-            and self.importer.availability().available
-            and self.importer.installed_story_changed() is True
-        ):
+        if self._background_discovery and changed:
             self._start_import(None, automatic=True)
 
     def _stale_voice_job_finished(

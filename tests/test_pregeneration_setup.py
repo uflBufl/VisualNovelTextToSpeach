@@ -1051,6 +1051,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 self.addCleanup(dialog.deleteLater)
                 dialog.show()
                 self.application.processEvents()
+                importer.installed_story_changed.assert_not_called()
                 self.run_next_task(pool)
                 self.assertTrue(dialog.importing)
                 self.assertTrue(dialog.discovery_panel.isVisible())

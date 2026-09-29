@@ -63,6 +63,11 @@ Planned implementation order after approval:
 
 ## P0 - Validate automatic game-update refresh on Windows
 
+- [ ] On the current Mac, reopen Stories after updating the app and confirm the
+      stale English audio-bank index triggers visible automatic import, preserves
+      prepared audio, and no longer reaches `Saved audio needs attention`. The
+      importer and background UI route are covered by automated tests; do not
+      overwrite the user's game-content cache merely for this validation.
 - [ ] After a real Reverse: 1999 update, open Stories without using Add or import
       content. Confirm that the update is detected, the cancellable import has a
       visible status, new stories appear in the existing Game content source,
