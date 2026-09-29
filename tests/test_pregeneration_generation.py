@@ -397,6 +397,30 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
         popen.assert_not_called()
         self.assertEqual(result.total, generation_input.ready_items)
 
+    def test_omitted_audio_event_does_not_hide_unfinished_dialogue(self):
+        with TemporaryDirectory() as directory:
+            generation_input, plan = generation_inputs(Path(directory))
+            generation_input = replace(
+                generation_input,
+                audio_event_omission_queue_ids=("pure-event",),
+            )
+            worker = OfflineGenerationWorker(command=("worker",))
+            partial = OfflineGenerationResult(
+                Path(directory), Path(directory), Path(directory), 2, 0, 1
+            )
+            completed = replace(partial, generated=3)
+            generated = Mock()
+            with (
+                patch.object(worker, "inspect", return_value=partial) as inspect,
+                patch.object(worker, "_execute", return_value=generated) as execute,
+                patch("vntts.pregeneration_generation._ensure_remaining_disk_space"),
+            ):
+                self.assertIs(worker.generate(generation_input, plan), generated)
+                inspect.return_value = completed
+                self.assertIs(worker.generate(generation_input, plan), completed)
+
+            execute.assert_called_once()
+
     def test_moss_generation_uses_the_in_process_retained_backend(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

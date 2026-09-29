@@ -1,5 +1,11 @@
 # TODO
 
+## Active - Offline generation and state debt pass
+
+- [ ] Bind workspace direct-extension authority state, digest, and payload to one read; `workspace_authority` reloads the state after hashing it, allowing an atomic replacement to mix revisions. Check sibling inspection path and add a replacement regression.
+- [ ] Inspect generation state, offline generation, recovery, and their direct callers for correctness, types, design, tests, resources, and tooling; record reproducible findings before editing.
+- [ ] Fix confirmed findings separately, run focused checks and required changed-test selectors, then rescan and remove this section when complete.
+
 ## Validate OpenMOSS progress on Windows
 
 - [ ] During a sustained offline story preparation, confirm progress updates without frequent reads of `generation-state.json`, cancellation and Continue retain completed lines, and no state replacement access error recurs.

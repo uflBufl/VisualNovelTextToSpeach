@@ -99,7 +99,10 @@ class OfflineGenerationWorker:
         if queue_ids is None:
             with suppress(OfflineGenerationError):
                 current = self.inspect(generation_input)
-                if current.total == generation_input.ready_items:
+                expected_terminal = generation_input.ready_items + len(
+                    generation_input.audio_event_omission_queue_ids
+                )
+                if current.total == expected_terminal:
                     return current
         if generation_input.identity not in self._disk_checked_inputs:
             _ensure_remaining_disk_space(generation_input)
