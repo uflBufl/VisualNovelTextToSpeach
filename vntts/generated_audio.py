@@ -155,6 +155,7 @@ class PendingGeneratedAudioRoute:
     line_id: str
     text_sha256: str
     text: str
+    synthesis_character: str
     trace: AudioRouteTrace
     synthesis_ms: float = 0.0
     first_audio_ms: float | None = None
@@ -967,6 +968,7 @@ class GeneratedAudioFallbackBackend:
                 line.line_id,
                 line.text_sha256,
                 text,
+                synthesis_character(character),
                 AudioRouteTrace(
                     None,
                     "waiting-for-generation",
@@ -1000,30 +1002,39 @@ class GeneratedAudioFallbackBackend:
                     source_audio_wait or 0.0 if source_audio_partial else 0.0
                 ),
             )
-        live_prepared = self.live_backend.prepare_playback(
-            synthesis_character(character), text
+        return self._live_tts_route(
+            synthesis_character(character),
+            text,
+            AudioRouteTrace(
+                None,
+                "live",
+                match_result,
+                ";".join(dict.fromkeys(fallback_reasons)) or None,
+                None,
+                line_id,
+                artifact_preflight_state,
+            ),
+            source_audio_lead_seconds=(
+                source_audio_wait or 0.0 if source_audio_partial else 0.0
+            ),
         )
-        effective_source = live_prepared.audio_source
-        trace = AudioRouteTrace(
-            None,
-            effective_source,
-            match_result,
-            ";".join(dict.fromkeys(fallback_reasons)) or None,
-            None,
-            line_id,
-            artifact_preflight_state,
-        )
-        live_route = LiveTTSRoute(
-            live_prepared,
-            trace,
-            live_prepared.synthesis_ms,
-            live_prepared.first_audio_ms,
-            live_prepared.cache_source,
-        )
-        return (
-            replace(live_route, source_audio_lead_seconds=source_audio_wait or 0.0)
-            if source_audio_partial
-            else live_route
+
+    def _live_tts_route(
+        self,
+        character: str,
+        text: str,
+        trace: AudioRouteTrace,
+        *,
+        source_audio_lead_seconds: float = 0.0,
+    ) -> LiveTTSRoute:
+        prepared = self.live_backend.prepare_playback(character, text)
+        return LiveTTSRoute(
+            prepared,
+            replace(trace, effective_source=prepared.audio_source),
+            prepared.synthesis_ms,
+            prepared.first_audio_ms,
+            prepared.cache_source,
+            source_audio_lead_seconds,
         )
 
     def _live_fallback_route(
@@ -1095,7 +1106,7 @@ class GeneratedAudioFallbackBackend:
 
     def resolved_pending_route(
         self, route: PendingGeneratedAudioRoute
-    ) -> GeneratedAudioRoute | LiveFallbackRoute | None:
+    ) -> GeneratedAudioRoute | LiveFallbackRoute | LiveTTSRoute | None:
         if self.library is None:
             return None
         prepared, _state = self.library.find_with_preflight(
@@ -1116,6 +1127,20 @@ class GeneratedAudioFallbackBackend:
         )
         if live_fallback is None:
             return None
+        try:
+            _validate_live_fallback_backend(self.live_backend, live_fallback)
+        except ValueError:
+            reasons = (route.trace.fallback_reason or "").split(";")
+            reasons.append("live-fallback-backend-mismatch")
+            return self._live_tts_route(
+                route.synthesis_character,
+                route.text,
+                replace(
+                    route.trace,
+                    fallback_reason=";".join(dict.fromkeys(filter(None, reasons))),
+                ),
+                source_audio_lead_seconds=self._remaining_source_audio_lead(route),
+            )
         return self._live_fallback_route(
             live_fallback,
             text=route.text,

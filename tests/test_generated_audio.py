@@ -785,6 +785,43 @@ class GeneratedAudioTest(unittest.TestCase):
         backend.voice_override.assert_not_called()
         live.prepare_playback.assert_called_once_with("Narrator", "Hello.")
 
+    def test_pending_fallback_backend_mismatch_uses_frozen_live_voice(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / "generated-audio.json"
+            write_generated_audio_manifest(
+                manifest, {"vntts.runtime.progress": True}, []
+            )
+            library = GeneratedAudioLibrary.load_optional(manifest)
+            live = self.create_live_backend()
+            live.name = "pocket-tts"
+            live.model_identity = None
+            live.model_name = "pocket-tts"
+            live.generation_profile = "default"
+            resolver = self.create_resolver()
+            backend = GeneratedAudioFallbackBackend(
+                live, library, resolver, audio_output=FakeAudioOutput()
+            )
+            pending = backend.prepare_route("Ada", "Hello.")
+            self.assertIsInstance(pending, PendingGeneratedAudioRoute)
+            self.create_live_fallback_library(root, runtime_progress=True)
+            live.model_name = "different-model"
+            backend.voice_override = Mock(return_value=True)
+
+            with patch.object(
+                resolver,
+                "line_for_id",
+                side_effect=AssertionError("Pending route must not resolve again"),
+            ):
+                resolved = backend.resolved_pending_route(pending)
+                outcome = backend.play_route(resolved)
+
+        self.assertIsInstance(resolved, LiveTTSRoute)
+        self.assertTrue(outcome.successful)
+        self.assertIn("live-fallback-backend-mismatch", resolved.trace.fallback_reason)
+        backend.voice_override.assert_not_called()
+        live.prepare_playback.assert_called_once_with("Ada", "Hello.")
+
     def test_pending_partial_source_cue_keeps_the_remaining_generated_lead(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
