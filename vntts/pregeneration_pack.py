@@ -1087,7 +1087,6 @@ def _write_cumulative_story(
     story_copy.parent.mkdir(parents=True, exist_ok=True)
     metadata, records, semantic_copy = project_source_audio_semantics(
         source_story,
-        source_story.metadata,
         records,
         story_copy.parent,
     )

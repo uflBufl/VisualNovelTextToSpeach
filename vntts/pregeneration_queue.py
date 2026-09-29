@@ -140,7 +140,6 @@ class PregenerationInputStore:
                 story_metadata, selected_records, semantic_evidence = (
                     project_source_audio_semantics(
                         story,
-                        story.metadata,
                         routed_records,
                         staging,
                     )

@@ -241,10 +241,10 @@ def validate_story_semantic_evidence(
 
 def project_source_audio_semantics(
     source_story: StoryIndexDocument,
-    metadata: dict[str, object],
     records: list[JsonDocument],
     staging: Path,
 ) -> tuple[dict[str, object], list[JsonDocument], Path | None]:
+    metadata = source_story.metadata
     binding = metadata.get("source_audio_semantics")
     if not isinstance(binding, dict):
         return metadata, records, None
@@ -305,9 +305,9 @@ def project_source_audio_semantics(
         "method": binding["method"],
         "selected_chapters": sorted(
             {
-                record.get("chapter")
+                chapter
                 for record in projected_records
-                if isinstance(record.get("chapter"), str) and record.get("chapter")
+                if isinstance(chapter := record.get("chapter"), str) and chapter
             }
         ),
         "applied_count": sum(
