@@ -649,7 +649,11 @@ class CharacterVoiceRouter:
     ) -> int:
         progress = progress or (lambda _current, _total, _character: None)
         voices = sorted(
-            self.registry.unique_voices(),
+            (
+                voice
+                for voice in self.registry.unique_voices()
+                if not is_narrator(voice.character)
+            ),
             key=lambda voice: voice.character.casefold(),
         )
         characters = ["Narrator", *(voice.character for voice in voices)]

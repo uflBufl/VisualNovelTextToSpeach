@@ -682,7 +682,10 @@ class CharacterVoiceRouterTest(unittest.TestCase):
             tts = Mock()
             tts.has_speaker.return_value = False
             registry = CharacterVoiceRegistry(
-                [CharacterVoice("Marcus", "reverse-1999-marcus", reference)]
+                [
+                    CharacterVoice("Marcus", "reverse-1999-marcus", reference),
+                    CharacterVoice("Narrator", "stored-narrator", reference),
+                ]
             )
             progress = Mock()
             router = CharacterVoiceRouter(

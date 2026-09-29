@@ -2,6 +2,7 @@
 
 ## Active - Voice routing debt pass
 
+- [ ] Avoid retaining every voice-catalog reference payload in memory during offline plan creation. Preserve byte-bound catalog identity and atomic publication; verify duplicate-reference and cancellation behavior.
 - [ ] Inspect type/data contracts, execution/resources/performance, tests/observability, and dependencies/tooling for the selected boundary; qualify every candidate, fix confirmed debt, and run project checks.
 - [ ] Rescan affected paths and remove this section only when all applicable category passes and verification gates are complete.
 
