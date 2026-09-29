@@ -28,9 +28,9 @@ class DialogueHistory:
             raise ValueError("maximum_entries must be positive")
         self.maximum_entries = maximum_entries
         self.clock = clock or (lambda: datetime.now(timezone.utc))
-        self.entries: list[DialogueHistoryEntry] = []
-        self.active_entry_id: str | None = None
-        self.lock = RLock()
+        self._entries: list[DialogueHistoryEntry] = []
+        self._active_entry_id: str | None = None
+        self._lock = RLock()
 
     def add(
         self, character: str | None, text: str | None
@@ -40,7 +40,7 @@ class DialogueHistory:
         if not text:
             self.finish_current()
             return None
-        with self.lock:
+        with self._lock:
             active = self._active_entry()
             if (
                 active is not None
@@ -50,7 +50,7 @@ class DialogueHistory:
                 if active.text.startswith(text):
                     return active
                 updated = replace(active, text=text)
-                self.entries[-1] = updated
+                self._entries[-1] = updated
                 return updated
             entry = DialogueHistoryEntry(
                 id=uuid4().hex,
@@ -58,19 +58,19 @@ class DialogueHistory:
                 character=character,
                 text=text,
             )
-            self.entries.append(entry)
-            if len(self.entries) > self.maximum_entries:
-                self.entries = self.entries[-self.maximum_entries :]
-            self.active_entry_id = entry.id
+            self._entries.append(entry)
+            if len(self._entries) > self.maximum_entries:
+                self._entries = self._entries[-self.maximum_entries :]
+            self._active_entry_id = entry.id
             return entry
 
     def finish_current(self) -> None:
-        with self.lock:
-            self.active_entry_id = None
+        with self._lock:
+            self._active_entry_id = None
 
     def snapshot(self) -> list[DialogueHistoryEntry]:
-        with self.lock:
-            return list(self.entries)
+        with self._lock:
+            return list(self._entries)
 
     def search(self, query: str | None = "") -> list[DialogueHistoryEntry]:
         query = " ".join((query or "").split()).casefold()
@@ -105,9 +105,9 @@ class DialogueHistory:
         return path
 
     def _active_entry(self) -> DialogueHistoryEntry | None:
-        if not self.entries or self.entries[-1].id != self.active_entry_id:
+        if not self._entries or self._entries[-1].id != self._active_entry_id:
             return None
-        return self.entries[-1]
+        return self._entries[-1]
 
     @staticmethod
     def _is_continuation(previous: str, current: str) -> bool:
