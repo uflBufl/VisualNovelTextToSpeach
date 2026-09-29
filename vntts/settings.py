@@ -389,7 +389,7 @@ class AppSettings:
             parsed["offline_tts_profile"] = parsed["tts_profile"]
 
         capture_mode = values.get("capture_mode", defaults.capture_mode)
-        if capture_mode in {"screen", "window"}:
+        if isinstance(capture_mode, str) and capture_mode in {"screen", "window"}:
             parsed["capture_mode"] = capture_mode
         else:
             report("Invalid 'capture_mode' setting; using its default")

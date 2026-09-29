@@ -493,15 +493,15 @@ class SettingsTest(unittest.TestCase):
         self.assertTrue(any("VNTTS_LIVE_INTERVAL_MS" in value for value in warnings))
 
     def test_invalid_capture_mode_falls_back_to_screen(self):
-        warnings = []
-
-        settings = AppSettings.from_mapping(
-            {"capture_mode": "desktop-magic"},
-            warn=warnings.append,
-        )
-
-        self.assertEqual(settings.capture_mode, "screen")
-        self.assertIn("capture_mode", warnings[0])
+        for invalid in ("desktop-magic", [], {}):
+            warnings = []
+            settings = AppSettings.from_mapping(
+                {"capture_mode": invalid, "read_hotkey": "<ctrl>+r"},
+                warn=warnings.append,
+            )
+            self.assertEqual(settings.capture_mode, "screen")
+            self.assertEqual(settings.read_hotkey, "<ctrl>+r")
+            self.assertIn("capture_mode", warnings[0])
 
     def test_ocr_confidence_must_be_between_zero_and_one_hundred(self):
         warnings = []
