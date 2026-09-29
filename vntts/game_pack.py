@@ -16,7 +16,6 @@ from vntts.settings import AppSettings
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
     load_source_audio_semantic_evidence,
-    validate_story_semantic_evidence,
 )
 
 
@@ -192,8 +191,7 @@ def _validate_semantic_evidence(
     entry_count: int,
 ) -> None:
     story = load_story_index_document(story_path)
-    document = load_source_audio_semantic_evidence(evidence_path)
-    validate_story_semantic_evidence(story, evidence_path, document)
+    document = load_source_audio_semantic_evidence(evidence_path, story)
     if (
         document["evidence_id"] != evidence_id
         or len(document["entries"]) != entry_count

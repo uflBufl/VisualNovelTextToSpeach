@@ -50,7 +50,6 @@ from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
     canonical_document_sha256,
     load_source_audio_semantic_evidence,
-    validate_story_semantic_evidence,
 )
 from vntts.support import record_background_operation
 from vntts.versioned_json import read_versioned_json, write_versioned_json
@@ -149,11 +148,7 @@ class PregenerationInputStore:
                 )
                 write_story_index_document(story_path, story_metadata, selected_records)
                 if semantic_evidence is not None:
-                    validate_story_semantic_evidence(
-                        story_path,
-                        semantic_evidence,
-                        load_source_audio_semantic_evidence(semantic_evidence),
-                    )
+                    load_source_audio_semantic_evidence(semantic_evidence, story_path)
                 _record_input_phase(
                     "story-projection",
                     phase_started,
