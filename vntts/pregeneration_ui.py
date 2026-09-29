@@ -597,6 +597,14 @@ class OfflineAudioPreparationDialog(QDialog):
         story_filters = QHBoxLayout()
         story_filters.addWidget(self.story_search, 1)
         story_filters.addWidget(self.story_filter)
+        self.expand_stories_button = QPushButton("Expand all")
+        self.expand_stories_button.setToolTip("Show every story and stage")
+        self.expand_stories_button.clicked.connect(self.stories.expandAll)
+        story_filters.addWidget(self.expand_stories_button)
+        self.collapse_stories_button = QPushButton("Collapse all")
+        self.collapse_stories_button.setToolTip("Show only story types")
+        self.collapse_stories_button.clicked.connect(self.stories.collapseAll)
+        story_filters.addWidget(self.collapse_stories_button)
         self.story_filter_status = QLabel()
         self.story_filter_status.setAccessibleName("Shown and selected story counts")
         return story_filters
@@ -3277,7 +3285,7 @@ class OfflineAudioPreparationDialog(QDialog):
                                     content.story_index_sha256,
                                     f"story:{selection.kind}:{selection.parent_story_id}",
                                 ),
-                                True,
+                                False,
                             )
                         )
                         story_parent.setToolTip(
@@ -3405,7 +3413,7 @@ class OfflineAudioPreparationDialog(QDialog):
             item.setHidden(matches == 0)
             expanded = (
                 self._story_group_expansion.get(
-                    (content.story_index_sha256, expansion_key), True
+                    (content.story_index_sha256, expansion_key), item.parent() is None
                 )
                 if content is not None
                 else True
@@ -4564,6 +4572,8 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         self.story_search.setEnabled(enabled)
         self.story_filter.setEnabled(enabled)
+        self.expand_stories_button.setEnabled(enabled)
+        self.collapse_stories_button.setEnabled(enabled)
         self.select_all_button.setEnabled(enabled)
         self.select_none_button.setEnabled(enabled)
         self.change_voices.setEnabled(enabled)

@@ -1313,10 +1313,24 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 [first.text(0), second.text(0)], ["Episode 1", "Episode 2"]
             )
             self.assertEqual(dialog.stories.count(), 2)
+            self.assertTrue(category.isExpanded())
+            self.assertFalse(story.isExpanded())
+            dialog.expand_stories_button.click()
+            self.assertTrue(category.isExpanded())
+            self.assertTrue(story.isExpanded())
+            dialog.collapse_stories_button.click()
+            self.assertFalse(category.isExpanded())
+            self.assertFalse(story.isExpanded())
+            category.setExpanded(True)
             dialog.stories.setCurrentItem(story)
             self.assertFalse(dialog.check_story_audio.isEnabled())
 
             story.setCheckState(0, Qt.CheckState.Checked)
+            self.assertEqual(
+                dialog.selected_story_ids(), ("story:stage:1", "story:stage:2")
+            )
+            dialog.collapse_stories_button.click()
+            dialog.expand_stories_button.click()
             self.assertEqual(
                 dialog.selected_story_ids(), ("story:stage:1", "story:stage:2")
             )
@@ -1327,11 +1341,15 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(story.text(1), "1/2 ready")
             self.assertEqual(category.text(1), "1/2 ready")
 
+            dialog.collapse_stories_button.click()
             dialog.story_search.setText("Episode 2")
             self.assertTrue(first.isHidden())
             self.assertFalse(story.isHidden())
             self.assertFalse(category.isHidden())
             self.assertTrue(story.isExpanded())
+            dialog.story_search.clear()
+            self.assertFalse(story.isExpanded())
+            dialog.story_search.setText("Episode 2")
             story.setCheckState(0, Qt.CheckState.Checked)
             self.assertEqual(
                 dialog.selected_story_ids(), ("story:stage:1", "story:stage:2")
@@ -1343,6 +1361,12 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertFalse(dialog.check_story_audio.isEnabled())
             dialog.story_search.clear()
             self.assertFalse(story.isExpanded())
+            dialog._populate_stories(content)
+            restored_story = dialog.stories.topLevelItem(0).child(0)
+            self.assertFalse(restored_story.isExpanded())
+            dialog.expand_stories_button.click()
+            dialog._populate_stories(content)
+            self.assertTrue(dialog.stories.topLevelItem(0).child(0).isExpanded())
 
     def test_story_search_matches_visible_character_and_episode_title(self):
         with TemporaryDirectory() as temporary_directory:
