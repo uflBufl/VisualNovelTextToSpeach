@@ -354,6 +354,7 @@ class LiveDialogReader:
         self.auto_advance_focus_wait_generation: int | None = None
         self.auto_advance_visual_wait_generation: int | None = None
         self.auto_advance_timer: Timer | None = None
+        self._auto_advance_timer_serial = 0
         self.focus_probe_failed = False
         self.latest_frame: Frame | None = None
         self.latest_frame_fingerprint: FrameFingerprint | None = None
@@ -1549,17 +1550,25 @@ class LiveDialogReader:
                 or self.stop_event.is_set()
             ):
                 return
+            self._auto_advance_timer_serial += 1
             timer = Timer(
                 self.auto_advance_delay_seconds,
                 self._run_auto_advance,
-                args=(generation,),
+                args=(generation, self._auto_advance_timer_serial),
             )
             timer.daemon = True
             self.auto_advance_timer = timer
         timer.start()
 
-    def _run_auto_advance(self, generation: int) -> None:
+    def _run_auto_advance(
+        self, generation: int, timer_serial: int | None = None
+    ) -> None:
         with self.state_lock:
+            if (
+                timer_serial is not None
+                and timer_serial != self._auto_advance_timer_serial
+            ):
+                return
             self.auto_advance_timer = None
             if (
                 self.auto_advance is None
@@ -1688,10 +1697,16 @@ class LiveDialogReader:
                         self.pipeline_metrics,
                         last_auto_advance_dispatched_at=monotonic(),
                     )
+                    self._auto_advance_timer_serial += 1
                     timer = Timer(
                         self.auto_advance_confirmation_timeout_seconds,
                         self._auto_advance_confirmation_expired,
-                        args=(generation, attempt, False),
+                        args=(
+                            generation,
+                            attempt,
+                            False,
+                            self._auto_advance_timer_serial,
+                        ),
                     )
                     timer.daemon = True
                     self.auto_advance_timer = timer
@@ -1712,8 +1727,14 @@ class LiveDialogReader:
         generation: int,
         attempt: int,
         terminal: bool = False,
+        timer_serial: int | None = None,
     ) -> None:
         with self.state_lock:
+            if (
+                timer_serial is not None
+                and timer_serial != self._auto_advance_timer_serial
+            ):
+                return
             self.auto_advance_timer = None
             if (
                 generation != self.active_generation
@@ -1778,6 +1799,7 @@ class LiveDialogReader:
                 or self.stop_event.is_set()
             ):
                 return
+            self._auto_advance_timer_serial += 1
             timer = Timer(
                 (
                     self.auto_advance_confirmation_timeout_seconds
@@ -1785,7 +1807,7 @@ class LiveDialogReader:
                     else delay_seconds
                 ),
                 self._auto_advance_confirmation_expired,
-                args=(generation, attempt, terminal),
+                args=(generation, attempt, terminal, self._auto_advance_timer_serial),
             )
             timer.daemon = True
             self.auto_advance_timer = timer
@@ -1826,6 +1848,7 @@ class LiveDialogReader:
     def _cancel_auto_advance_locked(self) -> None:
         timer = self.auto_advance_timer
         self.auto_advance_timer = None
+        self._auto_advance_timer_serial += 1
         if timer is not None:
             timer.cancel()
 

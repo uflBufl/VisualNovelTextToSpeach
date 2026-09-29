@@ -1850,6 +1850,41 @@ class LiveDialogReaderTest(unittest.TestCase):
         state_changed.assert_any_call("waiting", 3, 1)
         state_changed.assert_any_call("failed", 3, 1)
 
+    def test_cancelled_auto_advance_timer_cannot_dispatch_after_replacement(self):
+        scheduler = ManualTimerScheduler()
+        auto_advance = Mock(return_value=True)
+        reader = self.create_reader(auto_advance=auto_advance)
+        reader.active_generation = 3
+        reader.dialog_ready_generation = 3
+
+        with patch("vntts.live.Timer", side_effect=scheduler.create):
+            reader._maybe_auto_advance()
+            cancelled = reader.auto_advance_timer
+            reader.toggle_pause()
+            reader.toggle_pause()
+            current = reader.auto_advance_timer
+            cancelled.function(*cancelled.args)
+
+        self.assertIs(reader.auto_advance_timer, current)
+        auto_advance.assert_not_called()
+
+    def test_cancelled_confirmation_timer_cannot_replace_new_timer(self):
+        scheduler = ManualTimerScheduler()
+        reader = self.create_reader(auto_advance=Mock(return_value=True))
+        reader.active_generation = 3
+        reader.dialog_ready_generation = 3
+
+        with patch("vntts.live.Timer", side_effect=scheduler.create):
+            reader._maybe_auto_advance()
+            reader.auto_advance_timer.fire()
+            cancelled = reader.auto_advance_timer
+            reader.toggle_pause()
+            reader.toggle_pause()
+            current = reader.auto_advance_timer
+            cancelled.function(*cancelled.args)
+
+        self.assertIs(reader.auto_advance_timer, current)
+
     def test_late_next_dialogue_confirms_without_another_key(self):
         auto_advance = Mock(return_value=True)
         state_changed = Mock()
