@@ -2065,6 +2065,56 @@ class LiveDialogReaderTest(unittest.TestCase):
         self.assertIsNone(reader.failed_auto_advance_generation)
         state_changed.assert_called_once_with("focus-wait", 3, 0)
 
+    def test_pausing_during_focus_probe_prevents_auto_advance(self):
+        entered = Event()
+        release = Event()
+
+        def focus_probe():
+            entered.set()
+            self.assertTrue(release.wait(1))
+            return True
+
+        auto_advance = Mock(return_value=True)
+        reader = self.create_reader(auto_advance=auto_advance, focus_probe=focus_probe)
+        reader.active_generation = 3
+        reader.dialog_ready_generation = 3
+        worker = Thread(target=reader._run_auto_advance, args=(3, 0))
+        worker.start()
+        self.assertTrue(entered.wait(1))
+        reader.toggle_pause()
+        release.set()
+        worker.join(1)
+
+        self.assertFalse(worker.is_alive())
+        auto_advance.assert_not_called()
+
+    def test_pausing_during_confirmation_focus_probe_does_not_schedule_timer(self):
+        entered = Event()
+        release = Event()
+
+        def focus_probe():
+            entered.set()
+            self.assertTrue(release.wait(1))
+            return True
+
+        reader = self.create_reader(focus_probe=focus_probe)
+        reader.active_generation = 3
+        reader.pending_auto_advance_generation = 3
+        reader.auto_advance_attempts = 1
+        worker = Thread(
+            target=reader._auto_advance_confirmation_expired,
+            args=(3, 1, False, 0),
+        )
+        with patch("vntts.live.Timer") as timer:
+            worker.start()
+            self.assertTrue(entered.wait(1))
+            reader.toggle_pause()
+            release.set()
+            worker.join(1)
+
+        self.assertFalse(worker.is_alive())
+        timer.assert_not_called()
+
     def test_typed_focus_refusal_reschedules_without_an_ambiguous_second_probe(self):
         state_changed = Mock()
         focus_probe = Mock(return_value=True)

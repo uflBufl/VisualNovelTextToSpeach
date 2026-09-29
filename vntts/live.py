@@ -1584,7 +1584,19 @@ class LiveDialogReader:
                 or self.stop_event.is_set()
             ):
                 return
-        if not self._is_focused():
+        focused = self._is_focused()
+        with self.state_lock:
+            if (
+                (
+                    timer_serial is not None
+                    and timer_serial != self._auto_advance_timer_serial
+                )
+                or generation != self.active_generation
+                or self.paused
+                or self.stop_event.is_set()
+            ):
+                return
+        if not focused:
             # A nonmodal voice prompt can own focus exactly when speech ends.
             # Keep a delayed attempt alive so returning to the game cannot
             # strand a ready dialogue forever.
@@ -1607,6 +1619,16 @@ class LiveDialogReader:
         except Exception as error:
             self.report_error(error)
         with self.state_lock:
+            if (
+                (
+                    timer_serial is not None
+                    and timer_serial != self._auto_advance_timer_serial
+                )
+                or generation != self.active_generation
+                or self.paused
+                or self.stop_event.is_set()
+            ):
+                return
             visual_ready = bool(
                 not self.require_visible_auto_advance
                 or (
@@ -1744,7 +1766,21 @@ class LiveDialogReader:
             ):
                 return
             paused = self.paused
-        if paused or not self._is_focused():
+        focused = False if paused else self._is_focused()
+        with self.state_lock:
+            if (
+                (
+                    timer_serial is not None
+                    and timer_serial != self._auto_advance_timer_serial
+                )
+                or generation != self.active_generation
+                or self.pending_auto_advance_generation != generation
+                or self.auto_advance_attempts != attempt
+                or self.stop_event.is_set()
+            ):
+                return
+            paused = self.paused
+        if paused or not focused:
             self._schedule_auto_advance_confirmation(
                 generation,
                 attempt,
@@ -1796,6 +1832,7 @@ class LiveDialogReader:
                 generation != self.active_generation
                 or self.pending_auto_advance_generation != generation
                 or self.auto_advance_timer is not None
+                or self.paused
                 or self.stop_event.is_set()
             ):
                 return
