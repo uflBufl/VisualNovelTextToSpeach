@@ -342,6 +342,92 @@ class RecognizedDialogTest(unittest.TestCase):
 
         self.assertEqual((result.character, result.text), ("???", "Who are you?"))
 
+    def test_unknown_nameplate_glyph_variants_are_isolated_before_dialogue_ocr(self):
+        dialog_data = {"text": ["Who", "are", "you?"], "conf": [96, 96, 96]}
+        for nameplate in ("2???", "22?"):
+            with self.subTest(nameplate=nameplate):
+                frame_data = {
+                    "text": [nameplate, "Who", "are", "you?"],
+                    "conf": [95, 96, 96, 96],
+                    "block_num": [1, 2, 2, 2],
+                    "par_num": [1, 1, 1, 1],
+                    "line_num": [1, 1, 1, 1],
+                    "left": [80, 75, 180, 250],
+                    "top": [30, 150, 150, 150],
+                    "width": [50, 80, 55, 90],
+                    "height": [45, 40, 40, 40],
+                }
+
+                result = recognize_dialog_image_result(
+                    Image.new("RGB", (1000, 300), "black"),
+                    recognize_text=Mock(return_value="Who are you?\n"),
+                    recognize_data=Mock(side_effect=[frame_data, dialog_data]),
+                    profiles=(OCRPreprocessingProfile("balanced", 1.8, 180),),
+                )
+
+                self.assertEqual((result.character, result.text), ("???", "Who are you?"))
+
+    def test_short_unknown_interjection_drops_trailing_background_glyphs(self):
+        merged_data = {
+            "text": ["222", "|", "Aa", "XUN", "Hey!"],
+            "conf": [95, 73, 80, 70, 90],
+            "block_num": [1, 1, 1, 1, 2],
+            "par_num": [1, 1, 1, 1, 1],
+            "line_num": [1, 1, 1, 1, 1],
+            "left": [80, 180, 300, 450, 64],
+            "top": [0, 0, 0, 0, 202],
+            "width": [60, 25, 45, 70, 134],
+            "height": [62, 62, 62, 62, 63],
+        }
+        sparse_data = {
+            "text": ["\\", "\\ ON", "22?", "at", "————", "Hey!"],
+            "conf": [30, 30, 95, 55, 45, 90],
+            "block_num": [1, 2, 3, 4, 5, 6],
+            "par_num": [1, 1, 1, 1, 1, 1],
+            "line_num": [1, 1, 1, 1, 1, 1],
+            "left": [1239, 1428, 80, 1052, 2373, 64],
+            "top": [0, 0, 70, 138, 164, 202],
+            "width": [44, 192, 110, 49, 142, 134],
+            "height": [72, 133, 65, 18, 6, 63],
+        }
+        dialog_data = {
+            "text": ["Hey!", "-", "™", "\\", "|", "a", "Se"],
+            "conf": [90, 73, 0, 0, 57, 62, 53],
+        }
+
+        result = recognize_dialog_image_result(
+            Image.new("RGB", (2560, 560), "black"),
+            recognize_text=Mock(return_value="Hey! - ™ \\\n| a\nSe\n"),
+            recognize_data=Mock(
+                side_effect=[merged_data, sparse_data, dialog_data]
+            ),
+            profiles=(OCRPreprocessingProfile("balanced", 1.8, 180),),
+        )
+
+        self.assertEqual((result.character, result.text), ("???", "Hey!"))
+        self.assertEqual(result.confidence, 90)
+
+    def test_unknown_nameplate_normalization_preserves_other_numeric_npc_names(self):
+        for nameplate in ("6", "37", "222"):
+            with self.subTest(nameplate=nameplate):
+                speaker = recognize_speaker_from_data(
+                    {
+                        "text": [nameplate, "No."],
+                        "conf": [96, 95],
+                        "block_num": [1, 2],
+                        "par_num": [1, 1],
+                        "line_num": [1, 1],
+                        "left": [80, 75],
+                        "top": [30, 150],
+                        "width": [180, 100],
+                        "height": [45, 40],
+                    },
+                    image_width=1000,
+                    image_height=300,
+                )
+
+                self.assertEqual(speaker[0], nameplate)
+
     def test_confident_orphaned_nameplate_does_not_hide_short_dialogue(self):
         orphaned_nameplate = {
             "text": [":", "Hotelier"],

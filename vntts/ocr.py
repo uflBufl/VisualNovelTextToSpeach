@@ -541,7 +541,10 @@ def recognize_speaker_from_data(
     for position, line in enumerate(lines[:-1]):
         if len(line.text) > 40:
             continue
-        if not is_probable_character_name(line.text):
+        if (
+            _normalize_unknown_nameplate(line.text) != "???"
+            and not is_probable_character_name(line.text)
+        ):
             continue
         if image_height is not None and line.top > image_height * 0.6:
             continue
@@ -551,6 +554,14 @@ def recognize_speaker_from_data(
             for candidate in lines[position + 1 :]
             if candidate.top > line.bottom
         ]
+        if image_width is not None:
+            if line.right - line.left > image_width * 0.45:
+                continue
+            dialog_lines = [
+                candidate
+                for candidate in dialog_lines
+                if abs(line.left - candidate.left) <= image_width * 0.15
+            ]
         if not dialog_lines:
             continue
         first_dialog_line = dialog_lines[0]
@@ -560,11 +571,6 @@ def recognize_speaker_from_data(
         # those lines before the checksum-bound sequence matcher can see them.
         if len(first_dialog_line.text.strip()) < 3:
             continue
-        if image_width is not None:
-            if line.right - line.left > image_width * 0.45:
-                continue
-            if abs(line.left - first_dialog_line.left) > image_width * 0.15:
-                continue
 
         score = len(first_dialog_line.text)
         if len(line.text.split()) == 1 and line.text.istitle():
@@ -582,7 +588,14 @@ def recognize_speaker_from_data(
 
 
 def _normalize_unknown_nameplate(text: str) -> str:
-    return "???" if text.strip() == "22" else text.strip()
+    value = text.strip()
+    # Tesseract reads the game's ``???`` as 22, 22?, or 2???; do not turn
+    # ordinary numeric NPC labels such as 6 or 37 into an unknown speaker.
+    if value == "22" or (
+        2 <= len(value) <= 4 and "?" in value and set(value) <= {"2", "?"}
+    ):
+        return "???"
+    return value
 
 
 def _has_dialog_below(speaker_line: OCRLine, lines: Sequence[OCRLine]) -> bool:
@@ -604,7 +617,7 @@ def _has_ocr_geometry(data: OcrData) -> bool:
 def calculate_ocr_confidence(data: OcrData) -> float:
     weighted_confidence = 0.0
     total_weight = 0
-    for text, confidence in _recognized_words(data):
+    for text, confidence in _trim_trailing_ocr_noise(_recognized_words(data)):
         weight = max(1, sum(character.isalnum() for character in text))
         weighted_confidence += confidence * weight
         total_weight += weight
@@ -737,17 +750,10 @@ def clean_dialog_lines_from_data(
     """Remove low-confidence background words appended after a full sentence."""
     fallback_lines = list(fallback_lines)
     words = _recognized_words(data)
-    terminal_position = _last_confident_terminal_position(words)
-    if terminal_position is None or terminal_position == len(words) - 1:
+    cleaned_words = _trim_trailing_ocr_noise(words)
+    if len(cleaned_words) == len(words):
         return fallback_lines
-
-    suffix = words[terminal_position + 1 :]
-    if not all(_is_suspicious_trailing_word(*word) for word in suffix):
-        return fallback_lines
-
-    cleaned = clean_dialog_lines(
-        " ".join(word for word, _ in words[: terminal_position + 1])
-    )
+    cleaned = clean_dialog_lines(" ".join(word for word, _ in cleaned_words))
     return cleaned or fallback_lines
 
 
@@ -781,9 +787,25 @@ def _last_confident_terminal_position(words: Sequence[tuple[str, float]]) -> int
     return terminal_position
 
 
+def _trim_trailing_ocr_noise(
+    words: Sequence[tuple[str, float]],
+) -> Sequence[tuple[str, float]]:
+    terminal_position = _last_confident_terminal_position(words)
+    if terminal_position is None or terminal_position == len(words) - 1:
+        return words
+    suffix = words[terminal_position + 1 :]
+    return words[: terminal_position + 1] if all(
+        _is_suspicious_trailing_word(*word) for word in suffix
+    ) else words
+
+
 def _is_suspicious_trailing_word(word: str, confidence: float) -> bool:
     alphanumeric_characters = sum(character.isalnum() for character in word)
-    return confidence < 45 or (alphanumeric_characters <= 3 and confidence < 65)
+    return (
+        alphanumeric_characters == 0
+        or confidence < 45
+        or (alphanumeric_characters <= 3 and confidence < 65)
+    )
 
 
 def _strip_trailing_ocr_glyphs(line: str) -> str:
