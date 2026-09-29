@@ -511,10 +511,7 @@ class VoicePackManager:
                 for voice in unique_voices:
                     copied_references = []
                     for reference in voice.references:
-                        if not reference.is_file():
-                            raise VoiceManifestError(
-                                f"Voice reference does not exist: {reference}"
-                            )
+                        self._validate_reference_file(reference)
                         output = references_path / (
                             f"{slugify(voice.character, fallback='asset')}-{uuid4().hex[:10]}"
                             f"{reference.suffix.casefold()}"
@@ -645,13 +642,17 @@ class VoicePackManager:
         if not references:
             raise VoiceManifestError("Select at least one voice reference")
         for reference in references:
-            if not reference.is_file():
-                raise VoiceManifestError(f"Voice reference does not exist: {reference}")
-            if reference.suffix.casefold() not in supported_audio_extensions:
-                raise VoiceManifestError(
-                    f"Unsupported voice reference format: {reference.suffix}"
-                )
+            VoicePackManager._validate_reference_file(reference)
         return references
+
+    @staticmethod
+    def _validate_reference_file(reference: Path) -> None:
+        if not reference.is_file():
+            raise VoiceManifestError(f"Voice reference does not exist: {reference}")
+        if reference.suffix.casefold() not in supported_audio_extensions:
+            raise VoiceManifestError(
+                f"Unsupported voice reference format: {reference.suffix}"
+            )
 
     @staticmethod
     def _write_voice_checksums(pack_path: Path, manifest_path: Path) -> None:

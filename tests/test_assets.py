@@ -653,6 +653,36 @@ class VoicePackManagerTest(unittest.TestCase):
             self.assertTrue(imported_voice.reference.is_file())
             self.assertNotEqual(imported_voice.reference, reference)
 
+    def test_import_manifest_rejects_unsupported_reference_format(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source_pack = root / "source"
+            source_pack.mkdir()
+            reference = source_pack / "voice.txt"
+            reference.write_bytes(b"not audio")
+            source_manifest = source_pack / "manifest.json"
+            source_manifest.write_text(
+                json.dumps(
+                    {
+                        "voices": [
+                            {
+                                "character": "X",
+                                "speaker": "x-v2",
+                                "reference": reference.name,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manager = VoicePackManager(root / "managed")
+
+            with self.assertRaisesRegex(
+                VoiceManifestError, "Unsupported voice reference format"
+            ):
+                manager.import_pack(source_manifest)
+            self.assertFalse((root / "managed" / "source" / "manifest.json").exists())
+
     def test_import_pack_removes_partial_copies_and_preserves_prior_pack(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
