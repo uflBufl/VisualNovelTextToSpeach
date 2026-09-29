@@ -83,10 +83,6 @@ class RuntimeInstallationTest(unittest.TestCase):
         ):
             return ensure_speech_runtime("pocket-tts")
 
-    def next_recipe(self):
-        with (self.project / "uv.lock").open("a", encoding="utf-8") as stream:
-            stream.write("# another recipe\n")
-
     def test_active_runtime_and_unconfirmed_child_are_preserved_until_shutdown(self):
         old = self.prepared_runtime()
         use = claim_runtime("pocket-tts", old[0])
@@ -94,7 +90,7 @@ class RuntimeInstallationTest(unittest.TestCase):
         child = Mock(pid=999999, poll=Mock(return_value=None))
         use.begin_launch()
         use.launched(child)
-        self.next_recipe()
+        old[1].unlink()
         new = self.prepared_runtime()
         self.assertTrue(old[0].is_dir())
         use.close()
@@ -113,7 +109,7 @@ class RuntimeInstallationTest(unittest.TestCase):
         old = self.prepared_runtime()
         use = claim_runtime("pocket-tts", old[0])
         use.begin_launch()
-        self.next_recipe()
+        old[1].unlink()
         new = self.prepared_runtime()
         with patch(
             "vntts.runtime_ownership.inspect_process_status", return_value="dead"
@@ -139,7 +135,7 @@ class RuntimeInstallationTest(unittest.TestCase):
         use = claim_runtime("pocket-tts", old[0])
         use.document["parent_pid"] = 0x80000000
         use._save()
-        self.next_recipe()
+        old[1].unlink()
         new = self.prepared_runtime()
 
         with (
@@ -294,8 +290,7 @@ class RuntimeInstallationTest(unittest.TestCase):
                 worker._start_worker()
             self.assertIsNotNone(worker._runtime_use)
 
-            with (project / "uv.lock").open("a", encoding="utf-8") as stream:
-                stream.write("# another recipe\n")
+            old[1].unlink()
             new = ensure_speech_runtime("moss-tts")
             self.assertTrue(old[0].exists())
 
@@ -330,7 +325,7 @@ class RuntimeInstallationTest(unittest.TestCase):
 
     def test_cleanup_failures_do_not_reject_a_good_runtime(self):
         old = self.prepared_runtime()
-        self.next_recipe()
+        old[1].unlink()
         messages = []
         with (
             patch("vntts.runtime_installation._run", side_effect=self.install),
@@ -348,7 +343,7 @@ class RuntimeInstallationTest(unittest.TestCase):
     def test_cleanup_skips_unknown_ownership_and_junctions(self):
         old = self.prepared_runtime()
         use = claim_runtime("pocket-tts", old[0])
-        self.next_recipe()
+        old[1].unlink()
         new = self.prepared_runtime()
         use.close()
         with patch.object(Path, "is_junction", lambda path: path == old[0]):
@@ -368,7 +363,10 @@ class RuntimeInstallationTest(unittest.TestCase):
     def test_cleanup_skips_recipe_under_installation(self):
         old = self.prepared_runtime()
         use = claim_runtime("pocket-tts", old[0])
-        self.next_recipe()
+        old[1].unlink()
+        self.prepared_runtime()  # Supersede old while its process is still active.
+        with (self.project / "uv.lock").open("a", encoding="utf-8") as stream:
+            stream.write("# another recipe\n")
         new = self.prepared_runtime()
         use.close()
         with exclusive_advisory_lock(old[0].parents[2] / "installation.lock"):
@@ -408,7 +406,7 @@ class RuntimeInstallationTest(unittest.TestCase):
             Thread(target=read_ready, daemon=True).start()
             self.assertTrue(ready.wait(15), "runtime claimant did not start")
             self.assertEqual(lines, ["ready\n"])
-            self.next_recipe()
+            old[1].unlink()
             new = self.prepared_runtime()
             self.assertTrue(old[0].is_dir())
             _out, error = child.communicate("stop\n", timeout=10)
@@ -434,7 +432,7 @@ class RuntimeInstallationTest(unittest.TestCase):
                 backend_directory="pocket-tts",
                 missing_message="missing",
             )
-            self.next_recipe()
+            old[1].unlink()
             new = self.prepared_runtime()
             self.assertTrue(old[0].exists())
             self.assertEqual(len(uses), 1)
@@ -466,7 +464,10 @@ class RuntimeInstallationTest(unittest.TestCase):
             self.assertIsNone(find_managed_speech_runtime("pocket-tts"))
             updated = ensure_speech_runtime("pocket-tts")
             self.assertNotEqual(paths[0], updated[0])
-            self.assertFalse(paths[0].is_dir())
+            self.assertTrue(paths[0].is_dir())
+            old_use = claim_runtime("pocket-tts", paths[0])
+            self.assertIsNotNone(old_use)
+            old_use.close()
 
     def test_legacy_runtime_alias_outside_managed_storage_is_rejected(self):
         from vntts_artifacts.atomic_io import atomic_write_json

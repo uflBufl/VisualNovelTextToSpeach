@@ -262,16 +262,13 @@ def _cleanup_managed_runtimes(
                 for generation in generations.iterdir():
                     if generation == keep_generation:
                         continue
-                    if (
-                        location == keep_generation.parent.parent
-                        and generation.name == selected
-                    ):
-                        continue  # Preserve a newer publication from a concurrent caller.
+                    if generation.name == selected:
+                        # Any app using this recipe may claim its selected runtime
+                        # after resolution, even while a newer recipe is cleaned.
+                        continue
                     if not remove_inactive_generation(backend, generation):
                         continue
                     removed += 1
-                    if generation.name == selected:
-                        (location / "verified.json").unlink(missing_ok=True)
         except AdvisoryLockBusyError:
             continue
         except OSError as error:
