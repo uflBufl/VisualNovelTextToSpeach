@@ -612,6 +612,42 @@ class SpeechWorkerTest(unittest.TestCase):
             np.array([[0.25], [-0.25]], dtype=np.float32),
         )
 
+    def test_stream_failure_preserves_first_audio_time(self):
+        output = MagicMock()
+        stream = output.OutputStream.return_value.__enter__.return_value
+        stream.write.side_effect = (False, RuntimeError("device write failed"))
+        with (
+            patch.object(IsolatedSpeechBackend, "_start_worker"),
+            patch(
+                "vntts.speech_worker._runtime_paths",
+                return_value=(Path("/runtime"), Path("/runtime/python"), Path("/site")),
+            ),
+        ):
+            backend = IsolatedSpeechBackend(
+                "moss-tts", CharacterVoiceRegistry(), audio_output=output
+            )
+        backend.clock = iter((1.0, 1.01, 1.02)).__next__
+
+        def render(request):
+            result = FakeWorkerBackend(backend.registry).render(request).collect()
+
+            def chunks():
+                for index, frame in enumerate(result.pcm):
+                    yield SynthesisChunk(frame[None, :], result.sample_rate, index, 0.0)
+                return result
+
+            return SynthesisChunkStream(chunks())
+
+        with patch.object(backend, "render", side_effect=render):
+            outcome = backend.play_prepared(
+                backend.prepare_playback("Narrator", "Keep the first write time.")
+            )
+
+        self.assertEqual(outcome.status.value, "failed")
+        self.assertAlmostEqual(outcome.first_audio_ms, 10.0)
+        self.assertIn("device write failed", outcome.error)
+        self.assertEqual(stream.write.call_count, 2)
+
     def test_pocket_worker_ignores_an_inapplicable_saved_profile(self):
         backend = object.__new__(IsolatedSpeechBackend)
         backend.name = "pocket-tts"

@@ -1503,6 +1503,7 @@ class IsolatedSpeechBackend:
                     ),
                     (self.clock() - started) * 1000,
                     underflowed=underflowed,
+                    first_audio_ms=first_audio_ms,
                     error=None if self._stop_requested.is_set() else str(error),
                     error_type=None if self._stop_requested.is_set() else type(error),
                 )
