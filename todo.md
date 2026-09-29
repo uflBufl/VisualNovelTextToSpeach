@@ -14,6 +14,10 @@
 
 ## Adopt Qwen for offline story preparation
 
+- [ ] Listen to transcriptless Qwen game-voice samples on Mac and Windows before
+      choosing it as the default offline engine. The speaker-only conditioning
+      path is functional but may preserve expression less well than a reference
+      with verified spoken words.
 - [ ] On the RTX 2070 Super 8 GB, generate the fixed character corpus with the packaged Windows Qwen 0.6B runtime. Compare its voices with MOSS, confirm memory use and complete lines, and retain the audio and timings. The Mac Qwen 1.7B comparison has passed listening review but does not establish Windows 0.6B quality.
 - [ ] Resolve the Qwen dependency audit findings or explicitly accept their release risk. After the Windows quality check, make Qwen the preferred offline engine on supported installations and verify narrator setup and story preparation; keep MOSS available as an alternative.
 

@@ -1099,16 +1099,6 @@ class VoiceAssignmentComponent:
         )
         if choice is None:
             raise ValueError("The selected voice is no longer available")
-        if (
-            controller.settings.speech_backend == "qwen-tts"
-            and source_id != default_voice_choice_id
-        ):
-            voice = voice_router.registry.resolve_source(source_id)
-            if voice is None or not voice.reference_transcript:
-                raise ValueError(
-                    "Qwen needs an exact reference transcript. "
-                    "Choose this voice in Voices and enter its original words."
-                )
         character_key = normalize_character_name(character)
         updated_settings = controller.settings
         if commit_settings is not None:

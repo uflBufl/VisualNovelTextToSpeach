@@ -1149,20 +1149,14 @@ class SettingsDialog(QDialog):
                 f"Offline preparation engine: {offline_backend} is not included in this application package.",
             )
         narrator_binding = self.voice_library.binding("Narrator")
-        narrator_evidence = (
-            narrator_binding.provenance.get("evidence")
-            if narrator_binding is not None
-            else None
-        )
         if "qwen-tts" in {backend, offline_backend} and (
-            not isinstance(narrator_evidence, dict)
-            or not str(narrator_evidence.get("reference_transcript") or "").strip()
+            not self.narrator_reference.text().strip()
+            and not (narrator_binding and narrator_binding.source_sha256s)
         ):
             add(
                 2,
                 self.choose_narrator_button,
-                "Narrator voice: choose a game voice and enter the exact words "
-                "spoken in its reference for Qwen3-TTS.",
+                "Narrator voice: choose a game voice or reference recording for Qwen3-TTS.",
             )
         if (
             backend == "moss-tts"

@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from vntts.pregeneration_queue import PregenerationQueueError, _write_effective_voices
+from vntts.pregeneration_queue import _write_effective_voices
 from vntts.pregeneration_voices import _materialize_voice_catalog
 from vntts.qwen_backend import QwenTTSVoiceRouterBackend, _require_qwen_model
 from vntts.services.tts_engine import TTSConfigurationError
@@ -174,7 +174,25 @@ class QwenBackendTest(unittest.TestCase):
             self.assertEqual(calls[0]["voice_clone_prompt"], "cached-prompt")
             self.assertGreater(calls[0]["max_new_tokens"], 0)
 
-    def test_reference_text_reaches_model_and_is_required(self):
+            backend.registry = CharacterVoiceRegistry(
+                [CharacterVoice("Narrator", "Narrator", references=(reference,))]
+            )
+            with (
+                patch("vntts.qwen_backend.sys.platform", "win32"),
+                patch.dict("sys.modules", {"torch": fake_torch}),
+            ):
+                result = backend.render(
+                    SynthesisRequest(
+                        voice="Narrator",
+                        text="Another line.",
+                        cache_policy=SynthesisCachePolicy.BYPASS,
+                    )
+                ).collect()
+            self.assertEqual(result.completion, SynthesisCompletion.COMPLETE)
+            self.assertIsNone(prompts[1]["ref_text"])
+            self.assertTrue(prompts[1]["x_vector_only_mode"])
+
+    def test_reference_text_reaches_model_when_available(self):
         with TemporaryDirectory() as directory:
             reference = Path(directory) / "reference.wav"
             with wave.open(str(reference), "wb") as output:
@@ -225,12 +243,26 @@ class QwenBackendTest(unittest.TestCase):
                     [CharacterVoice("Narrator", "Narrator", references=(reference,))]
                 )
                 backend.registry = missing
-                with self.assertRaisesRegex(TTSConfigurationError, "exact transcript"):
-                    backend.render(
-                        SynthesisRequest(voice="Narrator", text="Another line.")
-                    )
+                result = backend.render(
+                    SynthesisRequest(voice="Narrator", text="Another line.")
+                ).collect()
+                self.assertEqual(result.completion, SynthesisCompletion.COMPLETE)
+                self.assertIsNone(calls[-1]["ref_text"])
+                self.assertNotEqual(
+                    backend._persistent_cache_key(
+                        "narrator", "Another line.", reference.resolve()
+                    ),
+                    QwenTTSVoiceRouterBackend(
+                        restored,
+                        narrator_reference=reference,
+                        model_factory=lambda _name, lazy=False: FakeModel(),
+                        persistent_audio_cache_directory=Path(directory) / "cache",
+                    )._persistent_cache_key(
+                        "narrator", "Another line.", reference.resolve()
+                    ),
+                )
 
-    def test_offline_reference_carries_transcript_or_fails_early(self):
+    def test_offline_reference_carries_optional_transcript(self):
         with TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             reference = root / "reference.wav"
@@ -252,7 +284,7 @@ class QwenBackendTest(unittest.TestCase):
                 "narrator_roles": (),
                 "line_voice_characters": {},
             }
-            entries = _write_effective_voices(staging, effective, backend="qwen-tts")
+            entries = _write_effective_voices(staging, effective)
             self.assertEqual(
                 entries[0]["vntts.reference_transcript"], "The original line."
             )
@@ -265,8 +297,8 @@ class QwenBackendTest(unittest.TestCase):
             )
             missing_staging = root / "missing-staging"
             missing_staging.mkdir()
-            with self.assertRaisesRegex(PregenerationQueueError, "exact transcript"):
-                _write_effective_voices(missing_staging, effective, backend="qwen-tts")
+            entries = _write_effective_voices(missing_staging, effective)
+            self.assertNotIn("vntts.reference_transcript", entries[0])
 
     def test_voice_catalog_snapshot_keeps_reference_text(self):
         with TemporaryDirectory() as directory:

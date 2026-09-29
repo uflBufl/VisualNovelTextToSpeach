@@ -2801,7 +2801,7 @@ class TrayApplicationTest(unittest.TestCase):
             self.assertTrue(dialog.advanced_narrator.isChecked())
             delete_dialog(dialog)
 
-    def test_qwen_rejects_manual_narrator_without_transcript(self):
+    def test_qwen_accepts_manual_narrator_without_transcript(self):
         with TemporaryDirectory() as directory:
             reference = Path(directory) / "narrator.wav"
             reference.touch()
@@ -2817,11 +2817,10 @@ class TrayApplicationTest(unittest.TestCase):
                     ),
                     voice_library=VoiceLibrary(Path(directory) / "voices"),
                 )
-                self.assertTrue(
+                self.assertFalse(
                     any(
                         widget is dialog.choose_narrator_button
-                        and "exact words" in message
-                        for _, widget, message in dialog.validation_errors()
+                        for _, widget, _ in dialog.validation_errors()
                     )
                 )
                 delete_dialog(dialog)

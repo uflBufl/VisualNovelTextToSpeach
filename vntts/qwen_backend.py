@@ -86,7 +86,7 @@ class _QwenTTSModel(Protocol):
         *,
         text: str,
         ref_audio: str,
-        ref_text: str,
+        ref_text: str | None,
         lang_code: str,
         temperature: float,
         top_k: int,
@@ -118,11 +118,12 @@ def _require_qwen_model(model: object) -> _QwenTTSModel:
     return cast(_QwenTTSModel, model)
 
 
-def _reference_prompt_codes(value: object) -> tuple[str, str]:
+def _reference_prompt_codes(value: object) -> tuple[str, str | None]:
     if (
         isinstance(value, tuple)
         and len(value) == 2
-        and all(isinstance(part, str) for part in value)
+        and isinstance(value[0], str)
+        and (value[1] is None or isinstance(value[1], str))
     ):
         return value
     raise TTSConfigurationError("Qwen Base reference encoder is missing")
@@ -252,23 +253,21 @@ class QwenTTSVoiceRouterBackend(MossTTSVoiceRouterBackend):
     def _resolve_prompt_codes(self, character: str) -> tuple[str, object]:
         voice_key, source = self._resolve_voice_source(character)
         voice = self.registry.resolve(character)
-        transcript = getattr(voice, "reference_transcript", None)
-        if not transcript or not transcript.strip():
-            raise TTSConfigurationError(
-                f"Qwen needs the exact transcript of {voice_key}'s reference audio"
-            )
+        transcript = (
+            getattr(voice, "reference_transcript", None) or ""
+        ).strip() or None
         if sys.platform == "win32":
-            identity = f"{voice_key}:{source}:{transcript.strip()}"
+            identity = f"{voice_key}:{source}:{transcript}"
             prompt = self.prompt_audio_codes.get(identity)
             if prompt is None:
                 prompt = self.model.create_voice_clone_prompt(
                     ref_audio=str(source),
-                    ref_text=transcript.strip(),
-                    x_vector_only_mode=False,
+                    ref_text=transcript,
+                    x_vector_only_mode=transcript is None,
                 )
                 self.prompt_audio_codes[identity] = prompt
             return voice_key, prompt
-        return voice_key, (str(source), transcript.strip())
+        return voice_key, (str(source), transcript)
 
     def _resolve_voice_source(self, character: str) -> tuple[str, Path]:
         voice_key, source = resolve_required_voice_reference(
@@ -276,7 +275,7 @@ class QwenTTSVoiceRouterBackend(MossTTSVoiceRouterBackend):
             character,
             self.narrator_reference,
             backend_name="Qwen3-TTS",
-            missing_message="Qwen3-TTS requires a voice reference with an exact transcript.",
+            missing_message="Qwen3-TTS requires a voice reference recording.",
             error_type=TTSConfigurationError,
         )
         return str(voice_key), Path(source)
@@ -309,17 +308,15 @@ class QwenTTSVoiceRouterBackend(MossTTSVoiceRouterBackend):
             ),
             None,
         )
-        if not transcript or not transcript.strip():
-            raise TTSConfigurationError(
-                f"Qwen needs the exact transcript of {voice_key}'s reference audio"
-            )
+        transcript = (transcript or "").strip() or None
         max_seconds = moss_generation_limits(text)[1]
         return self.persistent_cache_keys.key(
             voice_key=voice_key,
             source=source,
             text=text,
             speed=self.speed,
-            reference_transcript=transcript.strip(),
+            reference_transcript=transcript,
+            conditioning_mode="full-reference" if transcript else "speaker-only",
             language="English",
             profile=generation_profile or self.generation_profile,
             seed=seed,

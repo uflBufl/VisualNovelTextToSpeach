@@ -1753,6 +1753,28 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertIn("No saved preparation pack", dialog.story_audio_status.text())
             self.assertEqual(dialog.selected_story_ids(), ("main-1", "rhiannon"))
 
+    def test_preparation_error_is_not_mislabeled_as_damaged_saved_audio(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog.stories.item(0).setCheckState(0, Qt.CheckState.Checked)
+            dialog._job = SimpleNamespace(
+                story_index_sha256=content.story_index_sha256,
+                selected_story_ids=("main-1",),
+            )
+            error = RuntimeError("Qwen could not prepare the reference")
+            dialog._set_resume_error("Unable to prepare", error)
+            dialog._preparation_paused("Preparation paused", error)
+            self.assertEqual(dialog._story_audio_checks, {})
+            self.assertIn(str(error), dialog.resume_status.text())
+            self.assertNotIn("Saved audio needs attention", dialog.summary.text())
+
     def test_checked_story_readiness_updates_list_and_primary_without_preparing(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1879,7 +1901,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 None, ValueError("No character references. Import the game again.")
             )
             self.application.processEvents()
-            self.assertIn("Needs attention", dialog.stories.item(0).text(1))
+            self.assertIn("Partially prepared", dialog.stories.item(0).text(1))
             self.assertIn("No character references", updates[-1])
             self.assertEqual(dialog.continue_button.text(), "Continue preparation")
             dialog.voice_runner.cancel()

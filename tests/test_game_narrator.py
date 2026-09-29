@@ -1309,7 +1309,7 @@ class GameNarratorTest(unittest.TestCase):
             dialog.reject()
             self.run_task(pool)
 
-    def test_qwen_candidate_shows_editable_exact_reference_text(self):
+    def test_qwen_candidate_does_not_assume_game_text_is_exact_audio(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "matilda.wav").write_bytes(clean_wav_bytes())
@@ -1350,7 +1350,8 @@ class GameNarratorTest(unittest.TestCase):
                         )
                     ],
                 )
-                self.assertEqual(dialog.exact_transcript.text(), "The original line.")
+                self.assertEqual(dialog.exact_transcript.text(), "")
+                self.assertIn("Optional", dialog.exact_transcript.placeholderText())
                 self.assertGreaterEqual(
                     dialog.form.getWidgetPosition(dialog.exact_transcript)[0], 0
                 )

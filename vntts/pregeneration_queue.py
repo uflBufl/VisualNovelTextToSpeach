@@ -157,9 +157,7 @@ class PregenerationInputStore:
                 )
                 _raise_if_cancelled(cancellation)
                 phase_started, cpu_started = perf_counter(), process_time()
-                voices = _write_effective_voices(
-                    staging, effective, backend=plan.synthesis_backend
-                )
+                voices = _write_effective_voices(staging, effective)
                 write_voice_manifest(
                     voice_path,
                     {"version": 2, "voices": voices},
@@ -476,7 +474,7 @@ def _routed_story_records(
 
 
 def _write_effective_voices(
-    staging: Path, effective: EffectiveVoiceRoutes, *, backend: str = ""
+    staging: Path, effective: EffectiveVoiceRoutes
 ) -> list[dict[str, object]]:
     references = staging / "references"
     references.mkdir()
@@ -485,16 +483,6 @@ def _write_effective_voices(
     for character, (voice, expected_hashes, speaker) in sorted(
         effective["routes"].items(), key=lambda item: item[0].casefold()
     ):
-        if (
-            backend == "qwen-tts"
-            and voice is not None
-            and voice.references
-            and not voice.reference_transcript
-        ):
-            raise PregenerationQueueError(
-                f"Qwen needs the exact transcript of {character}'s selected reference. "
-                "Enter it in Voices before preparing this story."
-            )
         relative_references = []
         for source, expected in zip(
             voice.references if voice else (), expected_hashes, strict=True

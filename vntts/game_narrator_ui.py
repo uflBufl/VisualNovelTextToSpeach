@@ -367,15 +367,19 @@ class GameNarratorDialog(QDialog):
         self.reference_text = QLabel()
         self.reference_text.setWordWrap(True)
         self.reference_text.setTextFormat(Qt.TextFormat.PlainText)
-        self.reference_text.setAccessibleName("Original reference transcript")
-        game_form.addRow("Original transcript", self.reference_text)
+        self.reference_text.setAccessibleName("Associated game dialogue text")
+        game_form.addRow("Game dialogue text", self.reference_text)
         self.exact_transcript = QLineEdit()
         self.exact_transcript.setAccessibleName("Exact reference transcript for Qwen")
         self.exact_transcript.setPlaceholderText(
-            "Enter the exact words in this recording"
+            "Optional: enter verified words spoken in this recording"
+        )
+        self.exact_transcript.setToolTip(
+            "Leave blank to clone the speaker's voice only. Enter verified spoken "
+            "words for higher-fidelity reference conditioning."
         )
         if self.settings_value.speech_backend == "qwen-tts":
-            self.form.addRow("Qwen reference text", self.exact_transcript)
+            self.form.addRow("Qwen reference text (optional)", self.exact_transcript)
 
     def _build_preview_controls(self) -> None:
         form = self.form
@@ -971,8 +975,8 @@ class GameNarratorDialog(QDialog):
     def _reference_copy_text(self) -> str:
         asset = self.references.currentText()
         source_id = self.references.currentData() or "(none)"
-        transcript = self.reference_text.text() or "Transcript unavailable."
-        return f"{asset}\nSource ID: {source_id}\nTranscript: {transcript}"
+        game_text = self.reference_text.text() or "Game text unavailable."
+        return f"{asset}\nSource ID: {source_id}\nGame dialogue text: {game_text}"
 
     def _playback_copy_text(self) -> str:
         return "\n".join(
@@ -1561,15 +1565,8 @@ class GameNarratorDialog(QDialog):
                 dict.fromkeys(value for value in spoken_text if value)
             )
             voice = registry.resolve_source(source_id)
-            source_line_ids = variant.get("source_line_ids")
-            if (
-                voice is not None
-                and len(voice.references) == 1
-                and len(spoken_text) == 1
-                and isinstance(source_line_ids, list)
-                and len(source_line_ids) == 1
-            ):
-                self._exact_transcripts[source_id] = spoken_text[0]
+            if voice is not None and voice.reference_transcript:
+                self._exact_transcripts[source_id] = voice.reference_transcript
             bank_only = variant.get("candidate_origin") == UNLINKED_BANK_MEDIA
             excerpt = (
                 UNLINKED_BANK_LABEL
@@ -1588,7 +1585,7 @@ class GameNarratorDialog(QDialog):
             self.references.setItemData(
                 index - 1,
                 transcript
-                or (UNLINKED_BANK_LABEL if bank_only else "Transcript unavailable."),
+                or (UNLINKED_BANK_LABEL if bank_only else "Game text unavailable."),
                 Qt.ItemDataRole.ToolTipRole,
             )
             self._candidate_source_ids.add(source_id)
@@ -1627,7 +1624,7 @@ class GameNarratorDialog(QDialog):
         self._clear_impact()
         self.reference_text.setText(
             self.references.currentData(Qt.ItemDataRole.ToolTipRole)
-            or ("Transcript unavailable." if self.references.count() else "")
+            or ("Game text unavailable." if self.references.count() else "")
         )
         self.exact_transcript.setText(
             self._exact_transcripts.get(self.references.currentData(), "")
@@ -1708,15 +1705,6 @@ class GameNarratorDialog(QDialog):
 
     def _candidate_action(self, operation: str) -> None:
         reference_transcript = self.exact_transcript.text().strip()
-        if (
-            operation in {"preview", "save"}
-            and self.settings_value.speech_backend == "qwen-tts"
-            and not reference_transcript
-        ):
-            self.status.setText(
-                "Qwen needs the exact words spoken in the selected original recording."
-            )
-            return
         if operation != "audio" and (
             not self._engine_available()
             or self.source.currentData() == "preset"

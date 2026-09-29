@@ -2389,24 +2389,6 @@ class OfflineAudioPreparationDialog(QDialog):
         self.progress_failures.clear()
         if not self.has_pending_work():
             self.cancel_button.setText("Close")
-        if (
-            self._job is not None
-            and error is not None
-            and not isinstance(
-                error,
-                (
-                    OfflineGenerationCancelled,
-                    PregenerationVoiceCancelled,
-                    PregenerationQueueCancelled,
-                ),
-            )
-        ):
-            for selection_id in self._job.selected_story_ids:
-                self._story_audio_checks[self._story_audio_key(selection_id)] = (
-                    None,
-                    None,
-                    error,
-                )
         self._refresh_story_statuses()
         self._selection_changed()
         QTimer.singleShot(0, self._emit_task_progress)
