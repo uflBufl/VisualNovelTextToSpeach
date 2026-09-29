@@ -162,11 +162,17 @@ def load_generation_state(
 
 
 def load_generation_state_from_snapshot(
-    state_path: str | Path, queue: VoiceGenerationQueue, queue_sha256: str
+    state_path: str | Path,
+    queue: VoiceGenerationQueue,
+    queue_sha256: str,
+    *,
+    state_document: StateObject | None = None,
 ) -> StateObject:
     """Validate a state against queue bytes already captured by the caller."""
     state_path = Path(state_path).expanduser().resolve()
-    state = _read_generation_state(state_path)
+    state = (
+        _read_generation_state(state_path) if state_document is None else state_document
+    )
     _validate_state_document(state, state_path.parent, queue, queue_sha256)
     return state
 

@@ -1,5 +1,10 @@
 # TODO
 
+## Active - Offline pack publication debt pass
+
+- [ ] Check final-save cancellation inside cumulative voice and WAV copy loops so a cancellation stops before the next file, while staging remains atomic.
+- [ ] Inspect queue/pack ownership, types, design, tests, resources, and tooling across entry points and callers; rescan affected paths, run required checks, and remove this section when complete.
+
 ## Validate OpenMOSS progress on Windows
 
 - [ ] During a sustained offline story preparation, confirm progress updates without frequent reads of `generation-state.json`, cancellation and Continue retain completed lines, and no state replacement access error recurs.

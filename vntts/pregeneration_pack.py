@@ -61,6 +61,7 @@ from vntts.authoring.publication import (
     rename_directory_no_replace,
     staged_directory,
 )
+from vntts.authoring.workspace_foundation import load_json_object_snapshot
 from vntts.chapter_voice_preload import (
     _source_audio_covers_full_line,
     _validated_source_audio_line_ids,
@@ -409,8 +410,14 @@ class OfflinePackPublisher:
         try:
             _verify_prepared_inputs(generation_input)
             story = load_story_index_document(generation_input.story_index)
-            state_sha256 = sha256_file(generation_result.state)
+            state_document, state_sha256, state_payload = load_json_object_snapshot(
+                generation_result.state,
+                "generation state",
+                error_type=BulkGenerationError,
+            )
+            del state_payload
         except (
+            BulkGenerationError,
             OSError,
             StoryIndexError,
             ValueError,
@@ -444,7 +451,11 @@ class OfflinePackPublisher:
         phase_started, cpu_started = perf_counter(), process_time()
         state, _queue, voice_document, voices, current_omissions = (
             _load_terminal_generation(
-                job, generation_input, generation_result, state_sha256
+                job,
+                generation_input,
+                generation_result,
+                state_sha256,
+                state_document=state_document,
             )
         )
         _verify_prepared_inputs(generation_input)
@@ -814,6 +825,8 @@ def _load_terminal_generation(
     generation_input: PregenerationInput,
     generation_result: OfflineGenerationResult,
     state_sha256: str,
+    *,
+    state_document: GenerationState,
 ) -> tuple[
     GenerationState,
     VoiceGenerationQueue,
@@ -826,7 +839,10 @@ def _load_terminal_generation(
         if queue_sha256 != generation_input.queue_sha256:
             raise OfflinePackError("Generation queue changed before publication")
         state = load_generation_state_from_snapshot(
-            generation_result.state, queue, queue_sha256
+            generation_result.state,
+            queue,
+            queue_sha256,
+            state_document=state_document,
         )
         voice_document, voices = load_voice_manifest(
             generation_input.voice_manifest,

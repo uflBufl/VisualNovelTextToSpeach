@@ -6,6 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.game_pack import GamePackError
 from vntts_artifacts.live_sequence import (
@@ -682,7 +683,11 @@ class OfflinePackPublisherTest(unittest.TestCase):
             ):
                 _state, queue, _voices, _entries, _omissions = (
                     _load_terminal_generation(
-                        job, generation_input, result, sha256_file(result.state)
+                        job,
+                        generation_input,
+                        result,
+                        sha256_file(result.state),
+                        state_document=json.loads(result.state.read_text()),
                     )
                 )
 
@@ -768,6 +773,39 @@ class OfflinePackPublisherTest(unittest.TestCase):
             self.assertIn(
                 (items[1]["line_id"], items[1]["text_sha256"]),
                 library.live_fallbacks,
+            )
+
+    def test_published_pack_uses_the_state_bytes_hashed_for_its_identity(self):
+        with TemporaryDirectory() as temporary_directory:
+            job, generation_input, generation_result, _items = fixture(
+                Path(temporary_directory)
+            )
+            original_state = json.loads(generation_result.state.read_text())
+            original_sha256 = sha256_file(generation_result.state)
+
+            def replace_state_after_snapshot(*args, **kwargs):
+                replacement = json.loads(generation_result.state.read_text())
+                replacement["items"][next(iter(replacement["items"]))]["updated_at"] = (
+                    "2030-01-01T00:00:00+00:00"
+                )
+                atomic_write_json(generation_result.state, replacement, sort_keys=True)
+                self.assertEqual(kwargs["state_document"], original_state)
+                return _load_terminal_generation(*args, **kwargs)
+
+            with patch(
+                "vntts.pregeneration_pack._load_terminal_generation",
+                side_effect=replace_state_after_snapshot,
+            ):
+                published = OfflinePackPublisher().publish(
+                    job, generation_input, generation_result
+                )
+
+            self.assertNotEqual(sha256_file(generation_result.state), original_sha256)
+            self.assertEqual(
+                published.imported.pack.extensions["vntts.self-service"][
+                    "source_state_sha256"
+                ],
+                original_sha256,
             )
 
     def test_rejects_generated_wav_changed_after_terminal_validation(self):
