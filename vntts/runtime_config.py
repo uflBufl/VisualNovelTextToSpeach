@@ -213,7 +213,6 @@ def get_tts_configuration(settings: AppSettings | None = None) -> dict[str, obje
                 "speaker": settings.tts_speaker,
                 "language": settings.tts_language,
                 "speaker_wav": settings.tts_speaker_wav,
-                "volume": settings.output_volume_percent / 100,
             }.items()
             if value
         }
