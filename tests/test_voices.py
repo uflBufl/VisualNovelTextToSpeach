@@ -13,6 +13,8 @@ from vntts.voices import (
     CharacterVoiceRegistry,
     CharacterVoiceRouter,
     VoiceManifestError,
+    _immutable_voice_reference_snapshots,
+    _read_owned_voice_reference,
     find_default_voice_manifest,
     is_narrator,
     normalize_character_name,
@@ -25,6 +27,55 @@ from vntts.voices import (
 
 
 class CharacterVoiceRegistryTest(unittest.TestCase):
+    def test_owned_voice_references_are_snapshotted_one_at_a_time(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            references = (root / "first.wav", root / "second.wav")
+            for index, reference in enumerate(references):
+                reference.write_bytes(bytes((index + 1,)))
+            staging_root = root / "staging"
+            staging_root.mkdir()
+            reads = 0
+
+            def read_reference(owned_root, reference):
+                nonlocal reads
+                reads += 1
+                if reads == 2:
+                    self.assertEqual(
+                        len(
+                            list(
+                                staging_root.glob(
+                                    "vntts-voice-reference-*/reference-1.wav"
+                                )
+                            )
+                        ),
+                        1,
+                    )
+                return _read_owned_voice_reference(owned_root, reference)
+
+            with (
+                patch(
+                    "vntts.voices.TemporaryDirectory",
+                    side_effect=lambda *, prefix: TemporaryDirectory(
+                        prefix=prefix, dir=staging_root
+                    ),
+                ),
+                patch(
+                    "vntts.voices._read_owned_voice_reference",
+                    side_effect=read_reference,
+                ),
+            ):
+                with _immutable_voice_reference_snapshots(
+                    CharacterVoice(
+                        "Lucy", "lucy", references=references, reference_root=root
+                    )
+                ) as snapshots:
+                    self.assertEqual(
+                        tuple(path.read_bytes() for path in snapshots),
+                        (b"\x01", b"\x02"),
+                    )
+            self.assertEqual(reads, 2)
+
     def test_voice_library_binding_is_the_runtime_assignment(self):
         with TemporaryDirectory() as directory:
             root = Path(directory).resolve()

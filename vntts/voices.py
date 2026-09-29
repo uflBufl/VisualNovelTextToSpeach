@@ -704,18 +704,14 @@ def _immutable_voice_reference_snapshots(
         yield voice.references
         return
 
-    payloads = [
-        _read_owned_voice_reference(voice.reference_root, reference)
-        for reference in voice.references
-    ]
     with TemporaryDirectory(prefix="vntts-voice-reference-") as directory:
         snapshots: list[Path] = []
-        for index, (reference, payload) in enumerate(
-            zip(voice.references, payloads, strict=True)
-        ):
+        for index, reference in enumerate(voice.references):
+            payload = _read_owned_voice_reference(voice.reference_root, reference)
             suffix = reference.suffix if reference.suffix else ".wav"
             destination = Path(directory) / f"reference-{index + 1}{suffix}"
             destination.write_bytes(payload)
+            del payload
             snapshots.append(destination)
         yield tuple(snapshots)
 
