@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from vntts.async_ui import LatestTaskRunner
 from vntts.ocr_corrections import OCRCorrectionStore
+from vntts.versioned_json import StaleDocumentError
 
 TableRow = tuple[str, str]
 TableRows = tuple[TableRow, ...]
@@ -120,10 +121,16 @@ class OCRCorrectionsDialog(QDialog):
         self.tabs.setEnabled(True)
         self.buttons.setEnabled(True)
         if error is not None:
-            self.status.setText(
-                f"Rules were not saved: {error}. Check access to application "
-                "data, then select Save again. Your edits are still here."
-            )
+            if isinstance(error, StaleDocumentError):
+                self.status.setText(
+                    f"Rules were not saved: {error}. Copy your edits, then close "
+                    "and reopen OCR corrections to load the latest rules."
+                )
+            else:
+                self.status.setText(
+                    f"Rules were not saved: {error}. Check access to application "
+                    "data, then select Save again. Your edits are still here."
+                )
         else:
             self.accept()
         self._close_pending = False

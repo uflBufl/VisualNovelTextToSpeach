@@ -314,6 +314,28 @@ class OCRCorrectionsDialogTest(unittest.TestCase):
         self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
         self.assertEqual(store.replace_entries.call_count, 2)
 
+    def test_stale_rules_request_reopen_instead_of_retry(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "ocr-corrections.json"
+            current = OCRCorrectionStore(path)
+            current.upsert_entries({"Mareus": "Marcus"})
+            stale = OCRCorrectionStore.load(path)
+            current.upsert_entries({"Vertln": "Vertin"})
+            dialog = OCRCorrectionsDialog(store=stale)
+            dialog._append_row(dialog.global_table, "Poaeher", "Poacher")
+
+            dialog.save()
+            self.wait_for(lambda: not dialog._save_active)
+
+            self.assertIn("reopen OCR corrections", dialog.status.text())
+            self.assertNotIn("select Save again", dialog.status.text())
+            self.assertEqual(dialog.global_table.item(1, 1).text(), "Poacher")
+            self.assertEqual(
+                OCRCorrectionStore.load(path).global_entries,
+                {"Mareus": "Marcus", "Vertln": "Vertin"},
+            )
+            dialog.deleteLater()
+
     def test_row_errors_are_inline_and_all_scopes_are_reported(self):
         store = Mock(global_entries={}, profile_entries={})
         dialog = OCRCorrectionsDialog("game", "Game", store)

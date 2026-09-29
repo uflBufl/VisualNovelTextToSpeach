@@ -5,6 +5,7 @@ from math import isfinite
 from pathlib import Path
 
 from vntts.versioned_json import (
+    StaleDocumentError,
     file_revision,
     load_versioned_json,
     read_versioned_json,
@@ -81,7 +82,7 @@ class OCRReviewStore:
             allow_unversioned=True,
         )
         if self._sample_from_payload(sample.metadata_path, payload) != sample:
-            raise RuntimeError("OCR review sample changed before resolution")
+            raise StaleDocumentError("OCR review sample changed before resolution")
         payload["resolved"] = True
         payload["resolved_at"] = datetime.now(timezone.utc).isoformat()
         if scope:

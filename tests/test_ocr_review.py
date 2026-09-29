@@ -23,6 +23,7 @@ from vntts.ocr_review import (  # noqa: E402
     OCRReviewStore,
 )
 from vntts.ocr_review_ui import OCRReviewDialog  # noqa: E402
+from vntts.versioned_json import StaleDocumentError  # noqa: E402
 
 
 def record_uncertain_sample(directory):
@@ -198,7 +199,7 @@ class OCRReviewStoreTest(unittest.TestCase):
             replacement["text"] = "A newer observation."
             sample.metadata_path.write_text(json.dumps(replacement), encoding="utf-8")
 
-            with self.assertRaisesRegex(RuntimeError, "changed"):
+            with self.assertRaisesRegex(StaleDocumentError, "changed"):
                 store.mark_resolved(sample)
 
             preserved = json.loads(sample.metadata_path.read_text(encoding="utf-8"))
@@ -322,6 +323,33 @@ class OCRReviewDialogTest(unittest.TestCase):
         self.assertEqual(dialog.sample_list.count(), 0)
         self.assertEqual(dialog.progress.text(), "0 lines to review")
         dialog.deleteLater()
+
+    def test_stale_sample_requests_reopen_instead_of_retry(self):
+        with TemporaryDirectory() as temporary_directory:
+            review_directory = Path(temporary_directory) / "review"
+            record_uncertain_sample(review_directory)
+            dialog = OCRReviewDialog(review_directory)
+            sample = dialog.current_sample()
+            self.assertIsNotNone(sample)
+            replacement = json.loads(sample.metadata_path.read_text(encoding="utf-8"))
+            replacement["text"] = "A newer observation."
+            sample.metadata_path.write_text(json.dumps(replacement), encoding="utf-8")
+
+            with patch.object(
+                QMessageBox,
+                "exec",
+                return_value=QMessageBox.StandardButton.Yes,
+            ):
+                dialog.resolve_without_correction()
+            self.wait_for(lambda: not dialog._write_active)
+
+            self.assertIn("reopen OCR review", dialog.status.text())
+            self.assertNotIn("button to retry", dialog.status.text())
+            self.assertEqual(
+                OCRReviewStore(review_directory).pending_samples()[0].text,
+                "A newer observation.",
+            )
+            dialog.deleteLater()
 
     def test_failed_save_keeps_draft_and_partial_rule_refreshes_runtime(self):
         with TemporaryDirectory() as temporary_directory:

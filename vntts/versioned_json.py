@@ -16,6 +16,10 @@ Document = TypeVar("Document")
 _DOCUMENT_READ_LIMIT = 64 * 1024 * 1024
 
 
+class StaleDocumentError(OSError):
+    """A document changed since it was loaded and must be reopened."""
+
+
 def read_versioned_json(
     path: str | Path,
     *,
@@ -125,7 +129,9 @@ def write_versioned_json_if_unchanged(
     lock_path = path.with_name(f"{path.name}.lock")
     with exclusive_advisory_lock(lock_path, blocking=True):
         if file_revision(path) != revision:
-            raise OSError(f"{document_name} changed on disk; reopen before saving")
+            raise StaleDocumentError(
+                f"{document_name} changed on disk; reopen before saving"
+            )
         write_versioned_json(path, schema_version, fields)
         updated = file_revision(path)
         if updated is None:

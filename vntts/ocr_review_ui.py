@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 from vntts.async_ui import LatestTaskRunner
 from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.ocr_review import OCRReviewSample, OCRReviewStore
+from vntts.versioned_json import StaleDocumentError
 
 
 class OCRReviewDialog(QDialog):
@@ -450,10 +451,18 @@ class OCRReviewDialog(QDialog):
             self._update_save_enabled()
             if self._write_applies_corrections:
                 self.corrections_changed()
-            self.status.setText(
-                f"Could not finish review: {error}. Check access to application "
-                "data, then use the same button to retry. Your edits are still here."
-            )
+            if isinstance(error, StaleDocumentError) or isinstance(
+                error.__cause__, StaleDocumentError
+            ):
+                self.status.setText(
+                    f"Could not finish review: {error}. Copy your edits, then "
+                    "close and reopen OCR review to load the latest sample."
+                )
+            else:
+                self.status.setText(
+                    f"Could not finish review: {error}. Check access to application "
+                    "data, then use the same button to retry. Your edits are still here."
+                )
         else:
             if self._write_applies_corrections:
                 self.corrections_changed()
