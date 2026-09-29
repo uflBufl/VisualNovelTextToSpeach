@@ -86,21 +86,28 @@ class GameProfile:
         force_live_narrator = force_live_narrator or (
             source_schema < 5 and legacy_narrator_assignment_forces_live_tts(values)
         )
+        capture_mode = values.get("capture_mode")
+        if not isinstance(capture_mode, str) or capture_mode not in {
+            "screen",
+            "window",
+        }:
+            capture_mode = "screen"
         live_sequence_mode = values.get("live_sequence_mode")
-        recognized_live_sequence_mode = live_sequence_mode in live_sequence_modes
-        if not isinstance(live_sequence_mode, str) or not recognized_live_sequence_mode:
+        if (
+            not isinstance(live_sequence_mode, str)
+            or live_sequence_mode not in live_sequence_modes
+        ):
             live_sequence_mode = "off"
+        ocr_language = values.get("ocr_language")
+        if not isinstance(ocr_language, str) or not ocr_language.strip():
+            ocr_language = "eng"
         return cls(
             id=str(values["id"]),
             name=_validated_name(values["name"]),
-            capture_mode=(
-                values["capture_mode"]
-                if values["capture_mode"] in {"screen", "window"}
-                else "screen"
-            ),
+            capture_mode=capture_mode,
             game_window_title=_optional_text(values.get("game_window_title")),
             dialog_region=region,
-            ocr_language=str(values.get("ocr_language") or "eng").strip(),
+            ocr_language=ocr_language.strip(),
             game_pack=_optional_text(values.get("game_pack")),
             voice_manifest=_optional_text(values.get("voice_manifest")),
             story_index=_optional_text(values.get("story_index")),

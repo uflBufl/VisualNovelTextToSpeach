@@ -165,6 +165,42 @@ class GameProfileStoreTest(unittest.TestCase):
 
         self.assertEqual(profile.audio_source_policy, "live-tts-only")
 
+    def test_invalid_optional_profile_fields_keep_saved_profile_usable(self):
+        base = {
+            "id": "saved",
+            "name": "Saved game",
+            "capture_mode": "screen",
+            "dialog_region": {"left": 0.1, "top": 0.6, "width": 0.8, "height": 0.3},
+        }
+        cases = (
+            ("capture_mode", [], "capture_mode", "screen"),
+            ("live_sequence_mode", [], "live_sequence_mode", "off"),
+            ("ocr_language", "  ", "ocr_language", "eng"),
+            ("ocr_language", 42, "ocr_language", "eng"),
+        )
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "profiles.json"
+            for field, value, attribute, expected in cases:
+                with self.subTest(field=field, value=value):
+                    path.write_text(
+                        json.dumps(
+                            {
+                                "schema_version": profiles_schema_version,
+                                "profiles": [{**base, field: value}],
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    warnings = []
+                    loaded = GameProfileStore.load(path, warn=warnings.append)
+                    profile = loaded.get("saved")
+
+                    self.assertIsNotNone(profile)
+                    self.assertEqual(
+                        getattr(profile.apply(AppSettings()), attribute), expected
+                    )
+                    self.assertEqual(warnings, [])
+
     def test_legacy_profile_narrator_assignment_migrates_to_force_live_routing(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "profiles.json"
@@ -297,7 +333,7 @@ class GameProfileStoreTest(unittest.TestCase):
         self.assertEqual(store.profiles, [])
         self.assertIn("unsupported game profiles schema version", warnings[0])
 
-    def test_unhashable_sequence_mode_falls_back_to_empty_store(self):
+    def test_unhashable_sequence_mode_preserves_saved_profile(self):
         warnings = []
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "profiles.json"
@@ -326,8 +362,9 @@ class GameProfileStoreTest(unittest.TestCase):
 
             store = GameProfileStore.load(path, warn=warnings.append)
 
-        self.assertEqual(store.profiles, [])
-        self.assertIn("Unable to load game profiles", warnings[0])
+        self.assertEqual(len(store.profiles), 1)
+        self.assertEqual(store.profiles[0].live_sequence_mode, "off")
+        self.assertEqual(warnings, [])
 
     def test_incomplete_profile_region_is_reported_as_invalid(self):
         values = {
