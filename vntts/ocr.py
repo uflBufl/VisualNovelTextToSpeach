@@ -115,27 +115,29 @@ class DialogRegion:
             raise ValueError("Dialog region must fit inside the screen")
 
     def crop(self, image: Image.Image) -> Image.Image:
-        image_width, image_height = image.size
-        return image.crop(
-            (
-                round(self.left * image_width),
-                round(self.top * image_height),
-                round((self.left + self.width) * image_width),
-                round((self.top + self.height) * image_height),
-            )
-        )
+        return image.crop(self._pixel_box(*image.size))
 
     def capture_box(self, monitor: Mapping[str, int]) -> dict[str, int]:
         monitor_left = monitor.get("left", 0)
         monitor_top = monitor.get("top", 0)
         monitor_width = monitor["width"]
         monitor_height = monitor["height"]
+        left, top, right, bottom = self._pixel_box(monitor_width, monitor_height)
         return {
-            "left": monitor_left + round(self.left * monitor_width),
-            "top": monitor_top + round(self.top * monitor_height),
-            "width": max(1, round(self.width * monitor_width)),
-            "height": max(1, round(self.height * monitor_height)),
+            "left": monitor_left + left,
+            "top": monitor_top + top,
+            "width": right - left,
+            "height": bottom - top,
         }
+
+    def _pixel_box(self, width: int, height: int) -> tuple[int, int, int, int]:
+        if width <= 0 or height <= 0:
+            raise ValueError("Capture dimensions must be positive")
+        left = min(width - 1, round(self.left * width))
+        top = min(height - 1, round(self.top * height))
+        right = min(width, max(left + 1, round((self.left + self.width) * width)))
+        bottom = min(height, max(top + 1, round((self.top + self.height) * height)))
+        return left, top, right, bottom
 
     def to_json(self) -> dict[str, float]:
         return {

@@ -76,6 +76,22 @@ class DialogRegionTest(unittest.TestCase):
             {"left": 300, "top": 650, "width": 1600, "height": 300},
         )
 
+    def test_region_uses_the_same_bounded_pixels_for_capture_and_crop(self):
+        for size, region in (
+            ((1919, 1079), DialogRegion(0.5, 0.5, 0.5, 0.5)),
+            ((1, 1), DialogRegion(0.9, 0.9, 0.1, 0.1)),
+        ):
+            with self.subTest(size=size):
+                width, height = size
+                box = region.capture_box({"width": width, "height": height})
+                cropped = region.crop(Image.new("RGB", size))
+
+                self.assertGreaterEqual(box["left"], 0)
+                self.assertGreaterEqual(box["top"], 0)
+                self.assertLessEqual(box["left"] + box["width"], width)
+                self.assertLessEqual(box["top"] + box["height"], height)
+                self.assertEqual(cropped.size, (box["width"], box["height"]))
+
     def test_region_can_be_parsed_from_environment_format(self):
         self.assertEqual(
             parse_dialog_region("0.1, 0.6, 0.8, 0.3"),
