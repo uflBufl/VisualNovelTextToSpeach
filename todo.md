@@ -82,14 +82,13 @@ Planned implementation order after approval:
       `unknown` cues untouched and reach voice choice on the same five stages.
       Check that a retry reuses measured durations, preserves prepared audio,
       and does not rerun semantic classification after success.
-- [ ] **Validate the September 29 22:50 Stage 1 rerun on Windows:** the five
-      `2026-09-29 22.50.*.jpg` screenshots show `???` rendered as `2???` or
-      `22?`, and `Hey!` acquiring trailing OCR noise. The support bundle was
-      captured just before those screenshots, so its 21 `story-line-no-match`
-      routes and seven unconfirmed key dispatches cannot identify each pictured
-      occurrence. After the OCR fix, collect one fresh run with screenshots and
-      a same-run support archive to classify any remaining wrong reading, live
-      fallback, failed skip, or manual recovery against exact stage/line IDs.
+- [ ] **Validate remaining Stage 1 OCR routes on Windows:** `Hey!` acquired
+      trailing OCR noise in the September 29 screenshots. The support bundle was
+      captured before those screenshots, so its 21 `story-line-no-match` routes
+      and seven unconfirmed key dispatches cannot identify each pictured
+      occurrence. If wrong reading, live fallback, failed skip, or manual
+      recovery remains, collect a same-run support archive and screenshots to
+      classify it against exact stage/line IDs.
 - [ ] **Validate installed-game provenance on Windows:** the September 29 job
       was tagged `selected-story-index` even though its path is the installed
       Reverse: 1999 catalog. Discovery and resumed-job fixes must preserve the
@@ -101,8 +100,8 @@ Planned implementation order after approval:
       no confirmed successor. New bounded frame-gate counters now distinguish
       fingerprint resets from stable confirmations without retaining dialogue.
       Reproduce one stall and manual advance in the same stage, classify its
-      cursor/OCR/focus transition, including cases where a short phrase or `???`
-      is read but the next dialogue never advances. Check why a manual skip can
+      cursor/OCR/focus transition, including cases where a short phrase is read
+      but the next dialogue never advances. Check why a manual skip can
       leave the next line silent or require restarting Reading. Fix the proven
       boundary, not just the timeout; never blindly resend a key, and preserve
       one key per dialogue. Identify which unmatched routes are OCR/nameplate errors.
@@ -111,15 +110,12 @@ Planned implementation order after approval:
       clothing) after the tracker accepts equivalent OCR spelling and line-wrap
       variants. Confirm each completed playback advances once without extra
       audio; a genuinely changed line must still remain blocked.
-- [ ] **Validate unknown speaker OCR in the affected stage:** the isolated `22`
-      nameplate alias now resolves to `???` and is removed from dialogue, while
-      legitimate numeric names and numeral-led narration remain intact. Capture
-      the five fresh screenshots and real frames to verify this alias and identify
-      any other OCR variants. Test very short utterances (`hmm`/interjections)
-      and a known speaker such as Ever-Echo: the nameplate must stay separate
-      from dialogue, a known story line must resolve before live synthesis, and
-      `???` must never be spoken as `22`. Inspect unstable nameplate pixels
-      separately if the visual-successor gate still resets to one candidate frame.
+- [ ] **Validate other short and known-speaker OCR in Stage 1:** test very short
+      utterances (`hmm`/interjections), a known speaker such as Ever-Echo, and
+      legitimate numeric names. The nameplate must stay separate from dialogue
+      and known story lines must resolve before live synthesis. Inspect unstable
+      nameplate pixels if the visual-successor gate still resets to one candidate
+      frame.
 - [ ] **Validate Start/Stop on Windows:** the button now changes to `Cancel start`
       while chapter identification runs, then `Stopping reading...` and disabled
       while capture/speech quiesces; all launch surfaces share the transition.
