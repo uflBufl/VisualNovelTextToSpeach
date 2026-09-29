@@ -4381,7 +4381,7 @@ class TrayApplicationTest(unittest.TestCase):
             )
             region = DialogRegion(0.1, 0.6, 0.8, 0.3)
 
-            tray_application.update_profile_region(region)
+            tray_application._save_calibration_region(region)
 
             self.assertEqual(store.get(profile.id).dialog_region, region)
             tray_application.shutdown()

@@ -18,7 +18,6 @@ from vntts.configuration_apply import (
     _Dashboard,
     _Signals,
 )
-from vntts.ocr import DialogRegion
 from vntts.profiles import GameProfileStore
 from vntts.settings import (
     AppSettings,
@@ -127,16 +126,6 @@ class DurableSettingsMixin:
         self.settings = candidate
         self._update_auto_advance_action()
         self.controller.set_auto_advance_enabled(effective)
-
-    def update_profile_region(self, region: DialogRegion) -> None:
-        profile_id = self.settings.active_profile_id
-        if profile_id and self.profile_store.get(profile_id) is not None:
-            try:
-                self.profile_store.update_region(profile_id, region)
-            except OSError as error:
-                self.show_error(
-                    f"Unable to save the calibrated profile region: {error}"
-                )
 
     def finish_onboarding(self, wizard: _OnboardingWizard, result: int) -> None:
         if wizard is not self.onboarding_wizard:
