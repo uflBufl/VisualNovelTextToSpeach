@@ -3,13 +3,16 @@ from threading import Event, Thread
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from vntts.moss_runtime import RetainedMossRuntime
+from vntts.moss_runtime import RetainedMossRuntime, _is_moss_backend
 from vntts.synthesis import SynthesisChunkStream
 
 
 class _Backend:
     def __init__(self, registry, **options):
         self.registry = registry
+        self.narrator_reference = options.get("narrator_reference")
+        self.startup_cancellation = options.get("startup_cancellation")
+        self.startup_progress = options.get("startup_progress")
         self.options = options
         self.runtime_status = "ready"
         self.stops = 0
@@ -56,6 +59,18 @@ class _Backend:
 
 
 class RetainedMossRuntimeTests(unittest.TestCase):
+    def test_backend_guard_requires_mutable_lease_fields(self):
+        for field in (
+            "registry",
+            "narrator_reference",
+            "startup_cancellation",
+            "startup_progress",
+        ):
+            with self.subTest(field=field):
+                backend = _Backend("registry")
+                delattr(backend, field)
+                self.assertFalse(_is_moss_backend(backend))
+
     @patch("vntts.moss_runtime.moss_cpp_requested", return_value=True)
     def test_reuses_one_backend_until_model_changes_or_runtime_shuts_down(self, _):
         created = []

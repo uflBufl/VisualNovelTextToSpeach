@@ -51,7 +51,16 @@ class _MossBackend(Protocol):
 
 
 def _is_moss_backend(value: object) -> TypeGuard[_MossBackend]:
-    return hasattr(value, "runtime_status") and all(
+    return all(
+        hasattr(value, name)
+        for name in (
+            "registry",
+            "narrator_reference",
+            "startup_cancellation",
+            "startup_progress",
+            "runtime_status",
+        )
+    ) and all(
         callable(getattr(value, name, None))
         for name in (
             "render",
