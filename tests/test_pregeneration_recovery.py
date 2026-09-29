@@ -5,7 +5,9 @@ from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 from vntts_artifacts.file_integrity import sha256_file
+from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 
+from tests.test_pregeneration_pack import fixture
 from vntts.pregeneration_generation import (
     OfflineGenerationError,
     OfflineGenerationResult,
@@ -102,6 +104,44 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
                     result,
                 )
             self.assertEqual(events, ["a", "refresh", "b", "refresh"])
+
+    def test_recovery_order_ignores_queue_replacement_after_hash(self):
+        with TemporaryDirectory() as directory:
+            _job, generation_input, _result, items = fixture(Path(directory))
+            generation_input = replace(
+                generation_input, narrator_fallback_roles=("Narrator",)
+            )
+            recovery_root = Path(directory) / "recovery-fixture"
+            recovery_root.mkdir()
+            _unused, _unused_result, voice_plan = inputs(recovery_root)
+            original_sha256 = sha256_file
+
+            def hash_then_replace(path):
+                digest = original_sha256(path)
+                if Path(path) == generation_input.queue:
+                    write_voice_generation_queue(
+                        generation_input.queue,
+                        {"game": "Synthetic Game", "language": "en"},
+                        [
+                            {
+                                **items[0],
+                                "speaker": "Other",
+                                "voice_character": "Other",
+                            },
+                            items[1],
+                        ],
+                    )
+                return digest
+
+            with patch(
+                "vntts.pregeneration_recovery.sha256_file",
+                side_effect=hash_then_replace,
+            ):
+                queue_ids, _index = _ordered_generation_queue_ids(
+                    generation_input, voice_plan
+                )
+
+            self.assertEqual(queue_ids, tuple(item["queue_id"] for item in items))
 
     def test_recovery_rejects_a_changed_voice_manifest_before_loading_the_queue(self):
         with TemporaryDirectory() as temporary_directory:

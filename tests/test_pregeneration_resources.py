@@ -6,7 +6,10 @@ from unittest.mock import patch
 
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import write_story_index_document
+from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 
+from tests.test_pregeneration_pack import fixture
+from tests.test_pregeneration_pack import item as pack_item
 from vntts.pregeneration_generation import (
     OfflineGenerationError,
     OfflineGenerationWorker,
@@ -82,6 +85,33 @@ class PregenerationResourcesTest(unittest.TestCase):
         self.assertEqual(estimate.rough_audio_seconds, (len(text) + 11) // 12)
         self.assertEqual(estimate.estimated_generation_minutes, 0)
 
+    def test_resource_estimate_ignores_queue_replacement_after_hash(self):
+        with TemporaryDirectory() as directory:
+            _job, generation_input, result, items = fixture(Path(directory))
+            result.state.unlink()
+            original_sha256 = sha256_file
+
+            def hash_then_replace(path):
+                digest = original_sha256(path)
+                if Path(path) == generation_input.queue:
+                    write_voice_generation_queue(
+                        generation_input.queue,
+                        {"game": "Synthetic Game", "language": "en"},
+                        [pack_item("changed", items[0]["sequence"]), items[1]],
+                    )
+                return digest
+
+            with patch(
+                "vntts.pregeneration_setup.sha256_file",
+                side_effect=hash_then_replace,
+            ):
+                estimate = estimate_generation_resources(generation_input)
+
+            self.assertEqual(estimate.total_items, 2)
+            self.assertEqual(
+                estimate.total_text_characters, sum(len(item["text"]) for item in items)
+            )
+
     def test_resource_estimate_excludes_completed_audio_when_resuming(self):
         with TemporaryDirectory() as temporary_directory:
             inputs = _inputs(Path(temporary_directory))
@@ -97,11 +127,11 @@ class PregenerationResourcesTest(unittest.TestCase):
             )
             with (
                 patch(
-                    "vntts.pregeneration_setup.VoiceGenerationQueue.load",
-                    return_value=SimpleNamespace(items=items),
+                    "vntts.pregeneration_setup.load_stable_generation_queue",
+                    return_value=(SimpleNamespace(items=items), inputs.queue_sha256),
                 ),
                 patch(
-                    "vntts.pregeneration_setup.load_generation_state",
+                    "vntts.pregeneration_setup.load_generation_state_from_snapshot",
                     return_value={"items": {"done": {"status": "approved"}}},
                 ),
             ):

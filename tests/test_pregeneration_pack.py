@@ -16,7 +16,10 @@ from vntts_artifacts.story_index import (
     load_story_index_document,
     write_story_index_document,
 )
-from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
+from vntts_artifacts.voice_generation_queue import (
+    VoiceGenerationQueue,
+    write_voice_generation_queue,
+)
 from vntts_artifacts.voice_manifest import write_voice_manifest
 
 from tests.test_authoring_bulk_generation import SyntheticRenderer
@@ -37,6 +40,7 @@ from vntts.pregeneration_pack import (
     _copy_file,
     _ensure_pack_disk_space,
     _link_verified_file,
+    _load_terminal_generation,
     _stage_live_sequence,
     inspect_story_audio,
     load_saved_pack,
@@ -635,6 +639,55 @@ class OfflinePackPublisherTest(unittest.TestCase):
             with self.assertRaises((OfflinePackError, GamePackError)):
                 inspect_story_audio(content, selection.selection_id, store)
 
+    def test_change_summary_uses_one_queue_snapshot(self):
+        with TemporaryDirectory() as directory:
+            job, generation_input, _result, items = fixture(Path(directory))
+            original_load = VoiceGenerationQueue.load
+
+            def replace_queue_after_parse(path):
+                queue = original_load(path)
+                write_voice_generation_queue(
+                    generation_input.queue,
+                    {"game": "Synthetic Game", "language": "en"},
+                    [{**items[0], "speaker": "Other"}, items[1]],
+                )
+                return queue
+
+            with patch.object(
+                VoiceGenerationQueue, "load", side_effect=replace_queue_after_parse
+            ):
+                summary = OfflinePackPublisher().inspect_changes(job, generation_input)
+
+            self.assertEqual(summary.new, 0)
+            self.assertNotEqual(
+                sha256_file(generation_input.queue), generation_input.queue_sha256
+            )
+
+    def test_terminal_generation_uses_the_validated_queue_snapshot(self):
+        with TemporaryDirectory() as directory:
+            job, generation_input, result, items = fixture(Path(directory))
+            original_load = VoiceGenerationQueue.load
+
+            def replace_queue_after_parse(path):
+                queue = original_load(path)
+                write_voice_generation_queue(
+                    generation_input.queue,
+                    {"game": "Synthetic Game", "language": "en"},
+                    [{**items[0], "speaker": "Other"}, items[1]],
+                )
+                return queue
+
+            with patch.object(
+                VoiceGenerationQueue, "load", side_effect=replace_queue_after_parse
+            ):
+                _state, queue, _voices, _entries, _omissions = (
+                    _load_terminal_generation(
+                        job, generation_input, result, sha256_file(result.state)
+                    )
+                )
+
+            self.assertEqual(queue.items[0].speaker, items[0]["speaker"])
+
     def test_change_summary_uses_verified_resume_and_exact_replacement_candidates(self):
         with TemporaryDirectory() as directory:
             job, inputs, result, _items = fixture(Path(directory))
@@ -684,7 +737,7 @@ class OfflinePackPublisherTest(unittest.TestCase):
             ) as record:
                 first = publisher.publish(job, generation_input, generation_result)
                 with patch(
-                    "vntts.pregeneration_pack.load_generation_state",
+                    "vntts.pregeneration_pack.load_generation_state_from_snapshot",
                     side_effect=AssertionError("published pack must be reused"),
                 ):
                     second = publisher.publish(job, generation_input, generation_result)

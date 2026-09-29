@@ -10,7 +10,6 @@ from typing import Protocol
 
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_generation_queue import (
-    VoiceGenerationQueue,
     VoiceGenerationQueueError,
     VoiceGenerationQueueItem,
 )
@@ -27,6 +26,7 @@ from vntts.authoring.bulk_generation import (
 )
 from vntts.authoring.generation_state import (
     LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED,
+    load_stable_generation_queue,
 )
 from vntts.document_identity import is_lowercase_sha256
 from vntts.pregeneration_generation import (
@@ -458,14 +458,14 @@ def _ordered_generation_queue_ids(
     voice_plan: VoicePlan,
 ) -> tuple[tuple[str, ...], dict[tuple[str, str], str]]:
     try:
-        if sha256_file(generation_input.queue) != generation_input.queue_sha256:
-            raise OfflineRecoveryError("Offline generation queue changed")
         if (
             sha256_file(generation_input.voice_manifest)
             != generation_input.voice_manifest_sha256
         ):
             raise OfflineRecoveryError("Offline voice manifest changed")
-        queue = VoiceGenerationQueue.load(generation_input.queue)
+        queue, queue_sha256 = load_stable_generation_queue(generation_input.queue)
+        if queue_sha256 != generation_input.queue_sha256:
+            raise OfflineRecoveryError("Offline generation queue changed")
         voices = CharacterVoiceRegistry.from_file(generation_input.voice_manifest)
         projections = set(generation_input.audio_event_projection_queue_ids)
         omissions = set(generation_input.audio_event_omission_queue_ids)

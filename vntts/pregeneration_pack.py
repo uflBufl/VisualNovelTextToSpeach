@@ -53,7 +53,8 @@ from vntts.authoring.generation_state import (
     AUDIO_EVENT_OMISSION_REASON,
     AUDIO_EVENT_OMISSION_SCHEMA,
     AUDIO_EVENT_OMISSION_VERSION,
-    load_generation_state,
+    load_generation_state_from_snapshot,
+    load_stable_generation_queue,
 )
 from vntts.authoring.publication import (
     AtomicPublicationError,
@@ -314,12 +315,12 @@ class OfflinePackPublisher:
         base, _source = _load_incremental_base(self.base_pack, job, story)
         _record_acceptance_phase("base-load", phase_started, cpu_started)
         phase_started, cpu_started = perf_counter(), process_time()
-        queue = VoiceGenerationQueue.load(generation_input.queue)
-        if sha256_file(generation_input.queue) != generation_input.queue_sha256:
+        queue, queue_sha256 = load_stable_generation_queue(generation_input.queue)
+        if queue_sha256 != generation_input.queue_sha256:
             raise OfflinePackError("Generation queue changed before confirmation")
         state_path = _generation_output(generation_input) / "generation-state.json"
         state = (
-            load_generation_state(state_path, generation_input.queue)
+            load_generation_state_from_snapshot(state_path, queue, queue_sha256)
             if state_path.exists()
             else {"items": {}}
         )
@@ -821,11 +822,12 @@ def _load_terminal_generation(
     JsonRecords,
 ]:
     try:
-        state = load_generation_state(
-            generation_result.state,
-            generation_input.queue,
+        queue, queue_sha256 = load_stable_generation_queue(generation_input.queue)
+        if queue_sha256 != generation_input.queue_sha256:
+            raise OfflinePackError("Generation queue changed before publication")
+        state = load_generation_state_from_snapshot(
+            generation_result.state, queue, queue_sha256
         )
-        queue = VoiceGenerationQueue.load(generation_input.queue)
         voice_document, voices = load_voice_manifest(
             generation_input.voice_manifest,
             allow_legacy=False,

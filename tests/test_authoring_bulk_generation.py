@@ -236,7 +236,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             self.assertNotEqual(state["queue_sha256"], sha256_file(queue_path))
             self.assertIn(item["queue_id"], state["items"])
 
-    def test_failure_report_rejects_queue_change_after_state_validation(self):
+    def test_failure_report_uses_one_queue_snapshot(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             item = queue_item()
@@ -245,23 +245,24 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 queue_path,
                 root / "output",
                 SyntheticRenderer([SynthesisCompletion.LIMITED]),
+                retries=0,
             )
-            original_load = bulk_module.load_generation_state
+            original_load = bulk_module.VoiceGenerationQueue.load
 
-            def replace_queue_after_validation(*args):
-                state = original_load(*args)
+            def replace_queue_after_parse(path):
+                queue = original_load(path)
                 write_queue(queue_path, [{**item, "speaker": "Other"}])
-                return state
+                return queue
 
             with patch.object(
-                bulk_module,
-                "load_generation_state",
-                side_effect=replace_queue_after_validation,
+                bulk_module.VoiceGenerationQueue,
+                "load",
+                side_effect=replace_queue_after_parse,
             ):
-                with self.assertRaisesRegex(
-                    BulkGenerationError, "Generation queue changed"
-                ):
-                    generation_failure_report(result.state, queue_path)
+                report = generation_failure_report(result.state, queue_path)
+
+            self.assertEqual(report["records"][0]["speaker"], item["speaker"])
+            self.assertNotEqual(report["queue_sha256"], sha256_file(queue_path))
 
     def test_progress_callback_follows_each_state_commit(self):
         with TemporaryDirectory() as directory:

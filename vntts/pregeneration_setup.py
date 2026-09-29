@@ -22,13 +22,15 @@ from vntts_artifacts.story_index import (
     load_story_index_document,
 )
 from vntts_artifacts.voice_generation_queue import (
-    VoiceGenerationQueue,
     VoiceGenerationQueueError,
 )
 
 from vntts.application_directories import get_local_data_directory
 from vntts.authoring.generation_lease import BulkGenerationError
-from vntts.authoring.generation_state import load_generation_state
+from vntts.authoring.generation_state import (
+    load_generation_state_from_snapshot,
+    load_stable_generation_queue,
+)
 from vntts.chapter_voice_preload import (
     _has_authoritative_source_audio,
     _validated_source_audio_line_ids,
@@ -517,18 +519,18 @@ def estimate_generation_resources(
 ) -> GenerationResourceEstimate:
     """Estimate remaining PCM WAV storage from the exact private queue."""
     try:
-        if sha256_file(generation_input.queue) != generation_input.queue_sha256:
+        queue, queue_sha256 = load_stable_generation_queue(generation_input.queue)
+        if queue_sha256 != generation_input.queue_sha256:
             raise PregenerationSetupError(
                 "Generation queue changed before estimating storage"
             )
-        queue = VoiceGenerationQueue.load(generation_input.queue)
         state_path = (
             generation_input.directory.parent
             / f"generation-output-{generation_input.identity[:16]}"
             / "generation-state.json"
         )
         state = (
-            load_generation_state(state_path, generation_input.queue)
+            load_generation_state_from_snapshot(state_path, queue, queue_sha256)
             if state_path.is_file()
             else {"items": {}}
         )

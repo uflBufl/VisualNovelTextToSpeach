@@ -150,12 +150,7 @@ def load_generation_state(
 ) -> StateObject:
     """Load either VNTTS-owned or preserved legacy state and verify its files."""
     state_path = Path(state_path).expanduser().resolve()
-    state = load_json_object(
-        state_path,
-        "generation state",
-        error_type=BulkGenerationError,
-        object_label="Generation state",
-    )
+    state = _read_generation_state(state_path)
     queue = None
     stored_queue_sha256 = state.get("queue_sha256")
     queue_sha256 = stored_queue_sha256 if isinstance(stored_queue_sha256, str) else None
@@ -164,6 +159,25 @@ def load_generation_state(
         queue, queue_sha256 = load_stable_generation_queue(queue_path)
     _validate_state_document(state, state_path.parent, queue, queue_sha256)
     return state
+
+
+def load_generation_state_from_snapshot(
+    state_path: str | Path, queue: VoiceGenerationQueue, queue_sha256: str
+) -> StateObject:
+    """Validate a state against queue bytes already captured by the caller."""
+    state_path = Path(state_path).expanduser().resolve()
+    state = _read_generation_state(state_path)
+    _validate_state_document(state, state_path.parent, queue, queue_sha256)
+    return state
+
+
+def _read_generation_state(state_path: Path) -> StateObject:
+    return load_json_object(
+        state_path,
+        "generation state",
+        error_type=BulkGenerationError,
+        object_label="Generation state",
+    )
 
 
 def _validate_live_fallback_evidence(
@@ -2757,6 +2771,7 @@ __all__ = [
     "control_directory_digest",
     "live_fallback_decision",
     "load_generation_state",
+    "load_generation_state_from_snapshot",
     "load_stable_generation_queue",
     "provider_attempts",
     "reviewed_waveform_publication_queue_ids",

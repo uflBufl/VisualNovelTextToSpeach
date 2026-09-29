@@ -138,6 +138,7 @@ from vntts.authoring.generation_state import (
     load_generation_state as load_generation_state,
 )
 from vntts.authoring.generation_state import (
+    load_generation_state_from_snapshot,
     load_stable_generation_queue,
 )
 from vntts.authoring.generation_state import (
@@ -1221,12 +1222,8 @@ def generation_failure_report(
     """Project current and legacy failures into stable, actionable cohorts."""
     state_path = Path(state_path).expanduser().resolve()
     queue_path = Path(queue_path).expanduser().resolve()
-    state = load_generation_state(state_path, queue_path)
     queue, queue_sha256 = load_stable_generation_queue(queue_path)
-    if queue_sha256 != state["queue_sha256"]:
-        raise BulkGenerationError(
-            "Generation queue changed; use a new output directory"
-        )
+    state = load_generation_state_from_snapshot(state_path, queue, queue_sha256)
     queue_by_id = {item.queue_id: item for item in queue.items}
     records: list[_FailureReportRecord] = []
     for queue_id, result in _state_items(state).items():
