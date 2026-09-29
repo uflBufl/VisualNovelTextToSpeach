@@ -87,11 +87,12 @@ class LatestTaskRunner(QObject):
         **keyword_arguments: object,
     ) -> int:
         self._serial += 1
+        serial = self._serial
         self._set_active(True)
         if keyword_arguments:
             function = partial(function, **keyword_arguments)
-        self.thread_pool.start(_Task(self._serial, function, arguments, self._signals))
-        return self._serial
+        self.thread_pool.start(_Task(serial, function, arguments, self._signals))
+        return serial
 
     def cancel(self) -> bool:
         if not self._active:

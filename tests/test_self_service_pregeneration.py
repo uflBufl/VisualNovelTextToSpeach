@@ -436,6 +436,31 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
         self.application.processEvents()
         self.assertEqual(received, ["new"])
 
+    def test_reentrant_start_keeps_each_task_launch_identity(self):
+        pool = ManualThreadPool()
+        runner = LatestTaskRunner(thread_pool=pool)
+        received = []
+        replacement_started = False
+
+        def start_replacement(active):
+            nonlocal replacement_started
+            if active and not replacement_started:
+                replacement_started = True
+                runner.start(lambda: "new")
+
+        runner.activeChanged.connect(start_replacement)
+        runner.finished.connect(lambda result, _error: received.append(result))
+        runner.start(lambda: "old")
+        pool.tasks.pop(1).run()
+        self.application.processEvents()
+
+        self.assertTrue(runner.active)
+        self.assertEqual(received, [])
+
+        pool.tasks.pop(0).run()
+        self.application.processEvents()
+        self.assertEqual(received, ["new"])
+
     def test_embedded_preparation_keeps_work_on_navigation_and_waits_before_quit(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
