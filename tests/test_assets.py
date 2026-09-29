@@ -84,6 +84,27 @@ class ModelAssetManagerTest(unittest.TestCase):
                 with self.assertRaisesRegex(ModelIntegrityError, "no filename"):
                     manager.download("empty", asset=asset)
 
+    def test_rejects_model_urls_with_same_filename_before_download(self):
+        asset = ModelAsset(
+            "duplicate",
+            (
+                "https://models.invalid/first/model.pth",
+                "https://models.invalid/second/model.pth",
+            ),
+        )
+        opener = MemoryOpener({url: b"weights" for url in asset.urls})
+        with TemporaryDirectory() as temporary_directory:
+            manager = ModelAssetManager(temporary_directory, opener=opener)
+            with self.assertRaisesRegex(ModelIntegrityError, "same filename"):
+                manager.download(asset.name, asset=asset)
+            self.assertEqual(opener.requests, [])
+            with self.assertRaisesRegex(ModelIntegrityError, "same filename"):
+                manager._validate_checksum_manifest(
+                    {"version": 1, "model": asset.name, "files": {"model.pth": {}}},
+                    asset.name,
+                    asset,
+                )
+
     def test_configures_private_huggingface_model_cache(self):
         with TemporaryDirectory() as temporary_directory:
             manager = ModelAssetManager(storage_root=temporary_directory)

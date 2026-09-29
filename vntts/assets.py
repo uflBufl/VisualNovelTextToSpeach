@@ -77,6 +77,13 @@ class ModelAsset:
         return self.name.replace("/", "--")
 
 
+def _model_filenames(asset: ModelAsset) -> dict[str, str]:
+    filenames = {url: _model_filename(url) for url in asset.urls}
+    if len(set(filenames.values())) != len(asset.urls):
+        raise ModelIntegrityError("Model URLs resolve to the same filename")
+    return filenames
+
+
 class ModelAssetManager:
     def __init__(
         self,
@@ -173,7 +180,7 @@ class ModelAssetManager:
         files = manifest.get("files")
         if not isinstance(files, dict) or not files:
             raise ModelIntegrityError("Model checksum manifest has no files")
-        expected_files = {_model_filename(url) for url in asset.urls}
+        expected_files = set(_model_filenames(asset).values())
         if set(files) != expected_files:
             raise ModelIntegrityError("Model checksum manifest has the wrong files")
         return files
@@ -206,7 +213,7 @@ class ModelAssetManager:
         progress = progress or (lambda _percent, _message: None)
         cancel_event = cancel_event or Event()
         asset = asset or self.catalog_loader(model_name)
-        filenames = {url: _model_filename(url) for url in asset.urls}
+        filenames = _model_filenames(asset)
         self.configure_environment()
         model_path = self.model_path(model_name)
         self._check_model_path(model_path)
@@ -351,7 +358,7 @@ class ModelAssetManager:
             raise ModelDownloadCancelled("Model download cancelled")
 
     def _adopt_existing_model(self, model_path: Path, asset: ModelAsset) -> None:
-        required_files = [_model_filename(url) for url in asset.urls]
+        required_files = _model_filenames(asset).values()
         if not model_path.is_dir():
             raise ModelIntegrityError("Model is not downloaded")
         for filename in required_files:
@@ -376,8 +383,7 @@ class ModelAssetManager:
     @staticmethod
     def _write_checksum_manifest(model_path: Path, asset: ModelAsset) -> None:
         files = {}
-        for url in asset.urls:
-            filename = _model_filename(url)
+        for filename in _model_filenames(asset).values():
             path = model_path / filename
             if not path.is_file():
                 raise ModelIntegrityError(

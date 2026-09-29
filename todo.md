@@ -1,5 +1,9 @@
 # TODO
 
+## Active - Asset import correctness
+
+- [ ] Apply the supported-audio-format check to imported voice packs as well as individual voices. Gate: unsupported reference regression is rejected, valid `.ogg` import still passes, and changed tests and static checks pass.
+
 ## Validate OpenMOSS progress on Windows
 
 - [ ] During a sustained offline story preparation, confirm progress updates without frequent reads of `generation-state.json`, cancellation and Continue retain completed lines, and no state replacement access error recurs.
