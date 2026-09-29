@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import Mock
 
 import numpy as np
+from sounddevice import PortAudioError
 
 from vntts.audio_lifecycle import audio_lifecycle_context
 from vntts.audio_output import match_output_sample_rate, resolve_audio_output
@@ -58,6 +59,16 @@ class AudioOutputLifecycleTest(unittest.TestCase):
     def test_nonfinite_device_rate_falls_back_to_source_rate(self):
         output = Mock()
         output.query_devices.return_value = {"default_samplerate": float("inf")}
+        audio = np.zeros(8, dtype=np.float32)
+
+        matched, sample_rate = match_output_sample_rate(output, audio, 24_000)
+
+        self.assertIs(matched, audio)
+        self.assertEqual(sample_rate, 24_000)
+
+    def test_device_query_failure_falls_back_to_source_rate(self):
+        output = Mock()
+        output.query_devices.side_effect = PortAudioError("device unavailable")
         audio = np.zeros(8, dtype=np.float32)
 
         matched, sample_rate = match_output_sample_rate(output, audio, 24_000)
