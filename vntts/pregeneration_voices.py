@@ -1356,7 +1356,7 @@ def _load_registry(
             "character voice manifest",
         )
         after = sha256_file(manifest_path)
-    except (json.JSONDecodeError, OSError, VoiceManifestError, ValueError) as error:
+    except (OSError, VoiceManifestError, ValueError) as error:
         raise PregenerationVoiceError(
             f"Unable to read character voices: {error}"
         ) from error

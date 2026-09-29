@@ -78,7 +78,6 @@ def load_versioned_json(
         KeyError,
         TypeError,
         ValueError,
-        json.JSONDecodeError,
     ) as error:
         warn(f"Unable to load {document_name} from {path}: {error}")
         return fallback()

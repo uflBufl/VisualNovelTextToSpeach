@@ -169,7 +169,6 @@ def main(argv: list[str] | None = None) -> int:
         )
     except (
         OSError,
-        json.JSONDecodeError,
         subprocess.SubprocessError,
         ValueError,
     ) as error:

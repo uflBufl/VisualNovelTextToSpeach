@@ -267,7 +267,7 @@ def load_dialog_region(path: str | Path) -> DialogRegion:
             width=value["width"],
             height=value["height"],
         )
-    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+    except (OSError, KeyError, TypeError, ValueError) as error:
         raise ValueError(f"Unable to load dialog region {path}: {error}") from error
 
 

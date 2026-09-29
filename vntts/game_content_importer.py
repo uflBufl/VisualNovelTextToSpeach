@@ -1004,7 +1004,7 @@ class Reverse1999GameImporter:
                 result = json.loads(last_output_line(stdout) or "")
                 selected = Path(result["voice_manifest"]).expanduser().absolute()
                 relative = selected.relative_to(root)
-            except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+            except (KeyError, TypeError, ValueError) as error:
                 raise GameContentImportError(
                     "Reverse: 1999 voice preparation returned an invalid result"
                 ) from error
