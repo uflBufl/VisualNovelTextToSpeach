@@ -8,7 +8,7 @@ import sys
 from functools import lru_cache
 from hashlib import blake2b
 from pathlib import Path
-from typing import Protocol, TypeAlias
+from typing import TYPE_CHECKING, Protocol, TypeAlias
 
 from vntts_artifacts.file_integrity import sha256_file
 
@@ -19,8 +19,11 @@ from vntts.runtime_paths import (
 )
 from vntts.services.tts_engine import TTSConfigurationError
 
+if TYPE_CHECKING:
+    from vntts.runtime_ownership import RuntimeUse
+
 PathInput: TypeAlias = str | Path
-_managed_runtime_uses: dict[str, object] = {}
+_managed_runtime_uses: dict[str, RuntimeUse] = {}
 
 
 def shutdown_speech_backend(backend: object) -> None:
@@ -85,7 +88,7 @@ def activate_backend_runtime(
             )
         raise TTSConfigurationError(missing_message)
     site_packages_text = str(site_packages)
-    if site_packages_text not in _managed_runtime_uses:
+    if bundle_root is None and site_packages_text not in _managed_runtime_uses:
         from vntts.runtime_ownership import claim_runtime
 
         use = claim_runtime(backend_directory, runtime_directory)
