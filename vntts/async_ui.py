@@ -1,4 +1,4 @@
-"""Latest-result-wins Qt workers for blocking diagnostic probes."""
+"""Latest-result-wins Qt workers for blocking UI tasks."""
 
 from collections.abc import Callable
 from functools import partial
