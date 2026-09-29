@@ -627,7 +627,7 @@ class VoiceLibrary:
         try:
             with wave.open(str(path), "rb"):
                 pass
-        except (OSError, wave.Error) as error:
+        except (OSError, EOFError, wave.Error) as error:
             raise VoiceLibraryError(
                 f"Voice blob is not a WAV file: {checksum}"
             ) from error
@@ -788,7 +788,7 @@ def _read_wav(reference: str | Path) -> bytes:
     try:
         with wave.open(io.BytesIO(payload), "rb"):
             pass
-    except wave.Error as error:
+    except (EOFError, wave.Error) as error:
         raise VoiceLibraryError("Voice reference is not a WAV file") from error
     return payload
 

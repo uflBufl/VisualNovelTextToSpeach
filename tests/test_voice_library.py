@@ -21,6 +21,22 @@ def write_wav(path: Path, frames: bytes) -> None:
 
 
 class VoiceLibraryTest(unittest.TestCase):
+    def test_truncated_wav_uses_library_error_for_input_and_blob(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "truncated.wav"
+            reference.write_bytes(b"RIFF")
+            library = VoiceLibrary(root / "library")
+
+            with self.assertRaisesRegex(VoiceLibraryError, "not a WAV file"):
+                library.discover("Role", reference)
+
+            checksum = hashlib.sha256(b"RIFF").hexdigest()
+            library.blobs_path.mkdir(parents=True)
+            library._blob_path(checksum).write_bytes(b"RIFF")
+            with self.assertRaisesRegex(VoiceLibraryError, "not a WAV file"):
+                library._validate_blob(checksum)
+
     def test_batch_selection_is_atomic_when_a_later_choice_is_invalid(self) -> None:
         with TemporaryDirectory() as directory:
             library = VoiceLibrary(Path(directory) / "library")
