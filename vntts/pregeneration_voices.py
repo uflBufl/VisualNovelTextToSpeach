@@ -200,6 +200,7 @@ class VoiceCandidate:
     source_line_ids: tuple[str, ...] = ()
     reference_duration_seconds: float | None = None
     source_excerpts: tuple[str, ...] = ()
+    source_titles: tuple[str, ...] = ()
     candidate_origin: str | None = None
     reference_transcript: str | None = None
 
@@ -212,6 +213,7 @@ class VoiceCandidate:
             "source_voice_ids",
             "source_line_ids",
             "source_excerpts",
+            "source_titles",
         ):
             value[field] = list(value[field])
         return value
@@ -1769,6 +1771,15 @@ def _ranked_candidate(
         source_line_ids=_text_values(variant.get("source_line_ids")),
         reference_duration_seconds=_reference_duration_seconds(voice.references),
         source_excerpts=_source_excerpt_transcripts(variant.get("source_excerpts", ())),
+        source_titles=tuple(
+            dict.fromkeys(
+                excerpt["title"]
+                for excerpt in variant.get("source_excerpts", ())
+                if isinstance(excerpt, dict)
+                and isinstance(excerpt.get("title"), str)
+                and excerpt["title"].strip()
+            )
+        ),
         candidate_origin=_optional_variant(variant.get("candidate_origin")),
         reference_transcript=voice.reference_transcript,
     )

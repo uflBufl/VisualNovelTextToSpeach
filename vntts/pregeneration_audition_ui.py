@@ -452,7 +452,15 @@ class VoiceAuditionPanel(QGroupBox):
         ]
         if group.narrator_candidate is not None:
             entries.append((group.narrator_candidate, default_voice_choice_id, True))
-        entries.sort(key=lambda entry: entry[0].source_id != group.source_id)
+        entries.sort(
+            key=lambda entry: (
+                entry[0].source_id != group.source_id,
+                self._inspection_mode
+                and not is_playable_main_voice_source(
+                    entry[0].source_bank, entry[0].source_line_ids
+                ),
+            )
+        )
         self._candidate_entries = tuple(entries)
         with QSignalBlocker(self.voice_reference):
             self.voice_reference.clear()
@@ -474,13 +482,16 @@ class VoiceAuditionPanel(QGroupBox):
                     if candidate.source_excerpts
                     else "text unavailable"
                 )
-                source = (
-                    "Playable line - "
-                    if is_playable_main_voice_source(
-                        candidate.source_bank, candidate.source_line_ids
+                source = ""
+                if is_playable_main_voice_source(
+                    candidate.source_bank, candidate.source_line_ids
+                ):
+                    titles = (
+                        f" ({', '.join(candidate.source_titles)})"
+                        if candidate.source_titles
+                        else ""
                     )
-                    else ""
-                )
+                    source = f"Playable line{titles} - "
                 label = (
                     f"Narrator fallback - {duration}"
                     if narrator

@@ -1,5 +1,11 @@
 # TODO
 
+## Active - Expose long playable voice references
+
+- [ ] Integrate the extractor fix that publishes safe long main-menu references for manual audition, update the pinned dependency and lockfile.
+- [ ] Show playable menu references near the top of voice inspection with recognizable category labels while preserving automatic short-reference routing.
+- [ ] Verify the Everecho candidate report, focused extractor and VNTTS tests, and the changed-test selector.
+
 ## Validate OpenMOSS progress on Windows
 
 - [ ] During a sustained offline story preparation, confirm progress updates without frequent reads of `generation-state.json`, cancellation and Continue retain completed lines, and no state replacement access error recurs.

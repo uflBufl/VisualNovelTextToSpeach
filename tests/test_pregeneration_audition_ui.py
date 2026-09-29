@@ -132,6 +132,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 group.candidates[0],
                 source_character="Player candidate Rhiannon abcdef123456",
                 source_excerpts=("Good morning, traveller.",),
+                source_titles=("Morning",),
                 source_bank="hero3146_mainvoc.bnk",
                 source_line_ids=("playable-voice:3146:main:1",),
             )
@@ -150,9 +151,50 @@ class VoiceAuditionPanelTest(unittest.TestCase):
 
             self.assertIn("Good morning", panel.voice_reference.currentText())
             self.assertIn("Playable line", panel.voice_reference.currentText())
+            self.assertIn("Morning", panel.voice_reference.currentText())
             self.assertNotIn("abcdef123456", panel.voice_reference.currentText())
             self.assertIn("Original spoken text: Good morning", panel.a_reason.text())
             self.assertNotIn("Greeting:", panel.a_reason.text())
+            panel.cancel()
+
+    def test_inspection_keeps_selected_story_voice_then_shows_menu_references(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            story = replace(
+                group.candidates[0],
+                source_id="character:story",
+                source_bank="story.bnk",
+                source_line_ids=("story:1",),
+            )
+            other_story = replace(
+                story,
+                source_id="character:other-story",
+                source_excerpts=("Other story line.",),
+            )
+            menu = replace(
+                story,
+                source_id="character:menu",
+                source_bank="hero3145_mainvoc.bnk",
+                source_line_ids=("playable-voice:3145:1314513:22",),
+                source_titles=("Hobby",),
+                source_excerpts=("Original hobby line.",),
+            )
+            group = replace(
+                group,
+                source_id=story.source_id,
+                candidates=(story,),
+                candidate_inventory=(story, other_story, menu),
+            )
+            panel = VoiceAuditionPanel(
+                VoiceDecisionStore(root / "decisions.json"),
+                preview_service=Mock(),
+            )
+            self.addCleanup(panel.deleteLater)
+            panel.start(replace(plan, groups=(group,)), group_id=group.group_id)
+
+            self.assertIn("Hobby", panel.voice_reference.itemText(1))
+            self.assertIn("Other story line", panel.voice_reference.itemText(2))
             panel.cancel()
 
     def test_unlinked_game_bank_reference_is_labelled_without_a_transcript(self):

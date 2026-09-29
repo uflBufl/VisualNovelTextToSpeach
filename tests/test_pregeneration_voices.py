@@ -1532,6 +1532,10 @@ class VoicePlanStoreTest(unittest.TestCase):
                 group.candidate_inventory[0].source_excerpts,
                 ("Original line 1.",),
             )
+            self.assertEqual(
+                group.candidate_inventory[0].source_titles,
+                ("Chitchat", "Night"),
+            )
 
     def test_player_import_skips_unbound_original_spoken_text(self):
         with TemporaryDirectory() as temporary_directory:
