@@ -47,7 +47,6 @@ class OCRCorrectionsDialog(QDialog):
         self.save_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.save_runner.finished.connect(self._save_finished)
         self._save_active = False
-        self._close_pending = False
         self.setWindowTitle("OCR corrections")
         self.resize(680, 460)
 
@@ -133,11 +132,9 @@ class OCRCorrectionsDialog(QDialog):
                 )
         else:
             self.accept()
-        self._close_pending = False
 
     def reject(self) -> None:
         if self._save_active:
-            self._close_pending = True
             self.status.setText(
                 "Saving OCR corrections. Close is deferred until the write finishes."
             )
@@ -148,7 +145,6 @@ class OCRCorrectionsDialog(QDialog):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._save_active:
-            self._close_pending = True
             self.status.setText(
                 "Saving OCR corrections. Close is deferred until the write finishes."
             )
