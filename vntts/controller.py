@@ -1170,9 +1170,7 @@ class AppController:
         speech_deferred = self._offer_unknown_speaker_mapping(character, text)
         self._prime_observed_voice(character)
         self._prime_likely_chapter_voice(character, text)
-        self.history.add(character, text)
-        preview = text if len(text) <= 100 else f"{text[:97]}..."
-        self.dialog_handler(character or "Narrator", preview)
+        self._record_and_display_dialogue(character, text)
         if speech_deferred:
             return False
         return (
@@ -1974,9 +1972,7 @@ class AppController:
     def _enqueue_selected_sequence_line(self, line: ChapterDialogue) -> bool:
         self._prime_observed_voice(line.speaker)
         self._prime_likely_chapter_voice(line.speaker, line.text)
-        self.history.add(line.speaker, line.text)
-        preview = line.text if len(line.text) <= 100 else f"{line.text[:97]}..."
-        self.dialog_handler(line.speaker or "Narrator", preview)
+        self._record_and_display_dialogue(line.speaker, line.text)
         reader = self.live_reader
         if reader is None:
             return False
@@ -1985,6 +1981,11 @@ class AppController:
             line.text,
             line_id=line.line_id,
         )
+
+    def _record_and_display_dialogue(self, character: str | None, text: str) -> None:
+        self.history.add(character, text)
+        preview = text if len(text) <= 100 else f"{text[:97]}..."
+        self.dialog_handler(character or "Narrator", preview)
 
     def _report_explicit_live_sequence_outcome(
         self,
