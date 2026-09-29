@@ -1279,29 +1279,32 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.stories.setCurrentItem(groups[2])
             self.assertFalse(dialog.check_story_audio.isEnabled())
 
+    def _nested_stage_dialog(self, root):
+        content = inspect_story_index(write_story_index(root / "content"))
+        stages = tuple(
+            replace(
+                selection,
+                selection_id=f"story:stage:{index}",
+                title=f"A Story - Episode {index}",
+                kind="main_story",
+                order=1,
+                parent_story_id="story",
+                parent_story_title="A Story",
+            )
+            for index, selection in enumerate(content.selections, start=1)
+        )
+        content = replace(content, selections=stages)
+        dialog = OfflineAudioPreparationDialog(
+            AppSettings(),
+            discovery=lambda: ContentDiscovery((content,)),
+            job_store=PregenerationJobStore(root / "jobs"),
+        )
+        self.addCleanup(dialog.deleteLater)
+        return content, dialog
+
     def test_stages_are_nested_under_their_story(self):
         with TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            content = inspect_story_index(write_story_index(root / "content"))
-            stages = tuple(
-                replace(
-                    selection,
-                    selection_id=f"story:stage:{index}",
-                    title=f"A Story - Episode {index}",
-                    kind="main_story",
-                    order=1,
-                    parent_story_id="story",
-                    parent_story_title="A Story",
-                )
-                for index, selection in enumerate(content.selections, start=1)
-            )
-            content = replace(content, selections=stages)
-            dialog = OfflineAudioPreparationDialog(
-                AppSettings(),
-                discovery=lambda: ContentDiscovery((content,)),
-                job_store=PregenerationJobStore(root / "jobs"),
-            )
-            self.addCleanup(dialog.deleteLater)
+            _content, dialog = self._nested_stage_dialog(Path(temporary_directory))
 
             category = dialog.stories.topLevelItem(0)
             self.assertIn("1 story", dialog.source.currentText())
@@ -1313,24 +1316,10 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 [first.text(0), second.text(0)], ["Episode 1", "Episode 2"]
             )
             self.assertEqual(dialog.stories.count(), 2)
-            self.assertTrue(category.isExpanded())
-            self.assertFalse(story.isExpanded())
-            dialog.expand_stories_button.click()
-            self.assertTrue(category.isExpanded())
-            self.assertTrue(story.isExpanded())
-            dialog.collapse_stories_button.click()
-            self.assertFalse(category.isExpanded())
-            self.assertFalse(story.isExpanded())
-            category.setExpanded(True)
             dialog.stories.setCurrentItem(story)
             self.assertFalse(dialog.check_story_audio.isEnabled())
 
             story.setCheckState(0, Qt.CheckState.Checked)
-            self.assertEqual(
-                dialog.selected_story_ids(), ("story:stage:1", "story:stage:2")
-            )
-            dialog.collapse_stories_button.click()
-            dialog.expand_stories_button.click()
             self.assertEqual(
                 dialog.selected_story_ids(), ("story:stage:1", "story:stage:2")
             )
@@ -1341,15 +1330,11 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(story.text(1), "1/2 ready")
             self.assertEqual(category.text(1), "1/2 ready")
 
-            dialog.collapse_stories_button.click()
             dialog.story_search.setText("Episode 2")
             self.assertTrue(first.isHidden())
             self.assertFalse(story.isHidden())
             self.assertFalse(category.isHidden())
             self.assertTrue(story.isExpanded())
-            dialog.story_search.clear()
-            self.assertFalse(story.isExpanded())
-            dialog.story_search.setText("Episode 2")
             story.setCheckState(0, Qt.CheckState.Checked)
             self.assertEqual(
                 dialog.selected_story_ids(), ("story:stage:1", "story:stage:2")
@@ -1359,11 +1344,35 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             story.setExpanded(False)
             self.assertIs(dialog.stories.currentItem(), story)
             self.assertFalse(dialog.check_story_audio.isEnabled())
+
+    def test_stage_tree_expansion_survives_filter_and_refresh(self):
+        with TemporaryDirectory() as temporary_directory:
+            content, dialog = self._nested_stage_dialog(Path(temporary_directory))
+
+            category = dialog.stories.topLevelItem(0)
+            story = category.child(0)
+            self.assertTrue(category.isExpanded())
+            self.assertFalse(story.isExpanded())
+            dialog.expand_stories_button.click()
+            self.assertTrue(category.isExpanded())
+            self.assertTrue(story.isExpanded())
+            dialog.collapse_stories_button.click()
+            self.assertFalse(category.isExpanded())
+            self.assertFalse(story.isExpanded())
+
+            story.setCheckState(0, Qt.CheckState.Checked)
+            selected = ("story:stage:1", "story:stage:2")
+            self.assertEqual(dialog.selected_story_ids(), selected)
+            dialog.expand_stories_button.click()
+            self.assertEqual(dialog.selected_story_ids(), selected)
+
+            dialog.collapse_stories_button.click()
+            dialog.story_search.setText("Episode 2")
+            self.assertTrue(story.isExpanded())
             dialog.story_search.clear()
             self.assertFalse(story.isExpanded())
             dialog._populate_stories(content)
-            restored_story = dialog.stories.topLevelItem(0).child(0)
-            self.assertFalse(restored_story.isExpanded())
+            self.assertFalse(dialog.stories.topLevelItem(0).child(0).isExpanded())
             dialog.expand_stories_button.click()
             dialog._populate_stories(content)
             self.assertTrue(dialog.stories.topLevelItem(0).child(0).isExpanded())
