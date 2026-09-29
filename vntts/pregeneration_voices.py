@@ -632,6 +632,7 @@ class VoicePlanStore:
             authoritative_source_lines,
             ignore_decisions,
             rollback,
+            cancellation,
         )
         queue_bindings = _manifest_queue_bindings(manifest_document, registry)
         candidate_variants = _manifest_candidate_variants(
@@ -641,7 +642,9 @@ class VoicePlanStore:
             job.story_index_sha256,
         )
         if self.voice_library is not None:
-            manifest_path = _materialize_voice_catalog(self.job_store, job, registry)
+            manifest_path = _materialize_voice_catalog(
+                self.job_store, job, registry, cancellation=cancellation
+            )
             manifest_sha256 = sha256_file(manifest_path)
         reference_files, reference_bytes = _voice_reference_stats(registry)
         _record_plan_phase(
@@ -675,6 +678,7 @@ class VoicePlanStore:
         )
         groups: list[VoiceGroup] = []
         for group_id, values in grouped.items():
+            _raise_if_cancelled(cancellation)
             groups.append(
                 self._resolve_group(
                     group_id,
@@ -808,6 +812,7 @@ class VoicePlanStore:
         authoritative_source_lines: frozenset[str],
         ignore_decisions: bool,
         rollback: VoiceBindingRollback | None,
+        cancellation: Cancellation | None,
     ) -> CharacterVoiceRegistry:
         if self.voice_library is None:
             return registry
@@ -827,6 +832,7 @@ class VoicePlanStore:
                 )
             }
             for binding in self.voice_library.bindings():
+                _raise_if_cancelled(cancellation)
                 if (
                     not is_narrator(binding.role)
                     and normalize_character_name(binding.role) in reset_roles
@@ -837,6 +843,7 @@ class VoicePlanStore:
                         rollback=rollback,
                     )
         for binding in self.voice_library.bindings():
+            _raise_if_cancelled(cancellation)
             if (
                 binding.route == "narrator"
                 and binding.provenance.get("method") == "automatic"
@@ -1391,6 +1398,8 @@ def _materialize_voice_catalog(
     job_store: PregenerationJobStore,
     job: PregenerationJob,
     registry: CharacterVoiceRegistry,
+    *,
+    cancellation: Cancellation | None = None,
 ) -> Path:
     voices: list[JsonObject] = []
     identity: list[tuple[str, str, list[str]] | tuple[str, str, list[str], str]] = []
@@ -1400,9 +1409,11 @@ def _materialize_voice_catalog(
         for voice in sorted(
             registry.unique_voices(), key=lambda value: value.character.casefold()
         ):
+            _raise_if_cancelled(cancellation)
             references: list[str] = []
             checksums: list[str] = []
             for reference in voice.references:
+                _raise_if_cancelled(cancellation)
                 payload = read_voice_reference_bytes(voice, reference)
                 checksum = hashlib.sha256(payload).hexdigest()
                 suffix = reference.suffix or ".wav"
@@ -1433,12 +1444,14 @@ def _materialize_voice_catalog(
         digest = _digest(identity)
         destination = root / f"voice-catalog-{digest[:16]}"
         manifest = destination / "manifest.json"
+        _raise_if_cancelled(cancellation)
         if manifest.is_file():
             return manifest
         write_voice_manifest(
             staging / "manifest.json", {"version": 2, "voices": voices}
         )
         CharacterVoiceRegistry.from_file(staging / "manifest.json")
+        _raise_if_cancelled(cancellation)
         try:
             rename_directory_no_replace(staging, destination)
         except AtomicPublicationError:

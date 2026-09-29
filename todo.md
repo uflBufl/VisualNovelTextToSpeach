@@ -2,7 +2,8 @@
 
 ## Active - Voice routing debt pass
 
-- [ ] Check cancellation during voice-library preparation, catalog publication, and per-group routing before they write bindings or publish a catalog. Preserve rollback of unrelated concurrent library changes.
+- [ ] Stream runtime multi-reference snapshots as each protected file is read; `CharacterVoiceRouter` still retains every reference payload in a list before writing the temporary files. Keep reference ownership checks and synthesis lifetime.
+- [ ] Separate prior independent-choice matching from `_resolve_group` routing. Keep its candidate identity and narrator-change compatibility behavior and verify the existing saved-choice regression.
 - [ ] Inspect type/data contracts, execution/resources/performance, tests/observability, and dependencies/tooling for the selected boundary; qualify every candidate, fix confirmed debt, and run project checks.
 - [ ] Rescan affected paths and remove this section only when all applicable category passes and verification gates are complete.
 

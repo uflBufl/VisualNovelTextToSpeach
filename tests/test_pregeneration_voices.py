@@ -459,6 +459,33 @@ class VoicePlanStoreTest(unittest.TestCase):
                 len(CharacterVoiceRegistry.from_file(manifest).unique_voices()), 3
             )
 
+    def test_cancellation_during_catalog_read_prevents_publication(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            registry = CharacterVoiceRegistry.from_file(write_manifest(root / "voices"))
+            cancellation = Event()
+
+            def cancel_after_read(voice, reference):
+                payload = read_voice_reference_bytes(voice, reference)
+                cancellation.set()
+                return payload
+
+            with (
+                patch(
+                    "vntts.pregeneration_voices.read_voice_reference_bytes",
+                    side_effect=cancel_after_read,
+                ),
+                self.assertRaises(PregenerationVoiceCancelled),
+            ):
+                _materialize_voice_catalog(
+                    jobs, job, registry, cancellation=cancellation
+                )
+
+            catalog_root = Path(jobs.path_for(job.job_id)).parent
+            self.assertEqual(list(catalog_root.glob("voice-catalog-*")), [])
+            self.assertEqual(list(catalog_root.glob(".voice-catalog-*")), [])
+
     def test_planning_persists_one_automatic_voice_binding(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
