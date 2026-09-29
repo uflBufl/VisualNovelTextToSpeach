@@ -8,10 +8,6 @@ from typing import TypeAlias
 
 PathInput: TypeAlias = str | Path
 
-_BUNDLED_SPEECH_RUNTIMES = frozenset(
-    {"pocket-tts", "chatterbox-nano", "moss-tts", "moss-tts-delay", "qwen-tts"}
-)
-
 RUNTIME_ENVIRONMENT_VARIABLES = {
     "pocket-tts": "VNTTS_POCKET_TTS_RUNTIME",
     "chatterbox-nano": "VNTTS_CHATTERBOX_RUNTIME",
@@ -121,7 +117,7 @@ def get_bundle_root() -> Path | None:
 def find_bundled_speech_runtime(
     backend: str, bundle_root: PathInput | None = None
 ) -> Path | None:
-    if backend not in _BUNDLED_SPEECH_RUNTIMES:
+    if backend not in RUNTIME_ENVIRONMENT_VARIABLES:
         return None
     bundle_root = get_bundle_root() if bundle_root is None else Path(bundle_root)
     if bundle_root is None:
