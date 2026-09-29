@@ -165,7 +165,7 @@ def _source_audio_semantic_evidence(pack: GamePack) -> Path | None:
         raise GamePackError("Game pack semantic evidence checksum changed")
     evidence_id = extension.get("evidence_id")
     entry_count = extension.get("entry_count")
-    if not isinstance(evidence_id, str) or not isinstance(entry_count, int):
+    if not isinstance(evidence_id, str) or type(entry_count) is not int:
         raise GamePackError("Game pack semantic evidence extension changed")
     try:
         _validate_semantic_evidence(

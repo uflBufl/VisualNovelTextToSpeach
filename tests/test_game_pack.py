@@ -355,6 +355,20 @@ class GamePackImportTest(unittest.TestCase):
             with self.assertRaisesRegex(GamePackError, "checksum changed"):
                 import_game_pack(pack_path)
 
+    def test_import_rejects_boolean_semantic_evidence_entry_count(self):
+        with TemporaryDirectory() as directory:
+            pack_path, *_unused = write_synthetic_game_pack(
+                Path(directory), include_semantics=True
+            )
+            document = json.loads(pack_path.read_text(encoding="utf-8"))
+            document["vntts.authoring"]["source_audio_semantic_evidence"][
+                "entry_count"
+            ] = True
+            atomic_write_json(pack_path, document)
+
+            with self.assertRaisesRegex(GamePackError, "extension changed"):
+                import_game_pack(pack_path)
+
     def test_public_producer_pack_reaches_all_public_vntts_consumers(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
