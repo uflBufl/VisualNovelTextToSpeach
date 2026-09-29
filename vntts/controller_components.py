@@ -312,12 +312,13 @@ class RuntimeLifecycleComponent:
             )
             if registry is None:
                 return False
-            if (
-                controller.settings.speech_backend == "pocket-tts"
-                and not controller.settings.pocket_gated_model_accepted
-                and isinstance(registry, CharacterVoiceRegistry)
+            if controller.settings.speech_backend == "pocket-tts" and isinstance(
+                registry, CharacterVoiceRegistry
             ):
-                self._exclude_unaccepted_pocket_references(registry)
+                self._filter_pocket_voices(
+                    registry,
+                    allow_gated=controller.settings.pocket_gated_model_accepted,
+                )
             backend_factory = {
                 "chatterbox-nano": controller.chatterbox_backend_factory,
                 "moss-tts": controller.moss_backend_factory,
@@ -384,14 +385,19 @@ class RuntimeLifecycleComponent:
             return False
 
     @staticmethod
-    def _exclude_unaccepted_pocket_references(
-        registry: CharacterVoiceRegistry,
+    def _filter_pocket_voices(
+        registry: CharacterVoiceRegistry, *, allow_gated: bool
     ) -> None:
-        for name, voice in registry.voices.items():
+        def unavailable(voice: CharacterVoice) -> bool:
             if voice.references:
+                return not allow_gated
+            return voice.speaker not in pocket_tts_preset_voices
+
+        for name, voice in registry.voices.items():
+            if unavailable(voice):
                 registry.assignments[name] = None
         for name, assigned_voice in tuple(registry.assignments.items()):
-            if assigned_voice is not None and assigned_voice.references:
+            if assigned_voice is not None and unavailable(assigned_voice):
                 registry.assignments[name] = None
 
     def _initialize_voice_routing(self, use_xtts: bool) -> bool:

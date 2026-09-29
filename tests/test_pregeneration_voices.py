@@ -909,6 +909,24 @@ class VoicePlanStoreTest(unittest.TestCase):
                 self.assertEqual(group.source_speaker, "marius")
                 self.assertEqual(group.reference_sha256s, ())
 
+    def test_unknown_saved_pocket_preset_uses_default_narrator(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            library = VoiceLibrary(root / "library")
+            library.select("Narrator", route="voice", source_id="preset:unknown")
+            plan = VoicePlanStore(jobs, voice_library=library).create(
+                job,
+                AppSettings(),
+                manifest_path=write_manifest(root / "voices"),
+            )
+
+            narrator = next(
+                group for group in plan.groups if group.character == "Narrator"
+            )
+            self.assertEqual(narrator.source_id, "preset:alba")
+            PregenerationInputStore(jobs).materialize(job, plan)
+
     def test_saved_alias_assignment_is_reused_automatically(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

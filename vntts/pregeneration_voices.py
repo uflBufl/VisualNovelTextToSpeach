@@ -1466,6 +1466,12 @@ def _candidate_for(
     voice = registry.resolve(character)
     if voice is None or not _usable_voice(voice):
         return None
+    if (
+        settings.speech_backend == "pocket-tts"
+        and not voice.references
+        and voice.speaker not in pocket_tts_preset_voices
+    ):
+        return None
     return f"character:{normalize_character_name(voice.character)}", voice
 
 
@@ -1672,6 +1678,13 @@ def _effective_assignment_source(
         ):
             binding = None
         source_id = voice_binding_source_id(binding) if binding is not None else None
+        if (
+            settings.speech_backend == "pocket-tts"
+            and source_id is not None
+            and source_id.startswith("preset:")
+            and source_id.removeprefix("preset:") not in pocket_tts_preset_voices
+        ):
+            return None
         if (
             source_id
             and source_id != default_voice_choice_id

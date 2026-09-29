@@ -1548,6 +1548,44 @@ class MainTest(unittest.TestCase):
         )
         controller.shutdown()
 
+    def test_pocket_startup_ignores_unknown_saved_presets(self):
+        with TemporaryDirectory() as temporary_directory:
+            library = VoiceLibrary(Path(temporary_directory) / "library")
+            library.select("Narrator", route="voice", source_id="preset:unknown")
+            library.select("Ada", route="voice", source_id="preset:unknown")
+            library.select("Marius", route="voice", source_id="preset:marius")
+            backend = Mock()
+            backend.registry = Mock()
+            backend.capabilities.concurrent_prepare_and_play = False
+            pocket_factory = Mock(return_value=backend)
+            with (
+                patch(
+                    "vntts.runtime_config.find_default_voice_manifest",
+                    return_value=None,
+                ),
+                patch("vntts.controller.ThreadPoolExecutor", return_value=Mock()),
+                patch("vntts.controller.LiveDialogReader", return_value=Mock()),
+                patch(
+                    "vntts.controller.create_dialog_read_scheduler", return_value=Mock()
+                ),
+            ):
+                controller = AppController(
+                    AppSettings(
+                        speech_backend="pocket-tts",
+                        pocket_gated_model_accepted=True,
+                    ),
+                    voice_library=library,
+                    pocket_backend_factory=pocket_factory,
+                    model_asset_manager_factory=Mock(),
+                )
+                self.assertTrue(controller.start())
+            registry = pocket_factory.call_args.args[0]
+            self.assertIsNone(registry.resolve("Narrator"))
+            self.assertIsNone(registry.resolve("Ada"))
+            self.assertEqual(registry.resolve("Marius").speaker, "marius")
+            self.assertIsNone(pocket_factory.call_args.kwargs["narrator_reference"])
+            controller.shutdown()
+
     def test_pocket_without_cloning_ignores_offline_game_references(self):
         backend = Mock()
         backend.registry = Mock()
