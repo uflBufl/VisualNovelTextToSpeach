@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib
+import json
 import re
 import tempfile
 from collections import Counter
@@ -359,12 +360,25 @@ def _load_workspace_validation_state(
         state_sha256 = hashlib.sha256(payload).hexdigest()
         try:
             queue = _load_bound_workspace_queue(directory, workspace)
+            state_document = json.loads(payload.decode("utf-8"))
+            if not isinstance(state_document, dict):
+                raise BulkGenerationError("Generation state must be a JSON object")
             state = load_generation_state_from_snapshot(
                 state_path,
                 queue,
                 workspace_queue_sha256(workspace, error_type=AuthoringWorkbenchError),
+                state_document=state_document,
             )
-        except BulkGenerationError as error:
+            if sha256_file(state_path) != state_sha256:
+                raise BulkGenerationError(
+                    "Workspace generation state changed while it was loaded"
+                )
+        except (
+            BulkGenerationError,
+            OSError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+        ) as error:
             raise AuthoringWorkbenchError(str(error)) from error
         share_workspace_generation_state(
             directory, workspace, (queue, state, payload, state_sha256)

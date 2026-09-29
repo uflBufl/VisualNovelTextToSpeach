@@ -930,6 +930,57 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 forged_directory.rename(carried.directory)
                 workspace_path.write_text(json.dumps(original), encoding="utf-8")
 
+    def test_direct_extension_state_uses_one_snapshot(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            state_path = root / "generated-audio" / "generation-state.json"
+            state_path.parent.mkdir()
+            state_path.write_text('{"revision":"A"}', encoding="utf-8")
+            replacement = root / "replacement.json"
+            replacement.write_text('{"revision":"B"}', encoding="utf-8")
+            observed = []
+
+            def replace_after_validation_starts(
+                path, _queue, _digest, *, state_document=None
+            ):
+                observed.append(state_document)
+                replacement.replace(path)
+                return (
+                    state_document
+                    if state_document is not None
+                    else json.loads(path.read_text(encoding="utf-8"))
+                )
+
+            with (
+                patch.object(
+                    workspace_authority_module,
+                    "_load_bound_workspace_queue",
+                    return_value=object(),
+                ),
+                patch.object(
+                    workspace_authority_module,
+                    "workspace_queue_sha256",
+                    return_value="a" * 64,
+                ),
+                patch.object(
+                    workspace_authority_module,
+                    "load_generation_state_from_snapshot",
+                    side_effect=replace_after_validation_starts,
+                ),
+                patch.object(
+                    workspace_authority_module, "share_workspace_generation_state"
+                ) as cache,
+                self.assertRaisesRegex(
+                    AuthoringWorkbenchError, "changed while it was loaded"
+                ),
+            ):
+                workspace_authority_module._load_workspace_validation_state(
+                    root, {"config_rebase": {}}
+                )
+
+            self.assertEqual(observed, [{"revision": "A"}])
+            cache.assert_not_called()
+
     def test_offline_pocket_fallback_carries_exact_failure_with_fresh_seed_space(self):
         from tests.test_authoring_bulk_generation import SyntheticRenderer
         from vntts.authoring.bulk_generation import (

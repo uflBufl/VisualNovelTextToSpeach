@@ -2,7 +2,7 @@
 
 ## Active - Offline generation and state debt pass
 
-- [ ] Bind workspace direct-extension authority state, digest, and payload to one read; `workspace_authority` reloads the state after hashing it, allowing an atomic replacement to mix revisions. Check sibling inspection path and add a replacement regression.
+- [ ] Use one parsed state snapshot in workspace review projections too; their before/after path hashes reject ordinary replacements but can pair an intervening revision with the original hash after an A-B-A swap.
 - [ ] Inspect generation state, offline generation, recovery, and their direct callers for correctness, types, design, tests, resources, and tooling; record reproducible findings before editing.
 - [ ] Fix confirmed findings separately, run focused checks and required changed-test selectors, then rescan and remove this section when complete.
 
