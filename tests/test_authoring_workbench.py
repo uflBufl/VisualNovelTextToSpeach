@@ -493,10 +493,10 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 carry_forward_from=source_directory,
                 carry_forward_characters=("Rhiannon",),
             )
-            load_state = workspace_inspection_module.load_generation_state
+            load_state = workspace_inspection_module.load_generation_state_from_snapshot
             with patch.object(
                 workspace_inspection_module,
-                "load_generation_state",
+                "load_generation_state_from_snapshot",
                 wraps=load_state,
             ) as loading:
                 workbench_module.load_workbench_projection_data(carried.directory)
@@ -3011,6 +3011,37 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 workspaces = discover_workspaces(root / "workspaces")
 
         self.assertEqual(workspaces, (created.directory,))
+
+    def test_workspace_inspection_rejects_queue_replaced_after_authority_load(self):
+        with TemporaryDirectory() as directory:
+            _fixture, _imported, created = self.create_workspace(Path(directory))
+            (created.directory / "generated-audio/generation-state.json").unlink()
+            queue_path = created.directory / "queue.jsonl"
+            original_load = workspace_authority_module._load_workspace
+
+            def replace_queue_after_workspace_load(workspace_directory):
+                loaded = original_load(workspace_directory)
+                payload = queue_path.read_bytes()
+                self.assertIn(b"Rhiannon", payload)
+                queue_path.write_bytes(payload.replace(b"Rhiannon", b"Other"))
+                return loaded
+
+            with (
+                patch.object(
+                    workspace_authority_module,
+                    "_load_workspace",
+                    side_effect=replace_queue_after_workspace_load,
+                ),
+                patch.object(
+                    workspace_inspection_module,
+                    "_load_workspace",
+                    side_effect=replace_queue_after_workspace_load,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    AuthoringWorkbenchError, "Workspace queue was modified"
+                ):
+                    inspect_workspace(created.directory)
 
     def test_immutable_queue_and_core_paths_are_anchored_to_import_snapshot(self):
         with TemporaryDirectory() as directory:

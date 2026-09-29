@@ -46,6 +46,7 @@ from vntts.authoring.failure_repair import (
     FailureRepairPolicy,
     FailureRepairPolicyError,
 )
+from vntts.authoring.generation_state import load_generation_state_from_snapshot
 from vntts.authoring.offline_fallback_authority import (
     OfflineFallbackAuthority,
     OfflineFallbackAuthorityError,
@@ -357,10 +358,14 @@ def _load_workspace_validation_state(
         )
         state_sha256 = hashlib.sha256(payload).hexdigest()
         try:
-            state = load_generation_state(state_path, directory / "queue.jsonl")
+            queue = _load_bound_workspace_queue(directory, workspace)
+            state = load_generation_state_from_snapshot(
+                state_path,
+                queue,
+                workspace_queue_sha256(workspace, error_type=AuthoringWorkbenchError),
+            )
         except BulkGenerationError as error:
             raise AuthoringWorkbenchError(str(error)) from error
-        queue = _load_bound_workspace_queue(directory, workspace)
         share_workspace_generation_state(
             directory, workspace, (queue, state, payload, state_sha256)
         )

@@ -25,7 +25,6 @@ from vntts_artifacts.story_index import (
 )
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
-    VoiceGenerationQueueError,
     VoiceGenerationQueueItem,
 )
 from vntts_artifacts.voice_manifest import (
@@ -44,7 +43,6 @@ from vntts.authoring.bulk_generation import (
     ReviewAuthority,
     StateItems,
     is_spoken_queue_item,
-    load_generation_state,
     normalized_failure_record,
     sentence_repair_matches_failure,
 )
@@ -58,6 +56,7 @@ from vntts.authoring.generation_lease import (
     process_is_alive,
     process_started_at,
 )
+from vntts.authoring.generation_state import load_generation_state_from_snapshot
 from vntts.authoring.missing_voice_policy import (
     NARRATOR_ALL_UNRESOLVED,
     NARRATOR_ROLES,
@@ -258,31 +257,17 @@ def inspect_workspace(
     process_checker: Callable[[int], bool] = process_is_alive,
     process_start_checker: Callable[[int], str | None] = process_started_at,
 ) -> WorkspaceSummary:
-    directory, workspace = _load_workspace(workspace_directory)
-    queue_path = _within(
-        directory, _safe_relative(workspace["queue"], "Queue"), "Queue"
+    read = _load_workbench_projection_read(
+        workspace_directory, load_projection_details=False
     )
-    output = _within(directory, _safe_relative(workspace["output"], "Output"), "Output")
-    try:
-        queue = VoiceGenerationQueue.load(queue_path)
-    except VoiceGenerationQueueError as error:
-        raise AuthoringWorkbenchError(str(error)) from error
-    state_path = output / "generation-state.json"
-    state = None
-    if state_path.is_file():
-        try:
-            state = load_generation_state(state_path, queue_path)
-        except BulkGenerationError as error:
-            raise AuthoringWorkbenchError(str(error)) from error
-
     return _inspect_workspace_from_read(
-        directory,
-        workspace,
-        queue_path,
-        output,
-        queue,
-        state_path if state_path.is_file() else None,
-        state,
+        read.directory,
+        read.workspace,
+        read.queue_path,
+        read.output,
+        read.queue,
+        read.state_path,
+        read.state,
         voice_manifest=voice_manifest,
         local_process_id=local_process_id,
         local_process_started_at=local_process_started_at,
@@ -406,7 +391,9 @@ def _inspect_workspace_from_read(
         len(failed_ids),
         len(missing_voice_ids),
         blocked_reasons,
-        queue_sha256=sha256_file(queue_path),
+        queue_sha256=workspace_queue_sha256(
+            workspace, error_type=AuthoringWorkbenchError
+        ),
         local_process_id=local_process_id,
         local_process_started_at=local_process_started_at,
         process_checker=process_checker,
@@ -670,7 +657,11 @@ def list_review_items(
     queue = _load_bound_workspace_queue(directory, workspace)
     story = _load_bound_story_document(directory, workspace)
     state_sha256 = sha256_file(state_path)
-    state = load_generation_state(state_path, queue_path)
+    state = load_generation_state_from_snapshot(
+        state_path,
+        queue,
+        workspace_queue_sha256(workspace, error_type=AuthoringWorkbenchError),
+    )
     if sha256_file(state_path) != state_sha256:
         raise AuthoringWorkbenchError(
             "Generation state changed while review rows were being projected"
@@ -809,31 +800,26 @@ def inspect_generation_readiness(
         raise AuthoringWorkbenchError(
             "Workspace regeneration requires explicit queue IDs"
         )
-    summary = inspect_workspace(workspace_directory)
-    loaded_directory, loaded_workspace = _load_workspace(workspace_directory)
-    projection_ids = set(
-        workspace_audio_event_spoken_projection_queue_ids(
-            loaded_workspace, error_type=AuthoringWorkbenchError
-        )
+    read = _load_workbench_projection_read(
+        workspace_directory, load_projection_details=False
     )
-    queue = VoiceGenerationQueue.load(summary.queue)
-    state_items: StateItems = {}
-    state: JsonDocument | None = None
-    if summary.state is not None:
-        state = load_generation_state(summary.state, summary.queue)
-        state_items = _inspection_state_items(state)
-    control_workspace = _load_workspace(workspace_directory)[1]
+    summary = _inspect_workspace_from_read(
+        read.directory,
+        read.workspace,
+        read.queue_path,
+        read.output,
+        read.queue,
+        read.state_path,
+        read.state,
+    )
     return _inspect_generation_readiness_from_read(
-        loaded_directory,
-        loaded_workspace,
+        read.directory,
+        read.workspace,
         summary,
-        queue,
-        state,
+        read.queue,
+        read.state,
         queue_ids=queue_ids,
         regenerate_existing=regenerate_existing,
-        projection_ids=projection_ids,
-        state_items=state_items,
-        control_workspace=control_workspace,
     )
 
 
@@ -1245,7 +1231,13 @@ def _load_workbench_projection_read_scoped(
         else:
             state_sha256 = sha256_file(state_path)
             try:
-                state = load_generation_state(state_path, queue_path)
+                state = load_generation_state_from_snapshot(
+                    state_path,
+                    queue,
+                    workspace_queue_sha256(
+                        workspace, error_type=AuthoringWorkbenchError
+                    ),
+                )
             except BulkGenerationError as error:
                 raise AuthoringWorkbenchError(str(error)) from error
         if sha256_file(state_path) != state_sha256:

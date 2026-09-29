@@ -1761,8 +1761,8 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 ) as queue_load,
                 patch.object(
                     workspace_inspection_module,
-                    "load_generation_state",
-                    wraps=workspace_inspection_module.load_generation_state,
+                    "load_generation_state_from_snapshot",
+                    wraps=workspace_inspection_module.load_generation_state_from_snapshot,
                 ) as state_load,
                 patch.object(
                     workspace_inspection_module,
