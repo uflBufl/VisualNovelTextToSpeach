@@ -74,6 +74,14 @@ Planned implementation order after approval:
 
 ## P0 - Play while offline audio is still preparing
 
+- [ ] **Validate mixed-stage semantic classification on Windows:** September 29
+      support archive (17) selected five stages, four previously prepared;
+      Step 2 measured 90/90 source voices in 25 seconds, then the extractor
+      ASR publisher failed twice with `Timed source cue identity is invalid`
+      (18 and 17 seconds). The fixed extractor must leave untimed/absent
+      `unknown` cues untouched and reach voice choice on the same five stages.
+      Check that a retry reuses measured durations, preserves prepared audio,
+      and does not rerun semantic classification after success.
 - [ ] **Validate the September 29 22:50 Stage 1 rerun on Windows:** the five
       `2026-09-29 22.50.*.jpg` screenshots show `???` rendered as `2???` or
       `22?`, and `Hey!` acquiring trailing OCR noise. The support bundle was
@@ -285,6 +293,16 @@ Planned implementation order after approval:
 
 ## P1 - Measure remaining player latency
 
+- [ ] **Reuse source-audio analysis across stage combinations:** the five-stage
+      Windows run measured 90/90 game cues in 25 seconds although four stages
+      already had prepared audio; those packs do not prove timing evidence was
+      previously saved. The timed/semantic successor cache is keyed by the
+      combined job ID, so changed stage sets cannot reuse that private output.
+      Measure how many media/text pairs are genuinely new, then reuse only
+      checksum-bound duration and semantic evidence for unchanged WEM bytes,
+      decoder/model identity, locale and displayed text. The next run should
+      analyze only new or changed cues while preserving safe fallback on stale
+      evidence and the ability to cancel.
 - [ ] **Validate repeated Voice plan in the real UI:** on the local 253 MB reference
       index, repeated role selection fell from 9.18 to 0.37 seconds. The plan-store
       fixture now produces identical groups while reducing library reads from
