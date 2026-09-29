@@ -2,7 +2,7 @@ from collections.abc import Callable
 from concurrent.futures import Future
 from datetime import datetime
 
-from PySide6.QtCore import QSignalBlocker, Qt, QThreadPool, QTimer
+from PySide6.QtCore import QSignalBlocker, Qt, QThreadPool
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QDialog,
@@ -108,10 +108,6 @@ class DialogueHistoryDialog(QDialog):
         layout.addLayout(content)
         layout.addLayout(footer)
 
-        self.timer = QTimer(self)
-        self.timer.setInterval(750)
-        self.timer.timeout.connect(self.refresh)
-        self.timer.start()
         self.refresh()
 
     def refresh(self) -> None:
