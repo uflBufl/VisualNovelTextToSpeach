@@ -1,4 +1,4 @@
-"""Consumer-side validation for checksum-bound source-audio semantic evidence."""
+"""Validation and projection of checksum-bound source-audio evidence."""
 
 from __future__ import annotations
 
@@ -6,9 +6,11 @@ import hashlib
 import json
 import re
 import unicodedata
+from copy import deepcopy
 from pathlib import Path
 from typing import Literal, TypeAlias, TypedDict, TypeGuard, cast
 
+from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
@@ -235,6 +237,93 @@ def validate_story_semantic_evidence(
             "Story semantic evidence applied count changed"
         )
     return evidence
+
+
+def project_source_audio_semantics(
+    source_story: StoryIndexDocument,
+    metadata: dict[str, object],
+    records: list[JsonDocument],
+    staging: Path,
+) -> tuple[dict[str, object], list[JsonDocument], Path | None]:
+    binding = metadata.get("source_audio_semantics")
+    if not isinstance(binding, dict):
+        return metadata, records, None
+    source = source_story.path.parent / "source-audio-semantic-evidence.json"
+    try:
+        evidence = load_source_audio_semantic_evidence(source, source_story)
+    except (OSError, SourceAudioSemanticEvidenceError, ValueError) as error:
+        raise SourceAudioSemanticEvidenceError(
+            f"Selected dialogue source-audio evidence is invalid: {error}"
+        ) from error
+    selected_line_ids = {record.get("line_id") for record in records}
+    selected_entry_ids = {
+        record.get("source_audio_semantic_evidence_entry_id")
+        for record in records
+        if record.get("source_audio_semantic_evidence_entry_id") is not None
+    }
+    if not selected_entry_ids:
+        projected_metadata = deepcopy(metadata)
+        projected_metadata.pop("source_audio_semantics", None)
+        return projected_metadata, records, None
+    projected_entries = []
+    for entry in evidence["entries"]:
+        if entry.get("entry_id") not in selected_entry_ids:
+            continue
+        projected = deepcopy(entry)
+        projected["source_line_ids"] = sorted(
+            set(_text_values(projected.get("source_line_ids"))) & selected_line_ids
+        )
+        if not projected["source_line_ids"]:
+            raise SourceAudioSemanticEvidenceError(
+                "Selected source-audio evidence lost its dialogue binding"
+            )
+        projected_entries.append(projected)
+    if {entry["entry_id"] for entry in projected_entries} != selected_entry_ids:
+        raise SourceAudioSemanticEvidenceError(
+            "Selected dialogue source-audio evidence is incomplete"
+        )
+    projected_evidence = {
+        key: deepcopy(value)
+        for key, value in evidence.items()
+        if key not in {"evidence_id", "generated_at", "entries"}
+    }
+    projected_evidence["entries"] = projected_entries
+    projected_evidence["evidence_id"] = canonical_document_sha256(projected_evidence)
+    projected_evidence["generated_at"] = evidence["generated_at"]
+    projected_records = deepcopy(records)
+    for record in projected_records:
+        if record.get("source_audio_semantic_evidence_entry_id") is not None:
+            record["source_audio_semantic_evidence_id"] = projected_evidence[
+                "evidence_id"
+            ]
+    destination = staging / "source-audio-semantic-evidence.json"
+    atomic_write_json(destination, projected_evidence, sort_keys=True)
+    projected_metadata = deepcopy(metadata)
+    projected_metadata["source_audio_semantics"] = {
+        "evidence_id": projected_evidence["evidence_id"],
+        "evidence_sha256": sha256_file(destination),
+        "method": binding["method"],
+        "selected_chapters": sorted(
+            {
+                record.get("chapter")
+                for record in projected_records
+                if isinstance(record.get("chapter"), str) and record.get("chapter")
+            }
+        ),
+        "applied_count": sum(
+            record.get("source_audio_semantic_evidence_entry_id") is not None
+            for record in projected_records
+        ),
+    }
+    return projected_metadata, projected_records, destination
+
+
+def _text_values(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)) or not all(
+        isinstance(item, str) and item for item in value
+    ):
+        raise SourceAudioSemanticEvidenceError("Source evidence line IDs are invalid")
+    return tuple(value)
 
 
 def _require_sha256(value: object, label: str) -> str:

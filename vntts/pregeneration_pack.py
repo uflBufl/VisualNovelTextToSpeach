@@ -63,7 +63,7 @@ from vntts.chapter_voice_preload import (
     _source_audio_covers_full_line,
     _validated_source_audio_line_ids,
 )
-from vntts.document_identity import is_lowercase_sha256
+from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 from vntts.game_pack import GamePackImport, import_game_pack
 from vntts.generated_audio import GeneratedAudioLibrary
 from vntts.path_safety import safe_relative_path
@@ -77,7 +77,6 @@ from vntts.pregeneration_generation import (
 )
 from vntts.pregeneration_queue import (
     PregenerationInput,
-    project_source_audio_semantics,
 )
 from vntts.pregeneration_setup import (
     GameContent,
@@ -87,8 +86,9 @@ from vntts.pregeneration_setup import (
 )
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidence,
-    canonical_document_sha256,
+    SourceAudioSemanticEvidenceError,
     load_source_audio_semantic_evidence,
+    project_source_audio_semantics,
 )
 from vntts.support import record_background_operation
 
@@ -655,6 +655,7 @@ class OfflinePackPublisher:
             GamePackError,
             GeneratedAudioManifestError,
             OSError,
+            SourceAudioSemanticEvidenceError,
             StoryIndexError,
             ValueError,
             VoiceManifestError,

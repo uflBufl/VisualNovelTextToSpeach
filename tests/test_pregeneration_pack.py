@@ -48,6 +48,7 @@ from vntts.pregeneration_setup import (
     PreparationEstimate,
     inspect_story_index,
 )
+from vntts.source_audio_semantics import SourceAudioSemanticEvidenceError
 from vntts.synthesis import SynthesisCompletion
 from vntts.versioned_json import write_versioned_json
 
@@ -904,6 +905,19 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 story_index_sha256=sha256_file(source_story),
                 selected_story_ids=("story:stage:2",),
             )
+
+            with (
+                patch(
+                    "vntts.pregeneration_pack.project_source_audio_semantics",
+                    side_effect=SourceAudioSemanticEvidenceError("corrupt sidecar"),
+                ),
+                self.assertRaisesRegex(OfflinePackError, "corrupt sidecar"),
+            ):
+                OfflinePackPublisher(base_pack=base.manifest).publish(
+                    current_job,
+                    current_input,
+                    current_result,
+                )
 
             successor = OfflinePackPublisher(base_pack=base.manifest).publish(
                 current_job,

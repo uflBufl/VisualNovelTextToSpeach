@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import io
 from collections.abc import Mapping, Sequence
@@ -13,7 +12,6 @@ from typing import Protocol, TypeAlias, TypedDict
 
 import numpy as np
 import soundfile as sf
-from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import probe_pcm16_mono_wav, write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import (
@@ -40,6 +38,7 @@ from vntts.authoring.queue_builder import (
     inspect_generation_queue,
     publish_generation_queue,
 )
+from vntts.document_identity import canonical_document_sha256
 from vntts.pregeneration_setup import (
     PregenerationJob,
     PregenerationJobStore,
@@ -48,8 +47,8 @@ from vntts.pregeneration_setup import (
 from vntts.pregeneration_voices import VoiceGroup, VoicePlan
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
-    canonical_document_sha256,
     load_source_audio_semantic_evidence,
+    project_source_audio_semantics,
 )
 from vntts.support import record_background_operation
 from vntts.versioned_json import read_versioned_json, write_versioned_json
@@ -256,6 +255,7 @@ class PregenerationInputStore:
             AtomicPublicationError,
             GenerationQueueBuildError,
             OSError,
+            SourceAudioSemanticEvidenceError,
             StoryIndexError,
             VoiceManifestError,
             ValueError,
@@ -696,102 +696,10 @@ def _raise_if_cancelled(cancellation: _Cancellation | None) -> None:
         raise PregenerationQueueCancelled("Offline preparation was cancelled")
 
 
-def project_source_audio_semantics(
-    source_story: StoryIndexDocument,
-    metadata: dict[str, object],
-    records: list[StoryRecordDocument],
-    staging: Path,
-) -> tuple[dict[str, object], list[StoryRecordDocument], Path | None]:
-    binding = metadata.get("source_audio_semantics")
-    if not isinstance(binding, dict):
-        return metadata, records, None
-    source = source_story.path.parent / "source-audio-semantic-evidence.json"
-    try:
-        evidence = load_source_audio_semantic_evidence(source, source_story)
-    except (OSError, SourceAudioSemanticEvidenceError, ValueError) as error:
-        raise PregenerationQueueError(
-            f"Selected dialogue source-audio evidence is invalid: {error}"
-        ) from error
-    selected_line_ids = {record.get("line_id") for record in records}
-    selected_entry_ids = {
-        record.get("source_audio_semantic_evidence_entry_id")
-        for record in records
-        if record.get("source_audio_semantic_evidence_entry_id") is not None
-    }
-    if not selected_entry_ids:
-        projected_metadata = copy.deepcopy(metadata)
-        projected_metadata.pop("source_audio_semantics", None)
-        return projected_metadata, records, None
-    projected_entries = []
-    for entry in evidence["entries"]:
-        if entry.get("entry_id") not in selected_entry_ids:
-            continue
-        projected = copy.deepcopy(entry)
-        projected["source_line_ids"] = sorted(
-            set(
-                _text_values(
-                    projected.get("source_line_ids"), "source evidence line IDs"
-                )
-            )
-            & selected_line_ids
-        )
-        if not projected["source_line_ids"]:
-            raise PregenerationQueueError(
-                "Selected source-audio evidence lost its dialogue binding"
-            )
-        projected_entries.append(projected)
-    if {entry["entry_id"] for entry in projected_entries} != selected_entry_ids:
-        raise PregenerationQueueError(
-            "Selected dialogue source-audio evidence is incomplete"
-        )
-    projected_evidence = {
-        key: copy.deepcopy(value)
-        for key, value in evidence.items()
-        if key not in {"evidence_id", "generated_at", "entries"}
-    }
-    projected_evidence["entries"] = projected_entries
-    projected_evidence["evidence_id"] = canonical_document_sha256(projected_evidence)
-    projected_evidence["generated_at"] = evidence["generated_at"]
-    projected_records = copy.deepcopy(records)
-    for record in projected_records:
-        if record.get("source_audio_semantic_evidence_entry_id") is not None:
-            record["source_audio_semantic_evidence_id"] = projected_evidence[
-                "evidence_id"
-            ]
-    destination = staging / "source-audio-semantic-evidence.json"
-    atomic_write_json(destination, projected_evidence, sort_keys=True)
-    projected_metadata = copy.deepcopy(metadata)
-    projected_metadata["source_audio_semantics"] = {
-        "evidence_id": projected_evidence["evidence_id"],
-        "evidence_sha256": sha256_file(destination),
-        "method": binding["method"],
-        "selected_chapters": sorted(
-            {
-                record.get("chapter")
-                for record in projected_records
-                if isinstance(record.get("chapter"), str) and record.get("chapter")
-            }
-        ),
-        "applied_count": sum(
-            record.get("source_audio_semantic_evidence_entry_id") is not None
-            for record in projected_records
-        ),
-    }
-    return projected_metadata, projected_records, destination
-
-
 def _required_text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{label} must be non-empty text")
     return value
-
-
-def _text_values(value: object, label: str) -> tuple[str, ...]:
-    if not isinstance(value, (list, tuple)) or not all(
-        isinstance(item, str) and item for item in value
-    ):
-        raise PregenerationQueueError(f"{label.capitalize()} are invalid")
-    return tuple(value)
 
 
 def _file_size(path: str | Path | None) -> int:
@@ -820,5 +728,4 @@ __all__ = [
     "PregenerationInputStore",
     "PregenerationQueueCancelled",
     "PregenerationQueueError",
-    "project_source_audio_semantics",
 ]

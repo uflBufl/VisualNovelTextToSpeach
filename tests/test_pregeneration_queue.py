@@ -27,6 +27,7 @@ from vntts.source_audio_semantics import (
     canonical_document_sha256,
     load_source_audio_semantic_evidence,
     semantic_text_sha256,
+    validate_source_audio_semantic_evidence,
 )
 from vntts.voice_library import VoiceLibrary
 from vntts.voices import CharacterVoiceRegistry, remember_voice_binding
@@ -511,11 +512,20 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 manifest_path=manifest,
             )
 
+            source_evidence = root / "content" / "source-audio-semantic-evidence.json"
+            original_evidence = source_evidence.read_bytes()
+            source_evidence.write_bytes(b"corrupt")
+            with self.assertRaisesRegex(
+                PregenerationQueueError, "source-audio evidence is invalid"
+            ):
+                PregenerationInputStore(jobs).materialize(job, plan)
+            source_evidence.write_bytes(original_evidence)
+
             with (
                 patch(
-                    "vntts.pregeneration_queue.load_source_audio_semantic_evidence",
-                    wraps=load_source_audio_semantic_evidence,
-                ) as evidence_load,
+                    "vntts.source_audio_semantics.validate_source_audio_semantic_evidence",
+                    wraps=validate_source_audio_semantic_evidence,
+                ) as evidence_validation,
                 patch(
                     "vntts.source_audio_semantics.load_story_index_document",
                     wraps=load_story_index_document,
@@ -534,7 +544,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
             selected_story.metadata["source_audio_semantics"]["applied_count"],
             1,
         )
-        self.assertEqual(evidence_load.call_count, 2)
+        self.assertEqual(evidence_validation.call_count, 2)
         self.assertEqual(story_load.call_count, 1)
 
     def test_same_identity_resumes_without_rewriting(self):
