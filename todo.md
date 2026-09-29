@@ -2,7 +2,7 @@
 
 ## Active - Offline pack publication debt pass
 
-- [ ] Bind `_safe_sequence_document` typed plan and raw chapter JSON to one immutable byte snapshot; an atomic replacement between the two reads can mix source provenance in a cumulative live sequence.
+- [ ] Validate source-audio evidence content and its story-bound SHA-256 from the same bytes; a replacement between JSON loading and `sha256_file` can accept evidence that the story never bound.
 - [ ] Inspect queue/pack ownership, types, design, tests, resources, and tooling across entry points and callers; rescan affected paths, run required checks, and remove this section when complete.
 
 ## Validate OpenMOSS progress on Windows

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import shutil
@@ -10,6 +11,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
+from tempfile import TemporaryDirectory
 from time import perf_counter, process_time
 from typing import Protocol, cast
 
@@ -431,11 +433,14 @@ class OfflinePackPublisher:
             if base is None
             else base.pack.extensions["vntts.self-service"]["identity"]
         )
+        sequence_sha256, sequence_payload = _optional_sequence_snapshot(
+            live_sequence_plan
+        )
         identity = _identity(
             generation_input,
             state_sha256,
             base_identity,
-            _optional_sha256(live_sequence_plan),
+            sequence_sha256,
         )
         destination = (
             generation_input.directory.parent / "game-packs" / (f"pack-{identity[:24]}")
@@ -524,11 +529,12 @@ class OfflinePackPublisher:
                 _verify_prepared_inputs(generation_input)
                 staged_sequence = _stage_live_sequence(
                     base,
-                    live_sequence_plan,
+                    live_sequence_plan if sequence_payload is not None else None,
                     generation_input.story_index,
                     story_copy,
                     published_story,
                     sequence_copy,
+                    current_payload=sequence_payload,
                 )
                 _record_publication_phase(
                     "story-and-voices", phase_started, cpu_started
@@ -963,13 +969,14 @@ def _identity(
     return str(canonical_document_sha256(payload))
 
 
-def _optional_sha256(path: Path | None) -> str | None:
+def _optional_sequence_snapshot(path: Path | None) -> tuple[str | None, bytes | None]:
     if path is None or not path.is_file():
-        return None
+        return None, None
     try:
-        return sha256_file(path)
+        payload = path.read_bytes()
     except OSError:
-        return None
+        return None, None
+    return hashlib.sha256(payload).hexdigest(), payload
 
 
 def _stage_live_sequence(
@@ -979,13 +986,15 @@ def _stage_live_sequence(
     staged_story: Path,
     published_story: StoryIndexDocument,
     destination: Path,
+    *,
+    current_payload: bytes | None = None,
 ) -> Path | None:
     """Bind only a complete, linear sequence to the exact staged story bytes."""
     if current_path is None:
         return None
     try:
         current_document, current_plan = _safe_sequence_document(
-            current_path, current_story
+            current_path, current_story, payload=current_payload
         )
         documents = [current_document]
         plans = [current_plan]
@@ -1023,9 +1032,17 @@ def _stage_live_sequence(
 
 
 def _safe_sequence_document(
-    path: Path, story_index: Path
+    path: Path, story_index: Path, *, payload: bytes | None = None
 ) -> tuple[JsonObject, LiveSequencePlan]:
-    plan = load_live_sequence_plan(path, story_index)
+    if payload is None:
+        payload = path.read_bytes()
+    document = json.loads(payload)
+    if not isinstance(document, dict) or not isinstance(document.get("chapters"), list):
+        raise LiveSequencePlanError("Live sequence plan document is malformed")
+    with TemporaryDirectory(prefix="vntts-sequence-") as directory:
+        snapshot = Path(directory) / "live-sequence.json"
+        snapshot.write_bytes(payload)
+        plan = load_live_sequence_plan(snapshot, story_index)
     if plan.game_id != "reverse1999":
         raise LiveSequencePlanError("Live sequence is not for Reverse: 1999")
     for event in plan.events.values():
@@ -1033,9 +1050,6 @@ def _safe_sequence_document(
             event.control != "terminal" and len(event.successors) != 1
         ):
             raise LiveSequencePlanError("Live sequence is not uniquely automatic")
-    document = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(document, dict) or not isinstance(document.get("chapters"), list):
-        raise LiveSequencePlanError("Live sequence plan document is malformed")
     return document, plan
 
 

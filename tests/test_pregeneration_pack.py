@@ -44,6 +44,7 @@ from vntts.pregeneration_pack import (
     _ensure_pack_disk_space,
     _link_verified_file,
     _load_terminal_generation,
+    _optional_sequence_snapshot,
     _portable_voice_entries,
     _stage_live_sequence,
     _write_cumulative_routes,
@@ -388,6 +389,48 @@ class OfflinePackPublisherTest(unittest.TestCase):
             plan = load_live_sequence_plan(staged, final_story)
             self.assertEqual(
                 tuple(chapter.chapter for chapter in plan.chapters), ("1", "2")
+            )
+
+            source_digest, source_payload = _optional_sequence_snapshot(plans[1])
+            self.assertEqual(source_digest, sha256_file(plans[1]))
+            replacement_document = json.loads(plans[1].read_text(encoding="utf-8"))
+            replacement_document["source_extract_sha256"] = "b" * 64
+            replacement_chapter = replacement_document["chapters"][0]
+            replacement_chapter["entry_event_ids"] = ["2-other"]
+            replacement_chapter["events"][0]["event_id"] = "2-other"
+            replacement = root / "replacement.json"
+            write_live_sequence_plan(replacement, replacement_document, current_story)
+
+            def replace_source_after_validation(path, story_index):
+                validated = load_live_sequence_plan(path, story_index)
+                if story_index == current_story and replacement.exists():
+                    replacement.replace(plans[1])
+                return validated
+
+            with patch(
+                "vntts.pregeneration_pack.load_live_sequence_plan",
+                side_effect=replace_source_after_validation,
+            ):
+                staged = _stage_live_sequence(
+                    base,
+                    plans[1],
+                    current_story,
+                    final_story,
+                    load_story_index_document(final_story),
+                    root / "staged-race.json",
+                    current_payload=source_payload,
+                )
+
+            self.assertIsNotNone(staged)
+            self.assertEqual(
+                load_live_sequence_plan(staged, final_story)
+                .chapters[1]
+                .entry_event_ids,
+                ("2-one",),
+            )
+            self.assertEqual(
+                load_live_sequence_plan(plans[1], current_story).source_extract_sha256,
+                "b" * 64,
             )
 
     def test_copy_rejects_symlinked_source(self):
