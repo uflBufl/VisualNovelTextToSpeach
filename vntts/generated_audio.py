@@ -594,6 +594,16 @@ def _narrator_fallback_role(entry: GeneratedAudioEntryLike) -> str | None:
     return source.strip()
 
 
+def _has_full_source_audio(line: ChapterDialogue | None) -> bool:
+    return bool(
+        line is not None
+        and line.source_audio_status == "available"
+        and line.source_audio_authoritative
+        and line.source_audio_completeness == "full"
+        and line.source_audio_duration_seconds is not None
+    )
+
+
 class GeneratedAudioFallbackBackend:
     """Pass through source audio, prefer local generations, then use live TTS."""
 
@@ -665,7 +675,10 @@ class GeneratedAudioFallbackBackend:
             line = self.line_resolver.resolve_exact(character, text)
             if line is None or not line.line_id or not line.text_sha256:
                 return False
-            if self._will_use_source_audio(character, text):
+            if (
+                self.audio_source_policy == "prefer-game-audio"
+                and _has_full_source_audio(line)
+            ):
                 return True
             if self.library is None:
                 return False
@@ -713,10 +726,8 @@ class GeneratedAudioFallbackBackend:
         return bool(
             line is not None
             and line.line_id
-            and line.source_audio_status == "available"
-            and line.source_audio_authoritative
-            and line.source_audio_completeness == "full"
-            and line.source_audio_duration_seconds is not None
+            and line.text_sha256
+            and _has_full_source_audio(line)
         )
 
     def has_generated_line(self, line: ChapterDialogue) -> bool:
@@ -753,8 +764,7 @@ class GeneratedAudioFallbackBackend:
             or (self.voice_override is not None and self.voice_override(line.speaker))
             or (
                 self.audio_source_policy == "prefer-game-audio"
-                and line.source_audio_status == "available"
-                and line.source_audio_authoritative
+                and _has_full_source_audio(line)
             )
         ):
             return False
@@ -813,13 +823,7 @@ class GeneratedAudioFallbackBackend:
             and source_audio_completion is not None
             and source_audio_completeness == "partial"
         )
-        source_audio_full = bool(
-            line is not None
-            and line.source_audio_status == "available"
-            and line.source_audio_authoritative
-            and source_audio_completion is not None
-            and source_audio_completeness == "full"
-        )
+        source_audio_full = _has_full_source_audio(line)
         if (
             line is not None
             and line.line_id

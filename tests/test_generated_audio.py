@@ -1268,6 +1268,51 @@ class GeneratedAudioTest(unittest.TestCase):
                 backend.reserve_generated_line_for_early_playback(resolver.dialogue[0])
             )
 
+    def test_partial_source_cue_can_reserve_generated_prefix(self):
+        with TemporaryDirectory() as directory:
+            library, _audio = self.create_library(Path(directory))
+            resolver = self.create_resolver(
+                source_audio_status="available",
+                source_audio_duration_seconds=1.25,
+                source_audio_completeness="partial",
+                source_audio_authoritative=True,
+            )
+            backend = GeneratedAudioFallbackBackend(
+                self.create_live_backend(),
+                library,
+                resolver,
+                audio_source_policy="prefer-game-audio",
+                audio_output=FakeAudioOutput(),
+            )
+            backend.set_live_mode_active(True)
+
+            self.assertTrue(
+                backend.reserve_generated_line_for_early_playback(resolver.dialogue[0])
+            )
+            route = backend.prepare_route("Ada", "Hello.")
+
+        self.assertIsInstance(route, GeneratedAudioRoute)
+        self.assertEqual(route.source_audio_lead_seconds, 1.6)
+
+    def test_source_audio_preflight_resolves_story_line_once(self):
+        resolver = self.create_resolver(
+            source_audio_status="available",
+            source_audio_duration_seconds=1.0,
+            source_audio_authoritative=True,
+        )
+        resolver.resolve_exact = Mock(wraps=resolver.resolve_exact)
+        backend = GeneratedAudioFallbackBackend(
+            self.create_live_backend(),
+            None,
+            resolver,
+            audio_source_policy="prefer-game-audio",
+            audio_output=FakeAudioOutput(),
+        )
+
+        self.assertTrue(backend.has_resolved_route_in_live_mode("Ada", "Hello."))
+        resolver.resolve_exact.assert_called_once_with("Ada", "Hello.")
+        self.assertIsNone(resolver.current_match)
+
     def test_early_prefix_requires_verified_audio_and_carries_reserved_bytes(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
