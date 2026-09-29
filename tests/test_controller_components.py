@@ -75,7 +75,7 @@ class ControllerComponentsTest(unittest.TestCase):
             commit_settings=None,
         )
         controller.diagnostics.inspect_current_dialog.assert_called_once_with(
-            notify=False
+            notify=False, publish=True
         )
 
     def test_facade_methods_do_not_reaccumulate_coordination_logic(self):

@@ -2727,6 +2727,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.diagnostics_refresh_runner.start(
             self.controller.inspect_current_dialog,
             notify=False,
+            publish=False,
         )
 
     def _diagnostics_closed(self, dialog: DiagnosticsDialog) -> None:
@@ -2756,7 +2757,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         elif snapshot is None:
             self.set_diagnostics_error("Diagnostic capture returned no result")
         else:
-            self.update_diagnostics_snapshot(snapshot, manual=True)
+            self.update_diagnostics_snapshot(
+                self.controller.commit_diagnostic_snapshot(snapshot), manual=True
+            )
 
     def update_diagnostics_snapshot(
         self, snapshot: DiagnosticSnapshot, *, manual: bool = False

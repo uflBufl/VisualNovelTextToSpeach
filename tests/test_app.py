@@ -3722,6 +3722,7 @@ class TrayApplicationTest(unittest.TestCase):
         controller.is_live_running = True
         controller.get_latest_diagnostic.return_value = stale
         controller.inspect_current_dialog.return_value = fresh
+        controller.commit_diagnostic_snapshot.return_value = fresh
         tray_application = TrayApplication(
             self.application,
             AppSettings(),
@@ -3744,7 +3745,10 @@ class TrayApplicationTest(unittest.TestCase):
                 lambda: not tray_application.diagnostics_refresh_runner.active
             )
 
-        controller.inspect_current_dialog.assert_called_once_with(notify=False)
+        controller.inspect_current_dialog.assert_called_once_with(
+            notify=False, publish=False
+        )
+        controller.commit_diagnostic_snapshot.assert_called_once_with(fresh)
         diagnostics_dialog.set_snapshot.assert_called_once_with(fresh)
         diagnostics_dialog.conceal_for_capture.assert_called_once_with()
         tray_application.shutdown()
@@ -3779,7 +3783,9 @@ class TrayApplicationTest(unittest.TestCase):
             )
 
         diagnostics_dialog.conceal_for_capture.assert_called_once_with()
-        controller.inspect_current_dialog.assert_called_once_with(notify=False)
+        controller.inspect_current_dialog.assert_called_once_with(
+            notify=False, publish=False
+        )
         tray_application.shutdown()
 
     def test_diagnostic_refresh_keeps_latest_result_and_drops_after_close(self):
@@ -3791,10 +3797,12 @@ class TrayApplicationTest(unittest.TestCase):
                 self.tasks.append(task)
 
         pool = ManualThreadPool()
+        controller = Mock()
+        controller.commit_diagnostic_snapshot.side_effect = lambda snapshot: snapshot
         tray_application = TrayApplication(
             self.application,
             AppSettings(),
-            controller_factory=Mock(return_value=Mock()),
+            controller_factory=Mock(return_value=controller),
         )
         diagnostics_dialog = Mock(refresh_in_flight=True)
         tray_application.diagnostics_dialog = diagnostics_dialog
@@ -3843,11 +3851,8 @@ class TrayApplicationTest(unittest.TestCase):
                 self.tasks.append(task)
 
         pool = ManualThreadPool()
-        controller = Mock()
-        controller.get_latest_diagnostic.return_value = None
-        controller.inspect_current_dialog.return_value = DiagnosticSnapshot(
-            None, text="Closed capture"
-        )
+        controller = AppController(AppSettings())
+        controller.last_diagnostic = DiagnosticSnapshot(None, text="Current capture")
         tray_application = TrayApplication(
             self.application,
             AppSettings(),
@@ -3875,10 +3880,17 @@ class TrayApplicationTest(unittest.TestCase):
         ):
             dialog.request_refresh()
             dialog.close()
-            pool.tasks.pop(0).run()
+            with patch(
+                "vntts.controller_components.analyze_dialog_snapshot",
+                side_effect=lambda *_args, diagnostic_handler, **_kwargs: (
+                    diagnostic_handler(DiagnosticSnapshot(None, text="Closed capture"))
+                ),
+            ):
+                pool.tasks.pop(0).run()
             self.application.processEvents()
 
         self.assertFalse(tray_application.diagnostics_refresh_runner.active)
+        self.assertEqual(controller.get_latest_diagnostic().text, "Current capture")
         set_snapshot.assert_not_called()
         tray_application.shutdown()
 
@@ -3959,10 +3971,12 @@ class TrayApplicationTest(unittest.TestCase):
         tray_application.shutdown()
 
     def test_live_diagnostics_update_does_not_complete_manual_refresh(self):
+        controller = Mock()
+        controller.commit_diagnostic_snapshot.side_effect = lambda snapshot: snapshot
         tray_application = TrayApplication(
             self.application,
             AppSettings(),
-            controller_factory=Mock(return_value=Mock()),
+            controller_factory=Mock(return_value=controller),
         )
         dialog = Mock(refresh_in_flight=True)
         tray_application.diagnostics_dialog = dialog
@@ -4002,11 +4016,12 @@ class TrayApplicationTest(unittest.TestCase):
     def test_reopening_diagnostics_does_not_discard_pending_capture(self):
         release = Event()
         controller = Mock()
+        controller.commit_diagnostic_snapshot.side_effect = lambda snapshot: snapshot
         controller.get_latest_diagnostic.return_value = DiagnosticSnapshot(
             None, text="Previous capture"
         )
 
-        def inspect(*, notify):
+        def inspect(*, notify, publish):
             release.wait(10)
             return DiagnosticSnapshot(None, text="Fresh capture")
 

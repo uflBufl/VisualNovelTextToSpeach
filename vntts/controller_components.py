@@ -1297,7 +1297,9 @@ class DiagnosticsComponent:
         reader = self.controller.live_reader
         return None if reader is None else reader.get_pipeline_metrics()
 
-    def inspect_current_dialog(self, *, notify: bool = True) -> DiagnosticSnapshot:
+    def inspect_current_dialog(
+        self, *, notify: bool = True, publish: bool = True
+    ) -> DiagnosticSnapshot:
         controller = self.controller
         registry = (
             controller.voice_router.registry
@@ -1316,7 +1318,12 @@ class DiagnosticsComponent:
             correction_dictionary=controller.correction_dictionary,
             region=controller._capture_region(),
         )
-        return controller._publish_diagnostic(snapshots[-1], notify=notify)
+        snapshot = snapshots[-1]
+        return (
+            controller._publish_diagnostic(snapshot, notify=notify)
+            if publish
+            else snapshot
+        )
 
     def test_current_dialog(self) -> tuple[str, str]:
         controller = self.controller

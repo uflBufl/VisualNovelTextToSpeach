@@ -769,8 +769,15 @@ class AppController:
     def get_live_pipeline_metrics(self) -> object:
         return self.diagnostics.pipeline_metrics()
 
-    def inspect_current_dialog(self, *, notify: bool = True) -> DiagnosticSnapshot:
-        return self.diagnostics.inspect_current_dialog(notify=notify)
+    def inspect_current_dialog(
+        self, *, notify: bool = True, publish: bool = True
+    ) -> DiagnosticSnapshot:
+        return self.diagnostics.inspect_current_dialog(notify=notify, publish=publish)
+
+    def commit_diagnostic_snapshot(
+        self, snapshot: DiagnosticSnapshot
+    ) -> DiagnosticSnapshot:
+        return self._publish_diagnostic(snapshot, notify=False)
 
     def test_current_dialog(self) -> tuple[str, str]:
         return self.diagnostics.test_current_dialog()
