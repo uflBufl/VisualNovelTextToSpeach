@@ -2619,6 +2619,37 @@ class LiveDialogReaderTest(unittest.TestCase):
             "Three. Four.",
         )
 
+    def test_concurrent_speech_admission_preserves_queue_limit(self):
+        speech_executor = Mock()
+        speech_executor.submit.return_value = Future()
+        reader = self.create_reader(
+            speech_executor=speech_executor,
+            max_speech_jobs=1,
+        )
+        reader.active_generation = 1
+        first = SpeechChunk(1, "Alice", "First.")
+        second = SpeechChunk(1, "Alice", "Second.")
+        condition = reader.pause_condition
+
+        class InterleavingCondition:
+            def __init__(self):
+                self.inject_second = True
+
+            def __enter__(self):
+                return condition.__enter__()
+
+            def __exit__(self, *_exc):
+                condition.__exit__(*_exc)
+                if self.inject_second:
+                    self.inject_second = False
+                    reader._schedule([second])
+
+        reader.pause_condition = InterleavingCondition()
+        reader._schedule([first])
+
+        self.assertEqual(speech_executor.submit.call_count, 1)
+        self.assertEqual(reader.deferred_chunk.text, "Second.")
+
     def test_observed_dialog_is_reported_only_when_it_changes(self):
         dialog_observed = Mock()
         reader = self.create_reader(dialog_observed=dialog_observed)

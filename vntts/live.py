@@ -1309,8 +1309,7 @@ class LiveDialogReader:
                     self._defer_chunk_locked(chunk)
                     self._record_speech_metrics_locked(sentence_ready=True)
                     continue
-            future = self.speech_executor.submit(self._prepare_if_current, chunk)
-            with self.state_lock:
+                future = self.speech_executor.submit(self._prepare_if_current, chunk)
                 self.speech_futures[future] = chunk
                 self._record_speech_metrics_locked(sentence_ready=True)
             future.add_done_callback(self._preparation_finished)
