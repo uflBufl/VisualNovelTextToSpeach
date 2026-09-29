@@ -106,6 +106,8 @@ class LatestTaskRunner(QObject):
         if serial != self._serial or not self._active:
             return
         self._set_active(False)
+        if serial != self._serial:
+            return
         self.finished.emit(result, error)
 
     def _set_active(self, active: bool) -> None:
