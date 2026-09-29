@@ -23,6 +23,9 @@ audio_source_policies = {
     "prefer-game-audio",
 }
 default_audio_source_policy = "live-tts-only"
+speech_backends = frozenset(
+    {"coqui-xtts", "chatterbox-nano", "moss-tts", "qwen-tts", "pocket-tts"}
+)
 speaker_announcement_modes = {
     "off",
     "all-speakers",
@@ -357,24 +360,12 @@ class AppSettings:
         else:
             report("Invalid 'tts_profile' setting; using its default")
 
-        if parsed["speech_backend"] not in {
-            "coqui-xtts",
-            "chatterbox-nano",
-            "moss-tts",
-            "qwen-tts",
-            "pocket-tts",
-        }:
+        if parsed["speech_backend"] not in speech_backends:
             report("Invalid 'speech_backend' setting; using its default")
             parsed["speech_backend"] = defaults.speech_backend
 
         offline_backend = values.get("offline_speech_backend", parsed["speech_backend"])
-        if isinstance(offline_backend, str) and offline_backend in {
-            "coqui-xtts",
-            "chatterbox-nano",
-            "moss-tts",
-            "qwen-tts",
-            "pocket-tts",
-        }:
+        if isinstance(offline_backend, str) and offline_backend in speech_backends:
             parsed["offline_speech_backend"] = offline_backend
         else:
             report("Invalid 'offline_speech_backend' setting; using live engine")
@@ -514,17 +505,7 @@ class AppSettings:
             if (
                 configured
                 and configured.strip()
-                and (
-                    live_field != "speech_backend"
-                    or configured
-                    in {
-                        "coqui-xtts",
-                        "chatterbox-nano",
-                        "moss-tts",
-                        "pocket-tts",
-                        "qwen-tts",
-                    }
-                )
+                and (live_field != "speech_backend" or configured in speech_backends)
                 and getattr(self, live_field) == getattr(self, offline_field)
             ):
                 values[offline_field] = values[live_field]
