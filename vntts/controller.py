@@ -59,6 +59,7 @@ from vntts.live import (
     CanonicalDialogRoute,
     DialogObservationDecision,
     LiveDialogReader,
+    LivePipelineMetrics,
     SilentDialogRoute,
     SpeechChunk,
 )
@@ -2977,6 +2978,22 @@ class AppController:
     ) -> DiagnosticSnapshot:
         reader = self.live_reader
         pipeline_metrics = None if reader is None else reader.get_pipeline_metrics()
+        with self.diagnostic_lock:
+            snapshot = self._diagnostic_with_current_state(
+                snapshot, pipeline_metrics, route_metrics, audio_source
+            )
+            self.last_diagnostic = snapshot
+        if notify:
+            self.diagnostic_handler(snapshot)
+        return snapshot
+
+    def _diagnostic_with_current_state(
+        self,
+        snapshot: DiagnosticSnapshot,
+        pipeline_metrics: LivePipelineMetrics | None,
+        route_metrics: _DiagnosticRouteMetrics | None,
+        audio_source: str | None,
+    ) -> DiagnosticSnapshot:
         snapshot = replace(
             snapshot,
             capture_interval_ms=self.capture_interval_ms,
@@ -3007,10 +3024,6 @@ class AppController:
                 or route_metrics.audio_source
                 or "Not selected",
             )
-        with self.diagnostic_lock:
-            self.last_diagnostic = snapshot
-        if notify:
-            self.diagnostic_handler(snapshot)
         return snapshot
 
     def _prepare_live_chunk(self, chunk: SpeechChunk) -> object:
@@ -3711,10 +3724,17 @@ class AppController:
         route_metrics: _DiagnosticRouteMetrics | None = None,
         audio_source: str | None = None,
     ) -> None:
+        reader = self.live_reader
+        pipeline_metrics = None if reader is None else reader.get_pipeline_metrics()
         with self.diagnostic_lock:
             snapshot = self.last_diagnostic
-        if snapshot is not None:
-            self._publish_diagnostic(snapshot, route_metrics, audio_source)
+            if snapshot is None:
+                return
+            snapshot = self._diagnostic_with_current_state(
+                snapshot, pipeline_metrics, route_metrics, audio_source
+            )
+            self.last_diagnostic = snapshot
+        self.diagnostic_handler(snapshot)
 
     def _stop_tts(self) -> None:
         active_tts = self.tts

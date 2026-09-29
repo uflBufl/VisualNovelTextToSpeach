@@ -7,7 +7,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from types import SimpleNamespace
 from unittest.mock import ANY, Mock, patch
 from uuid import UUID
@@ -5745,6 +5745,61 @@ class MainTest(unittest.TestCase):
         self.assertEqual(diagnostics[-1].playback_ms, 20.0)
         self.assertEqual(diagnostics[-1].last_first_audio_ms, 10.0)
         self.assertEqual(diagnostics[-1].cache_source, "fresh-generation")
+
+    def test_route_metrics_do_not_restore_a_superseded_diagnostic(self):
+        controller = AppController(AppSettings())
+        controller.last_diagnostic = DiagnosticSnapshot(None, text="Old capture")
+
+        class InterleavingLock:
+            def __init__(self):
+                self.lock = Lock()
+                self.on_first_release = lambda: controller._publish_diagnostic(
+                    DiagnosticSnapshot(None, text="New capture")
+                )
+
+            def __enter__(self):
+                self.lock.acquire()
+
+            def __exit__(self, *_exc):
+                self.lock.release()
+                action = self.on_first_release
+                self.on_first_release = None
+                if action is not None:
+                    action()
+
+        controller.diagnostic_lock = InterleavingLock()
+        controller._refresh_diagnostic_metrics()
+
+        self.assertEqual(controller.get_latest_diagnostic().text, "New capture")
+
+    def test_diagnostic_publish_preserves_concurrent_focus_update(self):
+        controller = AppController(AppSettings())
+        controller.last_diagnostic = DiagnosticSnapshot(None, text="Old capture")
+
+        class InterleavingLock:
+            def __init__(self):
+                self.lock = Lock()
+                self.before_first_acquire = lambda: controller._capture_state_changed(
+                    False, 1.6
+                )
+
+            def __enter__(self):
+                action = self.before_first_acquire
+                self.before_first_acquire = None
+                if action is not None:
+                    action()
+                self.lock.acquire()
+
+            def __exit__(self, *_exc):
+                self.lock.release()
+
+        controller.diagnostic_lock = InterleavingLock()
+        controller._publish_diagnostic(DiagnosticSnapshot(None, text="New capture"))
+
+        snapshot = controller.get_latest_diagnostic()
+        self.assertEqual(snapshot.text, "New capture")
+        self.assertFalse(snapshot.game_focused)
+        self.assertEqual(snapshot.capture_interval_ms, 1600.0)
 
     def test_typed_playback_diagnostic_keeps_route_local_source_and_metrics(self):
         diagnostics = []
