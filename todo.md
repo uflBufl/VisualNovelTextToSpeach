@@ -289,9 +289,19 @@ Planned implementation order after approval:
       index, repeated role selection fell from 9.18 to 0.37 seconds. The plan-store
       fixture now produces identical groups while reducing library reads from
       3646 to 214; warm creation took about 0.25 seconds. On an installed game,
-      capture the candidate-preparation/store phase logs for first open and reopen;
-      require the warm phases to explain the whole wait and saved choices to remain
-      identical. Investigate any remaining phase above one second before changing it.
+      a Windows run still took roughly 30 seconds to scan voices for four selected
+      stages. Capture a fresh support archive and compare first open with reopen:
+      split semantic audio classification, extractor candidate preparation, and
+      plan-store inventory/routing timings; require the phases to explain the
+      whole wait and saved choices to remain identical. Prior Windows archives
+      show the cold extractor decoding hundreds of references while a cache hit
+      takes under a second; changing the selected role set creates a new batch
+      cache identity. If extraction dominates, reuse checksum-bound per-media
+      decoded/quality evidence across overlapping stage selections or defer
+      decoding non-previewed references until inspection, without hiding the
+      complete usable reference list or weakening voice-quality ranking. If
+      routing dominates, profile repeated reference reads before changing the
+      plan. Verify both cold and warm timings and identical voice choices.
 - [ ] **Validate combined PSM 6 OCR on Windows:** with an installed or bundled
       Tesseract, run the two sample-image parity/process-count tests and one live
       story. Require unchanged speaker/text/confidence/profile/attempts, working
