@@ -14,7 +14,6 @@ from vntts.versioned_json import (
 
 corrections_schema_version = 1
 PathInput: TypeAlias = str | Path
-CorrectionEntries: TypeAlias = Mapping[str, str]
 
 
 def get_ocr_corrections_path() -> Path:
