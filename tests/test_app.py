@@ -5017,6 +5017,64 @@ class TrayApplicationTest(unittest.TestCase):
             first.shutdown()
             second.shutdown()
 
+    def test_unrelated_preference_save_does_not_persist_environment_override(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            AppSettings(game_window_title="Saved game").save(path)
+            with patch.dict(
+                os.environ,
+                {
+                    "VNTTS_SETTINGS_FILE": str(path),
+                    "VNTTS_GAME_WINDOW_TITLE": "Temporary game",
+                },
+            ):
+                tray = TrayApplication(
+                    self.application,
+                    controller_factory=Mock(return_value=Mock()),
+                    profile_store=GameProfileStore(Path(directory) / "profiles.json"),
+                )
+                self.assertEqual(tray.settings.game_window_title, "Temporary game")
+                tray._save_compact_preference(True)
+                self.assertEqual(
+                    load_app_settings(path, environment={}).game_window_title,
+                    "Saved game",
+                )
+                chosen = tray.settings.updated(game_window_title="Chosen game")
+                tray._save_settings_candidate(chosen)
+                tray.settings = chosen
+                tray._save_main_section("reading")
+                tray.shutdown()
+
+            saved = load_app_settings(path, environment={})
+            self.assertEqual(saved.game_window_title, "Chosen game")
+            self.assertTrue(saved.compact_controls)
+            self.assertEqual(saved.last_main_section, "reading")
+
+    def test_profile_sync_uses_saved_settings_without_environment_override(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            store = GameProfileStore(Path(directory) / "profiles.json")
+            profile = store.create("Game", AppSettings(game_window_title="Saved game"))
+            AppSettings(
+                active_profile_id=profile.id, game_window_title="Saved game"
+            ).save(path)
+            with patch.dict(
+                os.environ,
+                {
+                    "VNTTS_SETTINGS_FILE": str(path),
+                    "VNTTS_GAME_WINDOW_TITLE": "Temporary game",
+                },
+            ):
+                tray = TrayApplication(
+                    self.application,
+                    controller_factory=Mock(return_value=Mock()),
+                    profile_store=store,
+                )
+                tray._save_compact_preference(True)
+                tray._sync_active_profile()
+                self.assertEqual(store.get(profile.id).game_window_title, "Saved game")
+                tray.shutdown()
+
     def test_offline_pack_activator_uses_settings_revision_guard(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"

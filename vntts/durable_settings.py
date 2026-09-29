@@ -66,6 +66,7 @@ class DurableSettingsMixin:
         _settings_path: Path
         _settings_revision: bytes | None
         _settings_commit_lock: Lock
+        _last_saved_settings: AppSettings | None
 
         def _update_auto_advance_action(self) -> None: ...
 
@@ -83,13 +84,21 @@ class DurableSettingsMixin:
 
     def _save_settings_candidate(self, candidate: AppSettings) -> Path:
         with self._settings_commit_lock:
+            values = asdict(candidate)
+            if persisted := self._last_saved_settings:
+                current = asdict(self.settings)
+                # Unchanged runtime overrides must not replace saved values.
+                for name, saved_value in asdict(persisted).items():
+                    if current[name] != saved_value and values[name] == current[name]:
+                        values[name] = saved_value
             self._settings_revision = write_versioned_json_if_unchanged(
                 self._settings_path,
                 settings_schema_version,
-                asdict(candidate),
+                values,
                 revision=self._settings_revision,
                 document_name="Settings",
             )
+            self._last_saved_settings = AppSettings.from_mapping(values)
             return self._settings_path
 
     def toggle_auto_advance(self, enabled: bool) -> None:
@@ -257,6 +266,8 @@ class DurableSettingsMixin:
 
     def _sync_active_profile(self, settings: AppSettings | None = None) -> bool:
         settings = self.settings if settings is None else settings
+        if settings is self.settings and self._last_saved_settings is not None:
+            settings = self._last_saved_settings
         profile_id = settings.active_profile_id
         if profile_id and self.profile_store.get(profile_id) is not None:
             try:

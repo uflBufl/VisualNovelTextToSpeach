@@ -1651,6 +1651,16 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             on_game_pack_error=self._startup_game_pack_errors.append,
             on_fallback=invalidate_settings_revision,
         )
+        self._last_saved_settings: AppSettings | None = (
+            load_app_settings(
+                self._settings_path,
+                environment={},
+                warn=lambda _message: None,
+                on_game_pack_error=lambda _error: None,
+            )
+            if uses_saved_settings
+            else None
+        )
         self.profile_store = profile_store or GameProfileStore.load()
         if uses_saved_settings:
             record_background_operation(
