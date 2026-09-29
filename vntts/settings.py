@@ -580,6 +580,7 @@ def load_app_settings(
     environment: Environment | None = None,
     warn: WarningHandler | None = None,
     on_game_pack_error: Callable[[Exception], None] | None = None,
+    on_fallback: Callable[[], None] | None = None,
 ) -> AppSettings:
     environment = os.environ if environment is None else environment
     report: WarningHandler = (
@@ -591,12 +592,17 @@ def load_app_settings(
         else Path(path).expanduser()
     )
 
+    def fallback() -> AppSettings:
+        if on_fallback is not None:
+            on_fallback()
+        return AppSettings()
+
     settings = load_versioned_json(
         path,
         schema_version=settings_schema_version,
         document_name="settings",
         decode=lambda values: AppSettings.from_mapping(values, warn=report),
-        fallback=AppSettings,
+        fallback=fallback,
         warn=report,
         allow_older=True,
         allow_unversioned=True,

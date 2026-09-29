@@ -1,3 +1,4 @@
+import json
 import os
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -38,7 +39,11 @@ from vntts.pregeneration_activation import OfflinePackActivationResult  # noqa: 
 from vntts.pregeneration_pack import OfflinePackResult  # noqa: E402
 from vntts.pregeneration_voices import resolve_pregeneration_settings  # noqa: E402
 from vntts.profiles import GameProfileStore  # noqa: E402
-from vntts.settings import AppSettings, load_app_settings  # noqa: E402
+from vntts.settings import (  # noqa: E402
+    AppSettings,
+    load_app_settings,
+    settings_schema_version,
+)
 from vntts.voice_library import VoiceLibrary  # noqa: E402
 from vntts.window_capture import WindowGeometry  # noqa: E402
 
@@ -4964,6 +4969,24 @@ class TrayApplicationTest(unittest.TestCase):
                 self.assertEqual(tray.settings.last_main_section, "voices")
                 self.assertIn("disk full", error.call_args.args[0])
                 tray.shutdown()
+
+    def test_fallback_settings_cannot_replace_future_document(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            path.write_text(
+                json.dumps({"schema_version": settings_schema_version + 1}),
+                encoding="utf-8",
+            )
+            original = path.read_bytes()
+            with patch.dict(os.environ, {"VNTTS_SETTINGS_FILE": str(path)}):
+                tray = TrayApplication(
+                    self.application,
+                    controller_factory=Mock(return_value=Mock()),
+                )
+                with self.assertRaisesRegex(OSError, "changed on disk"):
+                    tray._save_settings_candidate(tray.settings)
+                tray.shutdown()
+            self.assertEqual(path.read_bytes(), original)
 
     def test_second_application_cannot_replace_newer_settings(self):
         with TemporaryDirectory() as directory:

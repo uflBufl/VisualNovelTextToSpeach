@@ -204,6 +204,7 @@ class GameProfileStore:
 
         def fallback() -> GameProfileStore:
             store.profiles = []
+            store._revision = None
             return store
 
         return load_versioned_json(

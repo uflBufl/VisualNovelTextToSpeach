@@ -191,9 +191,15 @@ class GameProfileStoreTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            profile = GameProfileStore.load(path).get("legacy")
+            store = GameProfileStore.load(path)
+            profile = store.get("legacy")
+            store.save()
+            saved_schema = json.loads(path.read_text(encoding="utf-8"))[
+                "schema_version"
+            ]
 
         self.assertTrue(profile.force_live_narrator)
+        self.assertEqual(saved_schema, profiles_schema_version)
 
     def test_current_profile_ignores_obsolete_narrator_assignment(self):
         with TemporaryDirectory() as temporary_directory:
@@ -263,8 +269,11 @@ class GameProfileStoreTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-
+            original = path.read_bytes()
             store = GameProfileStore.load(path, warn=warnings.append)
+            with self.assertRaisesRegex(OSError, "changed on disk"):
+                store.save()
+            self.assertEqual(path.read_bytes(), original)
 
         self.assertEqual(store.profiles, [])
         self.assertIn("profile IDs must be unique", warnings[0])
@@ -279,8 +288,11 @@ class GameProfileStoreTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-
+            original = path.read_bytes()
             store = GameProfileStore.load(path, warn=warnings.append)
+            with self.assertRaisesRegex(OSError, "changed on disk"):
+                store.save()
+            self.assertEqual(path.read_bytes(), original)
 
         self.assertEqual(store.profiles, [])
         self.assertIn("unsupported game profiles schema version", warnings[0])

@@ -192,9 +192,13 @@ class OCRCorrectionStoreTest(unittest.TestCase):
                 json.dumps({"schema_version": 2, "global": {}, "profiles": {}}),
                 encoding="utf-8",
             )
+            original = path.read_bytes()
             warnings = []
 
             store = OCRCorrectionStore.load(path, warn=warnings.append)
+            with self.assertRaisesRegex(OSError, "changed on disk"):
+                store.save()
+            self.assertEqual(path.read_bytes(), original)
 
         self.assertEqual(store.global_entries, {})
         self.assertEqual(store.profile_entries, {})

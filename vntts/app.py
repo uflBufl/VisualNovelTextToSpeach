@@ -1642,9 +1642,14 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             configure_performance_log(get_local_data_directory() / "performance.log")
         self._startup_game_pack_errors: list[Exception] = []
         settings_started = perf_counter()
+
+        def invalidate_settings_revision() -> None:
+            self._settings_revision = None
+
         self.settings = settings or load_app_settings(
             self._settings_path,
             on_game_pack_error=self._startup_game_pack_errors.append,
+            on_fallback=invalidate_settings_revision,
         )
         self.profile_store = profile_store or GameProfileStore.load()
         if uses_saved_settings:

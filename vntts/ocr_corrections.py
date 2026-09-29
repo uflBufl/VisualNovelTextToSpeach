@@ -101,6 +101,7 @@ class OCRCorrectionStore:
         def fallback() -> OCRCorrectionStore:
             store.global_entries = {}
             store.profile_entries = {}
+            store._revision = None
             return store
 
         loaded = load_versioned_json(
