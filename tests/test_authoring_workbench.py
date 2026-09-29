@@ -981,6 +981,74 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             self.assertEqual(observed, [{"revision": "A"}])
             cache.assert_not_called()
 
+    def test_review_rows_use_one_generation_state_snapshot(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "queue.jsonl").write_text("queue", encoding="utf-8")
+            output = root / "generated-audio"
+            output.mkdir()
+            state_path = output / "generation-state.json"
+            original_bytes = b'{"revision":"A"}'
+            state_path.write_bytes(original_bytes)
+            original_copy = root / "original.json"
+            original_copy.write_bytes(original_bytes)
+            replacement = root / "replacement.json"
+            replacement.write_text('{"revision":"B"}', encoding="utf-8")
+
+            def swap_then_restore(path, _queue, _digest, *, state_document=None):
+                replacement.replace(path)
+                parsed = (
+                    state_document
+                    if state_document is not None
+                    else json.loads(path.read_text(encoding="utf-8"))
+                )
+                original_copy.replace(path)
+                return parsed
+
+            with (
+                patch.object(
+                    workspace_inspection_module,
+                    "_load_workspace",
+                    return_value=(
+                        root,
+                        {"queue": "queue.jsonl", "output": "generated-audio"},
+                    ),
+                ),
+                patch.object(
+                    workspace_inspection_module,
+                    "_load_bound_workspace_queue",
+                    return_value=object(),
+                ),
+                patch.object(
+                    workspace_inspection_module,
+                    "_load_bound_story_document",
+                    return_value=object(),
+                ),
+                patch.object(
+                    workspace_inspection_module,
+                    "workspace_queue_sha256",
+                    return_value="a" * 64,
+                ),
+                patch.object(
+                    workspace_inspection_module,
+                    "load_generation_state_from_snapshot",
+                    side_effect=swap_then_restore,
+                ),
+                patch.object(
+                    workspace_inspection_module,
+                    "_list_review_items_from_read",
+                    return_value=(),
+                ) as project,
+            ):
+                self.assertEqual(
+                    workspace_inspection_module.list_review_items(root), ()
+                )
+
+            self.assertEqual(project.call_args.args[3], {"revision": "A"})
+            self.assertEqual(
+                project.call_args.args[4], hashlib.sha256(original_bytes).hexdigest()
+            )
+
     def test_offline_pocket_fallback_carries_exact_failure_with_fresh_seed_space(self):
         from tests.test_authoring_bulk_generation import SyntheticRenderer
         from vntts.authoring.bulk_generation import (

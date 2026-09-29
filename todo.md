@@ -1,11 +1,5 @@
 # TODO
 
-## Active - Offline generation and state debt pass
-
-- [ ] Use one parsed state snapshot in workspace review projections too; their before/after path hashes reject ordinary replacements but can pair an intervening revision with the original hash after an A-B-A swap.
-- [ ] Inspect generation state, offline generation, recovery, and their direct callers for correctness, types, design, tests, resources, and tooling; record reproducible findings before editing.
-- [ ] Fix confirmed findings separately, run focused checks and required changed-test selectors, then rescan and remove this section when complete.
-
 ## Validate OpenMOSS progress on Windows
 
 - [ ] During a sustained offline story preparation, confirm progress updates without frequent reads of `generation-state.json`, cancellation and Continue retain completed lines, and no state replacement access error recurs.

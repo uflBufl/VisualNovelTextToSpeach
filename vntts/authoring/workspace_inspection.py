@@ -656,11 +656,14 @@ def list_review_items(
         return ()
     queue = _load_bound_workspace_queue(directory, workspace)
     story = _load_bound_story_document(directory, workspace)
-    state_sha256 = sha256_file(state_path)
+    state_document, state_sha256, _payload = _load_json_snapshot(
+        state_path, "generation state"
+    )
     state = load_generation_state_from_snapshot(
         state_path,
         queue,
         workspace_queue_sha256(workspace, error_type=AuthoringWorkbenchError),
+        state_document=state_document,
     )
     if sha256_file(state_path) != state_sha256:
         raise AuthoringWorkbenchError(
@@ -1229,7 +1232,9 @@ def _load_workbench_projection_read_scoped(
         if cached_state is not None:
             state, state_sha256 = cached_state[1], cached_state[3]
         else:
-            state_sha256 = sha256_file(state_path)
+            state_document, state_sha256, _payload = _load_json_snapshot(
+                state_path, "generation state"
+            )
             try:
                 state = load_generation_state_from_snapshot(
                     state_path,
@@ -1237,6 +1242,7 @@ def _load_workbench_projection_read_scoped(
                     workspace_queue_sha256(
                         workspace, error_type=AuthoringWorkbenchError
                     ),
+                    state_document=state_document,
                 )
             except BulkGenerationError as error:
                 raise AuthoringWorkbenchError(str(error)) from error
