@@ -565,18 +565,16 @@ class GameNarratorDialog(QDialog):
         for current, following in zip(tab_order, tab_order[1:], strict=False):
             QWidget.setTabOrder(current, following)
         make_text_copyable(self)
-        outer_labels = [
+        labels = [
             label
-            for row in range(self.form.rowCount())
-            if (item := self.form.itemAt(row, QFormLayout.ItemRole.LabelRole))
-            is not None
+            for form in (self.form, self.game_form)
+            for row in range(form.rowCount())
+            if (item := form.itemAt(row, QFormLayout.ItemRole.LabelRole)) is not None
             and (label := item.widget()) is not None
         ]
-        label_width = max(label.sizeHint().width() for label in outer_labels)
-        for row in range(self.game_form.rowCount()):
-            item = self.game_form.itemAt(row, QFormLayout.ItemRole.LabelRole)
-            if item is not None and (label := item.widget()) is not None:
-                label.setMinimumWidth(label_width)
+        label_width = max(label.sizeHint().width() for label in labels)
+        for label in labels:
+            label.setMinimumWidth(label_width)
         self._update()
         QTimer.singleShot(0, self._source_changed)
 
