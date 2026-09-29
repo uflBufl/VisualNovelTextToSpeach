@@ -17,6 +17,7 @@ from vntts.speech_worker import (
     _REQUIRED_MODULES,
     IsolatedSpeechBackend,
     RetainedWorkerRuntime,
+    _is_worker_process,
     _module_health,
     _read_frame,
     _registry_from_document,
@@ -144,6 +145,50 @@ class FakeProcess:
 
 
 class SpeechWorkerTest(unittest.TestCase):
+    def test_worker_process_guard_checks_stream_contracts(self):
+        self.assertTrue(_is_worker_process(FakeProcess(None)))
+        for name, incomplete in (
+            ("stdin", SimpleNamespace(write=lambda data: None)),
+            ("stdin", SimpleNamespace(flush=lambda: None)),
+            ("stdout", SimpleNamespace(readline=lambda size=-1: b"")),
+            ("stderr", SimpleNamespace(read=lambda size=-1: b"")),
+        ):
+            with self.subTest(stream=name, methods=vars(incomplete)):
+                process = FakeProcess(None)
+                setattr(process, name, incomplete)
+                self.assertFalse(_is_worker_process(process))
+        process = FakeProcess(None)
+        process.stdout = SimpleNamespace(read=lambda size=-1: b"")
+        process.stderr = SimpleNamespace(readline=lambda size=-1: b"")
+        self.assertTrue(_is_worker_process(process))
+        for name in ("stdin", "stdout", "stderr"):
+            with self.subTest(optional_stream=name):
+                process = FakeProcess(None)
+                setattr(process, name, None)
+                self.assertTrue(_is_worker_process(process))
+
+    def test_rejected_worker_process_is_terminated(self):
+        process = FakeProcess(None)
+        process.stdin = object()
+        with (
+            TemporaryDirectory() as directory,
+            patch(
+                "vntts.runtime_installation.ensure_speech_runtime",
+                return_value=tuple(
+                    Path(directory) / name for name in ("runtime", "python", "site")
+                ),
+            ),
+            self.assertRaisesRegex(
+                TTSConfigurationError, "process factory is malformed"
+            ),
+        ):
+            IsolatedSpeechBackend(
+                "pocket-tts",
+                CharacterVoiceRegistry(),
+                process_factory=lambda *args, **kwargs: process,
+            )
+        self.assertEqual(process.returncode, -15)
+
     def test_registry_serializes_voice_and_assignment_with_same_fields(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

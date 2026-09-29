@@ -156,6 +156,8 @@ StartupProgress: TypeAlias = Callable[[str], None] | None
 class _ReadableBinaryStream(Protocol):
     def read(self, size: int = -1) -> bytes: ...
 
+
+class _LineReadableBinaryStream(Protocol):
     def readline(self, size: int = -1) -> bytes: ...
 
 
@@ -165,11 +167,7 @@ class _WritableBinaryStream(Protocol):
     def flush(self) -> object: ...
 
 
-class WorkerProcess(Protocol):
-    stdin: _WritableBinaryStream | None
-    stdout: _ReadableBinaryStream | None
-    stderr: _ReadableBinaryStream | None
-
+class _ProcessControls(Protocol):
     def poll(self) -> int | None: ...
 
     def wait(self, timeout: float | None = None) -> int: ...
@@ -177,6 +175,12 @@ class WorkerProcess(Protocol):
     def terminate(self) -> None: ...
 
     def kill(self) -> None: ...
+
+
+class WorkerProcess(_ProcessControls, Protocol):
+    stdin: _WritableBinaryStream | None
+    stdout: _ReadableBinaryStream | None
+    stderr: _LineReadableBinaryStream | None
 
 
 WorkerMessage: TypeAlias = tuple[WorkerProcess, FrameDocument, bytes]
@@ -423,16 +427,29 @@ def _is_worker_backend(value: object) -> TypeGuard[_WorkerBackend]:
     )
 
 
-def _is_worker_process(value: object) -> TypeGuard[WorkerProcess]:
-    return (
-        hasattr(value, "stdin")
-        and hasattr(value, "stdout")
-        and hasattr(value, "stderr")
-        and callable(getattr(value, "poll", None))
-        and callable(getattr(value, "wait", None))
-        and callable(getattr(value, "terminate", None))
-        and callable(getattr(value, "kill", None))
+def _has_process_controls(value: object) -> TypeGuard[_ProcessControls]:
+    return all(
+        callable(getattr(value, name, None))
+        for name in ("poll", "wait", "terminate", "kill")
     )
+
+
+def _is_worker_process(value: object) -> TypeGuard[WorkerProcess]:
+    if not _has_process_controls(value):
+        return False
+    for name, methods in (
+        ("stdin", ("write", "flush")),
+        ("stdout", ("read",)),
+        ("stderr", ("readline",)),
+    ):
+        if not hasattr(value, name):
+            return False
+        stream = getattr(value, name)
+        if stream is not None and not all(
+            callable(getattr(stream, method, None)) for method in methods
+        ):
+            return False
+    return True
 
 
 def _write_frame(
@@ -1099,6 +1116,10 @@ class IsolatedSpeechBackend:
                 self._runtime_use.launched(None)
             raise
         if not _is_worker_process(candidate):
+            if _has_process_controls(candidate):
+                self._terminate_process(candidate)
+                if self._runtime_use is not None and candidate.poll() is not None:
+                    self._runtime_use.launched(None)
             raise TTSConfigurationError("Speech worker process factory is malformed")
         process = candidate
         self.process = process
@@ -1639,10 +1660,11 @@ class IsolatedSpeechBackend:
                 self._runtime_use.close()
                 self._runtime_use = None
 
-    def _terminate_process(self, process: WorkerProcess | None) -> None:
+    def _terminate_process(self, process: _ProcessControls | None) -> None:
         if process is None:
             return
-        if self.process is process:
+        current_process = self.process is process
+        if current_process:
             self.process = None
         if process.poll() is None:
             process.terminate()
