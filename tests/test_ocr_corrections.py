@@ -208,7 +208,7 @@ class OCRCorrectionStoreTest(unittest.TestCase):
 class OCRCorrectionPipelineTest(unittest.TestCase):
     def test_recognized_result_is_corrected_before_use(self):
         result = OCRResult("Mareus", "Hello.", 95.0, "balanced", 1)
-        dictionary = OCRCorrectionDictionary({"Mareus": "Marcus"})
+        dictionary = OCRCorrectionDictionary({"Mareus": "Marcus", "Hello": r"Line\1"})
 
         with patch(
             "vntts.dialog_capture.recognize_dialog_image_result", return_value=result
@@ -219,7 +219,10 @@ class OCRCorrectionPipelineTest(unittest.TestCase):
             )
 
         self.assertEqual(corrected.character, "Marcus")
-        self.assertEqual(corrected.corrections, ("Mareus -> Marcus",))
+        self.assertEqual(corrected.text, r"Line\1.")
+        self.assertEqual(
+            corrected.corrections, ("Mareus -> Marcus", r"Hello -> Line\1")
+        )
 
 
 class OCRCorrectionsDialogTest(unittest.TestCase):

@@ -50,7 +50,7 @@ class OCRCorrectionDictionary:
             prefix = r"(?<!\w)" if source[0].isalnum() else ""
             suffix = r"(?!\w)" if source[-1].isalnum() else ""
             pattern = re.compile(f"{prefix}{re.escape(source)}{suffix}", re.IGNORECASE)
-            corrected, count = pattern.subn(replacement, corrected)
+            corrected, count = pattern.subn(lambda _match: replacement, corrected)
             if count:
                 changes.append(f"{source} -> {replacement}")
         return corrected, tuple(changes)
