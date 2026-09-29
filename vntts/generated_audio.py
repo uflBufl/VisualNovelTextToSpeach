@@ -318,12 +318,22 @@ def _validate_generated_audio_paths(index: GeneratedAudioSource) -> None:
     manifest_path = getattr(index, "manifest_path", None) or getattr(index, "path")
     root = manifest_path.parent.resolve()
     for entry in index.entries:
-        try:
-            entry.audio.resolve().relative_to(root)
-        except ValueError as error:
-            raise GeneratedAudioManifestError(
-                "Generated audio must stay within the manifest directory"
-            ) from error
+        _validate_generated_audio_path(entry.audio, root)
+
+
+def _validate_generated_audio_path(audio: Path, root: Path) -> None:
+    try:
+        audio.resolve().relative_to(root)
+        relative = audio.absolute().relative_to(root)
+        current = root
+        for part in relative.parts:
+            current /= part
+            if current.is_symlink():
+                raise ValueError("symlink")
+    except (OSError, ValueError) as error:
+        raise GeneratedAudioManifestError(
+            "Generated audio must stay within the manifest directory without symlinks"
+        ) from error
 
 
 class GeneratedAudioLibrary:
@@ -435,6 +445,11 @@ class GeneratedAudioLibrary:
         narrator_fallback_role = narrator_fallback_roles.get(
             (entry.line_id, entry.text_sha256)
         )
+        try:
+            _validate_generated_audio_path(entry.audio, self.manifest_path.parent)
+        except GeneratedAudioManifestError:
+            self._warn_once(entry, f"Generated audio path is unsafe: {entry.audio}")
+            return None, "generated-audio-entry-unsafe-path"
         try:
             payload = entry.audio.read_bytes()
         except OSError:

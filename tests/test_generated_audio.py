@@ -1371,6 +1371,24 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertIsNone(prepared)
         self.assertEqual(state, "generated-audio-checksum-failed")
 
+    def test_loaded_generated_wav_replaced_by_external_symlink_is_rejected(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_root = root / "manifest"
+            manifest_root.mkdir()
+            library, audio = self.create_library(manifest_root)
+            external = root / "external.wav"
+            external.write_bytes(audio.read_bytes())
+            audio.unlink()
+            symlink_or_skip(audio, external)
+
+            prepared, state = library.find_with_preflight(
+                "game:1", text_sha256("Hello.")
+            )
+
+        self.assertIsNone(prepared)
+        self.assertEqual(state, "generated-audio-entry-unsafe-path")
+
     def test_game_audio_fallback_reason_is_kept_with_generated_route(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
