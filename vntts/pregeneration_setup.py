@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from vntts.pregeneration_queue import PregenerationInput
 
 job_schema_version = 1
-story_catalog_schema_version = 5
+story_catalog_schema_version = 6
 story_catalog_minimum_bytes = 8 * 1024 * 1024
 # ponytail: assumes 12 text chars/sec and PCM16 mono 24 kHz; upgrade with measured
 # durations and the selected backend's output format if storage estimates matter.
@@ -73,6 +73,8 @@ class StorySelection:
     generation_text_characters: int
     episode_titles: tuple[str, ...] = ()
     character_names: tuple[str, ...] = ()
+    parent_story_id: str | None = None
+    parent_story_title: str | None = None
 
 
 @dataclass(frozen=True)
@@ -350,6 +352,8 @@ def _cached_story_selection(document: object) -> StorySelection:
         "generation_text_characters",
         "episode_titles",
         "character_names",
+        "parent_story_id",
+        "parent_story_title",
     }
     if not isinstance(document, Mapping):
         raise ValueError("story catalog cache selection is malformed")
@@ -376,6 +380,8 @@ def _cached_story_selection(document: object) -> StorySelection:
         ),
         episode_titles=_text_tuple(document, "episode_titles", allow_empty=True),
         character_names=_text_tuple(document, "character_names", allow_empty=True),
+        parent_story_id=_optional_text(document.get("parent_story_id")),
+        parent_story_title=_optional_text(document.get("parent_story_title")),
     )
     if (
         selection.line_count != len(line_ids)
@@ -383,6 +389,7 @@ def _cached_story_selection(document: object) -> StorySelection:
         != selection.original_audio_lines + selection.generation_lines
         or selection.speakable_lines > selection.line_count
         or selection.speaker_count != len(speakers)
+        or (selection.parent_story_id is None) != (selection.parent_story_title is None)
     ):
         raise ValueError("story catalog cache selection counts changed")
     return selection
@@ -828,6 +835,8 @@ def _story_selections(
                 "chapter",
                 order,
                 tuple(records),
+                None,
+                None,
             )
             for order, (chapter, records) in enumerate(
                 sorted(records_by_chapter.items())
@@ -840,10 +849,12 @@ def _story_selections(
             kind,
             order,
             records,
+            parent_story_id=parent_story_id,
+            parent_story_title=parent_story_title,
             completion_contract=completion_contract,
             authoritative_source_lines=authoritative_source_lines,
         )
-        for selection_id, title, kind, order, records in groups
+        for selection_id, title, kind, order, records, parent_story_id, parent_story_title in groups
         if records
     )
 
@@ -854,21 +865,24 @@ def _collection_stage_groups(
     kind: str,
     order: int,
     records: tuple[StoryIndexRecord, ...],
-) -> tuple[tuple[str, str, str, int, tuple[StoryIndexRecord, ...]], ...]:
+) -> tuple[
+    tuple[str, str, str, int, tuple[StoryIndexRecord, ...], str | None, str | None],
+    ...,
+]:
     """Split a collection only when its source story-step IDs prove stages."""
     by_chapter: dict[str, list[StoryIndexRecord]] = {}
     stage_order: list[str] = []
     for record in records:
         chapter = getattr(record, "chapter", None)
         if not isinstance(chapter, str) or not chapter.strip():
-            return ((collection_id, title, kind, order, records),)
+            return ((collection_id, title, kind, order, records, None, None),)
         by_chapter.setdefault(chapter, []).append(record)
         if not stage_order or stage_order[-1] != chapter:
             stage_order.append(chapter)
     if len(by_chapter) < 2:
-        return ((collection_id, title, kind, order, records),)
+        return ((collection_id, title, kind, order, records, None, None),)
     if len(stage_order) != len(by_chapter):
-        return ((collection_id, title, kind, order, records),)
+        return ((collection_id, title, kind, order, records, None, None),)
     stage_label = "Episode" if kind in {"main_story", "main-story"} else "Stage"
     return tuple(
         (
@@ -877,6 +891,8 @@ def _collection_stage_groups(
             kind,
             order,
             tuple(stage_records),
+            collection_id,
+            title,
         )
         for position, chapter in enumerate(stage_order, start=1)
         for stage_records in (by_chapter[chapter],)
@@ -903,6 +919,8 @@ def _selection_from_records(
     order: int,
     records: Sequence[StoryIndexRecord],
     *,
+    parent_story_id: str | None = None,
+    parent_story_title: str | None = None,
     completion_contract: str | None = None,
     authoritative_source_lines: Iterable[str] = frozenset(),
 ) -> StorySelection:
@@ -962,6 +980,8 @@ def _selection_from_records(
                 record.speaker.strip() for record in speakable if record.speaker.strip()
             )
         ),
+        parent_story_id=parent_story_id,
+        parent_story_title=parent_story_title,
     )
     return selection
 

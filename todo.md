@@ -113,10 +113,12 @@ Planned implementation order after approval:
       remains in OCR mode; decide whether a later safe successor publication is
       worth the added complexity only after measuring this case.
 - [ ] **Validate stage preparation on Windows:** multi-stage collections now
-      expose independently selectable source stage IDs with per-selection
-      readiness, and publishing Stage 2 retains Stage 1 audio. Confirm the
-      affected eight-stage story displays eight choices, selecting only an
-      unread stage does not regenerate finished stages, and Stage 1 remains
+      expose independently selectable source stage IDs grouped under their
+      parent story, with per-stage readiness, and publishing Stage 2 retains
+      Stage 1 audio. Confirm the affected eight-stage story shows one story
+      with eight selectable stages; parent checkboxes, filters, expansion and
+      readiness work at normal and enlarged text sizes. Selecting only an
+      unread stage must not regenerate finished stages, and Stage 1 remains
       playable after a later stage is prepared. If the source reorders a stage
       or changes its checksum, verify the saved job is rejected explicitly.
 - [ ] **Validate in a sustained chapter:** an occurrence is now claimed as soon as

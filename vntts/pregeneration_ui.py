@@ -170,7 +170,7 @@ def _prepare_runtime_sequence(
 
 
 class _StoryTree(QTreeWidget):
-    """Address story rows separately from collapsible category rows."""
+    """Address selectable rows separately from category and story headings."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -195,7 +195,21 @@ class _StoryTree(QTreeWidget):
 
     def current_story_item(self) -> QTreeWidgetItem | None:
         item = self.currentItem()
-        return item if item is not None and item.parent() is not None else None
+        return (
+            item
+            if item is not None
+            and isinstance(item.data(0, Qt.ItemDataRole.UserRole), str)
+            else None
+        )
+
+    def story_descendants(self, item: QTreeWidgetItem) -> list[QTreeWidgetItem]:
+        if isinstance(item.data(0, Qt.ItemDataRole.UserRole), str):
+            return [item]
+        return [
+            story
+            for row in range(item.childCount())
+            for story in self.story_descendants(item.child(row))
+        ]
 
 
 class OfflineAudioPreparationDialog(QDialog):
@@ -542,8 +556,9 @@ class OfflineAudioPreparationDialog(QDialog):
         self.stories.setAlternatingRowColors(True)
         self.stories.setAccessibleName("Stories, stages, and chapters")
         self.stories.setAccessibleDescription(
-            "Expand or collapse a type with Left and Right. Check a type to select "
-            "all its stories, or check individual stories. Audio status is in the second column."
+            "Expand a type and story with Left and Right. Check a type or story to "
+            "select all its stages, or check an individual stage. Audio status is in "
+            "the second column."
         )
         self.stories.setMinimumHeight(120)
         self.stories.itemChanged.connect(self._story_item_changed)
@@ -2715,7 +2730,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.story_audio_status.setVisible(item is not None)
         if item is not None:
             self.story_audio_status.setText(
-                f"Story details: {item.text(0)} "
+                f"Story details: {item.toolTip(0)} "
                 f"({item.data(0, Qt.ItemDataRole.UserRole + 5)} lines)\n"
                 f"{item.text(1)}: {item.data(0, Qt.ItemDataRole.UserRole + 4)}\n"
                 "Saved audio is checked automatically. You can also recheck this story."
@@ -2984,6 +2999,13 @@ class OfflineAudioPreparationDialog(QDialog):
                 ):
                     label = "Ready with live speech"
                 item.setText(0, selection.title)
+                if selection.parent_story_title is not None:
+                    item.setText(
+                        0,
+                        selection.title.removeprefix(
+                            f"{selection.parent_story_title} - "
+                        ),
+                    )
                 item.setText(1, label)
                 item.setToolTip(0, selection.title)
                 item.setToolTip(1, detail)
@@ -3172,6 +3194,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.stories.blockSignals(True)
         self.stories.clear()
         self._story_groups.clear()
+        story_parents: dict[tuple[str, str], QTreeWidgetItem] = {}
         ordered_selections = (
             sorted(
                 content.selections,
@@ -3221,8 +3244,54 @@ class OfflineAudioPreparationDialog(QDialog):
                         )
                     )
                     self._story_groups[selection.kind] = group
+                parent = group
+                if (
+                    selection.parent_story_id is not None
+                    and selection.parent_story_title is not None
+                ):
+                    parent_key = (selection.kind, selection.parent_story_id)
+                    story_parent = story_parents.get(parent_key)
+                    if story_parent is None:
+                        story_parent = QTreeWidgetItem(group)
+                        story_parent.setText(0, selection.parent_story_title)
+                        parent_font = story_parent.font(0)
+                        parent_font.setBold(True)
+                        story_parent.setFont(0, parent_font)
+                        story_parent.setData(
+                            0, Qt.ItemDataRole.UserRole + 3, selection.kind
+                        )
+                        story_parent.setData(
+                            0,
+                            Qt.ItemDataRole.UserRole + 6,
+                            selection.parent_story_id,
+                        )
+                        story_parent.setFlags(
+                            story_parent.flags() | Qt.ItemFlag.ItemIsUserCheckable
+                        )
+                        story_parent.setCheckState(0, Qt.CheckState.Unchecked)
+                        story_parent.setExpanded(
+                            self._story_group_expansion.get(
+                                (
+                                    content.story_index_sha256,
+                                    f"story:{selection.kind}:{selection.parent_story_id}",
+                                ),
+                                True,
+                            )
+                        )
+                        story_parent.setToolTip(
+                            0,
+                            "Expand or collapse this story. Its checkbox selects all "
+                            "stages, including stages hidden by a filter.",
+                        )
+                        story_parents[parent_key] = story_parent
+                    parent = story_parent
                 item = QTreeWidgetItem()
-                item.setText(0, selection.title)
+                item.setText(
+                    0,
+                    selection.title.removeprefix(f"{selection.parent_story_title} - ")
+                    if selection.parent_story_title is not None
+                    else selection.title,
+                )
                 item.setData(0, Qt.ItemDataRole.UserRole, selection.selection_id)
                 item.setData(
                     0,
@@ -3244,7 +3313,7 @@ class OfflineAudioPreparationDialog(QDialog):
                     if selection.selection_id in selected_ids
                     else Qt.CheckState.Unchecked,
                 )
-                self.stories.add_story(group, item)
+                self.stories.add_story(parent, item)
             ready = sum(status == "ready" for status in story_statuses.values())
             message = (
                 "Saved offline audio found. Story selection is remembered when you continue or close."
@@ -3268,29 +3337,37 @@ class OfflineAudioPreparationDialog(QDialog):
     def _story_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
         if column != 0:
             return
-        if item.parent() is None:
+        if not isinstance(item.data(0, Qt.ItemDataRole.UserRole), str):
             state = (
                 Qt.CheckState.Unchecked
                 if item.checkState(0) == Qt.CheckState.Unchecked
                 else Qt.CheckState.Checked
             )
             with QSignalBlocker(self.stories):
-                for row in range(item.childCount()):
-                    child = item.child(row)
-                    assert child is not None
+                for child in self.stories.story_descendants(item):
                     child.setCheckState(0, state)
         self._selection_changed()
 
     def _story_group_expansion_changed(self, item: QTreeWidgetItem) -> None:
         content = self.current_content()
-        if content is None or item.parent() is not None:
+        if content is None:
             return
         kind = item.data(0, Qt.ItemDataRole.UserRole + 3)
-        self._story_group_expansion[(content.story_index_sha256, kind)] = (
+        parent_id = item.data(0, Qt.ItemDataRole.UserRole + 6)
+        if item.parent() is not None and not isinstance(parent_id, str):
+            return
+        expansion_key = (
+            f"story:{kind}:{parent_id}" if isinstance(parent_id, str) else kind
+        )
+        self._story_group_expansion[(content.story_index_sha256, expansion_key)] = (
             item.isExpanded()
         )
         current = self.stories.current_story_item()
-        if not item.isExpanded() and current is not None and current.parent() is item:
+        if (
+            not item.isExpanded()
+            and current is not None
+            and current in self.stories.story_descendants(item)
+        ):
             self.stories.setCurrentItem(item)
 
     def _set_all_checked(self, checked: bool) -> None:
@@ -3309,6 +3386,44 @@ class OfflineAudioPreparationDialog(QDialog):
         content = self.current_content()
         shown = selected = hidden_selected = 0
         current_was_hidden = False
+
+        def update_group(
+            item: QTreeWidgetItem,
+            leaves: list[QTreeWidgetItem],
+            expansion_key: str,
+            unit: str,
+        ) -> None:
+            matches = sum(not leaf.isHidden() for leaf in leaves)
+            checked_count = sum(
+                leaf.checkState(0) == Qt.CheckState.Checked for leaf in leaves
+            )
+            ready = sum(
+                leaf.data(0, Qt.ItemDataRole.UserRole + 2) == "ready" for leaf in leaves
+            )
+            item.setHidden(matches == 0)
+            expanded = (
+                self._story_group_expansion.get(
+                    (content.story_index_sha256, expansion_key), True
+                )
+                if content is not None
+                else True
+            )
+            item.setExpanded(True if filtered and matches else expanded)
+            item.setCheckState(
+                0,
+                Qt.CheckState.Checked
+                if checked_count == len(leaves)
+                else Qt.CheckState.PartiallyChecked
+                if checked_count
+                else Qt.CheckState.Unchecked,
+            )
+            item.setText(1, f"{ready}/{len(leaves)} ready")
+            item.setToolTip(
+                1,
+                f"{ready} of {len(leaves)} {unit} ready; {checked_count} selected"
+                + (f"; {matches} match filters" if filtered else ""),
+            )
+
         with QSignalBlocker(self.stories):
             for row in range(self.stories.count()):
                 item = self.stories.item(row)
@@ -3322,48 +3437,29 @@ class OfflineAudioPreparationDialog(QDialog):
                 selected += checked
                 hidden_selected += checked and not visible
             for kind, group in self._story_groups.items():
-                children: list[QTreeWidgetItem] = []
                 for row in range(group.childCount()):
                     child = group.child(row)
                     assert child is not None
-                    children.append(child)
-                matches = sum(not child.isHidden() for child in children)
-                checked_count = sum(
-                    child.checkState(0) == Qt.CheckState.Checked for child in children
-                )
-                ready = sum(
-                    child.data(0, Qt.ItemDataRole.UserRole + 2) == "ready"
-                    for child in children
-                )
-                group.setHidden(matches == 0)
-                expanded = (
-                    self._story_group_expansion.get(
-                        (content.story_index_sha256, kind), True
-                    )
-                    if content is not None
-                    else True
-                )
-                group.setExpanded(True if filtered and matches else expanded)
-                group.setCheckState(
-                    0,
-                    Qt.CheckState.Checked
-                    if checked_count == len(children)
-                    else Qt.CheckState.PartiallyChecked
-                    if checked_count
-                    else Qt.CheckState.Unchecked,
+                    parent_id = child.data(0, Qt.ItemDataRole.UserRole + 6)
+                    if isinstance(parent_id, str):
+                        update_group(
+                            child,
+                            self.stories.story_descendants(child),
+                            f"story:{kind}:{parent_id}",
+                            "stages",
+                        )
+                update_group(
+                    group,
+                    self.stories.story_descendants(group),
+                    kind,
+                    "selections",
                 )
                 group.setText(0, _story_type_label(kind))
-                group.setText(1, f"{ready}/{len(children)} ready")
-                group.setToolTip(
-                    1,
-                    f"{ready} of {len(children)} stories ready; "
-                    f"{checked_count} selected"
-                    + (f"; {matches} match filters" if filtered else ""),
-                )
             current = self.stories.current_story_item()
-            parent = current.parent() if current is not None else None
-            parent_hidden = parent.isHidden() if parent is not None else False
-            if current is not None and (current.isHidden() or parent_hidden):
+            ancestor = current
+            while ancestor is not None and not ancestor.isHidden():
+                ancestor = ancestor.parent()
+            if current is not None and ancestor is not None:
                 self.stories.setCurrentIndex(QModelIndex())
                 current_was_hidden = True
         if current_was_hidden:
@@ -4628,7 +4724,12 @@ class OfflineAudioPreparationDialog(QDialog):
 
 
 def _content_label(content: GameContent) -> str:
-    count = len(content.selections)
+    count = len(
+        {
+            (selection.kind, selection.parent_story_id or selection.selection_id)
+            for selection in content.selections
+        }
+    )
     return f"{content.display_name} - {count} {'story' if count == 1 else 'stories'}"
 
 

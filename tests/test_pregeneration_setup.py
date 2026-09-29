@@ -499,6 +499,13 @@ class PregenerationSetupTest(unittest.TestCase):
                 ("story:stage:1002", "A Story - Episode 2", ("stage-two",)),
             ],
         )
+        self.assertEqual(
+            [
+                (selection.parent_story_id, selection.parent_story_title)
+                for selection in content.selections
+            ],
+            [("story", "A Story"), ("story", "A Story")],
+        )
         self.assertEqual(job.selected_line_ids, ("stage-two",))
 
     def test_discovery_reuses_unchanged_catalog_and_reloads_changed_bytes(self):
@@ -1271,6 +1278,71 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.selected_story_ids(), ("main-1", "anecdote-1"))
             dialog.stories.setCurrentItem(groups[2])
             self.assertFalse(dialog.check_story_audio.isEnabled())
+
+    def test_stages_are_nested_under_their_story(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            stages = tuple(
+                replace(
+                    selection,
+                    selection_id=f"story:stage:{index}",
+                    title=f"A Story - Episode {index}",
+                    kind="main_story",
+                    order=1,
+                    parent_story_id="story",
+                    parent_story_title="A Story",
+                )
+                for index, selection in enumerate(content.selections, start=1)
+            )
+            content = replace(content, selections=stages)
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+            )
+            self.addCleanup(dialog.deleteLater)
+
+            category = dialog.stories.topLevelItem(0)
+            self.assertIn("1 story", dialog.source.currentText())
+            story = category.child(0)
+            first, second = story.child(0), story.child(1)
+            self.assertEqual(category.childCount(), 1)
+            self.assertEqual(story.text(0), "A Story")
+            self.assertEqual(
+                [first.text(0), second.text(0)], ["Episode 1", "Episode 2"]
+            )
+            self.assertEqual(dialog.stories.count(), 2)
+            dialog.stories.setCurrentItem(story)
+            self.assertFalse(dialog.check_story_audio.isEnabled())
+
+            story.setCheckState(0, Qt.CheckState.Checked)
+            self.assertEqual(
+                dialog.selected_story_ids(), ("story:stage:1", "story:stage:2")
+            )
+            first.setCheckState(0, Qt.CheckState.Unchecked)
+            self.assertEqual(story.checkState(0), Qt.CheckState.PartiallyChecked)
+            first.setData(0, Qt.ItemDataRole.UserRole + 2, "ready")
+            dialog._filter_stories()
+            self.assertEqual(story.text(1), "1/2 ready")
+            self.assertEqual(category.text(1), "1/2 ready")
+
+            dialog.story_search.setText("Episode 2")
+            self.assertTrue(first.isHidden())
+            self.assertFalse(story.isHidden())
+            self.assertFalse(category.isHidden())
+            self.assertTrue(story.isExpanded())
+            story.setCheckState(0, Qt.CheckState.Checked)
+            self.assertEqual(
+                dialog.selected_story_ids(), ("story:stage:1", "story:stage:2")
+            )
+            dialog.stories.setCurrentItem(second)
+            self.assertTrue(dialog.check_story_audio.isEnabled())
+            story.setExpanded(False)
+            self.assertIs(dialog.stories.currentItem(), story)
+            self.assertFalse(dialog.check_story_audio.isEnabled())
+            dialog.story_search.clear()
+            self.assertFalse(story.isExpanded())
 
     def test_story_search_matches_visible_character_and_episode_title(self):
         with TemporaryDirectory() as temporary_directory:
