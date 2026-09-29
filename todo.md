@@ -70,20 +70,33 @@ Planned implementation order after approval:
 
 ## P0 - Play while offline audio is still preparing
 
+- [ ] **Triage the September 29 22:50 Stage 1 rerun before changing playback:**
+      correlate the five `2026-09-29 22.50.*.jpg` screenshots in Downloads with
+      `vntts-support (16).zip` runtime events, generation timelines, active
+      content and build version. Identify the exact stage/line and transition
+      for each wrong reading, live fallback, failed skip and manual recovery.
+      Separate failures already covered by the OCR, matching, source-audio and
+      auto-advance tasks below from new causes; do not assume an earlier fix
+      passed on the user's current Windows build.
 - [ ] **Diagnose Stage 1 auto-advance stalls on Windows:** the September 29
       archive has 21 `story-line-no-match` routes and seven dispatched keys with
       no confirmed successor. New bounded frame-gate counters now distinguish
       fingerprint resets from stable confirmations without retaining dialogue.
       Reproduce one stall and manual advance in the same stage, classify its
-      cursor/OCR/focus transition, and fix the proven boundary. Never blindly
-      resend a key; preserve one key per dialogue. Identify which unmatched
-      routes are OCR/nameplate errors.
+      cursor/OCR/focus transition, including cases where a short phrase or `???`
+      is read but the next dialogue never advances. Check why a manual skip can
+      leave the next line silent or require restarting Reading. Fix the proven
+      boundary, not just the timeout; never blindly resend a key, and preserve
+      one key per dialogue. Identify which unmatched routes are OCR/nameplate errors.
 - [ ] **Validate unknown speaker OCR in the affected stage:** the isolated `22`
       nameplate alias now resolves to `???` and is removed from dialogue, while
       legitimate numeric names and numeral-led narration remain intact. Capture
-      real frames to verify this alias and identify any other OCR variants;
-      inspect unstable nameplate pixels separately if the visual-successor gate
-      still resets to one candidate frame.
+      the five fresh screenshots and real frames to verify this alias and identify
+      any other OCR variants. Test very short utterances (`hmm`/interjections)
+      and a known speaker such as Ever-Echo: the nameplate must stay separate
+      from dialogue, a known story line must resolve before live synthesis, and
+      `???` must never be spoken as `22`. Inspect unstable nameplate pixels
+      separately if the visual-successor gate still resets to one candidate frame.
 - [ ] **Validate Start/Stop on Windows:** the button now changes to `Cancel start`
       while chapter identification runs, then `Stopping reading...` and disabled
       while capture/speech quiesces; all launch surfaces share the transition.
@@ -98,8 +111,10 @@ Planned implementation order after approval:
       pinned local ASR model before generating; untimed or partial cues remain
       TTS fallbacks. Confirm one exact ASR match uses game audio without
       synthetic overlap, one partial cue still uses TTS, and identify the
-      indexed media for `We should all stay on our island.` before claiming the
-      reported overlap is fixed. Check that cancelling the one-time model
+      indexed media and route decision for the reported `We should all stay on
+      our own island.` (earlier note: `We should all stay on our island.`) in the
+      fresh run before claiming the reported double reading is fixed.
+      Check that cancelling the one-time model
       download takes effect after its current file and never blocks a retry.
 - [ ] **Validate sequence-led prepared playback on Windows:** safe linear stages
       now acquire a checksum-bound raw-step plan in the background; runtime and
