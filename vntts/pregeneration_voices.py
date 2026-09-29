@@ -1149,41 +1149,12 @@ class VoicePlanStore:
             and not ignore_decisions
             else None
         )
-        if prior_source is None and self.voice_library is None and eligible_candidates:
-            candidate_identities = [
-                _candidate_decision_identity(value) for value in eligible_candidates
-            ]
-            for previous in reversed(saved_groups):
-                previous_candidates = previous.get("candidates", ())
-                if (
-                    previous.get("group_id") != group_id
-                    or not isinstance(previous_candidates, list)
-                    or not previous_candidates
-                    or not all(isinstance(value, dict) for value in previous_candidates)
-                ):
-                    continue
-                if [
-                    {key: value.get(key) for key in candidate_identities[0]}
-                    for value in previous_candidates
-                ] != candidate_identities:
-                    continue
-                context = previous.get("decision_context_sha256")
-                if not isinstance(context, str) or not _is_sha256(context):
-                    continue
-                decisions = self.decisions
-                if decisions is None:
-                    continue
-                source = decisions.choice_for(group_id, context)
-                if (
-                    source is not None
-                    and source != default_voice_choice_id
-                    and source in {value.source_id for value in eligible_candidates}
-                ):
-                    # An explicit independent voice choice does not depend on the
-                    # narrator. Reuse its original evidence key across narrator edits.
-                    prior_source = source
-                    decision_context_sha256 = context
-                    break
+        if prior_source is None and self.voice_library is None:
+            previous_choice = _matching_independent_choice(
+                group_id, eligible_candidates, saved_groups, self.decisions
+            )
+            if previous_choice is not None:
+                prior_source, decision_context_sha256 = previous_choice
         if prior_source is not None:
             if prior_source == default_voice_choice_id:
                 selected = (
@@ -1862,6 +1833,44 @@ def _candidate_decision_identity(candidate: VoiceCandidate) -> JsonObject:
         "reference_sha256s": list(candidate.reference_sha256s),
         "match_score": candidate.match_score,
     }
+
+
+def _matching_independent_choice(
+    group_id: str,
+    candidates: Sequence[VoiceCandidate],
+    saved_groups: Sequence[JsonObject],
+    decisions: VoiceDecisionStore | None,
+) -> tuple[str, str] | None:
+    """Reuse an explicit voice choice when only narrator evidence changed."""
+    if decisions is None or not candidates:
+        return None
+    candidate_identities = [_candidate_decision_identity(value) for value in candidates]
+    source_ids = {value.source_id for value in candidates}
+    for previous in reversed(saved_groups):
+        previous_candidates = previous.get("candidates", ())
+        if (
+            previous.get("group_id") != group_id
+            or not isinstance(previous_candidates, list)
+            or not previous_candidates
+            or not all(isinstance(value, dict) for value in previous_candidates)
+        ):
+            continue
+        if [
+            {key: value.get(key) for key in candidate_identities[0]}
+            for value in previous_candidates
+        ] != candidate_identities:
+            continue
+        context = previous.get("decision_context_sha256")
+        if not isinstance(context, str) or not _is_sha256(context):
+            continue
+        source = decisions.choice_for(group_id, context)
+        if (
+            source is not None
+            and source != default_voice_choice_id
+            and source in source_ids
+        ):
+            return source, context
+    return None
 
 
 def _requires_audition(

@@ -1,11 +1,5 @@
 # TODO
 
-## Active - Voice routing debt pass
-
-- [ ] Separate prior independent-choice matching from `_resolve_group` routing. Keep its candidate identity and narrator-change compatibility behavior and verify the existing saved-choice regression.
-- [ ] Inspect type/data contracts, execution/resources/performance, tests/observability, and dependencies/tooling for the selected boundary; qualify every candidate, fix confirmed debt, and run project checks.
-- [ ] Rescan affected paths and remove this section only when all applicable category passes and verification gates are complete.
-
 ## Validate OpenMOSS progress on Windows
 
 - [ ] During a sustained offline story preparation, confirm progress updates without frequent reads of `generation-state.json`, cancellation and Continue retain completed lines, and no state replacement access error recurs.
