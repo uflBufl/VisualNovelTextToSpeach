@@ -10,7 +10,7 @@
 
 ## Active - Qwen voice cloning on Windows
 
-- [ ] On the RTX 2070 Super 8 GB, render the same Matilda reference and text with Qwen and MOSS. Listen for voice similarity, intelligibility, and artifacts; compare generation time and memory use. Check that Qwen reports CUDA and the correct GPU.
+- [ ] Listen to the Mac Qwen 1.7B / MOSS Local A/B set for Centurion, Matilda, Everecho, Igor, Cornerstone, Lilya, and Schneider. Decide whether Qwen quality merits resolving its dependency audit. Separately validate the Windows Qwen 0.6B path on the RTX 2070 Super 8 GB before claiming comparable Windows quality.
 
 ## Active - Finish repeated UI scanability rollout
 
