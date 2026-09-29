@@ -55,6 +55,14 @@ class FailingSoundDevice(FakeSoundDevice):
         raise RuntimeError("device stop failed")
 
 
+class ConvenienceSoundDevice(FakeSoundDevice):
+    def play(self, _audio, _sample_rate, *, latency):
+        del latency
+
+    def wait(self):
+        return None
+
+
 class AudioOutputLifecycleTest(unittest.TestCase):
     def test_nonfinite_device_rate_falls_back_to_source_rate(self):
         output = Mock()
@@ -93,6 +101,27 @@ class AudioOutputLifecycleTest(unittest.TestCase):
                 self.assertEqual(events[-1]["operation"], operation)
                 self.assertEqual(events[-1]["outcome"], "failed")
                 self.assertEqual(len({event["stream_id"] for event in events}), 1)
+
+    def test_replacing_convenience_playback_closes_previous_log_identity(self):
+        log = configure_audio_lifecycle_log()
+        try:
+            output = resolve_audio_output(ConvenienceSoundDevice())
+            audio = np.zeros(8, dtype=np.float32)
+            output.play(audio, 24_000, latency="low")
+            output.play(audio, 24_000, latency="low")
+            output.wait()
+            events = log.report()["events"]
+        finally:
+            configure_audio_lifecycle_log()
+
+        self.assertEqual(
+            [event["operation"] for event in events],
+            ["open", "abort", "open", "close"],
+        )
+        self.assertEqual(events[1]["reason"], "convenience-replaced")
+        self.assertEqual(events[0]["stream_id"], events[1]["stream_id"])
+        self.assertEqual(events[2]["stream_id"], events[3]["stream_id"])
+        self.assertNotEqual(events[0]["stream_id"], events[2]["stream_id"])
 
     def test_stream_lifecycle_keeps_device_owner_and_playback_identity(self):
         log = configure_audio_lifecycle_log()

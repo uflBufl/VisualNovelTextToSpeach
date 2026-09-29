@@ -293,6 +293,7 @@ class _LoggedAudioOutput:
                 owner=current_thread().name,
             )
             raise
+        self._finish_convenience("abort", "convenience-replaced", "complete")
         with self.lock:
             self.convenience = stream_id, fields, context
         record_audio_lifecycle(
