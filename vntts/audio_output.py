@@ -125,6 +125,7 @@ class _LoggedOutputStream:
         fields: dict[str, object],
         context: dict[str, object],
     ) -> None:
+        self.context_stream = stream
         self.stream = stream
         self.stream_id = stream_id
         self.fields = fields
@@ -160,7 +161,7 @@ class _LoggedOutputStream:
     ) -> object:
         self._record("stop", "requested", "context-exit")
         try:
-            result = self.stream.__exit__(exc_type, exc_value, traceback)
+            result = self.context_stream.__exit__(exc_type, exc_value, traceback)
         except Exception:
             self._record("close", "failed", "context-exit")
             raise

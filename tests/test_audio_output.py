@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 from sounddevice import PortAudioError
@@ -67,6 +67,25 @@ class IncompleteSoundDevice:
         return FakeStream()
 
 
+class DelegatingStream(FakeStream):
+    def __init__(self):
+        self.entered = FakeStream()
+        self.exited = False
+
+    def __enter__(self):
+        return self.entered
+
+    def __exit__(self, *_args):
+        self.exited = True
+        return False
+
+
+class DelegatingSoundDevice(FakeSoundDevice):
+    def OutputStream(self, **_options):
+        self.context = DelegatingStream()
+        return self.context
+
+
 class FailingSoundDevice(FakeSoundDevice):
     def play(self, _audio, _sample_rate, *, latency):
         self.latency = latency
@@ -91,6 +110,18 @@ class AudioOutputLifecycleTest(unittest.TestCase):
         incomplete = IncompleteSoundDevice()
 
         self.assertIs(resolve_audio_output(incomplete), incomplete)
+
+    def test_stream_exit_uses_the_context_manager_that_was_entered(self):
+        output = DelegatingSoundDevice()
+        wrapped = resolve_audio_output(output)
+
+        with patch("vntts.audio_output.record_audio_lifecycle"):
+            with wrapped.OutputStream(
+                samplerate=24_000, channels=1, dtype="float32", latency="low"
+            ) as stream:
+                self.assertIsNot(stream, output.context.entered)
+
+        self.assertTrue(output.context.exited)
 
     def test_nonfinite_device_rate_falls_back_to_source_rate(self):
         output = Mock()
