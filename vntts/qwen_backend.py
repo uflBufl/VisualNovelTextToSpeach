@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from time import monotonic
-from typing import Any, ClassVar, Protocol, cast, runtime_checkable
+from typing import Any, ClassVar, Protocol, cast
 
 from vntts.audio_output import AudioOutput
 from vntts.services.tts_engine import TTSConfigurationError
@@ -73,12 +73,10 @@ class _QwenGeneratedResult(Protocol):
     token_count: int
 
 
-@runtime_checkable
 class _QwenSpeechTokenizer(Protocol):
     has_encoder: bool
 
 
-@runtime_checkable
 class _QwenTTSModel(Protocol):
     sample_rate: int
     speech_tokenizer: _QwenSpeechTokenizer
@@ -110,9 +108,14 @@ class _QwenGeneratedChunk:
 
 
 def _require_qwen_model(model: object) -> _QwenTTSModel:
-    if not isinstance(model, _QwenTTSModel):
+    tokenizer = getattr(model, "speech_tokenizer", None)
+    if (
+        not isinstance(getattr(model, "sample_rate", None), int)
+        or not callable(getattr(model, "generate", None))
+        or not getattr(tokenizer, "has_encoder", False)
+    ):
         raise TTSConfigurationError("Qwen Base reference encoder is missing")
-    return model
+    return cast(_QwenTTSModel, model)
 
 
 def _reference_prompt_codes(value: object) -> tuple[str, str]:

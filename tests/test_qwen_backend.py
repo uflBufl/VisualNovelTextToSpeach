@@ -13,7 +13,7 @@ import numpy as np
 
 from vntts.pregeneration_queue import PregenerationQueueError, _write_effective_voices
 from vntts.pregeneration_voices import _materialize_voice_catalog
-from vntts.qwen_backend import QwenTTSVoiceRouterBackend
+from vntts.qwen_backend import QwenTTSVoiceRouterBackend, _require_qwen_model
 from vntts.services.tts_engine import TTSConfigurationError
 from vntts.speech_worker import (
     _registry_from_document,
@@ -25,6 +25,27 @@ from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 
 class QwenBackendTest(unittest.TestCase):
+    def test_qwen_accepts_mlx_dynamic_speech_tokenizer(self):
+        class DynamicModel:
+            sample_rate = 24000
+
+            def __init__(self):
+                self._tokenizer = SimpleNamespace(has_encoder=True)
+
+            def __getattr__(self, name):
+                if name == "speech_tokenizer":
+                    return self._tokenizer
+                raise AttributeError(name)
+
+            def generate(self, **_options):
+                return iter(())
+
+        model = DynamicModel()
+        self.assertIs(_require_qwen_model(model), model)
+        model._tokenizer.has_encoder = False
+        with self.assertRaisesRegex(TTSConfigurationError, "encoder is missing"):
+            _require_qwen_model(model)
+
     def test_qwen_reuses_the_installed_mlx_runtime(self):
         root = Path("/tmp/test-moss-mlx-runtime")
         registry = CharacterVoiceRegistry()
