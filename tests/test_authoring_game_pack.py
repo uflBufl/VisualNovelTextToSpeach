@@ -1756,6 +1756,16 @@ class AuthoringGamePackTest(unittest.TestCase):
 
             self.assertFalse((root / "final-pack").exists())
 
+    def test_malformed_publication_lease_aborts_before_commit(self):
+        for payload in (b"\xff", b"null"):
+            with self.subTest(payload=payload), TemporaryDirectory() as directory:
+                destination = Path(directory) / "final-pack"
+                with self.assertRaises(FinalGamePackError):
+                    with game_pack_module._PublicationLease(destination) as lease:
+                        lease.path.write_bytes(payload)
+                        lease.assert_owned()
+                self.assertFalse(destination.exists())
+
     def test_publication_lease_write_failure_leaves_no_blocking_lease(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1853,6 +1863,32 @@ class AuthoringGamePackTest(unittest.TestCase):
 
             self.assertTrue(result.manifest.is_file())
             self.assertEqual(load_game_pack(result.manifest).game_id, "synthetic-game")
+
+    def test_post_commit_malformed_lease_does_not_report_publication_failure(self):
+        for payload in (b"\xff", b"null"):
+            with self.subTest(payload=payload), TemporaryDirectory() as directory:
+                root = Path(directory)
+                fixture = prepare_authoring_fixture(root, names=("one",))
+                review_generation_item(
+                    fixture["state"], fixture["items"][0]["queue_id"], "rejected"
+                )
+                real_rename = game_pack_module._rename_directory_no_replace
+
+                def rename_then_corrupt_lease(source, destination):
+                    real_rename(source, destination)
+                    (root / ".final-pack.publication.json").write_bytes(payload)
+
+                with patch.object(
+                    game_pack_module,
+                    "_rename_directory_no_replace",
+                    side_effect=rename_then_corrupt_lease,
+                ):
+                    result = publish(fixture, root / "final-pack")
+
+                self.assertTrue(result.manifest.is_file())
+                self.assertEqual(
+                    load_game_pack(result.manifest).game_id, "synthetic-game"
+                )
 
     def test_post_commit_lease_unlink_failure_does_not_report_failure(self):
         with TemporaryDirectory() as directory:

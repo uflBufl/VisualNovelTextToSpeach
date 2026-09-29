@@ -925,10 +925,13 @@ class _PublicationLease:
             with exclusive_advisory_lock(self.guard_path, blocking=True):
                 try:
                     document = json.loads(self.path.read_text(encoding="utf-8"))
-                except OSError, json.JSONDecodeError:
+                except OSError, UnicodeDecodeError, json.JSONDecodeError:
                     ownership_lost = True
                 else:
-                    if document.get("owner") == self.owner:
+                    if (
+                        isinstance(document, dict)
+                        and document.get("owner") == self.owner
+                    ):
                         self.path.unlink()
                     else:
                         ownership_lost = True
@@ -943,11 +946,11 @@ class _PublicationLease:
     def assert_owned(self) -> None:
         try:
             document = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise FinalGamePackError(
                 "Final game-pack publication lease became unreadable"
             ) from error
-        if document.get("owner") != self.owner:
+        if not isinstance(document, dict) or document.get("owner") != self.owner:
             raise FinalGamePackError(
                 "Final game-pack publication lease ownership was lost"
             )
