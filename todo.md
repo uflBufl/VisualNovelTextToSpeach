@@ -2,7 +2,11 @@
 
 ## Validate OpenMOSS progress on Windows
 
-- [ ] During a sustained offline story preparation, confirm progress updates without frequent reads of `generation-state.json`, cancellation and Continue retain completed lines, and no state replacement access error recurs.
+- [ ] The September 29 22:48 support bundle still records `[WinError 5] Access is
+      denied` replacing `generation-state.json` during another 568-line job.
+      Diagnose the writer/reader or antivirus sharing boundary, then confirm
+      sustained progress updates, cancellation and Continue retain completed
+      lines without frequent state reads or another replacement failure.
 
 ## Validate capture changes during background preparation on Windows
 
@@ -70,14 +74,20 @@ Planned implementation order after approval:
 
 ## P0 - Play while offline audio is still preparing
 
-- [ ] **Triage the September 29 22:50 Stage 1 rerun before changing playback:**
-      correlate the five `2026-09-29 22.50.*.jpg` screenshots in Downloads with
-      `vntts-support (16).zip` runtime events, generation timelines, active
-      content and build version. Identify the exact stage/line and transition
-      for each wrong reading, live fallback, failed skip and manual recovery.
-      Separate failures already covered by the OCR, matching, source-audio and
-      auto-advance tasks below from new causes; do not assume an earlier fix
-      passed on the user's current Windows build.
+- [ ] **Validate the September 29 22:50 Stage 1 rerun on Windows:** the five
+      `2026-09-29 22.50.*.jpg` screenshots show `???` rendered as `2???` or
+      `22?`, and `Hey!` acquiring trailing OCR noise. The support bundle was
+      captured just before those screenshots, so its 21 `story-line-no-match`
+      routes and seven unconfirmed key dispatches cannot identify each pictured
+      occurrence. After the OCR fix, collect one fresh run with screenshots and
+      a same-run support archive to classify any remaining wrong reading, live
+      fallback, failed skip, or manual recovery against exact stage/line IDs.
+- [ ] **Validate installed-game provenance on Windows:** the September 29 job
+      was tagged `selected-story-index` even though its path is the installed
+      Reverse: 1999 catalog. Discovery and resumed-job fixes must preserve the
+      canonical `reverse1999` provider without relabelling arbitrary indexes.
+      Confirm reopening the existing job enables selected-source ASR
+      classification and prepares a sequence plan before stage playback.
 - [ ] **Diagnose Stage 1 auto-advance stalls on Windows:** the September 29
       archive has 21 `story-line-no-match` routes and seven dispatched keys with
       no confirmed successor. New bounded frame-gate counters now distinguish
@@ -110,10 +120,13 @@ Planned implementation order after approval:
       measures selected installed clips and classifies exact timed cues with a
       pinned local ASR model before generating; untimed or partial cues remain
       TTS fallbacks. Confirm one exact ASR match uses game audio without
-      synthetic overlap, one partial cue still uses TTS, and identify the
-      indexed media and route decision for the reported `We should all stay on
-      our own island.` (earlier note: `We should all stay on our island.`) in the
-      fresh run before claiming the reported double reading is fixed.
+      synthetic overlap and one partial cue still uses TTS. The reported line
+      is indexed as `reverse1999:314501:92`, media `703844389`, text `We should
+      all stay on our own "island."`, but its source-audio completeness and
+      duration are unknown; the September 29 runtime routed it to generated
+      speech with `source-audio-authority-unavailable`. Confirm that the fixed
+      game provenance leads to measured/ASR-classified audio for this line
+      before claiming its double reading is fixed.
       Check that cancelling the one-time model
       download takes effect after its current file and never blocks a retry.
 - [ ] **Validate sequence-led prepared playback on Windows:** safe linear stages
@@ -121,8 +134,11 @@ Planned implementation order after approval:
       published packs use audio-auto only with the plan and enabled auto-advance.
       Branches, gaps, missing bundles and incomplete cumulative coverage fall
       back to OCR. In stage `314501`, confirm the 107-step plan is acquired,
-      known WAVs start promptly, no wrong speaker/duplicate/unsolicited key occurs,
-      and manual resync still works. Compare capture/OCR/first-PCM timings with
+      and explain or correct the fresh support bundle's `live_sequence_mode=off`
+      while `auto_advance_enabled=true` before interpreting a missing plan as
+      a generation failure. Confirm known WAVs start promptly, no wrong
+      speaker/duplicate/unsolicited key occurs, and manual resync still works.
+      Compare capture/OCR/first-PCM timings with
       the September 29 baseline before changing capture cadence. If plan creation
       finishes after a very short generation and publication, the pack currently
       remains in OCR mode; decide whether a later safe successor publication is

@@ -446,19 +446,22 @@ def discover_game_content(
         if configured_extractor_root
         else Path(user_data_path("Reverse1999Extractor", appauthor=False))
     )
+    installed_story = (
+        get_local_data_directory()
+        / "game-content"
+        / "reverse1999"
+        / "reverse1999"
+        / "story-index.jsonl"
+    )
+    extractor_story = extractor_root / "reverse1999" / "story-index.jsonl"
+    trusted_game_paths = {installed_story.resolve(), extractor_story.resolve()}
     candidates.append(
         (
-            get_local_data_directory()
-            / "game-content"
-            / "reverse1999"
-            / "reverse1999"
-            / "story-index.jsonl",
+            installed_story,
             "reverse1999",
         )
     )
-    candidates.append(
-        (extractor_root / "reverse1999" / "story-index.jsonl", "reverse1999")
-    )
+    candidates.append((extractor_story, "reverse1999"))
 
     discovered: list[GameContent] = []
     errors: list[str] = []
@@ -476,7 +479,11 @@ def discover_game_content(
             continue
         try:
             discovered.append(
-                _cached_story_index(str(path), provider_id, sha256_file(path))
+                _cached_story_index(
+                    str(path),
+                    "reverse1999" if path in trusted_game_paths else provider_id,
+                    sha256_file(path),
+                )
             )
         except PregenerationSetupError as error:
             errors.append(str(error))
@@ -656,6 +663,12 @@ class PregenerationJobStore:
                 raise PregenerationSetupError(
                     "Saved preparation identity conflicts with the selected story"
                 )
+            if (
+                job.provider_id != content.provider_id
+                and content.provider_id == "reverse1999"
+            ):
+                job = replace(job, provider_id=content.provider_id)
+                write_versioned_json(path, job_schema_version, job.to_document())
             return job
         timestamp = self.clock().astimezone(timezone.utc).isoformat()
         job = PregenerationJob(

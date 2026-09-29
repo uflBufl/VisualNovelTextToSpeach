@@ -602,6 +602,26 @@ class PregenerationSetupTest(unittest.TestCase):
             ["configured-story-index", "reverse1999", "reverse1999"],
         )
 
+    def test_saved_path_cannot_downgrade_installed_game_provider(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            app_data = root / "app-data"
+            installed = write_story_index(
+                app_data / "game-content" / "reverse1999" / "reverse1999"
+            )
+            with patch(
+                "vntts.pregeneration_setup.get_local_data_directory",
+                return_value=app_data,
+            ):
+                discovery = discover_game_content(
+                    AppSettings(story_index=str(installed)),
+                    environment={"R1999_EXTRACTOR_DATA": str(root / "extractor")},
+                    extra_paths=(installed,),
+                )
+
+        self.assertEqual(len(discovery.content), 1)
+        self.assertEqual(discovery.content[0].provider_id, "reverse1999")
+
     def test_discovery_rejects_outdated_reverse1999_index_before_full_parse(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "story-index.jsonl"
@@ -664,6 +684,23 @@ class PregenerationSetupTest(unittest.TestCase):
             )
             self.assertEqual(store.latest_for_content(content), first)
             self.assertTrue(store.path_for(first.job_id).is_file())
+
+    def test_resumed_installed_game_job_uses_current_provider(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(
+                write_story_index(root / "content"), provider_id="reverse1999"
+            )
+            store = PregenerationJobStore(root / "jobs")
+            older = store.create_or_resume(
+                replace(content, provider_id="selected-story-index"), ("main-1",)
+            )
+
+            resumed = store.create_or_resume(content, ("main-1",))
+
+            self.assertEqual(resumed.job_id, older.job_id)
+            self.assertEqual(resumed.provider_id, "reverse1999")
+            self.assertEqual(store.load(resumed.job_id).provider_id, "reverse1999")
 
     def test_empty_and_unknown_selections_fail_before_writing(self):
         with TemporaryDirectory() as temporary_directory:
