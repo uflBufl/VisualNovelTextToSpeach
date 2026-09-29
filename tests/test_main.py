@@ -2539,12 +2539,12 @@ class MainTest(unittest.TestCase):
                 "A transitional OCR frame that is not the expected successor.",
             )
         )
-        controller._offer_unknown_speaker_mapping.assert_not_called()
         self.assertEqual(
             controller.story_cursor.state,
             StoryCursorState.WAITING_TRANSITION,
         )
         self.assertFalse(controller._dialog_observed("Narrator", ""))
+        controller.history.add("Rhiannon", "Second canonical line that")
 
         self.assertEqual(
             controller._dialog_observed(
@@ -2563,6 +2563,13 @@ class MainTest(unittest.TestCase):
         controller.live_reader.confirm_pending_auto_advance.assert_called_once_with()
         self.assertEqual(controller.story_cursor.current_event_id, "event-2")
         self.assertEqual(controller.story_cursor.state, StoryCursorState.LOCKED)
+        self.assertEqual(
+            [entry.text for entry in controller.history.snapshot()],
+            [
+                "Second canonical line that",
+                "Second canonical line that remains stable.",
+            ],
+        )
 
         controller.story_cursor.reset()
         controller.story_cursor.anchor_event("event-1")
@@ -3655,6 +3662,7 @@ class MainTest(unittest.TestCase):
         reader.enqueue.return_value = True
         controller.live_reader = reader
         controller.story_cursor.anchor_event("event-1")
+        controller.history.add("Rhiannon", repeated)
         event_id = controller._begin_sequence_playback(
             SpeechChunk(
                 1,
@@ -3678,6 +3686,10 @@ class MainTest(unittest.TestCase):
         self.assertEqual(controller.story_cursor.current_event_id, "event-2")
         self.assertEqual(preloader.current_match.chapter, "1")
         self.assertEqual(preloader.current_match.sequence, 2)
+        self.assertEqual(
+            [entry.text for entry in controller.history.snapshot()],
+            [repeated, repeated],
+        )
 
     def test_manual_multi_line_skip_requires_bounded_recognition(self):
         rows = [

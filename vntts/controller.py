@@ -1087,6 +1087,7 @@ class AppController:
         self, character: str | None, text: str
     ) -> DialogObservationDecision:
         if not text:
+            self.history.finish_current()
             with self.story_cursor_lock:
                 if (
                     self.story_cursor is not None
@@ -1098,13 +1099,18 @@ class AppController:
                     }
                 ):
                     return False
-            self.history.finish_current()
             self.dialog_handler("Narrator", "")
             return True
         observed_character = character or "Narrator"
         character = self._canonical_observed_character(character, text)
         canonical_routing = False
+        canonical_event_changed = False
         with self.story_cursor_lock:
+            previous_event_id = (
+                None
+                if self.story_cursor is None
+                else self.story_cursor.current_event_id
+            )
             sequence_observation = self._observe_live_sequence(character, text)
             if self._live_sequence_audio_active():
                 if self.story_cursor is None:
@@ -1167,9 +1173,12 @@ class AppController:
                         return False
                     character, text = line.speaker, line.text
                     canonical_routing = True
+                    canonical_event_changed = event.event_id != previous_event_id
         speech_deferred = self._offer_unknown_speaker_mapping(character, text)
         self._prime_observed_voice(character)
         self._prime_likely_chapter_voice(character, text)
+        if canonical_event_changed:
+            self.history.finish_current()
         self._record_and_display_dialogue(character, text)
         if speech_deferred:
             return False
@@ -1972,6 +1981,7 @@ class AppController:
     def _enqueue_selected_sequence_line(self, line: ChapterDialogue) -> bool:
         self._prime_observed_voice(line.speaker)
         self._prime_likely_chapter_voice(line.speaker, line.text)
+        self.history.finish_current()
         self._record_and_display_dialogue(line.speaker, line.text)
         reader = self.live_reader
         if reader is None:
