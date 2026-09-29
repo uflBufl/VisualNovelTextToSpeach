@@ -8,9 +8,10 @@
 
 - [ ] While a story is preparing and reading is active, confirm Settings and Calibrate capture remain available. Opening either stops only reading, and story preparation continues; after saving a region, restart reading and confirm capture uses the new area.
 
-## Active - Qwen voice cloning on Windows
+## Adopt Qwen for offline story preparation
 
-- [ ] Listen to the Mac Qwen 1.7B / MOSS Local A/B set for Centurion, Matilda, Everecho, Igor, Cornerstone, Lilya, and Schneider. Decide whether Qwen quality merits resolving its dependency audit. Separately validate the Windows Qwen 0.6B path on the RTX 2070 Super 8 GB before claiming comparable Windows quality.
+- [ ] On the RTX 2070 Super 8 GB, generate the fixed character corpus with the packaged Windows Qwen 0.6B runtime. Compare its voices with MOSS, confirm memory use and complete lines, and retain the audio and timings. The Mac Qwen 1.7B comparison has passed listening review but does not establish Windows 0.6B quality.
+- [ ] Resolve the Qwen dependency audit findings or explicitly accept their release risk. After the Windows quality check, make Qwen the preferred offline engine on supported installations and verify narrator setup and story preparation; keep MOSS available as an alternative.
 
 ## Active - Finish repeated UI scanability rollout
 
