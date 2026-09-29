@@ -2685,6 +2685,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.diagnostics_dialog.closed.connect(
                 lambda dialog=self.diagnostics_dialog: self._diagnostics_closed(dialog)
             )
+        if self.diagnostics_dialog.refresh_in_flight:
+            return
         snapshot = self.controller.get_latest_diagnostic()
         if snapshot is not None:
             self.diagnostics_dialog.set_snapshot(snapshot)

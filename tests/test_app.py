@@ -3999,6 +3999,52 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertTrue(dialog.warning.isVisible())
         tray_application.shutdown()
 
+    def test_reopening_diagnostics_does_not_discard_pending_capture(self):
+        release = Event()
+        controller = Mock()
+        controller.get_latest_diagnostic.return_value = DiagnosticSnapshot(
+            None, text="Previous capture"
+        )
+
+        def inspect(*, notify):
+            release.wait(10)
+            return DiagnosticSnapshot(None, text="Fresh capture")
+
+        controller.inspect_current_dialog.side_effect = inspect
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray_application.open_diagnostics()
+        dialog = tray_application.diagnostics_dialog
+
+        try:
+            with (
+                patch(
+                    "vntts.app.get_macos_permission_status",
+                    return_value={"screen_capture": True, "accessibility": True},
+                ),
+                patch(
+                    "vntts.app.QTimer.singleShot", side_effect=lambda _ms, call: call()
+                ),
+            ):
+                dialog.request_refresh()
+                self.wait_until(lambda: controller.inspect_current_dialog.called)
+                self.assertFalse(dialog.isVisible())
+
+                tray_application.open_diagnostics()
+                self.assertTrue(dialog.refresh_in_flight)
+                self.assertFalse(dialog.isVisible())
+
+                release.set()
+                self.wait_until(lambda: not dialog.refresh_in_flight)
+            self.assertEqual(dialog.text.text(), "Fresh capture")
+            self.assertTrue(dialog.isVisible())
+        finally:
+            release.set()
+            tray_application.shutdown()
+
     def test_diagnostic_result_restores_concealed_window(self):
         tray_application = TrayApplication(
             self.application,
