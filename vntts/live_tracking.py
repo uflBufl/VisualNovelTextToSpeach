@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from hashlib import sha256
 from time import monotonic
+from unicodedata import normalize
 
 
 @dataclass(frozen=True)
@@ -143,6 +144,14 @@ class IncrementalDialogTracker:
             return True
         if character != self.character or self.transition_expected:
             return False
+        if self.committed_text:
+            committed_key = self._comparison_key(self.committed_text)
+            observed_key = self._comparison_key(text)
+            if observed_key == committed_key:
+                return False
+            if observed_key and committed_key.startswith(observed_key):
+                self._clear_pending_dialog()
+                return True
         if self.committed_text.startswith(text) and text != self.committed_text:
             self._clear_pending_dialog()
             return True
@@ -204,8 +213,10 @@ class IncrementalDialogTracker:
         stable_length = len(self.stable_text.rstrip())
         return (
             self.committed_position >= stable_length
-            and self.clock() - self.last_stable_change_at >= self.idle_flush_seconds
-        )
+            or bool(self.committed_text)
+            and self._comparison_key(self.committed_text)
+            == self._comparison_key(self.stable_text)
+        ) and self.clock() - self.last_stable_change_at >= self.idle_flush_seconds
 
     def _is_new_dialog(self, character: str, text: str) -> bool:
         if not self.latest_text:
@@ -282,7 +293,9 @@ class IncrementalDialogTracker:
     @staticmethod
     def _comparison_key(text: str) -> str:
         return "".join(
-            character.casefold() for character in text if character.isalnum()
+            character.casefold()
+            for character in normalize("NFKD", text)
+            if character.isalnum()
         )
 
     def _start_dialog(self, character: str, text: str, now: float) -> None:
@@ -320,6 +333,10 @@ class IncrementalDialogTracker:
 
     def _emit(self, stable_text: str, *, flush: bool) -> list[SpeechChunk]:
         if self.complete_dialogue_only and not flush:
+            return []
+        if self.committed_text and self._comparison_key(
+            stable_text
+        ) == self._comparison_key(self.committed_text):
             return []
         if not stable_text.startswith(self.committed_text):
             self.conflicting_observation = True

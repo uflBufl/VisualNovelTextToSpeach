@@ -930,6 +930,57 @@ class AdaptiveSpeechBackpressureTest(unittest.TestCase):
 
 
 class IncrementalDialogTrackerTest(unittest.TestCase):
+    def test_equivalent_ocr_after_early_story_audio_allows_auto_advance(self):
+        cases = (
+            (
+                "Clerk",
+                "And during that time, the new arrival will stay temporarily in a guest room at the Nowa Miedź office.",
+                "And during that time, the new arrival will stay temporarily in a guest room at the Nowa Miedz office.",
+                "And during that time, the new arrival will stay temporarily",
+            ),
+            (
+                "Narrator",
+                "Now, the Shades have gathered together, surrounding a human in gray-and-white checkered clothing standing in the middle.",
+                "Now, the Shades have gathered together, surrounding a human in gray-and- white checkered clothing standing in the middle.",
+                "Now, the Shades have gathered together, surrounding a human",
+            ),
+        )
+        for speaker, canonical, observed, prefix in cases:
+            with self.subTest(speaker=speaker):
+                tracker = self.create_tracker(
+                    complete_dialogue_only=True,
+                    early_dialogue_resolver=lambda *_: canonical,
+                )
+                tracker.observe(speaker, prefix)
+                self.assertEqual(
+                    tracker.observe(speaker, prefix),
+                    [SpeechChunk(1, speaker, canonical)],
+                )
+                tracker.observe(speaker, observed)
+                tracker.observe(speaker, observed)
+                self.clock.advance(0.8)
+                self.assertEqual(tracker.observe(speaker, observed), [])
+                self.assertTrue(tracker.is_idle_complete())
+                self.assertEqual(tracker.generation, 1)
+
+    def test_changed_ocr_after_early_story_audio_stays_blocked(self):
+        canonical = "The visitor will stay at the Nowa Miedź office."
+        tracker = self.create_tracker(
+            complete_dialogue_only=True,
+            early_dialogue_resolver=lambda *_: canonical,
+        )
+        tracker.observe("Clerk", "The visitor will stay")
+        self.assertEqual(
+            tracker.observe("Clerk", "The visitor will stay"),
+            [SpeechChunk(1, "Clerk", canonical)],
+        )
+        changed = "The visitor will stay at the Nowa Miedz hotel."
+        tracker.observe("Clerk", changed)
+        tracker.observe("Clerk", changed)
+        self.clock.advance(0.8)
+        self.assertEqual(tracker.observe("Clerk", changed), [])
+        self.assertFalse(tracker.is_idle_complete())
+
     def test_cursor_owned_silent_event_is_ready_once_without_speech(self):
         tracker = IncrementalDialogTracker()
 

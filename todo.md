@@ -106,6 +106,11 @@ Planned implementation order after approval:
       leave the next line silent or require restarting Reading. Fix the proven
       boundary, not just the timeout; never blindly resend a key, and preserve
       one key per dialogue. Identify which unmatched routes are OCR/nameplate errors.
+- [ ] **Validate Stage 1 post-playback skips on Windows:** rerun
+      `reverse1999:314501:10` (Nowa Miedź office) and `:71` (gray-and-white
+      clothing) after the tracker accepts equivalent OCR spelling and line-wrap
+      variants. Confirm each completed playback advances once without extra
+      audio; a genuinely changed line must still remain blocked.
 - [ ] **Validate unknown speaker OCR in the affected stage:** the isolated `22`
       nameplate alias now resolves to `???` and is removed from dialogue, while
       legitimate numeric names and numeral-led narration remain intact. Capture
