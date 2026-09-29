@@ -1758,6 +1758,9 @@ def _ranked_candidate(
     variant: Mapping[str, object] | None = None,
 ) -> VoiceCandidate:
     variant = variant or {}
+    source_excerpts = variant.get("source_excerpts", ())
+    if not isinstance(source_excerpts, (list, tuple)):
+        raise PregenerationVoiceError("Voice candidate source excerpts are invalid")
     return VoiceCandidate(
         source_id=source_id,
         source_character=voice.source_character or voice.character,
@@ -1770,11 +1773,11 @@ def _ranked_candidate(
         source_voice_ids=_text_values(variant.get("source_voice_ids")),
         source_line_ids=_text_values(variant.get("source_line_ids")),
         reference_duration_seconds=_reference_duration_seconds(voice.references),
-        source_excerpts=_source_excerpt_transcripts(variant.get("source_excerpts", ())),
+        source_excerpts=_source_excerpt_transcripts(source_excerpts),
         source_titles=tuple(
             dict.fromkeys(
                 excerpt["title"]
-                for excerpt in variant.get("source_excerpts", ())
+                for excerpt in source_excerpts
                 if isinstance(excerpt, dict)
                 and isinstance(excerpt.get("title"), str)
                 and excerpt["title"].strip()
