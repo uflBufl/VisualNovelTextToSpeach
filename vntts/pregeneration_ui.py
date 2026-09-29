@@ -202,7 +202,9 @@ class _StoryTree(QTreeWidget):
             else None
         )
 
-    def story_descendants(self, item: QTreeWidgetItem) -> list[QTreeWidgetItem]:
+    def story_descendants(self, item: QTreeWidgetItem | None) -> list[QTreeWidgetItem]:
+        if item is None:
+            return []
         if isinstance(item.data(0, Qt.ItemDataRole.UserRole), str):
             return [item]
         return [
