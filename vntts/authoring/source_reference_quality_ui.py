@@ -8,7 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Literal, NotRequired, TypedDict, TypeGuard
 
-from PySide6.QtCore import Qt, QThreadPool
+from PySide6.QtCore import Qt, QThreadPool, QTimer
 from PySide6.QtGui import QCloseEvent, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -399,6 +399,9 @@ class SourceReferenceQualityDialog(QDialog):
             self.needs_sample,
         ):
             button.setVisible(False)
+        QTimer.singleShot(
+            0, lambda: self.review_scroll.ensureWidgetVisible(self.status)
+        )
 
     def _show_current_review(self, total: int) -> None:
         assert self.current is not None

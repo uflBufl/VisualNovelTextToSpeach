@@ -158,7 +158,7 @@ class AssetManagerDialogTest(unittest.TestCase):
         dialog.model_finished(True, "Model verified and ready at managed/first")
         dialog.model.setCurrentText("second")
         self.assertIn("not checked", dialog.model_status.text())
-        self.assertEqual(dialog.model_path.text(), "managed/second")
+        self.assertEqual(dialog.model_path.text(), str(Path("managed") / "second"))
 
         dialog.set_operation_running(True, "verify")
         dialog.model.setCurrentText("third")
