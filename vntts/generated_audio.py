@@ -1589,21 +1589,12 @@ def _live_fallback_index(
         ):
             raise ValueError("Generated-audio live fallback schema is unsupported")
         for field in ("text_sha256", "decision_sha256"):
-            value_hash = raw[field]
-            if (
-                not isinstance(value_hash, str)
-                or len(value_hash) != 64
-                or any(character not in "0123456789abcdef" for character in value_hash)
-            ):
+            if not is_lowercase_sha256(raw[field]):
                 raise ValueError(
                     "Generated-audio live fallback hashes must be lowercase SHA-256"
                 )
         previous = raw["previous_result_sha256"]
-        if previous is not None and (
-            not isinstance(previous, str)
-            or len(previous) != 64
-            or any(character not in "0123456789abcdef" for character in previous)
-        ):
+        if previous is not None and not is_lowercase_sha256(previous):
             raise ValueError(
                 "Generated-audio previous-result hash must be lowercase SHA-256"
             )
@@ -1682,15 +1673,7 @@ def _live_fallback_index(
         decision_document = {
             key: value for key, value in raw.items() if key != "decision_sha256"
         }
-        decision_sha256 = hashlib.sha256(
-            json.dumps(
-                decision_document,
-                ensure_ascii=False,
-                separators=(",", ":"),
-                sort_keys=True,
-            ).encode("utf-8")
-        ).hexdigest()
-        if decision_sha256 != raw["decision_sha256"]:
+        if canonical_document_sha256(decision_document) != raw["decision_sha256"]:
             raise ValueError("Generated-audio live fallback decision hash changed")
         decision = LiveFallbackDecision(
             schema=str(raw["schema"]),
@@ -1772,15 +1755,7 @@ def _validate_automatic_recovery_fallback_evidence(
         }
     ):
         raise ValueError("Generated-audio automatic recovery evidence is malformed")
-    base_result_sha256 = hashlib.sha256(
-        json.dumps(
-            base_result,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-    ).hexdigest()
-    if base_result_sha256 != evidence["base_result_sha256"]:
+    if canonical_document_sha256(base_result) != evidence["base_result_sha256"]:
         raise ValueError("Generated-audio automatic recovery evidence changed")
 
 
