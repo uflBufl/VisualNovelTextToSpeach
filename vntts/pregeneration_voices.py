@@ -1393,49 +1393,48 @@ def _materialize_voice_catalog(
     registry: CharacterVoiceRegistry,
 ) -> Path:
     voices: list[JsonObject] = []
-    payloads: dict[str, bytes] = {}
     identity: list[tuple[str, str, list[str]] | tuple[str, str, list[str], str]] = []
-    for voice in sorted(
-        registry.unique_voices(), key=lambda value: value.character.casefold()
-    ):
-        references: list[str] = []
-        checksums: list[str] = []
-        for reference in voice.references:
-            payload = read_voice_reference_bytes(voice, reference)
-            checksum = hashlib.sha256(payload).hexdigest()
-            suffix = reference.suffix or ".wav"
-            relative = f"references/{checksum}{suffix}"
-            payloads.setdefault(relative, payload)
-            references.append(relative)
-            checksums.append(checksum)
-        entry: JsonObject = {
-            "character": voice.character,
-            "speaker": voice.speaker,
-            "aliases": [],
-            "references": references,
-        }
-        if voice.source_character:
-            entry["vntts.source_character"] = voice.source_character
-        if voice.reference_transcript:
-            entry["vntts.reference_transcript"] = voice.reference_transcript
-        voices.append(entry)
-        identity.append(
-            (voice.character, voice.speaker, checksums, voice.reference_transcript)
-            if voice.reference_transcript
-            else (voice.character, voice.speaker, checksums)
-        )
-    digest = _digest(identity)
     root = Path(job_store.path_for(job.job_id)).parent
-    destination = root / f"voice-catalog-{digest[:16]}"
-    manifest = destination / "manifest.json"
-    if manifest.is_file():
-        return Path(manifest)
     root.mkdir(parents=True, exist_ok=True)
     with staged_directory(root, prefix=".voice-catalog-") as staging:
-        for relative, payload in payloads.items():
-            target = staging / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(payload)
+        for voice in sorted(
+            registry.unique_voices(), key=lambda value: value.character.casefold()
+        ):
+            references: list[str] = []
+            checksums: list[str] = []
+            for reference in voice.references:
+                payload = read_voice_reference_bytes(voice, reference)
+                checksum = hashlib.sha256(payload).hexdigest()
+                suffix = reference.suffix or ".wav"
+                relative = f"references/{checksum}{suffix}"
+                target = staging / relative
+                if not target.is_file():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(payload)
+                del payload
+                references.append(relative)
+                checksums.append(checksum)
+            entry: JsonObject = {
+                "character": voice.character,
+                "speaker": voice.speaker,
+                "aliases": [],
+                "references": references,
+            }
+            if voice.source_character:
+                entry["vntts.source_character"] = voice.source_character
+            if voice.reference_transcript:
+                entry["vntts.reference_transcript"] = voice.reference_transcript
+            voices.append(entry)
+            identity.append(
+                (voice.character, voice.speaker, checksums, voice.reference_transcript)
+                if voice.reference_transcript
+                else (voice.character, voice.speaker, checksums)
+            )
+        digest = _digest(identity)
+        destination = root / f"voice-catalog-{digest[:16]}"
+        manifest = destination / "manifest.json"
+        if manifest.is_file():
+            return manifest
         write_voice_manifest(
             staging / "manifest.json", {"version": 2, "voices": voices}
         )

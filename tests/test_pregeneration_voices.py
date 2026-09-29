@@ -36,6 +36,7 @@ from vntts.pregeneration_voices import (
     PregenerationVoiceError,
     VoiceDecisionStore,
     VoicePlanStore,
+    _materialize_voice_catalog,
     player_voice_catalog_is_current,
     resolve_pregeneration_settings,
 )
@@ -49,6 +50,7 @@ from vntts.voice_library import VoiceLibrary
 from vntts.voices import (
     CharacterVoiceRegistry,
     default_voice_choice_id,
+    read_voice_reference_bytes,
     remember_voice_binding,
     voice_binding_source_id,
 )
@@ -428,6 +430,35 @@ def write_player_candidate_manifest(
 
 
 class VoicePlanStoreTest(unittest.TestCase):
+    def test_voice_catalog_writes_each_reference_before_reading_the_next(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            registry = CharacterVoiceRegistry.from_file(write_manifest(root / "voices"))
+            catalog_root = Path(jobs.path_for(job.job_id)).parent
+            reads = 0
+
+            def read_reference(voice, reference):
+                nonlocal reads
+                reads += 1
+                if reads == 2:
+                    self.assertEqual(
+                        len(list(catalog_root.glob(".voice-catalog-*/references/*"))),
+                        1,
+                    )
+                return read_voice_reference_bytes(voice, reference)
+
+            with patch(
+                "vntts.pregeneration_voices.read_voice_reference_bytes",
+                side_effect=read_reference,
+            ):
+                manifest = _materialize_voice_catalog(jobs, job, registry)
+
+            self.assertEqual(reads, 3)
+            self.assertEqual(
+                len(CharacterVoiceRegistry.from_file(manifest).unique_voices()), 3
+            )
+
     def test_planning_persists_one_automatic_voice_binding(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
