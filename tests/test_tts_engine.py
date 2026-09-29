@@ -604,6 +604,22 @@ class TTSEngineTest(unittest.TestCase):
         self.assertAlmostEqual(outcome.first_audio_ms, 5.0)
         self.assertAlmostEqual(outcome.playback_ms, 400.0)
 
+    def test_playback_failure_keeps_first_successful_write_time(self):
+        audio_output = FakeAudioOutput()
+        stream = FakeOutputStream(audio_output)
+        stream.write = Mock(side_effect=[False, RuntimeError("second block failed")])
+        audio_output.OutputStream = Mock(return_value=stream)
+        clock = iter((1.0, 1.01, 1.02)).__next__
+        engine, _, _ = self.create_engine(audio_output=audio_output, clock=clock)
+
+        outcome = engine.play_prepared(
+            PreparedPlayback(np.zeros(2401), None, None, None, "test")
+        )
+
+        self.assertIs(outcome.status, PlaybackStatus.FAILED)
+        self.assertAlmostEqual(outcome.first_audio_ms, 10.0)
+        self.assertEqual(stream.write.call_count, 2)
+
     def test_has_speaker_checks_model_and_newly_cached_voices(self):
         engine, _, _ = self.create_engine(
             is_multi_speaker=True,

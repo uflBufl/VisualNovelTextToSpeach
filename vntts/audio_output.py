@@ -496,6 +496,7 @@ class SynchronousPcmPlaybackMixin:
                     prepared,
                     PlaybackStatus.FAILED,
                     (self.clock() - started) * 1000,
+                    first_audio_ms=first_audio_ms,
                     error=str(error),
                     error_type=type(error),
                 )
