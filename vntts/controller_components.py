@@ -86,7 +86,6 @@ class _TypedPlaybackBackend(Protocol):
 @runtime_checkable
 class _LiveVoiceRouter(_TypedPlaybackBackend, Protocol):
     registry: CharacterVoiceRegistry
-    narrator_voice: CharacterVoice | None
     name: str
     capabilities: SpeechBackendCapabilities
 
@@ -140,23 +139,31 @@ def _is_voice_engine(value: object) -> TypeGuard[VoiceEngine]:
 
 
 def _is_live_voice_router(value: object) -> TypeGuard[_LiveVoiceRouter]:
-    return value is not None and all(
-        callable(getattr(value, name, None))
-        for name in (
-            "prepare_playback",
-            "play_prepared",
-            "stop",
-            "warm_up",
-            "set_volume",
-            "set_speed",
+    return (
+        value is not None
+        and all(hasattr(value, name) for name in ("registry", "name", "capabilities"))
+        and all(
+            callable(getattr(value, name, None))
+            for name in (
+                "prepare_playback",
+                "play_prepared",
+                "stop",
+                "warm_up",
+                "set_volume",
+                "set_speed",
+            )
         )
     )
 
 
 def _is_xtts_voice_router(value: object) -> TypeGuard[_XTTSVoiceRouter]:
-    return value is not None and all(
-        callable(getattr(value, name, None))
-        for name in ("prepare_playback", "play_prepared", "warm_up")
+    return (
+        value is not None
+        and all(hasattr(value, name) for name in ("tts", "registry", "narrator_voice"))
+        and all(
+            callable(getattr(value, name, None))
+            for name in ("prepare_playback", "play_prepared", "warm_up")
+        )
     )
 
 

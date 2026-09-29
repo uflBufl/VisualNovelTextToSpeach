@@ -167,7 +167,6 @@ class _Executor(Protocol):
 
 class _VoiceRouter(Protocol):
     registry: CharacterVoiceRegistry
-    narrator_voice: CharacterVoice | None
 
     def warm_up(self, *, progress: Callable[[int, int, str], None]) -> int: ...
 
@@ -1071,7 +1070,7 @@ class AppController:
             )
             voice_router.conditionals.pop("narrator", None)
         else:
-            voice_router.narrator_voice = voice
+            setattr(voice_router, "narrator_voice", voice)
 
     def _clear_voice_runtime_cache(self) -> None:
         clear_runtime_cache = getattr(self.voice_router, "clear_runtime_cache", None)

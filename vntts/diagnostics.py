@@ -6,12 +6,11 @@ from typing import Protocol
 
 from PIL import Image
 
-from vntts.voices import CharacterVoice, CharacterVoiceRegistry, is_narrator
+from vntts.voices import CharacterVoiceRegistry, is_narrator
 
 
 class VoiceRoutingSnapshot(Protocol):
     registry: CharacterVoiceRegistry
-    narrator_voice: CharacterVoice | None
 
 
 @dataclass(frozen=True)

@@ -18,6 +18,7 @@ from vntts_artifacts.hashing import text_sha256
 
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.controller import PreparedLiveChunkRoutes, SequenceEventLease
+from vntts.controller_components import _is_live_voice_router, _is_xtts_voice_router
 from vntts.diagnostics import DiagnosticSnapshot
 from vntts.generated_audio import (
     AudioRouteTrace,
@@ -205,6 +206,38 @@ def stub_live_sequence_plan(*lines):
 
 
 class MainTest(unittest.TestCase):
+    def test_live_voice_router_guard_requires_backend_fields(self):
+        backend = SimpleNamespace(
+            **{
+                name: Mock()
+                for name in (
+                    "prepare_playback",
+                    "play_prepared",
+                    "stop",
+                    "warm_up",
+                    "set_volume",
+                    "set_speed",
+                )
+            }
+        )
+
+        self.assertFalse(_is_live_voice_router(backend))
+        backend.registry = Mock()
+        backend.name = "test-live"
+        backend.capabilities = SpeechBackendCapabilities(True, False, True)
+        self.assertTrue(_is_live_voice_router(backend))
+
+    def test_xtts_voice_router_guard_requires_backend_fields(self):
+        backend = SimpleNamespace(
+            prepare_playback=Mock(), play_prepared=Mock(), warm_up=Mock()
+        )
+
+        self.assertFalse(_is_xtts_voice_router(backend))
+        backend.tts = Mock()
+        backend.registry = Mock()
+        backend.narrator_voice = None
+        self.assertTrue(_is_xtts_voice_router(backend))
+
     def test_dialog_fingerprint_changes_when_only_the_text_changes(self):
         first = Image.new("RGB", (1200, 240), "#202020")
         second = first.copy()
