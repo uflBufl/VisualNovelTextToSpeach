@@ -216,9 +216,11 @@ def _candidate_directories(root: Path) -> tuple[Path, ...] | None:
 def _protected_candidates(root: Path, paths: Iterable[str | Path]) -> set[str] | None:
     protected: set[str] = set()
     for value in paths:
-        candidate = _candidate_for_path(root, Path(value).expanduser())
-        if candidate is not None:
-            protected.add(candidate)
+        path = Path(value).expanduser()
+        for base in (root, None):
+            candidate = _candidate_for_path(root, path, base=base)
+            if candidate is not None:
+                protected.add(candidate)
     return protected
 
 

@@ -37,6 +37,18 @@ class VoiceCandidateCacheTest(unittest.TestCase):
         self.assertFalse(old.exists())
         self.assertTrue(current.exists())
 
+    def test_root_relative_protected_manifest_is_not_pruned(self) -> None:
+        old = self._candidate("old")
+        current = self._candidate("current")
+        manifest = current.relative_to(self.root) / "manifest.json"
+
+        removed = prune_obsolete_voice_candidate_caches(
+            self.root, self.jobs, protected_paths=(manifest,)
+        )
+
+        self.assertEqual(removed, (old.resolve(),))
+        self.assertTrue(current.exists())
+
     def test_removes_a_bounded_batch_when_cache_exceeds_previous_limit(self) -> None:
         stale = tuple(self._candidate(f"stale-{index}") for index in range(65))
 
