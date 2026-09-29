@@ -327,6 +327,7 @@ class LiveDialogReader:
         self.capture_future: Future[object] | None = None
         self.ocr_future: Future[object] | None = None
         self.active_generation = 0
+        self._explicit_generation_offset = 0
         self.suppressed_generation: int | None = None
         self.speech_futures: dict[
             Future[object | None] | Future[None], SpeechChunk
@@ -413,6 +414,7 @@ class LiveDialogReader:
             self.emergency_stopped = False
             self.stop_event = Event()
             self.active_generation = 0
+            self._explicit_generation_offset = 0
             self.suppressed_generation = None
             self.last_observation = None
             self.last_accepted_observation = None
@@ -562,7 +564,9 @@ class LiveDialogReader:
     def enqueue(self, character: str, text: str, *, line_id: str | None = None) -> bool:
         with self.state_lock:
             generation = self.active_generation + 1
-        self._set_generation(generation)
+            # Explicit lines advance the shared queue without advancing the OCR tracker.
+            self._explicit_generation_offset += 1
+            self._set_generation(generation)
         self._schedule([SpeechChunk(generation, character, text, line_id=line_id)])
         return True
 
@@ -1067,9 +1071,7 @@ class LiveDialogReader:
                     else:
                         assert character is not None
                         chunks = tracker.observe_canonical(character, text, line_id)
-                self._set_generation(tracker.generation)
-                self._schedule(chunks)
-                self._update_dialog_ready(tracker)
+                self._schedule_tracked_chunks(tracker, chunks)
                 interval = policy.observe(character, text, focused=True)
                 with self.state_lock:
                     self.next_capture_interval = interval
@@ -1078,9 +1080,7 @@ class LiveDialogReader:
                 with self.state_lock:
                     self.next_capture_interval = self.interval_seconds
 
-        self._set_generation(tracker.generation)
-        self._schedule(tracker.flush())
-        self._update_dialog_ready(tracker)
+        self._schedule_tracked_chunks(tracker, tracker.flush())
 
     def _stable_frame_route_decision(
         self,
@@ -1303,7 +1303,7 @@ class LiveDialogReader:
     def _schedule(self, chunks: Iterable[SpeechChunk]) -> None:
         for chunk in chunks:
             with self.pause_condition:
-                if self.emergency_stopped:
+                if self.emergency_stopped or chunk.generation < self.active_generation:
                     continue
                 if (
                     self.sealed_generation == chunk.generation
@@ -1520,10 +1520,26 @@ class LiveDialogReader:
             self.report_error(error)
             return False
 
-    def _update_dialog_ready(self, tracker: IncrementalDialogTracker) -> None:
+    def _schedule_tracked_chunks(
+        self, tracker: IncrementalDialogTracker, chunks: Iterable[SpeechChunk]
+    ) -> None:
         with self.state_lock:
+            offset = self._explicit_generation_offset
+            generation = tracker.generation + offset
+            self._set_generation(generation)
+        self._schedule(
+            replace(chunk, generation=chunk.generation + offset) for chunk in chunks
+        )
+        self._update_dialog_ready(tracker, generation)
+
+    def _update_dialog_ready(
+        self, tracker: IncrementalDialogTracker, generation: int
+    ) -> None:
+        with self.state_lock:
+            if generation != self.active_generation:
+                return
             self.dialog_ready_generation = (
-                tracker.generation if tracker.is_idle_complete() else None
+                generation if tracker.is_idle_complete() else None
             )
             if (
                 self.dialog_ready_generation is None

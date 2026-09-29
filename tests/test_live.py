@@ -2926,6 +2926,56 @@ class LiveDialogReaderTest(unittest.TestCase):
 
         self.assertEqual(tracker.observe.call_args_list, [call("Alice", "new")])
 
+    def test_explicit_enqueue_survives_old_ocr_generation_and_next_dialog_advances(
+        self,
+    ):
+        stop_event = Event()
+        tracker = IncrementalDialogTracker()
+        tracker.observe_canonical("Alice", "Old line.", "old")
+        speech_executor = QueuedExecutor()
+        survived_old_ocr = []
+        reader = None
+
+        def resolve_line(character, _text):
+            if character == "Alice":
+                reader.enqueue("Alice", "Selected line.", line_id="old")
+                with reader.pause_condition:
+                    reader.latest_frame = "next"
+                    reader.latest_frame_fingerprint = "next"
+                    reader.frame_version += 1
+                    reader.pause_condition.notify_all()
+                return "old"
+            survived_old_ocr.append(not speech_executor.jobs[0][0].cancelled())
+            stop_event.set()
+            return "next"
+
+        reader = self.create_reader(
+            recognize_frame=lambda frame: (
+                ("Alice", "Old line.") if frame == "old" else ("Bob", "Next line.")
+            ),
+            line_id_resolver=resolve_line,
+            tracker_factory=lambda **_options: tracker,
+            speech_executor=speech_executor,
+        )
+        reader.active_generation = 1
+        with reader.pause_condition:
+            reader.latest_frame = "old"
+            reader.latest_frame_fingerprint = "old"
+            reader.latest_frame_visible = True
+            reader.frame_version = 1
+
+        reader._run_ocr(stop_event)
+
+        self.assertEqual(reader.active_generation, 3)
+        self.assertEqual(
+            [arguments[0] for _future, _function, arguments in speech_executor.jobs],
+            [
+                SpeechChunk(2, "Alice", "Selected line.", line_id="old"),
+                SpeechChunk(3, "Bob", "Next line.", ordinal=1, line_id="next"),
+            ],
+        )
+        self.assertEqual(survived_old_ocr, [True])
+
     def test_changed_fingerprint_bypasses_stale_idle_capture_interval(self):
         stop_event = Mock()
         stop_event.is_set.side_effect = [False, False, True]
