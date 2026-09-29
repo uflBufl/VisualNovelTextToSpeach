@@ -225,6 +225,15 @@ def add_semantic_evidence(story_path):
 
 
 class PregenerationInputStoreTest(unittest.TestCase):
+    def test_semantic_evidence_rejects_invalid_utf8(self):
+        with TemporaryDirectory() as directory:
+            evidence = Path(directory) / "source-audio-semantic-evidence.json"
+            evidence.write_bytes(b"\xff")
+            with self.assertRaisesRegex(
+                SourceAudioSemanticEvidenceError, "Unable to read"
+            ):
+                load_source_audio_semantic_evidence(evidence)
+
     def test_semantic_evidence_rejects_boolean_schema_version(self):
         with TemporaryDirectory() as temporary_directory:
             story = add_semantic_evidence(

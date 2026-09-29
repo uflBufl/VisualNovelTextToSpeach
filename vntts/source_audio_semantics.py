@@ -71,7 +71,7 @@ def load_source_audio_semantic_evidence(
     evidence_path = Path(path).expanduser().resolve()
     try:
         document = json.loads(evidence_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise SourceAudioSemanticEvidenceError(
             f"Unable to read source-audio semantic evidence {evidence_path}: {error}"
         ) from error
