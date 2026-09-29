@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import math
 import os
 import platform
 import queue
@@ -1000,9 +1001,13 @@ class IsolatedSpeechBackend:
         self.process_factory = process_factory
         self.startup_timeout = float(startup_timeout)
         self.request_timeout = float(request_timeout)
-        if self.request_timeout <= 0:
+        if not math.isfinite(self.startup_timeout) or self.startup_timeout <= 0:
             raise TTSConfigurationError(
-                "Speech worker request timeout must be positive"
+                "Speech worker startup timeout must be positive and finite"
+            )
+        if not math.isfinite(self.request_timeout) or self.request_timeout <= 0:
+            raise TTSConfigurationError(
+                "Speech worker request timeout must be positive and finite"
             )
         self.startup_cancellation = startup_cancellation
         self.startup_progress = startup_progress
@@ -1308,18 +1313,29 @@ class IsolatedSpeechBackend:
                 },
             )
             chunks: list[NDArray[np.float32]] = []
+            deadline = monotonic() + self.request_timeout
             while True:
                 if self._stop_requested.is_set() or request.cancellation_requested():
                     self._terminate_process(process)
                     return self._cancelled_result(request, chunks)
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    self._terminate_process(process)
+                    raise TTSSynthesisError(
+                        f"{self.name} isolated worker did not answer 'render' "
+                        f"within {self.request_timeout:g} seconds"
+                    )
                 try:
-                    document, payload = self._next_frame(process, timeout=0.05)
+                    document, payload = self._next_frame(
+                        process, timeout=min(0.05, remaining)
+                    )
                 except queue.Empty:
                     continue
                 if document.get("request_id") not in {None, request_id}:
                     continue
                 message_type = document.get("type")
                 if message_type == "chunk":
+                    deadline = monotonic() + self.request_timeout
                     pcm: NDArray[np.float32] = (
                         np.frombuffer(payload, dtype=np.float32)
                         .copy()

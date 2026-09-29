@@ -31,6 +31,7 @@ from vntts.synthesis import (
     SynthesisCompletion,
     SynthesisDiagnostics,
     SynthesisLimits,
+    SynthesisRequest,
     SynthesisResult,
     SynthesisTiming,
 )
@@ -664,6 +665,65 @@ class SpeechWorkerTest(unittest.TestCase):
             backend.prime("Narrator")
 
         self.assertEqual(process.returncode, -15)
+
+    def test_render_timeout_resets_after_each_chunk_and_terminates_idle_worker(self):
+        with (
+            patch.object(IsolatedSpeechBackend, "_start_worker"),
+            patch(
+                "vntts.speech_worker._runtime_paths",
+                return_value=(Path("/runtime"), Path("/runtime/python"), Path("/site")),
+            ),
+        ):
+            backend = IsolatedSpeechBackend(
+                "moss-tts", CharacterVoiceRegistry(), request_timeout=1
+            )
+        process = FakeProcess(None)
+        payload = np.zeros((1, 1), dtype=np.float32).tobytes()
+        chunks = [
+            (
+                {
+                    "type": "chunk",
+                    "request_id": "request-1",
+                    "shape": [1, 1],
+                    "sample_rate": 24_000,
+                    "index": index,
+                    "elapsed_ms": 0.0,
+                },
+                payload,
+            )
+            for index in range(2)
+        ]
+        with (
+            patch.object(backend, "_ensure_worker", return_value=process),
+            patch.object(backend, "_send"),
+            patch.object(backend, "_next_frame", side_effect=(*chunks, queue.Empty())),
+            patch("vntts.speech_worker.uuid.uuid4") as uuid4,
+            patch(
+                "vntts.speech_worker.monotonic",
+                side_effect=(0, 0.4, 0.5, 1.2, 1.3, 1.8, 2.4),
+            ),
+        ):
+            uuid4.return_value.hex = "request-1"
+            rendered = backend.render(SynthesisRequest("Narrator", "Hello"))
+            self.assertEqual(next(rendered).index, 0)
+            self.assertEqual(next(rendered).index, 1)
+            with self.assertRaisesRegex(TTSSynthesisError, "did not answer 'render'"):
+                next(rendered)
+
+        self.assertEqual(process.returncode, -15)
+
+    def test_worker_rejects_nonfinite_timeouts(self):
+        for options in (
+            {"startup_timeout": float("nan")},
+            {"request_timeout": float("inf")},
+        ):
+            with self.subTest(options=options):
+                with self.assertRaisesRegex(
+                    TTSConfigurationError, "timeout must be positive and finite"
+                ):
+                    IsolatedSpeechBackend(
+                        "moss-tts", CharacterVoiceRegistry(), **options
+                    )
 
     def test_cancelled_startup_terminates_the_exact_worker(self):
         registry = CharacterVoiceRegistry()
