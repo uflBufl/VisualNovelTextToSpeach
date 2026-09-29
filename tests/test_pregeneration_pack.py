@@ -4,6 +4,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
 from unittest.mock import patch
 
 from vntts_artifacts.atomic_io import atomic_write_json
@@ -21,7 +22,7 @@ from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     write_voice_generation_queue,
 )
-from vntts_artifacts.voice_manifest import write_voice_manifest
+from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_manifest
 
 from tests.test_authoring_bulk_generation import SyntheticRenderer
 from vntts.authoring.audio_events import audio_event_plan_for_record
@@ -34,6 +35,7 @@ from vntts.authoring.bulk_generation import (
 )
 from vntts.game_pack import import_game_pack
 from vntts.generated_audio import GeneratedAudioLibrary
+from vntts.pregeneration_contract import OfflineGenerationCancelled
 from vntts.pregeneration_generation import OfflineGenerationResult
 from vntts.pregeneration_pack import (
     OfflinePackError,
@@ -42,7 +44,9 @@ from vntts.pregeneration_pack import (
     _ensure_pack_disk_space,
     _link_verified_file,
     _load_terminal_generation,
+    _portable_voice_entries,
     _stage_live_sequence,
+    _write_cumulative_routes,
     inspect_story_audio,
     load_saved_pack,
 )
@@ -807,6 +811,143 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 ],
                 original_sha256,
             )
+
+    def test_cancellation_stops_voice_copy_and_cleans_staging(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, generation_input, generation_result, _items = fixture(root)
+            references = generation_input.voice_manifest.parent / "references"
+            references.mkdir()
+            for name in ("first.wav", "second.wav"):
+                (references / name).write_bytes(name.encode())
+            write_voice_manifest(
+                generation_input.voice_manifest,
+                {
+                    "version": 2,
+                    "voices": [
+                        {
+                            "character": "Narrator",
+                            "speaker": "alba",
+                            "aliases": [],
+                            "references": [
+                                "references/first.wav",
+                                "references/second.wav",
+                            ],
+                        }
+                    ],
+                },
+            )
+            generation_input = replace(
+                generation_input,
+                voice_manifest_sha256=sha256_file(generation_input.voice_manifest),
+            )
+            cancellation = Event()
+            copied_references = []
+
+            def copy_then_cancel(source, destination):
+                _copy_file(source, destination)
+                if Path(source).suffix == ".wav":
+                    copied_references.append(Path(source).name)
+                    cancellation.set()
+
+            with (
+                patch(
+                    "vntts.pregeneration_pack._copy_file", side_effect=copy_then_cancel
+                ),
+                self.assertRaises(OfflineGenerationCancelled),
+            ):
+                OfflinePackPublisher().publish(
+                    job, generation_input, generation_result, cancel_event=cancellation
+                )
+
+            self.assertEqual(copied_references, ["first.wav"])
+            self.assertEqual(list((root / "game-packs").iterdir()), [])
+
+    def test_cancellation_stops_before_the_next_generated_route(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            _job, generation_input, generation_result, _items = fixture(root)
+            story = load_story_index_document(generation_input.story_index)
+            cancellation = Event()
+            copied = []
+
+            def copy_then_cancel(record, *_args, **_kwargs):
+                copied.append(record["audio"])
+                cancellation.set()
+                return record
+
+            with (
+                patch(
+                    "vntts.pregeneration_pack.approved_manifest_entries",
+                    return_value=[{"audio": "first.wav"}, {"audio": "second.wav"}],
+                ),
+                patch(
+                    "vntts.pregeneration_pack._portable_generated_record",
+                    side_effect=copy_then_cancel,
+                ),
+                self.assertRaises(OfflineGenerationCancelled),
+            ):
+                _write_cumulative_routes(
+                    None,
+                    story,
+                    {},
+                    generation_result,
+                    root / "generated" / "manifest.json",
+                    [],
+                    cancel_event=cancellation,
+                )
+
+            self.assertEqual(copied, ["first.wav"])
+
+    def test_cancellation_stops_cumulative_voice_copy(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            references = root / "references"
+            references.mkdir()
+            for name in ("first.wav", "second.wav"):
+                (references / name).write_bytes(name.encode())
+            manifest = root / "manifest.json"
+            write_voice_manifest(
+                manifest,
+                {
+                    "version": 2,
+                    "voices": [
+                        {
+                            "character": "Narrator",
+                            "speaker": "alba",
+                            "aliases": [],
+                            "references": [
+                                "references/first.wav",
+                                "references/second.wav",
+                            ],
+                        }
+                    ],
+                },
+            )
+            document, voices = load_voice_manifest(manifest, allow_legacy=False)
+            cancellation = Event()
+            copied = []
+
+            def copy_then_cancel(source, destination):
+                _copy_file(source, destination)
+                copied.append(Path(source).name)
+                cancellation.set()
+
+            with (
+                patch(
+                    "vntts.pregeneration_pack._copy_file", side_effect=copy_then_cancel
+                ),
+                self.assertRaises(OfflineGenerationCancelled),
+            ):
+                _portable_voice_entries(
+                    manifest,
+                    root / "staging" / "voice-manifest.json",
+                    document,
+                    voices,
+                    cancel_event=cancellation,
+                )
+
+            self.assertEqual(copied, ["first.wav"])
 
     def test_rejects_generated_wav_changed_after_terminal_validation(self):
         with TemporaryDirectory() as temporary_directory:

@@ -2,7 +2,7 @@
 
 ## Active - Offline pack publication debt pass
 
-- [ ] Check final-save cancellation inside cumulative voice and WAV copy loops so a cancellation stops before the next file, while staging remains atomic.
+- [ ] Bind `_safe_sequence_document` typed plan and raw chapter JSON to one immutable byte snapshot; an atomic replacement between the two reads can mix source provenance in a cumulative live sequence.
 - [ ] Inspect queue/pack ownership, types, design, tests, resources, and tooling across entry points and callers; rescan affected paths, run required checks, and remove this section when complete.
 
 ## Validate OpenMOSS progress on Windows

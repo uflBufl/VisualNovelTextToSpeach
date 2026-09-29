@@ -477,6 +477,7 @@ class OfflinePackPublisher:
             with staged_directory(
                 destination.parent, prefix=f".{destination.name}."
             ) as staging:
+                _raise_if_cancelled(cancel_event)
                 story_copy = staging / "story" / "story-index.jsonl"
                 voice_copy = staging / "voices" / "voice-manifest.json"
                 generated_copy = staging / "generated" / "manifest.json"
@@ -500,6 +501,7 @@ class OfflinePackPublisher:
                         voice_copy,
                         voice_document,
                         voices,
+                        cancel_event=cancel_event,
                     )
                     published_story = story
                 else:
@@ -517,6 +519,7 @@ class OfflinePackPublisher:
                         voice_document,
                         voices,
                         voice_copy,
+                        cancel_event=cancel_event,
                     )
                 _verify_prepared_inputs(generation_input)
                 staged_sequence = _stage_live_sequence(
@@ -539,7 +542,9 @@ class OfflinePackPublisher:
                     generation_result,
                     generated_copy,
                     current_omissions,
+                    cancel_event=cancel_event,
                 )
+                _raise_if_cancelled(cancel_event)
                 write_generated_audio_manifest(
                     generated_copy,
                     {
@@ -1121,6 +1126,8 @@ def _write_cumulative_voices(
     current_document: JsonObject,
     current_voices: tuple[VoiceManifestEntry, ...],
     target_manifest: Path,
+    *,
+    cancel_event: Cancellation | None,
 ) -> None:
     base_document, base_voices = load_voice_manifest(
         base.voice_manifest,
@@ -1131,13 +1138,16 @@ def _write_cumulative_voices(
         target_manifest,
         base_document,
         base_voices,
+        cancel_event=cancel_event,
     )
     for candidate in _portable_voice_entries(
         current_manifest,
         target_manifest,
         current_document,
         current_voices,
+        cancel_event=cancel_event,
     ):
+        _raise_if_cancelled(cancel_event)
         names = {normalize_character_name(value) for value in _voice_names(candidate)}
         merged = [
             existing
@@ -1168,18 +1178,22 @@ def _portable_voice_entries(
     target_manifest: Path,
     document: JsonObject,
     voices: tuple[VoiceManifestEntry, ...],
+    *,
+    cancel_event: Cancellation | None,
 ) -> JsonRecords:
     raw_voices = document.get("voices")
     if not isinstance(raw_voices, list) or len(raw_voices) != len(voices):
         raise OfflinePackError("Offline voice manifest changed")
     result: JsonRecords = []
     for raw, voice in zip(raw_voices, voices, strict=True):
+        _raise_if_cancelled(cancel_event)
         if tuple(raw.get("references") or ()) != voice.references:
             raise OfflinePackError("Offline voice references changed")
         candidate = copy.deepcopy(raw)
         candidate.pop("reference", None)
         candidate["references"] = []
         for configured in voice.references:
+            _raise_if_cancelled(cancel_event)
             relative = _safe_relative(configured, "Voice reference")
             source = source_manifest.parent / Path(*relative.parts)
             digest = sha256_file(source)
@@ -1197,6 +1211,8 @@ def _write_cumulative_routes(
     generation_result: OfflineGenerationResult,
     generated_copy: Path,
     current_omissions: JsonRecords,
+    *,
+    cancel_event: Cancellation | None,
 ) -> tuple[JsonRecords, JsonRecords, JsonRecords]:
     current_line_ids = {record.line_id for record in current_story.records}
     records: JsonRecords = []
@@ -1207,6 +1223,7 @@ def _write_cumulative_routes(
             raise OfflinePackError("Active self-service pack has no audio routes")
         base_generated = load_generated_audio_document(base.generated_audio_manifest)
         for record in base_generated.records:
+            _raise_if_cancelled(cancel_event)
             if record.line_id not in current_line_ids:
                 records.append(
                     _portable_generated_record(
@@ -1237,6 +1254,7 @@ def _write_cumulative_routes(
     for record in approved_manifest_entries(
         state, generation_result.output, validate_files=False
     ):
+        _raise_if_cancelled(cancel_event)
         relative = _safe_relative(record["audio"], "Generated WAV")
         records.append(
             _portable_generated_record(
@@ -1371,14 +1389,18 @@ def _copy_voice_references(
     target_manifest: Path,
     document: JsonObject,
     voices: tuple[VoiceManifestEntry, ...],
+    *,
+    cancel_event: Cancellation | None,
 ) -> None:
     raw_voices = document.get("voices")
     if not isinstance(raw_voices, list) or len(raw_voices) != len(voices):
         raise OfflinePackError("Offline voice manifest changed")
     for raw, voice in zip(raw_voices, voices, strict=True):
+        _raise_if_cancelled(cancel_event)
         if tuple(raw.get("references") or ()) != voice.references:
             raise OfflinePackError("Offline voice references changed")
         for configured in voice.references:
+            _raise_if_cancelled(cancel_event)
             relative = _safe_relative(configured, "Voice reference")
             _copy_file(
                 source_manifest.parent / Path(*relative.parts),
