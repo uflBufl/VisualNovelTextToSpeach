@@ -19,6 +19,7 @@ from vntts.speech_worker import (
     RetainedWorkerRuntime,
     _module_health,
     _read_frame,
+    _registry_from_document,
     _runtime_paths,
     _serialize_registry,
     _write_frame,
@@ -35,7 +36,7 @@ from vntts.synthesis import (
     SynthesisResult,
     SynthesisTiming,
 )
-from vntts.voices import CharacterVoiceRegistry
+from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 
 class FakeWorkerBackend:
@@ -143,6 +144,28 @@ class FakeProcess:
 
 
 class SpeechWorkerTest(unittest.TestCase):
+    def test_registry_serializes_voice_and_assignment_with_same_fields(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            voice = CharacterVoice(
+                "Narrator",
+                "Narrator",
+                aliases=("Guide",),
+                references=(root / "reference.wav",),
+                reference_root=root,
+                reference_transcript="Original words.",
+            )
+            registry = CharacterVoiceRegistry((voice,))
+            registry.assignments["hero"] = voice
+
+            document = _serialize_registry(registry)
+            self.assertEqual(document["voices"][0], document["assignments"]["hero"])
+            restored = _registry_from_document(document)
+            self.assertEqual(
+                restored.assignments["hero"].reference_transcript, "Original words."
+            )
+            self.assertTrue(restored.assignments["hero"].reference_root.samefile(root))
+
     def test_forced_worker_shutdown_stays_bounded_when_wait_never_finishes(self):
         process = MagicMock()
         process.poll.return_value = None

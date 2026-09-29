@@ -612,40 +612,27 @@ def probe_speech_runtime(
     return health
 
 
+def _serialize_voice(voice: CharacterVoice) -> VoiceDocument:
+    return {
+        "character": voice.character,
+        "speaker": voice.speaker,
+        "aliases": list(voice.aliases),
+        "references": [str(value) for value in voice.references],
+        "reference_transcript": voice.reference_transcript,
+        "reference_root": (
+            None if voice.reference_root is None else str(voice.reference_root)
+        ),
+    }
+
+
 def _serialize_registry(registry: CharacterVoiceRegistry) -> RegistryDocument:
-    voices: list[VoiceDocument] = []
-    for voice in registry.unique_voices():
-        voices.append(
-            {
-                "character": voice.character,
-                "speaker": voice.speaker,
-                "aliases": list(voice.aliases),
-                "references": [str(value) for value in voice.references],
-                "reference_transcript": voice.reference_transcript,
-                "reference_root": (
-                    None if voice.reference_root is None else str(voice.reference_root)
-                ),
-            }
-        )
-    assignments: dict[str, VoiceDocument | None] = {}
-    for character, assignment_voice in registry.assignments.items():
-        assignments[character] = (
-            None
-            if assignment_voice is None
-            else {
-                "character": assignment_voice.character,
-                "speaker": assignment_voice.speaker,
-                "aliases": list(assignment_voice.aliases),
-                "references": [str(value) for value in assignment_voice.references],
-                "reference_transcript": assignment_voice.reference_transcript,
-                "reference_root": (
-                    None
-                    if assignment_voice.reference_root is None
-                    else str(assignment_voice.reference_root)
-                ),
-            }
-        )
-    return {"voices": voices, "assignments": assignments}
+    return {
+        "voices": [_serialize_voice(voice) for voice in registry.unique_voices()],
+        "assignments": {
+            character: None if voice is None else _serialize_voice(voice)
+            for character, voice in registry.assignments.items()
+        },
+    }
 
 
 def _voice_from_document(value: VoiceDocument) -> CharacterVoice:
