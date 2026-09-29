@@ -234,6 +234,51 @@ class PregenerationInputStoreTest(unittest.TestCase):
             ):
                 load_source_audio_semantic_evidence(evidence)
 
+    def test_semantic_evidence_hash_matches_the_decoded_snapshot(self):
+        with TemporaryDirectory() as directory:
+            story = add_semantic_evidence(write_content(Path(directory) / "content"))
+            evidence_path = story.parent / "source-audio-semantic-evidence.json"
+            original = json.loads(evidence_path.read_text(encoding="utf-8"))
+            replacement = story.parent / "replacement.json"
+            changed = dict(original, generated_at="2026-09-01T00:00:00+00:00")
+            atomic_write_json(replacement, changed, sort_keys=True)
+            story_document = load_story_index_document(story)
+            metadata = dict(story_document.metadata)
+            metadata["source_audio_semantics"] = dict(
+                metadata["source_audio_semantics"],
+                evidence_sha256=sha256_file(replacement),
+            )
+            write_story_index_document(
+                story,
+                metadata,
+                [record.to_record() for record in story_document.records],
+            )
+            original_json_loads = json.loads
+
+            def replace_after_decode(value, *args, **kwargs):
+                decoded = original_json_loads(value, *args, **kwargs)
+                if replacement.exists():
+                    replacement.replace(evidence_path)
+                return decoded
+
+            with (
+                patch(
+                    "vntts.source_audio_semantics.json.loads",
+                    side_effect=replace_after_decode,
+                ),
+                self.assertRaisesRegex(
+                    SourceAudioSemanticEvidenceError, "binding changed"
+                ),
+            ):
+                load_source_audio_semantic_evidence(evidence_path, story)
+
+            self.assertEqual(
+                load_source_audio_semantic_evidence(evidence_path, story)[
+                    "generated_at"
+                ],
+                changed["generated_at"],
+            )
+
     def test_semantic_evidence_rejects_boolean_schema_version(self):
         with TemporaryDirectory() as temporary_directory:
             story = add_semantic_evidence(

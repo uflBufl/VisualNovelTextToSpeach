@@ -1,10 +1,5 @@
 # TODO
 
-## Active - Offline pack publication debt pass
-
-- [ ] Validate source-audio evidence content and its story-bound SHA-256 from the same bytes; a replacement between JSON loading and `sha256_file` can accept evidence that the story never bound.
-- [ ] Inspect queue/pack ownership, types, design, tests, resources, and tooling across entry points and callers; rescan affected paths, run required checks, and remove this section when complete.
-
 ## Validate OpenMOSS progress on Windows
 
 - [ ] During a sustained offline story preparation, confirm progress updates without frequent reads of `generation-state.json`, cancellation and Continue retain completed lines, and no state replacement access error recurs.

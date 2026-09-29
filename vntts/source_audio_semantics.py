@@ -70,14 +70,19 @@ def load_source_audio_semantic_evidence(
 ) -> SourceAudioSemanticEvidence:
     evidence_path = Path(path).expanduser().resolve()
     try:
-        document = json.loads(evidence_path.read_text(encoding="utf-8"))
+        payload = evidence_path.read_bytes()
+        document = json.loads(payload.decode("utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise SourceAudioSemanticEvidenceError(
             f"Unable to read source-audio semantic evidence {evidence_path}: {error}"
         ) from error
     if story_index_path is None:
         return validate_source_audio_semantic_evidence(document)
-    return validate_story_semantic_evidence(story_index_path, evidence_path, document)
+    return validate_story_semantic_evidence(
+        story_index_path,
+        hashlib.sha256(payload).hexdigest(),
+        document,
+    )
 
 
 def validate_source_audio_semantic_evidence(
@@ -185,7 +190,7 @@ def validate_source_audio_semantic_evidence(
 
 def validate_story_semantic_evidence(
     story_index: str | Path | StoryIndexDocument,
-    evidence_path: str | Path,
+    evidence_sha256: str,
     evidence: object,
 ) -> SourceAudioSemanticEvidence:
     evidence = validate_source_audio_semantic_evidence(evidence)
@@ -203,7 +208,7 @@ def validate_story_semantic_evidence(
         )
     if (
         metadata.get("evidence_id") != evidence["evidence_id"]
-        or metadata.get("evidence_sha256") != sha256_file(evidence_path)
+        or metadata.get("evidence_sha256") != evidence_sha256
         or metadata.get("method") != SEMANTIC_EVIDENCE_METHOD
     ):
         raise SourceAudioSemanticEvidenceError(
