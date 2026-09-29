@@ -770,7 +770,7 @@ class LiveDialogReader:
                     self.latest_render_owner = None
                     self.latest_render_changed_at = None
                 interval = policy.observe(None, None, focused=False)
-                self.capture_state_changed(False, interval)
+                self._notify_capture_state(False, interval)
                 stop_event.wait(interval)
                 continue
             try:
@@ -838,8 +838,14 @@ class LiveDialogReader:
             except Exception as error:
                 self.report_error(error)
                 interval = self.interval_seconds
-            self.capture_state_changed(True, interval)
+            self._notify_capture_state(True, interval)
             stop_event.wait(interval)
+
+    def _notify_capture_state(self, focused: bool, interval: float) -> None:
+        try:
+            self.capture_state_changed(focused, interval)
+        except Exception as error:
+            self.report_error(error)
 
     def _run_ocr(self, stop_event: Event) -> None:
         tracker = self.tracker_factory(**self.tracker_options)

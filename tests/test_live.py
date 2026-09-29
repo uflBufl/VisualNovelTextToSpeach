@@ -2749,6 +2749,26 @@ class LiveDialogReaderTest(unittest.TestCase):
         capture_state_changed.assert_called_once_with(False, 0.0025)
         stop_event.wait.assert_called_once_with(0.0025)
 
+    def test_capture_state_callback_failure_does_not_stop_capture(self):
+        stop_event = Mock()
+        stop_event.is_set.side_effect = [False, False, True]
+        failure = RuntimeError("capture status failed")
+        capture_state_changed = Mock(side_effect=[failure, None])
+        capture_frame = Mock(return_value="next frame")
+        report_error = Mock()
+        reader = self.create_reader(
+            capture_frame=capture_frame,
+            capture_state_changed=capture_state_changed,
+            focus_probe=Mock(side_effect=[False, True]),
+            report_error=report_error,
+        )
+
+        reader._run_capture(stop_event)
+
+        capture_frame.assert_called_once_with()
+        self.assertEqual(capture_state_changed.call_count, 2)
+        report_error.assert_called_once_with(failure)
+
     def test_capture_continues_while_speech_is_active(self):
         stop_event = Mock()
         stop_event.is_set.side_effect = [False, True]
