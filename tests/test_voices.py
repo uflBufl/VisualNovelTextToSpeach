@@ -340,8 +340,6 @@ class CharacterVoiceRegistryTest(unittest.TestCase):
                 registry.resolve("Lucy")
             with self.assertRaisesRegex(VoiceManifestError, "symlink"):
                 registry.resolve_source("character:lucy")
-            with self.assertRaisesRegex(VoiceManifestError, "symlink"):
-                registry.resolve_closest("Lucy")
 
     def test_duplicate_normalized_names_are_rejected(self):
         with self.assertRaisesRegex(VoiceManifestError, "Duplicate voice"):
@@ -388,28 +386,6 @@ class CharacterVoiceRegistryTest(unittest.TestCase):
         registry.set_assignment("Marcus", "default")
 
         self.assertIsNone(registry.resolve("Marcus"))
-
-    def test_default_assignment_disables_closest_manifest_voice(self):
-        registry = CharacterVoiceRegistry(
-            [CharacterVoice("Marcus", "local-marcus", Path("marcus.wav"))]
-        )
-
-        registry.set_assignment("Marcus", "default")
-
-        self.assertIsNone(registry.resolve_closest("Marcus"))
-
-    def test_incompatible_preset_assignment_can_be_ignored(self):
-        warnings = []
-        registry = CharacterVoiceRegistry()
-
-        registry.apply_assignments(
-            {"Marcus": "preset:alba"},
-            warn=warnings.append,
-            preset_validator=lambda _speaker: False,
-        )
-
-        self.assertNotIn("marcus", registry.assignments)
-        self.assertIn("not available", warnings[0])
 
     def test_discovers_a_complete_default_voice_pack(self):
         with TemporaryDirectory() as temporary_directory:

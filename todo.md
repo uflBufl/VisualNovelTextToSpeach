@@ -1,5 +1,12 @@
 # TODO
 
+## Active - Voice routing debt pass
+
+- [ ] Inspect correctness and trust boundaries, including manifest reference suffix handling and persisted preset bindings; reproduce or disprove the two prior audit leads.
+- [ ] Validate saved Pocket preset bindings at live startup and offline voice planning. An unknown `preset:` currently reaches the Pocket backend or fails late during queue materialization. Preserve valid built-in presets and gated reference voices; add both entry-point regressions and run changed tests.
+- [ ] Inspect type/data contracts, execution/resources/performance, tests/observability, and dependencies/tooling for the selected boundary; qualify every candidate, fix confirmed debt, and run project checks.
+- [ ] Rescan affected paths and remove this section only when all applicable category passes and verification gates are complete.
+
 ## Validate OpenMOSS progress on Windows
 
 - [ ] During a sustained offline story preparation, confirm progress updates without frequent reads of `generation-state.json`, cancellation and Continue retain completed lines, and no state replacement access error recurs.

@@ -1,7 +1,7 @@
 import hashlib
 import os
 import stat
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -58,20 +58,6 @@ class VoiceChoice:
     id: str
     label: str
     description: str = ""
-
-
-def find_voice_assignment(
-    assignments: Mapping[str, str], character: str | None
-) -> str | None:
-    target = normalize_character_name(synthesis_character(character))
-    return next(
-        (
-            source_id
-            for configured_character, source_id in assignments.items()
-            if normalize_character_name(configured_character) == target
-        ),
-        None,
-    )
 
 
 @dataclass(frozen=True)
@@ -179,27 +165,6 @@ class CharacterVoiceRegistry:
         self.assignments[normalized_name] = voice
         self.assignment_names[normalized_name] = character.strip()
 
-    def apply_assignments(
-        self,
-        assignments: Mapping[str, str],
-        *,
-        warn: Callable[[str], object] | None = None,
-        preset_validator: Callable[[str], bool] | None = None,
-    ) -> None:
-        warn = warn or (lambda _message: None)
-        for character, source_id in assignments.items():
-            if (
-                source_id.startswith("preset:")
-                and preset_validator is not None
-                and not preset_validator(source_id.removeprefix("preset:"))
-            ):
-                warn(f"Voice choice {source_id!r} is not available for {character!r}")
-                continue
-            try:
-                self.set_assignment(character, source_id)
-            except VoiceManifestError as error:
-                warn(str(error))
-
     def unique_voices(self) -> tuple[CharacterVoice, ...]:
         return tuple({id(voice): voice for voice in self.voices.values()}.values())
 
@@ -216,22 +181,6 @@ class CharacterVoiceRegistry:
                 self.unique_voices(), key=lambda item: item.character.casefold()
             )
         )
-
-    def resolve_closest(
-        self, character: str | None, *, minimum_similarity: float = 0.78
-    ) -> CharacterVoice | None:
-        normalized_name = normalize_character_name(synthesis_character(character))
-        if normalized_name in self.assignments:
-            voice = self.assignments[normalized_name]
-            if voice is not None:
-                _validate_voice_reference_ownership(voice)
-            return voice
-        closest_name = self._closest_voice_name(normalized_name, minimum_similarity)
-        if closest_name is None:
-            return None
-        voice = self.voices[closest_name]
-        _validate_voice_reference_ownership(voice)
-        return voice
 
     def resolve_closest_character(
         self, character: str | None, *, minimum_similarity: float = 0.78
