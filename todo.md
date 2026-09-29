@@ -10,8 +10,7 @@
 
 ## Active - Qwen voice cloning on Windows
 
-- [ ] Resolve the official `qwen-tts==0.1.1` dependency audit findings without silently suppressing known vulnerabilities.
-- [ ] Render and time one Matilda reference on the RTX 2070 Super 8 GB. Check that the UI reports CUDA and the correct GPU.
+- [ ] On the RTX 2070 Super 8 GB, render the same Matilda reference and text with Qwen and MOSS. Listen for voice similarity, intelligibility, and artifacts; compare generation time and memory use. Check that Qwen reports CUDA and the correct GPU.
 
 ## Active - Finish repeated UI scanability rollout
 
