@@ -271,7 +271,7 @@ def project_source_audio_semantics(
             continue
         projected = deepcopy(entry)
         projected["source_line_ids"] = sorted(
-            set(_text_values(projected.get("source_line_ids"))) & selected_line_ids
+            set(projected["source_line_ids"]) & selected_line_ids
         )
         if not projected["source_line_ids"]:
             raise SourceAudioSemanticEvidenceError(
@@ -316,14 +316,6 @@ def project_source_audio_semantics(
         ),
     }
     return projected_metadata, projected_records, destination
-
-
-def _text_values(value: object) -> tuple[str, ...]:
-    if not isinstance(value, (list, tuple)) or not all(
-        isinstance(item, str) and item for item in value
-    ):
-        raise SourceAudioSemanticEvidenceError("Source evidence line IDs are invalid")
-    return tuple(value)
 
 
 def _require_sha256(value: object, label: str) -> str:
