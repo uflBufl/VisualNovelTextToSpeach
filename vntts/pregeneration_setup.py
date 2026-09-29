@@ -27,7 +27,8 @@ from vntts_artifacts.voice_generation_queue import (
 )
 
 from vntts.application_directories import get_local_data_directory
-from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
+from vntts.authoring.generation_lease import BulkGenerationError
+from vntts.authoring.generation_state import load_generation_state
 from vntts.chapter_voice_preload import (
     _has_authoritative_source_audio,
     _validated_source_audio_line_ids,

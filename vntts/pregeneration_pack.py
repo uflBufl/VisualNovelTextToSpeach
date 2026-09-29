@@ -47,12 +47,13 @@ from vntts_artifacts.voice_manifest import (
 )
 
 from vntts.authoring.audio_events import audio_event_plan_for_record
-from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
+from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_manifest import approved_manifest_entries
 from vntts.authoring.generation_state import (
     AUDIO_EVENT_OMISSION_REASON,
     AUDIO_EVENT_OMISSION_SCHEMA,
     AUDIO_EVENT_OMISSION_VERSION,
+    load_generation_state,
 )
 from vntts.authoring.publication import (
     AtomicPublicationError,

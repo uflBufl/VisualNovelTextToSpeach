@@ -54,6 +54,7 @@ from vntts.authoring.terminal_conflict_records import (
     TerminalConflictRecordError,
     validate_terminal_conflict_item_provenance,
 )
+from vntts.authoring.workspace_foundation import load_json_object
 from vntts.document_identity import is_lowercase_sha256
 from vntts.synthesis import SynthesisCompletion
 from vntts.voices import synthesis_character_for_line
@@ -142,6 +143,27 @@ def load_stable_generation_queue(
     except (OSError, VoiceGenerationQueueError) as error:
         raise BulkGenerationError(str(error)) from error
     return queue, digest
+
+
+def load_generation_state(
+    state_path: str | Path, queue_path: str | Path | None = None
+) -> StateObject:
+    """Load either VNTTS-owned or preserved legacy state and verify its files."""
+    state_path = Path(state_path).expanduser().resolve()
+    state = load_json_object(
+        state_path,
+        "generation state",
+        error_type=BulkGenerationError,
+        object_label="Generation state",
+    )
+    queue = None
+    stored_queue_sha256 = state.get("queue_sha256")
+    queue_sha256 = stored_queue_sha256 if isinstance(stored_queue_sha256, str) else None
+    if queue_path is not None:
+        queue_path = Path(queue_path).expanduser().resolve()
+        queue, queue_sha256 = load_stable_generation_queue(queue_path)
+    _validate_state_document(state, state_path.parent, queue, queue_sha256)
+    return state
 
 
 def _validate_live_fallback_evidence(
@@ -2734,6 +2756,7 @@ __all__ = [
     "contained_state_path",
     "control_directory_digest",
     "live_fallback_decision",
+    "load_generation_state",
     "load_stable_generation_queue",
     "provider_attempts",
     "reviewed_waveform_publication_queue_ids",

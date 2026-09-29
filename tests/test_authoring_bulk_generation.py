@@ -211,6 +211,58 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             **options,
         )
 
+    def test_state_loader_uses_queue_bytes_from_one_snapshot(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue_path = write_queue(root / "queue.jsonl", [item])
+            result = self.run_generation(
+                queue_path, root / "output", SyntheticRenderer()
+            )
+            original_load = bulk_module.VoiceGenerationQueue.load
+
+            def replace_queue_after_parse(path):
+                parsed = original_load(path)
+                write_queue(queue_path, [{**item, "speaker": "Other"}])
+                return parsed
+
+            with patch.object(
+                bulk_module.VoiceGenerationQueue,
+                "load",
+                side_effect=replace_queue_after_parse,
+            ):
+                state = load_generation_state(result.state, queue_path)
+
+            self.assertNotEqual(state["queue_sha256"], sha256_file(queue_path))
+            self.assertIn(item["queue_id"], state["items"])
+
+    def test_failure_report_rejects_queue_change_after_state_validation(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue_path = write_queue(root / "queue.jsonl", [item])
+            result = self.run_generation(
+                queue_path,
+                root / "output",
+                SyntheticRenderer([SynthesisCompletion.LIMITED]),
+            )
+            original_load = bulk_module.load_generation_state
+
+            def replace_queue_after_validation(*args):
+                state = original_load(*args)
+                write_queue(queue_path, [{**item, "speaker": "Other"}])
+                return state
+
+            with patch.object(
+                bulk_module,
+                "load_generation_state",
+                side_effect=replace_queue_after_validation,
+            ):
+                with self.assertRaisesRegex(
+                    BulkGenerationError, "Generation queue changed"
+                ):
+                    generation_failure_report(result.state, queue_path)
+
     def test_progress_callback_follows_each_state_commit(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

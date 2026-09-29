@@ -26,7 +26,6 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.text_utils import slugify
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
-    VoiceGenerationQueueError,
     VoiceGenerationQueueItem,
 )
 from vntts_artifacts.voice_manifest import (
@@ -134,6 +133,9 @@ from vntts.authoring.generation_state import (
 )
 from vntts.authoring.generation_state import (
     live_fallback_decision as _live_fallback_decision,
+)
+from vntts.authoring.generation_state import (
+    load_generation_state as load_generation_state,
 )
 from vntts.authoring.generation_state import (
     load_stable_generation_queue,
@@ -1213,26 +1215,6 @@ def _assert_fallback_narrator_has_reference(
         )
 
 
-def load_generation_state(
-    state_path: str | Path, queue_path: str | Path | None = None
-) -> JsonDocument:
-    """Load either VNTTS-owned or preserved legacy state and verify its files."""
-    state_path = Path(state_path).expanduser().resolve()
-    state = _load_json(state_path, "generation state")
-    queue = None
-    stored_queue_sha256 = state.get("queue_sha256")
-    queue_sha256 = stored_queue_sha256 if isinstance(stored_queue_sha256, str) else None
-    if queue_path is not None:
-        queue_path = Path(queue_path).expanduser().resolve()
-        try:
-            queue = VoiceGenerationQueue.load(queue_path)
-        except VoiceGenerationQueueError as error:
-            raise BulkGenerationError(str(error)) from error
-        queue_sha256 = sha256_file(queue_path)
-    _validate_state_document(state, state_path.parent, queue, queue_sha256)
-    return state
-
-
 def generation_failure_report(
     state_path: str | Path, queue_path: str | Path
 ) -> _GenerationFailureReport:
@@ -1240,10 +1222,11 @@ def generation_failure_report(
     state_path = Path(state_path).expanduser().resolve()
     queue_path = Path(queue_path).expanduser().resolve()
     state = load_generation_state(state_path, queue_path)
-    try:
-        queue = VoiceGenerationQueue.load(queue_path)
-    except VoiceGenerationQueueError as error:
-        raise BulkGenerationError(str(error)) from error
+    queue, queue_sha256 = load_stable_generation_queue(queue_path)
+    if queue_sha256 != state["queue_sha256"]:
+        raise BulkGenerationError(
+            "Generation queue changed; use a new output directory"
+        )
     queue_by_id = {item.queue_id: item for item in queue.items}
     records: list[_FailureReportRecord] = []
     for queue_id, result in _state_items(state).items():

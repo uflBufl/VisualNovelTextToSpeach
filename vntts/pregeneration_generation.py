@@ -18,8 +18,9 @@ from typing import Protocol
 
 from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
 
-from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
+from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_manifest import RUNTIME_PROGRESS_MANIFEST_NAME
+from vntts.authoring.generation_state import load_generation_state
 from vntts.chapter_voice_preload import (
     _has_authoritative_source_audio,
     _validated_source_audio_line_ids,
