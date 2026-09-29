@@ -14,6 +14,7 @@ from vntts.live import (
     AdaptiveCapturePolicy,
     AdaptiveSpeechBackpressure,
     AutoAdvanceAttempt,
+    CanonicalDialogRoute,
     IncrementalDialogTracker,
     LiveDialogReader,
     SilentDialogRoute,
@@ -2676,6 +2677,19 @@ class LiveDialogReaderTest(unittest.TestCase):
         self.assertEqual(first, ("Canonical", "Complete sentence."))
         self.assertEqual(repeated, first)
         dialog_observed.assert_called_once_with("OCR name", "Complete sentnce.")
+
+    def test_observation_callback_preserves_canonical_route(self):
+        canonical = CanonicalDialogRoute("Bea", "Canonical line.")
+        dialog_observed = Mock(return_value=canonical)
+        reader = self.create_reader(dialog_observed=dialog_observed)
+
+        self.assertEqual(
+            reader._report_observation("OCR name", "Wrong line."), canonical
+        )
+        self.assertEqual(
+            reader._report_observation("OCR name", "Wrong line."), canonical
+        )
+        dialog_observed.assert_called_once_with("OCR name", "Wrong line.")
 
     def test_rejected_observation_has_no_tracker_identity(self):
         reader = self.create_reader(dialog_observed=Mock(return_value=False))

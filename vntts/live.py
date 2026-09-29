@@ -1485,7 +1485,7 @@ class LiveDialogReader:
             self.last_accepted_observation = None
             return None
         routed: DialogRoute
-        if isinstance(decision, SilentDialogRoute):
+        if isinstance(decision, (SilentDialogRoute, CanonicalDialogRoute)):
             routed = decision
         elif isinstance(decision, tuple) and len(decision) == 2:
             routed = (decision[0], " ".join((decision[1] or "").split()))
