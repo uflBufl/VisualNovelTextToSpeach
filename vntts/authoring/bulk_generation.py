@@ -138,7 +138,6 @@ from vntts.authoring.generation_state import (
     load_generation_state as load_generation_state,
 )
 from vntts.authoring.generation_state import (
-    load_generation_state_from_snapshot,
     load_stable_generation_queue,
 )
 from vntts.authoring.generation_state import (
@@ -228,7 +227,10 @@ from vntts.authoring.terminal_conflict_records import (
     TerminalConflictRecordError,
     validate_terminal_conflict_state_binding,
 )
-from vntts.authoring.workspace_foundation import load_json_object
+from vntts.authoring.workspace_foundation import (
+    load_json_object,
+    load_json_object_snapshot,
+)
 from vntts.speech_presentation import speech_runtime_label
 from vntts.synthesis import (
     SynthesisCachePolicy,
@@ -1223,7 +1225,12 @@ def generation_failure_report(
     state_path = Path(state_path).expanduser().resolve()
     queue_path = Path(queue_path).expanduser().resolve()
     queue, queue_sha256 = load_stable_generation_queue(queue_path)
-    state = load_generation_state_from_snapshot(state_path, queue, queue_sha256)
+    state_document, state_sha256, _payload = load_json_object_snapshot(
+        state_path, "generation state", error_type=BulkGenerationError
+    )
+    state = _validate_state_document(
+        state_document, state_path.parent, queue, queue_sha256
+    )
     queue_by_id = {item.queue_id: item for item in queue.items}
     records: list[_FailureReportRecord] = []
     for queue_id, result in _state_items(state).items():
@@ -1284,7 +1291,7 @@ def generation_failure_report(
         "schema": "vntts.authoring-generation-failure-report",
         "schema_version": 1,
         "state": str(state_path),
-        "state_sha256": sha256_file(state_path),
+        "state_sha256": state_sha256,
         "queue": str(queue_path),
         "queue_sha256": _generation_text(state.get("queue_sha256"), "Queue SHA-256"),
         "failure_count": len(records),

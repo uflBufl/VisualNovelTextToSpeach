@@ -264,6 +264,35 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             self.assertEqual(report["records"][0]["speaker"], item["speaker"])
             self.assertNotEqual(report["queue_sha256"], sha256_file(queue_path))
 
+    def test_failure_report_hashes_the_state_used_for_records(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue_path = write_queue(root / "queue.jsonl", [queue_item()])
+            result = self.run_generation(
+                queue_path,
+                root / "output",
+                SyntheticRenderer([SynthesisCompletion.LIMITED]),
+                retries=0,
+            )
+            state_payload = result.state.read_bytes()
+            original_normalize = bulk_module.normalized_failure_record
+
+            def replace_state_after_read(item, *, text):
+                result.state.write_bytes(state_payload + b" ")
+                return original_normalize(item, text=text)
+
+            with patch.object(
+                bulk_module,
+                "normalized_failure_record",
+                side_effect=replace_state_after_read,
+            ):
+                report = generation_failure_report(result.state, queue_path)
+
+            self.assertEqual(
+                report["state_sha256"], hashlib.sha256(state_payload).hexdigest()
+            )
+            self.assertNotEqual(report["state_sha256"], sha256_file(result.state))
+
     def test_progress_callback_follows_each_state_commit(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
