@@ -1,5 +1,4 @@
 import hashlib
-import json
 import os
 import platform
 import sys
@@ -15,8 +14,6 @@ RUNTIME_ENVIRONMENT_VARIABLES = {
     "qwen-tts": "VNTTS_QWEN_RUNTIME",
     "moss-tts-delay": "VNTTS_MOSS_DELAY_RUNTIME",
 }
-
-_RUNTIME_RECORD_READ_LIMIT = 64 * 1024
 
 
 def source_runtime_project(backend: str) -> Path | None:
@@ -46,23 +43,12 @@ def managed_runtime_location(backend: str) -> Path | None:
 
 
 def find_managed_speech_runtime(backend: str) -> Path | None:
+    from vntts.runtime_ownership import owned_generation, read_record
+
     location = managed_runtime_location(backend)
     if location is None:
         return None
-    marker = location / "verified.json"
-    if marker.is_symlink() or marker.is_junction():
-        return None
-    try:
-        with marker.open("rb") as source:
-            payload = source.read(_RUNTIME_RECORD_READ_LIMIT + 1)
-    except OSError, ValueError:
-        return None
-    if len(payload) > _RUNTIME_RECORD_READ_LIMIT:
-        return None
-    try:
-        report = json.loads(payload)
-    except ValueError:
-        return None
+    report = read_record(location / "verified.json")
     if (
         isinstance(report, dict)
         and report.get("schema")
@@ -89,8 +75,6 @@ def find_managed_speech_runtime(backend: str) -> Path | None:
                 )
                 else None
             )
-        from vntts.runtime_ownership import owned_generation
-
         generation = report.get("generation")
         if not isinstance(generation, str):
             return None
