@@ -2808,6 +2808,39 @@ class LiveDialogReaderTest(unittest.TestCase):
         self.assertEqual(metrics.replaced_frames, 2)
         self.assertEqual(reader.latest_frame, 3)
 
+    def test_ocr_drops_frame_replaced_during_recognition(self):
+        stop_event = Event()
+        tracker = Mock(generation=0)
+        tracker.observe.return_value = []
+        tracker.flush.return_value = []
+        tracker.is_idle_complete.return_value = False
+        reader = None
+
+        def recognize(frame):
+            if frame == "old":
+                with reader.pause_condition:
+                    reader.latest_frame = "new"
+                    reader.latest_frame_fingerprint = "new"
+                    reader.frame_version += 1
+                    reader.pause_condition.notify_all()
+            else:
+                stop_event.set()
+            return "Alice", frame
+
+        reader = self.create_reader(
+            recognize_frame=recognize,
+            tracker_factory=Mock(return_value=tracker),
+        )
+        with reader.pause_condition:
+            reader.latest_frame = "old"
+            reader.latest_frame_fingerprint = "old"
+            reader.latest_frame_visible = True
+            reader.frame_version = 1
+
+        reader._run_ocr(stop_event)
+
+        self.assertEqual(tracker.observe.call_args_list, [call("Alice", "new")])
+
     def test_changed_fingerprint_bypasses_stale_idle_capture_interval(self):
         stop_event = Mock()
         stop_event.is_set.side_effect = [False, False, True]

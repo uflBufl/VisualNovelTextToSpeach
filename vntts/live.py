@@ -984,6 +984,17 @@ class LiveDialogReader:
                             self.next_capture_interval = interval
                         continue
                     character, text = self.recognize_frame(frame)
+                    with self.state_lock:
+                        if (
+                            fingerprint != self.latest_frame_fingerprint
+                            or visible != self.latest_frame_visible
+                            or complete != self.latest_frame_complete
+                            or (
+                                self.tracker_options.get("complete_dialogue_only")
+                                and render_fingerprint != self.latest_render_fingerprint
+                            )
+                        ):
+                            continue
                     route_kind = "ocr"
                     cached_fingerprint = fingerprint
                     cached_render_fingerprint = render_fingerprint
