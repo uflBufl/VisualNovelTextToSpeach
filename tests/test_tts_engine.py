@@ -503,6 +503,18 @@ class TTSEngineTest(unittest.TestCase):
         self.assertFalse(audio_output.writes)
         self.assertFalse(result)
 
+    def test_cancelled_preparation_never_opens_audio_output(self):
+        engine, _, audio_output = self.create_engine()
+        prepared = PreparedPlayback(
+            [0.0, 0.5, 0.0], None, None, None, "test", generation_completed=False
+        )
+
+        outcome = engine.play_prepared(prepared)
+
+        self.assertEqual(outcome.status, PlaybackStatus.INTERRUPTED)
+        self.assertFalse(audio_output.streams)
+        self.assertFalse(audio_output.writes)
+
     def test_inactive_stop_does_not_claim_the_audio_output(self):
         engine, _, audio_output = self.create_engine()
 

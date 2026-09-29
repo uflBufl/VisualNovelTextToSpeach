@@ -742,6 +742,9 @@ class XTTSBackendTest(unittest.TestCase):
 
         self.assertEqual(result.completion, SynthesisCompletion.CANCELLED)
         self.assertEqual(result.pcm.size, 0)
+        self.assertFalse(
+            backend.prepare_playback("Narrator", "Cancel this.").generation_completed
+        )
 
     def test_seeded_xtts_render_is_rejected(self):
         backend, _voice_router = self.create_backend()

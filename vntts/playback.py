@@ -9,6 +9,7 @@ from numpy.typing import NDArray
 
 from vntts.synthesis import (
     SynthesisChunkStream,
+    SynthesisCompletion,
     SynthesisRequest,
     SynthesisResult,
 )
@@ -92,6 +93,7 @@ def prepared_playback_from_render(
         None,
         rendered.diagnostics.cache_source,
         f"live:{backend.name}",
+        generation_completed=rendered.completion is not SynthesisCompletion.CANCELLED,
     )
 
 

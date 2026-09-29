@@ -442,6 +442,8 @@ class SynchronousPcmPlaybackMixin:
     ) -> PlaybackOutcome:
         if not isinstance(prepared, PreparedPlayback):
             raise self.playback_configuration_error(self.invalid_playback_message)
+        if not prepared.generation_completed:
+            return outcome_for_prepared(prepared, PlaybackStatus.INTERRUPTED, None)
         if playback_guard is not None and not playback_guard():
             return outcome_for_prepared(prepared, PlaybackStatus.INTERRUPTED, None)
         with self.playback_lock:
