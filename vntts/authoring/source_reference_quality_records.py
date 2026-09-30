@@ -234,18 +234,11 @@ def _validate_variant_samples(
 ) -> None:
     queue_ids: set[str] = set()
     for sample in generated:
-        _add_quality_sample_queue_id(
-            queue_ids,
-            _validate_sample(root, sample, variant_id, audio=True),
-            variant_id,
-        )
-    for sample in excluded:
-        queue_id = _validate_sample(root, sample, variant_id, audio=False)
+        _sample, queue_id = _validate_sample(root, sample, variant_id, audio=True)
         _add_quality_sample_queue_id(queue_ids, queue_id, variant_id)
-        if not isinstance(sample, dict):
-            raise SourceReferenceQualityError(
-                f"Quality variant {variant_id} sample must be an object"
-            )
+    for sample in excluded:
+        sample, queue_id = _validate_sample(root, sample, variant_id, audio=False)
+        _add_quality_sample_queue_id(queue_ids, queue_id, variant_id)
         _required_text(sample.get("status"), f"excluded {queue_id} status")
         attempts = sample.get("attempts")
         if isinstance(attempts, bool) or not isinstance(attempts, int) or attempts < 0:
@@ -527,7 +520,7 @@ def _validate_audio_record(root: Path, value: object, label: str) -> Path:
 
 def _validate_sample(
     root: Path, sample: object, variant_id: str, *, audio: bool
-) -> str:
+) -> tuple[JsonObject, str]:
     if not isinstance(sample, dict):
         raise SourceReferenceQualityError(
             f"Quality variant {variant_id} sample must be an object"
@@ -542,7 +535,7 @@ def _validate_sample(
         raise SourceReferenceQualityError(f"Quality sample text changed: {queue_id}")
     if audio:
         _validate_audio_record(root, sample, queue_id)
-    return queue_id
+    return sample, queue_id
 
 
 def _read_json(path: str | Path, label: str) -> tuple[bytes, JsonObject]:
@@ -578,9 +571,7 @@ def _variants(session: Mapping[str, object]) -> list[JsonObject]:
 
 
 def _required_text(value: object, label: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise SourceReferenceQualityError(f"{label.title()} must be non-empty text")
-    return value.strip()
+    return _capture_text(value, label, SourceReferenceQualityError)
 
 
 def _capture_text(value: object, label: str, error_type: type[Exception]) -> str:
@@ -609,10 +600,7 @@ def _optional_failure_text(value: object, field: str) -> str | None:
 
 
 def _required_sha256(value: object, label: str) -> str:
-    value = _required_text(value, label)
-    if not is_lowercase_sha256(value):
-        raise SourceReferenceQualityError(f"{label.title()} must be lowercase SHA-256")
-    return value
+    return _capture_sha256(value, label, SourceReferenceQualityError)
 
 
 def _positive_integer(value: object, label: str) -> int:
