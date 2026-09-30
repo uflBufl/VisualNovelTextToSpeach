@@ -10,7 +10,7 @@ from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -606,6 +606,29 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
         self.assertFalse(dialog.progress.isHidden())
         self.assertIn("Refreshing checksum authority", dialog.operation.text())
 
+    def test_reject_does_not_finish_during_authority_work(self):
+        with TemporaryDirectory() as directory:
+            dialog = CohortReviewBundleDialog(self.create_bundle(Path(directory)))
+            finished = Mock()
+            rejected = Mock()
+            dialog.finished.connect(finished)
+            dialog.rejected.connect(rejected)
+            dialog.show()
+            dialog._load_active = True
+
+            dialog.reject()
+            self.application.processEvents()
+
+            finished.assert_not_called()
+            rejected.assert_not_called()
+            self.assertTrue(dialog.isVisible())
+            self.assertIn("Close deferred", dialog.status.text())
+            dialog._load_active = False
+            dialog.close()
+            finished.assert_called_once_with(0)
+            rejected.assert_called_once_with()
+            dialog.deleteLater()
+
     def test_worker_success_results_are_validated_at_qt_boundaries(self):
         with TemporaryDirectory() as directory:
             dialog = CohortReviewBundleDialog(self.create_bundle(Path(directory)))
@@ -803,6 +826,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             dialog._checkpoint_observations()
             close_event = QCloseEvent()
             dialog.closeEvent(close_event)
+            dialog.reject()
             self.application.processEvents()
 
             self.assertEqual(heartbeat, [True])

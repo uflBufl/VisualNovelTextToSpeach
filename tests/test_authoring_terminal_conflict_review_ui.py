@@ -262,8 +262,8 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
             heartbeat.append(True)
             event = QCloseEvent()
             dialog.closeEvent(event)
-
             self.assertFalse(event.isAccepted())
+            dialog.reject()
             self.assertTrue(dialog._close_pending)
             self.assertTrue(heartbeat)
             release.set()

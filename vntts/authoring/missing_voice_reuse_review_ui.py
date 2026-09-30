@@ -11,7 +11,6 @@ from PySide6.QtGui import QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
-    QDialog,
     QDialogButtonBox,
     QGridLayout,
     QGroupBox,
@@ -40,6 +39,7 @@ from vntts.authoring.review_context_ui import (
     review_scroll_area,
 )
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
+from vntts.qt_dialogs import CloseGuardedDialog
 
 
 class ReviewSample(TypedDict):
@@ -391,7 +391,7 @@ def _create_audio_player(parent: QObject) -> QMediaPlayer:
     return QMediaPlayer(parent)
 
 
-class MissingVoiceReuseReviewDialog(QDialog):
+class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
     """Review exact cohort samples while keeping failed arms visible."""
 
     def __init__(

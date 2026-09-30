@@ -24,7 +24,6 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
-    QDialog,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -73,6 +72,7 @@ from vntts.authoring.voice_quality_gate import (
 from vntts.authoring.workbench import prepare_review_audio, review_technical_summary
 from vntts.qt_audio import PcmClip, play_audio_bytes, release_audio_buffer
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
+from vntts.qt_dialogs import CloseGuardedDialog
 
 
 def _display_required_reason(reason: str) -> str:
@@ -459,7 +459,7 @@ def _execute_and_checkpoint_bundle_decision(
     )
 
 
-class CohortReviewBundleDialog(QDialog):
+class CohortReviewBundleDialog(CloseGuardedDialog):
     """One non-blocking review surface over several immutable workspaces."""
 
     def __init__(
@@ -2147,7 +2147,7 @@ class CohortReviewBundleDialog(QDialog):
             event.ignore()
             return
         self.stop_playback()
-        event.accept()
+        super().closeEvent(event)
 
 
 def launch_cohort_review_bundle(

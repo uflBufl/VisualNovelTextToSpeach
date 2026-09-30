@@ -1205,6 +1205,27 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertTrue(dialog.close_after_stop)
             self.assertEqual(process.terminate_calls, 2)
 
+    def test_reject_confirms_before_stopping_generation(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            process = FakeProcess(QProcess.ProcessState.Running)
+            dialog = AuthoringWorkbenchDialog(
+                workspace,
+                settings=self.settings(root),
+                process=process,
+            )
+
+            with patch.object(
+                QMessageBox,
+                "question",
+                return_value=QMessageBox.StandardButton.Yes,
+            ):
+                dialog.reject()
+
+            self.assertTrue(dialog.close_after_stop)
+            self.assertEqual(process.terminate_calls, 1)
+
     def test_output_folder_uses_contained_workspace_path(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

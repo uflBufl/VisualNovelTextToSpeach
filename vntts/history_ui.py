@@ -5,7 +5,6 @@ from datetime import datetime
 from PySide6.QtCore import QSignalBlocker, Qt, QThreadPool
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
-    QDialog,
     QDialogButtonBox,
     QFileDialog,
     QHBoxLayout,
@@ -21,9 +20,10 @@ from PySide6.QtWidgets import (
 
 from vntts.async_ui import LatestTaskRunner
 from vntts.history import DialogueHistory, DialogueHistoryEntry
+from vntts.qt_dialogs import CloseGuardedDialog
 
 
-class DialogueHistoryDialog(QDialog):
+class DialogueHistoryDialog(CloseGuardedDialog):
     def __init__(
         self,
         history: DialogueHistory,

@@ -524,6 +524,8 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             close_event = QCloseEvent()
             dialog.closeEvent(close_event)
             self.assertFalse(close_event.isAccepted())
+            dialog.reject()
+            self.assertTrue(dialog._close_pending)
             self.assertIn("Close is deferred", dialog.status.text())
 
             release.set()

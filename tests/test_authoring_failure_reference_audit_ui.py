@@ -390,6 +390,16 @@ class FailureReferenceAuditUiTest(unittest.TestCase):
             self.assertFalse(event.isAccepted())
             self.assertIn("Close deferred", dialog.status.text())
 
+    def test_reject_is_deferred_during_checksum_work(self):
+        with TemporaryDirectory() as directory:
+            dialog = FailureReferenceAuditDialog(self.create_audit(Path(directory)))
+            dialog._save_active = True
+
+            dialog.reject()
+
+            self.assertTrue(dialog._save_active)
+            self.assertIn("Close deferred", dialog.status.text())
+
     def test_close_is_deferred_during_preview_generation(self):
         with TemporaryDirectory() as directory:
             audit = self.create_audit(Path(directory))

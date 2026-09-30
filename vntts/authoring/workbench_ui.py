@@ -89,6 +89,7 @@ from vntts.authoring.workbench import (
 )
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.qt_audio import play_audio_bytes, release_audio_buffer
+from vntts.qt_dialogs import CloseGuardedDialog
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 PROCESS_LOG_CHARACTER_LIMIT = 64 * 1024
@@ -394,7 +395,7 @@ def _save_review(
     return reviewer(workspace, queue_id, decision, authority)
 
 
-class AuthoringWorkbenchDialog(QDialog):
+class AuthoringWorkbenchDialog(CloseGuardedDialog):
     """Thin Qt shell over the validated authoring workspace boundary."""
 
     settings_group = "authoring/workbench"
@@ -3004,7 +3005,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self._save_settings()
         self._discard_review_playback_copy()
         if self.process.state() == QProcess.ProcessState.NotRunning:
-            event.accept()
+            super().closeEvent(event)
             return
         choice = QMessageBox.question(
             self,

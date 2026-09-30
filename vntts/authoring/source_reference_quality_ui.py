@@ -12,7 +12,6 @@ from PySide6.QtCore import Qt, QThreadPool, QTimer
 from PySide6.QtGui import QCloseEvent, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
-    QDialog,
     QDialogButtonBox,
     QHBoxLayout,
     QLabel,
@@ -41,6 +40,7 @@ from vntts.authoring.source_reference_quality_records import (
 )
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.qt_audio import play_audio_bytes, release_audio_buffer
+from vntts.qt_dialogs import CloseGuardedDialog
 
 QualityDecision = Literal["accept", "reject", "needs_sample"]
 PlaybackPayload = tuple[str, str, str, bytes]
@@ -155,7 +155,7 @@ _next_pending_variant: PendingVariant = _next_pending_document
 _record_decision: DecisionRecorder = _record_decision_document
 
 
-class SourceReferenceQualityDialog(QDialog):
+class SourceReferenceQualityDialog(CloseGuardedDialog):
     """Present exact original and generated evidence without cross-character A/B."""
 
     accept_button: QPushButton

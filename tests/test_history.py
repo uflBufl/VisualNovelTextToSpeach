@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QTimer  # noqa: E402
+from PySide6.QtCore import Qt, QTimer  # noqa: E402
 from PySide6.QtGui import QCloseEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
@@ -207,6 +207,33 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         stop.assert_called_once_with()
         self.assertFalse(dialog.replay_runner.active)
         release.set()
+
+    def test_escape_stops_active_replay_before_closing(self):
+        history = DialogueHistory()
+        history.add("Marcus", "The suitcase is ready.")
+        history.finish_current()
+        started = Event()
+        release = Event()
+        finished = Event()
+
+        def replay(_character, _text):
+            started.set()
+            release.wait(3)
+            finished.set()
+
+        stop = Mock(return_value=True)
+        dialog = DialogueHistoryDialog(history, replay, stop_handler=stop)
+        dialog.show()
+        dialog.replay_selected()
+        self.wait_for(started.is_set)
+
+        QTest.keyClick(dialog, Qt.Key.Key_Escape)
+
+        self.wait_for(lambda: not dialog.isVisible())
+        stop.assert_called_once_with()
+        release.set()
+        self.wait_for(finished.is_set)
+        dialog.deleteLater()
 
     def test_unsupported_stop_keeps_dialog_open_until_speech_finishes(self):
         history = DialogueHistory()

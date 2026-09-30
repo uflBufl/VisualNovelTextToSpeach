@@ -23,10 +23,11 @@ from PySide6.QtWidgets import (
 from vntts.async_ui import LatestTaskRunner
 from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.ocr_review import OCRReviewSample, OCRReviewStore
+from vntts.qt_dialogs import CloseGuardedDialog
 from vntts.versioned_json import StaleDocumentError
 
 
-class OCRReviewDialog(QDialog):
+class OCRReviewDialog(CloseGuardedDialog):
     def __init__(
         self,
         directory: str | Path,

@@ -11,7 +11,6 @@ from PySide6.QtCore import QEvent, QObject, Qt, QThreadPool, QTimer, QUrl, Signa
 from PySide6.QtGui import QCloseEvent, QDesktopServices, QKeySequence, QMouseEvent
 from PySide6.QtWidgets import (
     QApplication,
-    QDialog,
     QDialogButtonBox,
     QGridLayout,
     QHBoxLayout,
@@ -42,6 +41,7 @@ from vntts.authoring.pcm_playback import (
     PlaybackSnapshot,
 )
 from vntts.authoring.review_context_ui import ReviewDecisionContext, review_scroll_area
+from vntts.qt_dialogs import CloseGuardedDialog
 
 Side = Literal["a", "b"]
 Preference = Literal["a", "b", "tie", "neither"]
@@ -142,7 +142,7 @@ class SeekSlider(QSlider):
         event.accept()
 
 
-class ModelListeningDialog(QDialog):
+class ModelListeningDialog(CloseGuardedDialog):
     side_colors: ClassVar[Mapping[Side, Mapping[str, str]]] = {
         "a": {"normal": "#2563eb", "disabled": "#1e3a5f", "border": "#bfdbfe"},
         "b": {"normal": "#ea580c", "disabled": "#5f301f", "border": "#fed7aa"},

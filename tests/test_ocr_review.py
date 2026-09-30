@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PIL import Image  # noqa: E402
-from PySide6.QtCore import QTimer  # noqa: E402
+from PySide6.QtCore import Qt, QTimer  # noqa: E402
 from PySide6.QtGui import QCloseEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox, QScrollArea  # noqa: E402
@@ -579,10 +579,23 @@ class OCRReviewDialogTest(unittest.TestCase):
             self.assertTrue(dialog._write_active)
             self.assertFalse(dialog.resolve_button.isEnabled())
             self.assertIn("background", dialog.status.text())
+            dialog.reject()
+            self.assertTrue(dialog._close_pending)
+            self.assertIn("Close is deferred", dialog.status.text())
             close_event = QCloseEvent()
             dialog.closeEvent(close_event)
             self.assertFalse(close_event.isAccepted())
-            self.assertIn("Close is deferred", dialog.status.text())
+            rejected = []
+            finished = []
+            dialog.rejected.connect(lambda: rejected.append(True))
+            dialog.finished.connect(lambda _result: finished.append(True))
+            dialog.show()
+            self.application.processEvents()
+            QTest.keyClick(dialog, Qt.Key.Key_Escape)
+            self.application.processEvents()
+            self.assertTrue(dialog._close_pending)
+            self.assertEqual(rejected, [])
+            self.assertEqual(finished, [])
 
             release.set()
             self.wait_for(lambda: not dialog._write_active)

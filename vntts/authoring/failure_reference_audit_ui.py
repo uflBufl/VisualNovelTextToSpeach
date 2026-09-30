@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
-    QDialog,
     QDialogButtonBox,
     QFrame,
     QHeaderView,
@@ -51,6 +50,7 @@ from vntts.authoring.review_context_ui import (
     review_scroll_area,
 )
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
+from vntts.qt_dialogs import CloseGuardedDialog
 
 
 class AuditCandidate(TypedDict):
@@ -207,7 +207,7 @@ def _load_public_document(
     return validated, document, _audit_decisions(_decision_loader(validated.directory))
 
 
-class FailureReferenceAuditDialog(QDialog):
+class FailureReferenceAuditDialog(CloseGuardedDialog):
     """Review four exact control groups without revealing private source names."""
 
     def __init__(
@@ -1002,7 +1002,7 @@ class FailureReferenceAuditDialog(QDialog):
             return
         self.stop_playback()
         self.preview_service.close()
-        event.accept()
+        super().closeEvent(event)
 
 
 def launch_failure_reference_audit(audit_directory: str | Path) -> int:

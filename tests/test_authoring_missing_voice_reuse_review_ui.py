@@ -205,6 +205,20 @@ class AuthoringMissingVoiceReuseReviewUiTest(unittest.TestCase):
             self.assertIn("cancelled", dialog.status.text())
             dialog.deleteLater()
 
+    def test_reject_defers_until_heard_evidence_is_saved(self):
+        with TemporaryDirectory() as directory:
+            session_path, _queue_id = self.create_review(Path(directory))
+            dialog = MissingVoiceReuseReviewDialog(session_path)
+            dialog._pending_heard = [("cohort", "queue", "A")]
+
+            dialog.reject()
+
+            self.assertTrue(dialog._close_pending)
+            self.assertIn("Close requested", dialog.status.text())
+            dialog._pending_heard = []
+            dialog.close()
+            dialog.deleteLater()
+
     @patch("vntts.authoring.missing_voice_reuse_review_ui.QMessageBox.critical")
     @patch(
         "vntts.authoring.missing_voice_reuse_review_ui.MissingVoiceReuseReviewDialog"

@@ -422,3 +422,7 @@ class ReadinessDialog(QDialog):
     def closeEvent(self, event: QCloseEvent) -> None:
         self.runner.cancel()
         super().closeEvent(event)
+
+    def done(self, result: int) -> None:
+        self.runner.cancel()
+        super().done(result)

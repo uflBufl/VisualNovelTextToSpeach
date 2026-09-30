@@ -12,7 +12,6 @@ from PySide6.QtCore import QEvent, QObject, Qt, QThreadPool, QUrl
 from PySide6.QtGui import QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
-    QDialog,
     QDialogButtonBox,
     QHBoxLayout,
     QLabel,
@@ -38,6 +37,7 @@ from vntts.authoring.terminal_conflict_review import (
     record_terminal_conflict_decision,
 )
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
+from vntts.qt_dialogs import CloseGuardedDialog
 
 
 class ReviewCandidate(TypedDict):
@@ -188,7 +188,7 @@ def _create_audio_player(parent: QObject) -> QMediaPlayer:
     return QMediaPlayer(parent)
 
 
-class TerminalConflictReviewDialog(QDialog):
+class TerminalConflictReviewDialog(CloseGuardedDialog):
     """Play every distinct WAV and save one explicit winner per conflict."""
 
     def __init__(

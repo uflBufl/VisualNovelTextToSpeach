@@ -186,21 +186,24 @@ class ReadinessDialogTest(unittest.TestCase):
         dialog.deleteLater()
 
     def test_closed_probe_cannot_publish_late_results(self):
-        pool = ManualThreadPool()
-        diagnostics = type(
-            "Diagnostics",
-            (),
-            {"run": lambda _self, _settings: (DiagnosticResult("OCR", "ok", "Ready"),)},
-        )()
-        dialog = ReadinessDialog(AppSettings(), diagnostics, thread_pool=pool)
-        dialog.show()
-        dialog.close()
-        pool.run_next()
-        self.application.processEvents()
-        self.assertFalse(dialog.isVisible())
-        self.assertEqual(dialog.table.rowCount(), 0)
-        self.assertFalse(dialog.reading_button.isVisible())
-        dialog.deleteLater()
+        for action in ("close", "reject", "accept", "escape"):
+            with self.subTest(action=action):
+                pool = ManualThreadPool()
+                diagnostics = Mock()
+                diagnostics.run.return_value = (DiagnosticResult("OCR", "ok", "Ready"),)
+                dialog = ReadinessDialog(AppSettings(), diagnostics, thread_pool=pool)
+                dialog.show()
+                if action == "escape":
+                    QTest.keyClick(dialog, Qt.Key.Key_Escape)
+                else:
+                    getattr(dialog, action)()
+                self.assertFalse(dialog.runner.active)
+                pool.run_next()
+                self.application.processEvents()
+                self.assertFalse(dialog.isVisible())
+                self.assertEqual(dialog.table.rowCount(), 0)
+                self.assertFalse(dialog.reading_button.isVisible())
+                dialog.deleteLater()
 
     def test_malformed_probe_result_is_a_visible_retryable_failure(self):
         for result in (None, [], (object(),)):
@@ -228,7 +231,6 @@ class ReadinessDialogTest(unittest.TestCase):
                 self.assertTrue(dialog.progress.isHidden())
                 dialog.close()
                 dialog.deleteLater()
-
 
     def test_selects_first_blocking_error_and_emits_only_its_remediation(self):
         pool = ManualThreadPool()
