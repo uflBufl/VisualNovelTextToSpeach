@@ -2175,6 +2175,7 @@ def _sequence_replay_metrics(
     recognized_frames: Iterable[dict[str, object]],
     advance_states: Iterable[dict[str, object]],
 ) -> SequenceMetrics:
+    events = tuple(events)
     if mode == "shadow":
         identity_events = [
             event
@@ -2226,17 +2227,14 @@ def _sequence_replay_metrics(
         if frame.get("dialogue_index") is not None
         and frame.get("frame_index") is not None
     }
+    advances = Counter(state["state"] for state in advance_states)
     return {
         "event_ids": [event_id for event_id, _line_id in identities],
         "line_ids": [line_id for _event_id, line_id in identities],
         "ocr_calls": len(ocr_frame_identities),
         "bounded_recoveries": len(recovered_event_ids),
-        "key_dispatch_attempts": sum(
-            state["state"] == "dispatched" for state in advance_states
-        ),
-        "confirmed_key_dispatches": sum(
-            state["state"] == "confirmed" for state in advance_states
-        ),
+        "key_dispatch_attempts": advances["dispatched"],
+        "confirmed_key_dispatches": advances["confirmed"],
     }
 
 

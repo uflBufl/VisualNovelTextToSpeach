@@ -22,6 +22,7 @@ from vntts.live_replay import (
     ReplayFrameSource,
     _load_frame,
     _recognize_replay_frame,
+    _sequence_replay_metrics,
     _sequence_route_integrity,
     load_live_replay_corpus,
     main,
@@ -29,6 +30,42 @@ from vntts.live_replay import (
 
 
 class LiveReplayTest(unittest.TestCase):
+    def test_sequence_metrics_preserve_one_shot_input_counters(self):
+        events = [
+            {
+                "stage": "sequence-playback-state",
+                "outcome": "completed",
+                "event_id": "event-1",
+                "line_id": "story:1",
+            },
+            {
+                "stage": "sequence-audio-auto",
+                "reason": "observation-bounded-lookahead",
+                "event_id": "event-1",
+                "line_id": "story:1",
+            },
+        ]
+        advances = [{"state": "dispatched"}, {"state": "confirmed"}]
+        expected = {
+            "event_ids": ["event-1"],
+            "line_ids": ["story:1"],
+            "ocr_calls": 1,
+            "bounded_recoveries": 1,
+            "key_dispatch_attempts": 1,
+            "confirmed_key_dispatches": 1,
+        }
+        for one_shot in (False, True):
+            with self.subTest(one_shot=one_shot):
+                self.assertEqual(
+                    _sequence_replay_metrics(
+                        "audio-auto",
+                        iter(events) if one_shot else events,
+                        iter([{"dialogue_index": 1, "frame_index": 1}]),
+                        iter(advances) if one_shot else advances,
+                    ),
+                    expected,
+                )
+
     def test_audio_stack_uses_one_strict_source_audio_contract(self):
         runner = object.__new__(LiveReplayRunner)
         runner.corpus = SimpleNamespace(
