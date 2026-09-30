@@ -225,6 +225,67 @@ def add_semantic_evidence(story_path):
 
 
 class PregenerationInputStoreTest(unittest.TestCase):
+    def test_semantic_verdict_matches_the_transcript_and_preserves_authority(self):
+        with TemporaryDirectory() as directory:
+            story = add_semantic_evidence(write_content(Path(directory) / "content"))
+            path = story.parent / "source-audio-semantic-evidence.json"
+            original = json.loads(path.read_bytes())
+            for observed in (
+                original["entries"][0]["observed_transcript"],
+                "Other words",
+            ):
+                for verdict in ("full", "partial", [], {}):
+                    with self.subTest(observed=observed, verdict=verdict):
+                        document = json.loads(json.dumps(original))
+                        entry = document["entries"][0]
+                        entry.update(
+                            observed_transcript=observed,
+                            normalized_observed_text_sha256=semantic_text_sha256(
+                                observed
+                            ),
+                            verdict=verdict,
+                            reason=(
+                                "exact-normalized-asr-transcript"
+                                if verdict == "full"
+                                else "asr-transcript-mismatch"
+                            ),
+                            producer_extension={"keep": True},
+                        )
+                        entry["entry_id"] = canonical_document_sha256(
+                            {
+                                key: value
+                                for key, value in entry.items()
+                                if key not in {"entry_id", "source_line_ids"}
+                            }
+                        )
+                        document["evidence_id"] = canonical_document_sha256(
+                            {
+                                key: value
+                                for key, value in document.items()
+                                if key not in {"evidence_id", "generated_at"}
+                            }
+                        )
+                        expected = (
+                            "full"
+                            if entry["normalized_observed_text_sha256"]
+                            == entry["normalized_displayed_text_sha256"]
+                            else "partial"
+                        )
+                        if verdict == expected:
+                            self.assertIs(
+                                validate_source_audio_semantic_evidence(document),
+                                document,
+                            )
+                            self.assertEqual(
+                                entry["producer_extension"], {"keep": True}
+                            )
+                        else:
+                            with self.assertRaisesRegex(
+                                SourceAudioSemanticEvidenceError, "[Vv]erdict"
+                            ):
+                                validate_source_audio_semantic_evidence(document)
+
+
     def test_semantic_evidence_rejects_invalid_utf8(self):
         with TemporaryDirectory() as directory:
             evidence = Path(directory) / "source-audio-semantic-evidence.json"

@@ -116,60 +116,15 @@ def validate_source_audio_semantic_evidence(
     if not isinstance(entries, list) or not entries:
         raise SourceAudioSemanticEvidenceError("Semantic evidence entries are empty")
     keys = []
-    for entry in entries:
-        if not _is_json_document(entry) or entry.get("locale") != locale:
-            raise SourceAudioSemanticEvidenceError(
-                "Semantic evidence entry locale changed"
+    for raw_entry in entries:
+        entry = _validate_semantic_evidence_entry(raw_entry, locale, model_sha256)
+        keys.append(
+            (
+                entry["locale"],
+                entry["media_sha256"],
+                entry["normalized_displayed_text_sha256"],
             )
-        media_sha256 = _require_sha256(entry.get("media_sha256"), "semantic media")
-        normalized_text_sha256 = _require_sha256(
-            entry.get("normalized_displayed_text_sha256"),
-            "semantic normalized displayed text",
         )
-        _require_sha256(entry.get("displayed_text_sha256"), "semantic displayed text")
-        if entry.get("model_sha256") != model_sha256:
-            raise SourceAudioSemanticEvidenceError(
-                "Semantic entry model binding changed"
-            )
-        observed = entry.get("observed_transcript")
-        if not isinstance(observed, str) or not normalize_semantic_text(observed):
-            raise SourceAudioSemanticEvidenceError("Semantic transcript is empty")
-        if entry.get("normalized_observed_text_sha256") != semantic_text_sha256(
-            observed
-        ):
-            raise SourceAudioSemanticEvidenceError("Semantic transcript hash changed")
-        verdict = entry.get("verdict")
-        expected_reason = (
-            "exact-normalized-asr-transcript"
-            if verdict == "full"
-            else "asr-transcript-mismatch"
-        )
-        if verdict not in {"full", "partial"} or entry.get("reason") != expected_reason:
-            raise SourceAudioSemanticEvidenceError("Semantic verdict is invalid")
-        if entry.get("method") != SEMANTIC_EVIDENCE_METHOD:
-            raise SourceAudioSemanticEvidenceError("Semantic evidence method changed")
-        source_line_ids = entry.get("source_line_ids")
-        if (
-            not isinstance(source_line_ids, list)
-            or any(
-                not isinstance(line_id, str) or not line_id
-                for line_id in source_line_ids
-            )
-            or source_line_ids != sorted(set(source_line_ids))
-        ):
-            raise SourceAudioSemanticEvidenceError(
-                "Semantic source line IDs are invalid"
-            )
-        expected_entry_id = canonical_document_sha256(
-            {
-                key: value
-                for key, value in entry.items()
-                if key not in {"entry_id", "source_line_ids"}
-            }
-        )
-        if entry.get("entry_id") != expected_entry_id:
-            raise SourceAudioSemanticEvidenceError("Semantic evidence entry ID changed")
-        keys.append((locale, media_sha256, normalized_text_sha256))
     if keys != sorted(set(keys)):
         raise SourceAudioSemanticEvidenceError(
             "Semantic evidence entries are duplicated or not canonical"
@@ -186,6 +141,63 @@ def validate_source_audio_semantic_evidence(
             "Semantic evidence generation timestamp is invalid"
         )
     return cast(SourceAudioSemanticEvidence, document)
+
+
+def _validate_semantic_evidence_entry(
+    entry: object, locale: str, model_sha256: str
+) -> SourceAudioSemanticEvidenceEntry:
+    if not _is_json_document(entry) or entry.get("locale") != locale:
+        raise SourceAudioSemanticEvidenceError("Semantic evidence entry locale changed")
+    _require_sha256(entry.get("media_sha256"), "semantic media")
+    normalized_text_sha256 = _require_sha256(
+        entry.get("normalized_displayed_text_sha256"),
+        "semantic normalized displayed text",
+    )
+    _require_sha256(entry.get("displayed_text_sha256"), "semantic displayed text")
+    if entry.get("model_sha256") != model_sha256:
+        raise SourceAudioSemanticEvidenceError("Semantic entry model binding changed")
+    observed = entry.get("observed_transcript")
+    if not isinstance(observed, str) or not normalize_semantic_text(observed):
+        raise SourceAudioSemanticEvidenceError("Semantic transcript is empty")
+    observed_sha256 = semantic_text_sha256(observed)
+    if entry.get("normalized_observed_text_sha256") != observed_sha256:
+        raise SourceAudioSemanticEvidenceError("Semantic transcript hash changed")
+    verdict = entry.get("verdict")
+    expected_reason = (
+        "exact-normalized-asr-transcript"
+        if verdict == "full"
+        else "asr-transcript-mismatch"
+    )
+    if verdict not in ("full", "partial") or entry.get("reason") != expected_reason:
+        raise SourceAudioSemanticEvidenceError("Semantic verdict is invalid")
+    expected_verdict = (
+        "full" if observed_sha256 == normalized_text_sha256 else "partial"
+    )
+    if verdict != expected_verdict:
+        raise SourceAudioSemanticEvidenceError(
+            "Semantic verdict contradicts transcript"
+        )
+    if entry.get("method") != SEMANTIC_EVIDENCE_METHOD:
+        raise SourceAudioSemanticEvidenceError("Semantic evidence method changed")
+    source_line_ids = entry.get("source_line_ids")
+    if (
+        not isinstance(source_line_ids, list)
+        or any(
+            not isinstance(line_id, str) or not line_id for line_id in source_line_ids
+        )
+        or source_line_ids != sorted(set(source_line_ids))
+    ):
+        raise SourceAudioSemanticEvidenceError("Semantic source line IDs are invalid")
+    expected_entry_id = canonical_document_sha256(
+        {
+            key: value
+            for key, value in entry.items()
+            if key not in {"entry_id", "source_line_ids"}
+        }
+    )
+    if entry.get("entry_id") != expected_entry_id:
+        raise SourceAudioSemanticEvidenceError("Semantic evidence entry ID changed")
+    return cast(SourceAudioSemanticEvidenceEntry, entry)
 
 
 def validate_story_semantic_evidence(

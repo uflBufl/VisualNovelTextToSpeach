@@ -579,12 +579,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/source_audio_semantics.py",
-      "scope": "validate_source_audio_semantic_evidence",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/speech_backend.py",
       "scope": "MossTTSVoiceRouterBackend._render_chunks",
       "count": 1
@@ -977,12 +971,6 @@
       "code": "PLR0912",
       "path": "vntts/settings.py",
       "scope": "AppSettings.from_mapping",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/source_audio_semantics.py",
-      "scope": "validate_source_audio_semantic_evidence",
       "count": 1
     },
     {
