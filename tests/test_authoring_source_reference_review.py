@@ -19,6 +19,7 @@ from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.hashing import text_sha256
 from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_manifest
 
+from vntts.authoring import source_reference_quality_records
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.authoring.bulk_generation import load_generation_state, run_bulk_generation
 from vntts.authoring.cli import main as authoring_main
@@ -815,6 +816,43 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
                 for card in session["variants"]
             )
         )
+
+    def test_quality_portrait_png_requires_complete_checked_decode(self):
+        with TemporaryDirectory() as directory:
+            portrait = Path(directory) / "portrait.png"
+            write_test_png(portrait, red=120)
+            valid = portrait.read_bytes()
+            idat_offset = 8 + 12 + 13
+            idat_length = struct.unpack(">I", valid[idat_offset : idat_offset + 4])[0]
+            idat_start = idat_offset + 8
+            idat_end = idat_start + idat_length
+
+            def replace_idat(data):
+                return (
+                    valid[:idat_offset]
+                    + struct.pack(">I", len(data))
+                    + b"IDAT"
+                    + data
+                    + struct.pack(">I", zlib.crc32(b"IDAT" + data) & 0xFFFFFFFF)
+                    + valid[idat_end + 4 :]
+                )
+
+            self.assertEqual(
+                source_reference_quality_records._probe_png(valid, "portrait"), (2, 2)
+            )
+            invalid = {
+                "scanlines": replace_idat(zlib.compress(b"\x00")),
+                "crc": valid[: idat_end + 3]
+                + bytes((valid[idat_end + 3] ^ 1,))
+                + valid[idat_end + 4 :],
+                "truncated": valid[:-1],
+                "trailer": valid + b"trailer",
+                "duplicate_iend": valid + valid[-12:],
+            }
+            for name, payload in invalid.items():
+                with self.subTest(name=name):
+                    with self.assertRaises(SourceReferenceQualityError):
+                        source_reference_quality_records._probe_png(payload, "portrait")
 
     def test_quality_review_copies_and_validates_available_portraits(self):
         with TemporaryDirectory() as directory:

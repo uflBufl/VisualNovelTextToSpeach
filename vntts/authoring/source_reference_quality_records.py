@@ -6,14 +6,14 @@ import copy
 import hashlib
 import json
 import shutil
-import struct
-import zlib
 from collections.abc import Generator, Iterable, Mapping, MutableSequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 
+from PIL import Image
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import Pcm16MonoWavError, probe_pcm16_mono_wav
 from vntts_artifacts.file_integrity import sha256_file
@@ -28,6 +28,8 @@ from vntts.path_safety import contained_regular_file
 QUALITY_REVIEW_SCHEMA = "vntts.authoring-source-reference-quality-review"
 QUALITY_REVIEW_VERSION = 1
 QUALITY_DECISIONS = frozenset({"accept", "reject", "needs_sample"})
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+PNG_IEND = b"\x00\x00\x00\x00IEND\xaeB`\x82"
 JsonObject = dict[str, object]
 
 
@@ -451,68 +453,33 @@ def _validate_portrait_record(root: Path, value: object, label: str) -> Path:
 
 
 def _probe_png(payload: bytes, label: str) -> tuple[int, int]:
-    if not isinstance(payload, bytes) or not payload.startswith(b"\x89PNG\r\n\x1a\n"):
+    if not isinstance(payload, bytes) or not payload.startswith(PNG_SIGNATURE):
         raise SourceReferenceQualityError(f"{label.title()} is not a PNG")
-    offset = 8
-    dimensions: tuple[int, int] | None = None
-    idat_parts: list[bytes] = []
-    saw_iend = False
-    while offset < len(payload):
-        kind, data, chunk_end = _read_png_chunk(payload, offset, label)
-        if offset == 8:
-            dimensions = _png_dimensions(kind, data, label)
-        elif kind == b"IDAT":
-            idat_parts.append(data)
-        elif kind == b"IEND":
-            _validate_png_iend(data, chunk_end, len(payload), label)
-            saw_iend = True
-        offset = chunk_end
-    if dimensions is None or not idat_parts or not saw_iend:
-        raise SourceReferenceQualityError(f"{label.title()} is incomplete")
-    _validate_png_image_data(idat_parts, label)
-    return dimensions
-
-
-def _read_png_chunk(
-    payload: bytes, offset: int, label: str
-) -> tuple[bytes, bytes, int]:
-    if len(payload) - offset < 12:
-        raise SourceReferenceQualityError(f"{label.title()} is truncated")
-    length = struct.unpack(">I", payload[offset : offset + 4])[0]
-    kind = payload[offset + 4 : offset + 8]
-    chunk_end = offset + 12 + length
-    if chunk_end > len(payload):
-        raise SourceReferenceQualityError(f"{label.title()} is truncated")
-    data = payload[offset + 8 : offset + 8 + length]
-    expected_crc = struct.unpack(">I", payload[offset + 8 + length : chunk_end])[0]
-    if zlib.crc32(kind + data) & 0xFFFFFFFF != expected_crc:
-        raise SourceReferenceQualityError(f"{label.title()} has an invalid CRC")
-    return kind, data, chunk_end
-
-
-def _png_dimensions(kind: bytes, data: bytes, label: str) -> tuple[int, int]:
-    if kind != b"IHDR" or len(data) != 13:
-        raise SourceReferenceQualityError(f"{label.title()} has no valid IHDR")
-    width, height = struct.unpack(">II", data[:8])
-    if width < 1 or height < 1:
-        raise SourceReferenceQualityError(f"{label.title()} has invalid dimensions")
-    return width, height
-
-
-def _validate_png_iend(data: bytes, chunk_end: int, size: int, label: str) -> None:
-    if data or chunk_end != size:
+    if not payload.endswith(PNG_IEND):
         raise SourceReferenceQualityError(f"{label.title()} has invalid IEND")
-
-
-def _validate_png_image_data(parts: list[bytes], label: str) -> None:
     try:
-        decoded = zlib.decompress(b"".join(parts))
-    except zlib.error as error:
+        with BytesIO(payload) as stream:
+            with Image.open(stream, formats=["PNG"]) as image:
+                image.verify()
+                # Pillow stops before IEND's CRC; the tail and position checks
+                # require one final empty IEND and reject trailing chunks.
+                if stream.tell() != len(payload) - 4:
+                    raise SourceReferenceQualityError(
+                        f"{label.title()} has invalid IEND"
+                    )
+        with BytesIO(payload) as stream:
+            with Image.open(stream, formats=["PNG"]) as image:
+                width, height = image.size
+                image.load()
+    except SourceReferenceQualityError:
+        raise
+    except (Image.DecompressionBombError, OSError, SyntaxError, ValueError) as error:
         raise SourceReferenceQualityError(
             f"{label.title()} has invalid image data"
         ) from error
-    if not decoded:
-        raise SourceReferenceQualityError(f"{label.title()} has empty image data")
+    if width < 1 or height < 1:
+        raise SourceReferenceQualityError(f"{label.title()} has invalid dimensions")
+    return width, height
 
 
 def _validate_audio_record(root: Path, value: object, label: str) -> Path:
