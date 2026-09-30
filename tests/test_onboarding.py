@@ -4,6 +4,7 @@ import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -19,6 +20,7 @@ from vntts.game_pack import GamePackError  # noqa: E402
 from vntts.moss_cpp_installation import MossCppInstallRequired  # noqa: E402
 from vntts.onboarding import DiagnosticResult, OnboardingDiagnostics  # noqa: E402
 from vntts.onboarding_ui import OnboardingWizard  # noqa: E402
+from vntts.services.tts_engine import TTSSynthesisError  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
 from vntts.ui_text import plain_label_text  # noqa: E402
 from vntts.window_capture import WindowGeometry  # noqa: E402
@@ -29,6 +31,38 @@ def granted_permissions():
 
 
 class OnboardingDiagnosticsTest(unittest.TestCase):
+    def test_cancelled_setup_skips_subsequent_preparation_and_probes(self):
+        for token_kind in ("event", "callable"):
+            for phase in ("before", "prepared", "progress"):
+                with self.subTest(token_kind=token_kind, phase=phase):
+                    cancelled = Event()
+                    token = cancelled if token_kind == "event" else cancelled.is_set
+                    if phase == "before":
+                        cancelled.set()
+                    diagnostics = OnboardingDiagnostics()
+                    progress = Mock(
+                        side_effect=lambda _message: (
+                            cancelled.set() if phase == "progress" else None
+                        )
+                    )
+                    with (
+                        patch(
+                            "vntts.runtime_installation.ensure_speech_runtime",
+                            side_effect=lambda *_args, **_kwargs: (
+                                cancelled.set() if phase == "prepared" else None
+                            ),
+                        ) as prepare,
+                        patch.object(diagnostics, "run") as run,
+                        self.assertRaisesRegex(TTSSynthesisError, "cancelled"),
+                    ):
+                        diagnostics.prepare_and_run(
+                            AppSettings(speech_backend="pocket-tts"),
+                            cancellation=token,
+                            progress=progress,
+                        )
+                    self.assertEqual(prepare.call_count, 0 if phase == "before" else 1)
+                    run.assert_not_called()
+
     def test_qwen_setup_and_diagnostics_select_the_same_runtime(self):
         settings = AppSettings(speech_backend="qwen-tts")
         diagnostics = OnboardingDiagnostics()
