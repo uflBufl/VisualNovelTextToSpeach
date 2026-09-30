@@ -29,22 +29,18 @@ class _Task(QRunnable):
 
     def run(self) -> None:
         started = perf_counter()
+        result: object = None
+        failure: Exception | None = None
         try:
             result = self.function(*self.arguments)
         except Exception as error:
-            record_background_operation(
-                _operation_name(self.function),
-                (perf_counter() - started) * 1000,
-                "failed",
-            )
-            self.signals.finished.emit(self.serial, None, error)
-        else:
-            record_background_operation(
-                _operation_name(self.function),
-                (perf_counter() - started) * 1000,
-                "complete",
-            )
-            self.signals.finished.emit(self.serial, result, None)
+            failure = error
+        record_background_operation(
+            _operation_name(self.function),
+            (perf_counter() - started) * 1000,
+            "failed" if failure is not None else "complete",
+        )
+        self.signals.finished.emit(self.serial, result, failure)
 
 
 def _operation_name(function: Callable[..., object]) -> str:

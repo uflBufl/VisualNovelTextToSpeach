@@ -436,6 +436,37 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
         self.application.processEvents()
         self.assertEqual(received, ["new"])
 
+    def test_worker_reports_one_timing_and_completion_on_success_or_failure(self):
+        for failure in (None, ValueError("Cannot capture")):
+            with self.subTest(failure=failure):
+                pool = ManualThreadPool()
+                runner = LatestTaskRunner(thread_pool=pool)
+                received = []
+                runner.finished.connect(
+                    lambda result, error: received.append((result, error))
+                )
+
+                def capture(*, value):
+                    if failure is not None:
+                        raise failure
+                    return value
+
+                runner.start(capture, value="Captured")
+                with (
+                    patch("vntts.async_ui.perf_counter", side_effect=(1.0, 1.25)),
+                    patch("vntts.async_ui.record_background_operation") as timing,
+                ):
+                    pool.tasks.pop().run()
+                self.application.processEvents()
+                self.assertEqual(
+                    received, [(None if failure is not None else "Captured", failure)]
+                )
+                timing.assert_called_once_with(
+                    "capture", 250.0, "failed" if failure is not None else "complete"
+                )
+                self.assertFalse(runner.active)
+                runner.deleteLater()
+
     def test_reentrant_start_keeps_each_task_launch_identity(self):
         pool = ManualThreadPool()
         runner = LatestTaskRunner(thread_pool=pool)
