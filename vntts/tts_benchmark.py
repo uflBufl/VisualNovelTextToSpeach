@@ -20,6 +20,7 @@ from vntts.cli import cli_error, cli_messages
 from vntts.services.tts_engine import TTSEngine
 from vntts.settings import get_local_data_directory
 from vntts.speech_backend import XTTSVoiceRouterBackend
+from vntts.speech_backend_runtime import shutdown_speech_backend
 from vntts.speech_worker import (
     create_chatterbox_worker_backend,
     create_moss_delay_worker_backend,
@@ -520,14 +521,14 @@ def benchmark_backend(
     """Finish every sample in staging before publishing this run's WAVs."""
     output_directory = Path(output_directory).expanduser().resolve()
     output_directory.parent.mkdir(parents=True, exist_ok=True)
-    created_backends: list[object] = []
+    created_backend: object | None = None
 
     def tracked_backend_factory(
         name: str, registry: CharacterVoiceRegistry, cache: PathInput
     ) -> object:
-        backend = backend_factory(name, registry, cache)
-        created_backends.append(backend)
-        return backend
+        nonlocal created_backend
+        created_backend = backend_factory(name, registry, cache)
+        return created_backend
 
     with TemporaryDirectory(
         prefix=".tts-benchmark-", dir=output_directory.parent
@@ -548,20 +549,12 @@ def benchmark_backend(
                 cpu_clock=cpu_clock,
             )
         finally:
-            stop_error = None
-            for backend in reversed(created_backends):
-                stop = getattr(backend, "stop", None)
-                try:
-                    if callable(stop):
-                        stop()
-                    shutdown = getattr(backend, "shutdown", None)
-                    if callable(shutdown):
-                        shutdown()
-                except Exception as error:  # pragma: no cover - backend-specific
-                    if stop_error is None:
-                        stop_error = error
-            if stop_error is not None and sys.exc_info()[0] is None:
-                raise stop_error
+            failed = sys.exc_info()[0] is not None
+            try:
+                shutdown_speech_backend(created_backend)
+            except Exception:
+                if not failed:
+                    raise
 
         staging_root = Path(staging_directory).resolve()
         publications: list[tuple[BenchmarkSampleReport, Path, Path]] = []

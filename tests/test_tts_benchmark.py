@@ -3,7 +3,7 @@ import json
 import os
 import unittest
 import wave
-from contextlib import redirect_stderr
+from contextlib import nullcontext, redirect_stderr
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -749,6 +749,52 @@ class TTSBenchmarkTest(unittest.TestCase):
             for request in backend.render_requests
         }
         self.assertEqual(len(identities), 1)
+
+    def test_shutdown_releases_backend_and_preserves_primary_errors(self):
+        class ShutdownBackend(FakeRenderingBackend):
+            def __init__(self, limited, shutdown_fails):
+                super().__init__(
+                    completions=(
+                        SynthesisCompletion.LIMITED
+                        if limited
+                        else SynthesisCompletion.COMPLETE,
+                    )
+                )
+                self.shutdown_fails = shutdown_fails
+                self.shutdown_calls = 0
+
+            def stop(self):
+                raise AssertionError("stop cannot release an owned worker")
+
+            def shutdown(self):
+                self.shutdown_calls += 1
+                if self.shutdown_fails:
+                    raise RuntimeError("shutdown failed")
+
+        for limited, shutdown_fails, error in (
+            (False, False, None),
+            (False, True, "shutdown failed"),
+            (True, True, "limited"),
+        ):
+            with self.subTest(error=error), TemporaryDirectory() as directory:
+                backend = ShutdownBackend(limited, shutdown_fails)
+                output = Path(directory) / "output"
+                expected = (
+                    self.assertRaisesRegex(RuntimeError, error)
+                    if error
+                    else nullcontext()
+                )
+                with expected:
+                    benchmark_backend(
+                        "fake",
+                        CharacterVoiceRegistry(),
+                        ["Kamuta"],
+                        "Text",
+                        output,
+                        backend_factory=lambda _name, _registry, _cache: backend,
+                    )
+                self.assertEqual(backend.shutdown_calls, 1)
+                self.assertEqual(len(list(output.glob("*.wav"))), 0 if error else 1)
 
 
 if __name__ == "__main__":

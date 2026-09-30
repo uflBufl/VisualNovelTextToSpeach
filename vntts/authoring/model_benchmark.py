@@ -32,6 +32,7 @@ from vntts.authoring.speech_quality import measure_generated_speech_bytes
 from vntts.cli import cli_error, cli_messages
 from vntts.document_identity import canonical_document_sha256
 from vntts.settings import get_local_data_directory
+from vntts.speech_backend_runtime import shutdown_speech_backend
 from vntts.synthesis import (
     SynthesisCachePolicy,
     SynthesisCompletion,
@@ -1114,7 +1115,7 @@ def _render_benchmark_variant(
     except (TypeError, ValueError) as error:
         raise ModelBenchmarkError(str(error)) from error
     try:
-        return benchmark_renderer(
+        report = benchmark_renderer(
             variant,
             backend,
             samples,
@@ -1124,10 +1125,14 @@ def _render_benchmark_variant(
             voice_controls_sha256=voice_controls_sha256,
             voice_controls_content_sha256=voice_controls_content_sha256,
         )
-    finally:
-        stop = getattr(backend, "stop", None)
-        if callable(stop):
-            stop()
+    except BaseException:
+        try:
+            shutdown_speech_backend(backend)
+        except BaseException:
+            pass
+        raise
+    shutdown_speech_backend(backend)
+    return report
 
 
 def _publish_benchmark_staging(staging_root: Path, output_directory: Path) -> None:

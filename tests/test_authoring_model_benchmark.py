@@ -76,7 +76,48 @@ class FakeRenderBackend:
         return False
 
 
+class ShutdownRenderBackend(FakeRenderBackend):
+    def __init__(self, *arguments, shutdown_error=None, **keywords):
+        super().__init__(*arguments, **keywords)
+        self.shutdown_error = shutdown_error
+        self.shutdown_calls = 0
+        self.stop_calls = 0
+
+    def stop(self):
+        self.stop_calls += 1
+        return False
+
+    def shutdown(self):
+        self.shutdown_calls += 1
+        if self.shutdown_error is not None:
+            raise self.shutdown_error
+
+
 class AuthoringModelBenchmarkTest(unittest.TestCase):
+    @staticmethod
+    def _write_strict_corpus(root):
+        corpus = root / "corpus.json"
+        text = "Exact shared line."
+        corpus.write_text(
+            json.dumps(
+                {
+                    "schema": "vntts.tts-benchmark-corpus",
+                    "schema_version": 1,
+                    "samples": [
+                        {
+                            "id": "one",
+                            "line_id": "line-one",
+                            "character": "Voice",
+                            "text": text,
+                            "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return corpus
+
     def test_comparison_manifest_rejects_reference_symlink_outside_root(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -863,6 +904,66 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
         self.assertTrue(
             all(backend.requests[0].text == " Same line. " for backend in backends)
         )
+
+    def test_benchmark_shutdowns_each_backend_before_publication(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = self._write_strict_corpus(root)
+            backend = ShutdownRenderBackend()
+
+            output = root / "output"
+            benchmark_model_variants(
+                corpus,
+                (ModelVariant("managed", "fake"),),
+                CharacterVoiceRegistry(),
+                output,
+                backend_factory=lambda *_arguments, **_keywords: backend,
+            )
+
+            self.assertEqual(backend.shutdown_calls, 1)
+            self.assertEqual(backend.stop_calls, 0)
+            self.assertTrue(output.is_dir())
+
+    def test_benchmark_shutdown_failure_blocks_publication(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = self._write_strict_corpus(root)
+            backend = ShutdownRenderBackend(shutdown_error=RuntimeError("cleanup"))
+
+            output = root / "output"
+            with self.assertRaisesRegex(RuntimeError, "cleanup"):
+                benchmark_model_variants(
+                    corpus,
+                    (ModelVariant("managed", "fake"),),
+                    CharacterVoiceRegistry(),
+                    output,
+                    backend_factory=lambda *_arguments, **_keywords: backend,
+                )
+
+            self.assertEqual(backend.shutdown_calls, 1)
+            self.assertFalse(output.exists())
+
+    def test_benchmark_preserves_renderer_error_when_shutdown_also_fails(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = self._write_strict_corpus(root)
+            backend = ShutdownRenderBackend(
+                backend_name="different",
+                shutdown_error=RuntimeError("cleanup"),
+            )
+
+            output = root / "output"
+            with self.assertRaisesRegex(ModelBenchmarkError, "different request"):
+                benchmark_model_variants(
+                    corpus,
+                    (ModelVariant("managed", "fake"),),
+                    CharacterVoiceRegistry(),
+                    output,
+                    backend_factory=lambda *_arguments, **_keywords: backend,
+                )
+
+            self.assertEqual(backend.shutdown_calls, 1)
+            self.assertFalse(output.exists())
 
     def test_multi_model_benchmark_publishes_its_validated_corpus(self):
         with TemporaryDirectory() as directory:
