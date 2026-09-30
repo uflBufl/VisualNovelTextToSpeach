@@ -606,6 +606,7 @@ class TTSBenchmarkTest(unittest.TestCase):
 
     def test_rejects_conflicting_schema_identity_and_duplicate_ids(self):
         documents = (
+            {"schema": [], "schema_version": 1, "samples": []},
             {
                 "schema": "unrelated.corpus",
                 "schema_version": 1,

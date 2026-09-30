@@ -387,7 +387,7 @@ def load_tts_benchmark_corpus(path: PathInput) -> BenchmarkCorpus:
         document_name="TTS benchmark corpus",
     )
     declared_schema = document.get("schema")
-    if declared_schema not in {None, TTS_BENCHMARK_CORPUS_SCHEMA}:
+    if declared_schema is not None and declared_schema != TTS_BENCHMARK_CORPUS_SCHEMA:
         raise ValueError(
             f"Unsupported TTS benchmark corpus schema: {declared_schema!r}"
         )
@@ -433,10 +433,6 @@ def load_tts_benchmark_corpus(path: PathInput) -> BenchmarkCorpus:
         line_id = str(sample["line_id"]) if strict else sample_id
         text_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
         if strict:
-            if not sample.get("id") or not sample.get("line_id"):
-                raise ValueError(
-                    f"Strict TTS benchmark sample {index} requires id and line_id"
-                )
             if sample.get("text_sha256") != text_digest:
                 raise ValueError(
                     f"TTS benchmark sample {index} text_sha256 does not match exact text"
