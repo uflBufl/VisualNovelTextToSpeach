@@ -716,6 +716,22 @@ class RuntimeSupportLogTest(unittest.TestCase):
 
 
 class PerformanceLogTest(unittest.TestCase):
+    def test_report_retains_oversized_event_marker_without_aggregating_it(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "performance.log"
+            log = PerformanceLog(path=path, maximum_bytes=256)
+            log.record("scan", 125.4, "complete", cache_state="x" * 500)
+
+            report = log.report()
+            persisted = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(report["summary"], {})
+        self.assertEqual(report["events"], [persisted])
+        self.assertEqual(
+            persisted["message"],
+            "<runtime event exceeded persistent log limit>",
+        )
+
     def test_reports_only_slow_successes_and_all_failures(self):
         log = PerformanceLog()
 

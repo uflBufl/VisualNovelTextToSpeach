@@ -587,7 +587,7 @@ class PerformanceLog(RuntimeSupportLog):
         events = [sanitize_event(entry) for entry in self.snapshot()]
         summary: dict[str, dict[str, int | float]] = {}
         for event in events:
-            operation = event["operation"]
+            operation = event.get("operation")
             elapsed_ms = event.get("elapsed_ms")
             if (
                 not isinstance(operation, str)
