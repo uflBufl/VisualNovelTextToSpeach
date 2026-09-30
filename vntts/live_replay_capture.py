@@ -760,6 +760,17 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _load_capture_story(story_path: Path) -> tuple[StoryResolver, str]:
+    payload = story_path.read_bytes()
+    digest = hashlib.sha256(payload).hexdigest()
+    resolver = ChapterVoicePreloader.load_snapshot(story_path, payload)
+    if not resolver.dialogue:
+        raise LiveReplayCaptureError("Story index has no usable dialogue")
+    if hashlib.sha256(story_path.read_bytes()).hexdigest() != digest:
+        raise LiveReplayCaptureError("Story index changed while loading")
+    return resolver, digest
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     if arguments.interval_ms is not None and arguments.interval_ms < 1:
@@ -785,15 +796,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             story_path = selected_story.resolve()
             if not story_path.is_file():
                 raise LiveReplayCaptureError("Story index is unavailable or unsafe")
-            story_sha256 = hashlib.sha256(story_path.read_bytes()).hexdigest()
-            loaded_resolver: StoryResolver = ChapterVoicePreloader.load_optional(
-                story_path
-            )
-            resolver = loaded_resolver
-            if not resolver.dialogue:
-                raise LiveReplayCaptureError("Story index has no usable dialogue")
-            if hashlib.sha256(story_path.read_bytes()).hexdigest() != story_sha256:
-                raise LiveReplayCaptureError("Story index changed while loading")
+            resolver, story_sha256 = _load_capture_story(story_path)
         except (OSError, RuntimeError, ValueError) as error:
             return int(cli_error(error))
     try:

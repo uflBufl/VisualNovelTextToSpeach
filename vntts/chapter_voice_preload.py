@@ -9,6 +9,7 @@ from difflib import SequenceMatcher
 from hashlib import sha256
 from os.path import commonprefix
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import TypeAlias
 
 from vntts_artifacts.story_index import (
@@ -162,6 +163,23 @@ class ChapterVoicePreloader:
                 )
             )
         return cls(rows, lookahead_rows=lookahead_rows)
+
+    @classmethod
+    def load_snapshot(
+        cls, path: str | Path, payload: bytes, *, lookahead_rows: int = 80
+    ) -> ChapterVoicePreloader:
+        """Load captured story bytes with their optional checksum-bound evidence."""
+        with TemporaryDirectory(prefix="vntts-story-snapshot-") as directory:
+            snapshot = Path(directory) / "story-index.jsonl"
+            snapshot.write_bytes(payload)
+            evidence = Path(path).with_name("source-audio-semantic-evidence.json")
+            try:
+                if evidence.is_file() and not evidence.is_symlink():
+                    snapshot.with_name(evidence.name).write_bytes(evidence.read_bytes())
+            except OSError:
+                # Unavailable optional evidence cannot authorise source audio.
+                pass
+            return cls.load_optional(snapshot, lookahead_rows=lookahead_rows)
 
     @classmethod
     def load_optional(

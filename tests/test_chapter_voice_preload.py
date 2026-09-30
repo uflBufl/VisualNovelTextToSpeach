@@ -888,6 +888,26 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
         self.assertEqual(line.source_audio_completeness, "full")
         self.assertTrue(line.source_audio_authoritative)
 
+    def test_snapshot_preserves_verified_audio_and_rejects_changed_evidence(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "story-index.jsonl"
+            write_verified_source_story(path)
+            payload = path.read_bytes()
+            path.write_bytes(b"unbound replacement")
+            line = ChapterVoicePreloader.load_snapshot(path, payload).dialogue[0]
+            self.assertEqual(line.source_audio_duration_seconds, 1.25)
+            self.assertEqual(line.source_audio_completeness, "full")
+            self.assertTrue(line.source_audio_authoritative)
+
+            evidence = path.with_name("source-audio-semantic-evidence.json")
+            evidence.write_bytes(b"{}")
+            line = ChapterVoicePreloader.load_snapshot(path, payload).dialogue[0]
+            self.assertFalse(line.source_audio_authoritative)
+            self.assertEqual(line.source_audio_completeness, "unknown")
+            evidence.unlink()
+            line = ChapterVoicePreloader.load_snapshot(path, payload).dialogue[0]
+            self.assertFalse(line.source_audio_authoritative)
+
     def test_invalid_source_audio_completion_duration_is_ignored(self):
         document = dialogue_document()
         document["dialogue"][0].update(

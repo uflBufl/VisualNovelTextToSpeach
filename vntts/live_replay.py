@@ -1664,8 +1664,6 @@ def _decode_json_object(payload: bytes, document_name: str) -> JsonObject:
 def _required_sha256(value: object, label: str) -> str:
     if not is_lowercase_sha256(value):
         raise ValueError(f"{label} must be a lowercase SHA-256 digest")
-    if not isinstance(value, str):
-        raise ValueError(f"{label} must be a lowercase SHA-256 digest")
     return value
 
 
@@ -1780,7 +1778,7 @@ def _live_sequence_binding(
             "expected and focus_probes"
         )
     mode = value.get("mode")
-    if mode not in LIVE_REPLAY_SEQUENCE_MODES:
+    if not isinstance(mode, str) or mode not in LIVE_REPLAY_SEQUENCE_MODES:
         raise ValueError(f"Unsupported live replay sequence mode: {mode!r}")
     story_index = _replay_file_binding(
         document_path,
@@ -1798,11 +1796,16 @@ def _live_sequence_binding(
         not isinstance(item, bool) for item in focus_probes
     ):
         raise ValueError("Live replay focus_probes must be a list of booleans")
-    try:
-        plan = LiveSequencePlan.load(plan_binding.path, story_index.path)
-    except Exception as error:
-        raise ValueError(f"Live replay sequence binding is invalid: {error}") from error
-    resolver = ChapterVoicePreloader.load_optional(story_index.path)
+    binding = LiveReplaySequenceBinding(
+        mode,
+        story_index,
+        plan_binding,
+        expectation,
+        tuple(item for item in focus_probes if isinstance(item, bool)),
+    )
+    with _live_sequence_snapshot(binding) as snapshot:
+        assert snapshot is not None
+        plan, resolver, _story_path, _plan_path = snapshot
     dialogue_event_ids = tuple(item.event_id for item in dialogue)
     dialogue_line_ids = tuple(item.line_id for item in dialogue)
     if expectation.event_ids != dialogue_event_ids:
@@ -1862,13 +1865,7 @@ def _live_sequence_binding(
             raise ValueError(
                 "Live replay dialogue must follow a bounded visible sequence path"
             )
-    return LiveReplaySequenceBinding(
-        mode,
-        story_index,
-        plan_binding,
-        expectation,
-        tuple(item for item in focus_probes if isinstance(item, bool)),
-    )
+    return binding
 
 
 def _replay_file_binding(
@@ -2069,7 +2066,7 @@ def _live_sequence_snapshot(
             raise ValueError(
                 f"Live replay sequence snapshot is invalid: {error}"
             ) from error
-        resolver = ChapterVoicePreloader.load_optional(snapshot_story)
+        resolver = ChapterVoicePreloader.load_snapshot(story_path, story_payload)
         yield plan, resolver, snapshot_story, snapshot_plan
 
 

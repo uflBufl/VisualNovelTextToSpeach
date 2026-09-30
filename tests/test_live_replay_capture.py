@@ -23,6 +23,7 @@ from vntts.live_replay_capture import (
     capture_replay_session,
 )
 from vntts.ocr import OCRResult
+from vntts.settings import AppSettings
 
 
 class FakeStoryResolver:
@@ -39,6 +40,7 @@ class FakeStoryResolver:
             chapter: [line for line in self.known.values() if line.chapter == chapter]
             for chapter in {line.chapter for line in self.known.values()}
         }
+        self.dialogue = tuple(self.known.values())
         self.speaker_names = {
             "rhiannon": "Rhiannon",
             "hotelier": "Hotelier",
@@ -76,6 +78,65 @@ def frame(color):
 
 
 class LiveReplayCaptureTest(unittest.TestCase):
+    def test_capture_story_loader_uses_one_snapshot_and_keeps_optional_evidence(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story = root / "story.jsonl"
+            story.write_bytes(b"original story")
+            evidence = story.with_name("source-audio-semantic-evidence.json")
+            evidence.write_bytes(b"optional evidence")
+            original = story.read_bytes()
+
+            def load_during_replacement(snapshot, **_kwargs):
+                story.write_bytes(b"unbound replacement")
+                try:
+                    self.assertEqual(snapshot.read_bytes(), original)
+                    self.assertEqual(
+                        snapshot.with_name(evidence.name).read_bytes(),
+                        b"optional evidence",
+                    )
+                    return FakeStoryResolver()
+                finally:
+                    story.write_bytes(original)
+
+            output = root / "capture"
+            result = SimpleNamespace(
+                dialogue_count=1,
+                frame_count=1,
+                boundary_review_count=0,
+                corpus=output / "corpus.json",
+                report=output / "capture-report.json",
+            )
+            with (
+                patch(
+                    "vntts.live_replay_capture.ChapterVoicePreloader.load_optional",
+                    side_effect=load_during_replacement,
+                ),
+                patch(
+                    "vntts.live_replay_capture.load_app_settings",
+                    return_value=AppSettings(),
+                ),
+                patch("vntts.live_replay_capture.GameProfileStore.load") as profiles,
+                patch("vntts.live_replay_capture.get_dialog_region", return_value=None),
+                patch("vntts.live_replay_capture.OCRCorrectionStore.load"),
+                patch(
+                    "vntts.live_replay_capture.capture_replay_session",
+                    return_value=result,
+                ) as capture,
+            ):
+                profiles.return_value.get.return_value = None
+                self.assertEqual(
+                    live_replay_capture.main(
+                        [str(output), "--story-index", str(story)]
+                    ),
+                    0,
+                )
+            session = capture.call_args.args[0]
+            self.assertTrue(session.story_resolver.dialogue)
+            self.assertEqual(
+                session.story_index_sha256, hashlib.sha256(original).hexdigest()
+            )
+
     def test_invalid_capture_limits_fail_before_capturing(self):
         invalid = (
             *(

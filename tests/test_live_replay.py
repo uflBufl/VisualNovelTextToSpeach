@@ -16,10 +16,15 @@ from vntts_artifacts.generated_audio import text_sha256, write_generated_audio_m
 from vntts_artifacts.live_sequence import write_live_sequence_plan
 
 from tests.symlink_support import symlink_or_skip
+from tests.test_chapter_voice_preload import write_verified_source_story
 from vntts.dialog_capture import CapturedDialogFrame
 from vntts.live_replay import (
     LiveReplayRunner,
+    LiveReplaySequenceBinding,
+    LiveReplaySequenceExpectation,
+    ReplayFileBinding,
     ReplayFrameSource,
+    _live_sequence_snapshot,
     _load_frame,
     _recognize_replay_frame,
     _sequence_replay_metrics,
@@ -1145,6 +1150,108 @@ class LiveReplayTest(unittest.TestCase):
             story.write_bytes(story.read_bytes() + b"\n")
             with self.assertRaisesRegex(ValueError, "story index changed"):
                 LiveReplayRunner(corpus).run()
+
+    def test_sequence_snapshot_preserves_verified_source_audio(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            story = root / "story-index.jsonl"
+            write_verified_source_story(story)
+            plan = root / "live-sequence.json"
+            write_live_sequence_plan(
+                plan,
+                {
+                    "game_id": "replay-test",
+                    "producer": {"name": "tests", "version": "1"},
+                    "source_extract_sha256": hashlib.sha256(b"fixture").hexdigest(),
+                    "chapters": [
+                        {
+                            "chapter": "24006",
+                            "entry_event_ids": ["event-1"],
+                            "events": [
+                                {
+                                    "event_id": "event-1",
+                                    "sequence": 1,
+                                    "kind": "speech",
+                                    "control": "terminal",
+                                    "successors": [],
+                                    "line_id": "test:0",
+                                }
+                            ],
+                        }
+                    ],
+                },
+                story,
+            )
+            binding = LiveReplaySequenceBinding(
+                "shadow",
+                ReplayFileBinding(root, story.name, story, sha256_file(story)),
+                ReplayFileBinding(root, plan.name, plan, sha256_file(plan)),
+                LiveReplaySequenceExpectation(("event-1",), ("test:0",), 1, 0, 0, 0),
+            )
+            with _live_sequence_snapshot(binding) as snapshot:
+                self.assertIsNotNone(snapshot)
+                line = snapshot[1].dialogue[0]
+            self.assertTrue(line.source_audio_authoritative)
+            self.assertEqual(line.source_audio_completeness, "full")
+
+    def test_sequence_validation_uses_captured_plan_bytes(self):
+        with TemporaryDirectory() as directory:
+            path = self.create_sequence_corpus(
+                directory,
+                mode="shadow",
+                story_lines=[
+                    {
+                        "line_id": "story:1",
+                        "chapter": "1",
+                        "sequence": 1,
+                        "speaker": "Ada",
+                        "text": "Bound bytes.",
+                    }
+                ],
+                events=[
+                    {
+                        "event_id": "event-1",
+                        "sequence": 1,
+                        "kind": "speech",
+                        "control": "terminal",
+                        "successors": [],
+                        "line_id": "story:1",
+                    }
+                ],
+                dialogue_line_ids=("story:1",),
+                expected_counts={
+                    "ocr_calls": 1,
+                    "bounded_recoveries": 0,
+                    "key_dispatch_attempts": 0,
+                    "confirmed_key_dispatches": 0,
+                },
+            )
+            plan_path = Path(directory) / "live-sequence.json"
+            original = plan_path.read_bytes()
+            document = json.loads(original)
+            expected_game_id = document["game_id"]
+            document["game_id"] = "unbound replacement"
+            observed_game_ids = []
+            from vntts.live_sequence import LiveSequencePlan
+
+            load = LiveSequencePlan.load
+
+            def load_during_replacement(selected_plan, selected_story):
+                plan_path.write_text(json.dumps(document), encoding="utf-8")
+                try:
+                    plan = load(selected_plan, selected_story)
+                    observed_game_ids.append(plan.game_id)
+                    return plan
+                finally:
+                    plan_path.write_bytes(original)
+
+            with patch(
+                "vntts.live_replay.LiveSequencePlan.load",
+                side_effect=load_during_replacement,
+            ):
+                load_live_replay_corpus(path)
+
+            self.assertEqual(observed_game_ids, [expected_game_id])
 
     def test_unverified_game_audio_falls_back_without_blocking_auto_advance(self):
         with TemporaryDirectory() as temporary_directory:
