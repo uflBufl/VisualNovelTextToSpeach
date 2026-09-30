@@ -372,8 +372,7 @@ class NativeResourceSampler:
                 "status": self._gpu_status,
                 "sample_count": self._gpu_sample_count,
                 "boards": [
-                    _gpu_board_snapshot(board)
-                    for _, board in sorted(tuple(self._gpu_boards.items()))
+                    board.copy() for _, board in sorted(tuple(self._gpu_boards.items()))
                 ],
             },
         }
@@ -403,18 +402,6 @@ def _gpu_boards(output: str) -> list[GpuBoardSample]:
             }
         )
     return boards
-
-
-def _gpu_board_snapshot(board: GpuBoardSnapshot) -> GpuBoardSnapshot:
-    return {
-        "logical_index": board["logical_index"],
-        "driver_version": board["driver_version"],
-        "utilization_percent_peak": board["utilization_percent_peak"],
-        "utilization_percent_mean": board["utilization_percent_mean"],
-        "utilization_sample_count": board["utilization_sample_count"],
-        "vram_used_bytes_peak": board["vram_used_bytes_peak"],
-        "vram_total_bytes": board["vram_total_bytes"],
-    }
 
 
 def _subprocess_options() -> SubprocessOptions:
