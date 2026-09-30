@@ -66,6 +66,14 @@ class LiveReplayTest(unittest.TestCase):
                     expected,
                 )
 
+    def test_replay_limits_are_validated_before_running(self):
+        corpus = SimpleNamespace(dialogue=(object(),))
+        for field in ("interval_seconds", "timeout_seconds"):
+            for value in (float("nan"), float("inf"), 0.0, -1.0):
+                with self.subTest(field=field, value=value):
+                    with self.assertRaisesRegex(ValueError, "finite and positive"):
+                        LiveReplayRunner(corpus, **{field: value})
+
     def test_audio_stack_uses_one_strict_source_audio_contract(self):
         runner = object.__new__(LiveReplayRunner)
         runner.corpus = SimpleNamespace(

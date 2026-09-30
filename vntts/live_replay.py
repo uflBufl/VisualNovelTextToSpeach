@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import io
 import json
+import math
 import os
 import stat
 from collections import Counter
@@ -629,6 +630,10 @@ class LiveReplayRunner:
         self.recognizer = recognizer or _recognize_replay_frame
         self.interval_seconds = float(interval_seconds)
         self.timeout_seconds = float(timeout_seconds)
+        if not math.isfinite(self.interval_seconds) or self.interval_seconds <= 0:
+            raise ValueError("Live replay interval must be finite and positive")
+        if not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
+            raise ValueError("Live replay timeout must be finite and positive")
         self.audio_source_policy = audio_source_policy
 
     def run(self) -> ReplayReport:

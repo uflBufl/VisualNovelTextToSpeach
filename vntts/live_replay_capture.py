@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import io
 import json
+import math
 import os
 import tempfile
 import time
@@ -637,6 +638,16 @@ def capture_replay_session(
     focused: Callable[[], bool] = lambda: True,
 ) -> CapturedReplayResult:
     """Capture distinct accepted observations until a bound software limit."""
+    if not math.isfinite(interval_seconds) or interval_seconds < 0:
+        raise LiveReplayCaptureError("Capture interval must be finite and non-negative")
+    if duration_seconds is not None and (
+        not math.isfinite(duration_seconds) or duration_seconds <= 0
+    ):
+        raise LiveReplayCaptureError("Capture duration must be finite and positive")
+    if maximum_frames is not None and (
+        type(maximum_frames) is not int or maximum_frames < 1
+    ):
+        raise LiveReplayCaptureError("Accepted-frame limit must be a positive integer")
     started = clock()
     last_fingerprint = object()
     while True:
@@ -753,8 +764,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     if arguments.interval_ms is not None and arguments.interval_ms < 1:
         return int(cli_error("interval-ms must be positive"))
-    if arguments.duration_seconds is not None and arguments.duration_seconds <= 0:
-        return int(cli_error("duration-seconds must be positive"))
+    if arguments.duration_seconds is not None and (
+        not math.isfinite(arguments.duration_seconds) or arguments.duration_seconds <= 0
+    ):
+        return int(cli_error("duration-seconds must be finite and positive"))
     if arguments.max_accepted_frames is not None and arguments.max_accepted_frames < 1:
         return int(cli_error("max-accepted-frames must be positive"))
     settings = load_app_settings()

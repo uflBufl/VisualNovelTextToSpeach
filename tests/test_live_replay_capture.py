@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from PIL import Image, ImageDraw
 
@@ -76,6 +76,33 @@ def frame(color):
 
 
 class LiveReplayCaptureTest(unittest.TestCase):
+    def test_invalid_capture_limits_fail_before_capturing(self):
+        invalid = (
+            *(
+                dict(interval_seconds=value)
+                for value in (float("nan"), float("inf"), -1)
+            ),
+            *(
+                dict(duration_seconds=value)
+                for value in (float("nan"), float("inf"), 0, -1)
+            ),
+            *(dict(maximum_frames=value) for value in (True, 1.5, 0)),
+        )
+        for options in invalid:
+            with self.subTest(options=options), TemporaryDirectory() as directory:
+                session = LiveReplayCaptureSession(Path(directory) / "capture")
+                capture = Mock(side_effect=AssertionError("must not capture"))
+                with self.assertRaises(LiveReplayCaptureError):
+                    capture_replay_session(
+                        session,
+                        capture_frame=capture,
+                        recognize_frame=lambda _frame: ("Ada", "Line."),
+                        **(dict(interval_seconds=0) | options),
+                    )
+                capture.assert_not_called()
+                self.assertEqual(session.frame_count, 0)
+                self.assertFalse((session.directory / "corpus.json").exists())
+
     def test_capture_groups_prefixes_and_publishes_loadable_exact_frames(self):
         with TemporaryDirectory() as directory:
             root = Path(directory) / "capture"
