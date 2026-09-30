@@ -18,7 +18,10 @@ CacheValue = TypeVar("CacheValue")
 
 
 def _prepared_audio(value: object) -> AudioArray | None:
-    audio: AudioArray = np.asarray(value, dtype=np.float32)
+    try:
+        audio: AudioArray = np.asarray(value, dtype=np.float32)
+    except TypeError, ValueError, OverflowError:
+        return None
     if audio.ndim not in {1, 2}:
         audio = np.atleast_1d(audio.squeeze())
     if audio.ndim not in {1, 2} or audio.size == 0 or not np.all(np.isfinite(audio)):
@@ -105,9 +108,11 @@ class PersistentAudioCache:
         if path is None:
             return None
         try:
-            with atomic_output_path(path) as temporary:
-                with temporary.open("wb") as destination:
-                    np.save(destination, prepared, allow_pickle=False)
+            with (
+                atomic_output_path(path) as temporary,
+                temporary.open("wb") as destination,
+            ):
+                np.save(destination, prepared, allow_pickle=False)
             self._touch_newest(path)
             self._prune()
         except OSError:

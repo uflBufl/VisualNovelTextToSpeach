@@ -89,6 +89,18 @@ class PersistentAudioCacheTest(unittest.TestCase):
         self.assertIsNotNone(path)
         np.testing.assert_allclose(audio, [0.1, -0.1])
 
+    def test_uncacheable_audio_preserves_the_existing_entry(self):
+        with TemporaryDirectory() as directory:
+            cache = PersistentAudioCache(directory)
+            expected = np.array([0.1, -0.1], dtype=np.float32)
+            path = cache.put("existing", expected)
+            original = path.read_bytes()
+            for value in ("not audio", [[0.1], [0.2, 0.3]], {}, [10**1000]):
+                with self.subTest(value_type=type(value).__name__):
+                    self.assertIsNone(cache.put("existing", value))
+                    self.assertEqual(path.read_bytes(), original)
+                    np.testing.assert_array_equal(cache.get("existing"), expected)
+
     def test_recency_update_failure_does_not_hide_valid_audio(self):
         with TemporaryDirectory() as temporary_directory:
             cache = PersistentAudioCache(temporary_directory)
