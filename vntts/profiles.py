@@ -185,11 +185,11 @@ class GameProfileStore:
         path: PathInput | None = None,
         *,
         warn: WarningHandler | None = None,
-    ) -> GameProfileStore:
+    ) -> Self:
         report: WarningHandler = (lambda _message: None) if warn is None else warn
         store = cls(path)
 
-        def decode(payload: dict[str, object]) -> GameProfileStore:
+        def decode(payload: dict[str, object]) -> None:
             profile_documents = payload["profiles"]
             if not isinstance(profile_documents, list):
                 raise ValueError("profiles must be a list")
@@ -207,14 +207,12 @@ class GameProfileStore:
             if len(store.profiles) != len(profile_documents):
                 raise ValueError("profiles must contain objects")
             store._ensure_unique_profiles(store.profiles)
-            return store
 
-        def fallback() -> GameProfileStore:
+        def fallback() -> None:
             store.profiles = []
             store._revision = None
-            return store
 
-        return load_versioned_json(
+        load_versioned_json(
             store.path,
             schema_version=profiles_schema_version,
             document_name="game profiles",
@@ -223,6 +221,7 @@ class GameProfileStore:
             warn=report,
             allow_older=True,
         )
+        return store
 
     def save(self) -> Path:
         return self._save_profiles(self.profiles)
