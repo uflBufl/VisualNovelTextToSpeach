@@ -146,7 +146,7 @@ class DurableSettingsMixin:
             return
         self.settings = candidate
         self._update_auto_advance_action()
-        self.controller.apply_settings(candidate)
+        # The successful setup test already applied and started this draft.
         self.dashboard.set_configuration(candidate)
         self._refresh_preparation_settings()
         self.set_ready(self.controller.is_ready)

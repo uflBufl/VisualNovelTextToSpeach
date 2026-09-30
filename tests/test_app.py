@@ -10,7 +10,14 @@ from unittest.mock import ANY, Mock, call, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QCoreApplication, QEvent, Qt, QTimer  # noqa: E402
+from PySide6.QtCore import (  # noqa: E402
+    QCoreApplication,
+    QEvent,
+    QRunnable,
+    Qt,
+    QThreadPool,
+    QTimer,
+)
 from PySide6.QtGui import QFont  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
@@ -52,6 +59,11 @@ def delete_dialog(dialog):
     dialog.close()
     dialog.deleteLater()
     QCoreApplication.sendPostedEvents(dialog, QEvent.Type.DeferredDelete)
+
+
+class ImmediateTaskPool(QThreadPool):
+    def start(self, runnable: QRunnable, priority: int = 0) -> None:
+        runnable.run()
 
 
 class TrayApplicationTest(unittest.TestCase):
@@ -5566,16 +5578,10 @@ class TrayApplicationTest(unittest.TestCase):
             "Click Start reading when ready", tray_application.status_action.text()
         )
         controller.toggle_live.assert_not_called()
+        controller.apply_settings.assert_not_called()
         tray_application.shutdown()
 
     def test_onboarding_test_runs_controller_end_to_end(self):
-        class ImmediateThread:
-            def __init__(self, *, target, daemon):
-                self.target = target
-
-            def start(self):
-                self.target()
-
         controller = Mock()
         controller.start.return_value = True
         controller.test_current_dialog.return_value = (
@@ -5592,10 +5598,10 @@ class TrayApplicationTest(unittest.TestCase):
             lambda success, message: results.append((success, message))
         )
 
-        with patch("vntts.app.Thread", ImmediateThread):
-            tray_application.run_onboarding_test(
-                AppSettings(speech_backend="coqui-xtts", tts_model="xtts_v2")
-            )
+        tray_application.onboarding_test_runner.thread_pool = ImmediateTaskPool()
+        tray_application.run_onboarding_test(
+            AppSettings(speech_backend="coqui-xtts", tts_model="xtts_v2")
+        )
 
         controller.apply_settings.assert_called_once()
         controller.model_assets.download.assert_called_once()
@@ -5616,11 +5622,9 @@ class TrayApplicationTest(unittest.TestCase):
         tray_application.signals.onboarding_test_finished.connect(
             lambda success, message: results.append((success, message))
         )
-        with patch("vntts.app.Thread") as thread:
-            tray_application.run_onboarding_test(
-                AppSettings(speech_backend="coqui-xtts", tts_model=None)
-            )
-        thread.assert_not_called()
+        tray_application.run_onboarding_test(
+            AppSettings(speech_backend="coqui-xtts", tts_model=None)
+        )
         self.assertEqual(
             results, [(False, "Select a Coqui model before testing speech.")]
         )
@@ -5629,13 +5633,6 @@ class TrayApplicationTest(unittest.TestCase):
         tray_application.shutdown()
 
     def test_onboarding_test_shuts_down_after_preview_error(self):
-        class ImmediateThread:
-            def __init__(self, *, target, daemon):
-                self.target = target
-
-            def start(self):
-                self.target()
-
         controller = Mock()
         controller.start.return_value = True
         controller.test_current_dialog.side_effect = RuntimeError("preview failed")
@@ -5649,8 +5646,8 @@ class TrayApplicationTest(unittest.TestCase):
             lambda success, message: results.append((success, message))
         )
 
-        with patch("vntts.app.Thread", ImmediateThread):
-            tray_application.run_onboarding_test(AppSettings())
+        tray_application.onboarding_test_runner.thread_pool = ImmediateTaskPool()
+        tray_application.run_onboarding_test(AppSettings())
 
         controller.shutdown.assert_called_once_with()
         self.assertEqual(
@@ -5659,14 +5656,50 @@ class TrayApplicationTest(unittest.TestCase):
         )
         tray_application.shutdown()
 
+    def test_onboarding_preview_failure_waits_for_controller_cleanup(self):
+        cleanup_entered = Event()
+        release_cleanup = Event()
+        controller = Mock()
+        controller.start.return_value = True
+        controller.test_current_dialog.side_effect = RuntimeError("preview failed")
+
+        def blocked_shutdown():
+            cleanup_entered.set()
+            release_cleanup.wait(2)
+
+        controller.shutdown.side_effect = blocked_shutdown
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        results = []
+        tray.signals.onboarding_test_finished.connect(
+            lambda success, message: results.append((success, message))
+        )
+        try:
+            tray.run_onboarding_test(AppSettings())
+            self.wait_until(cleanup_entered.is_set)
+
+            self.assertEqual(results, [])
+            self.assertTrue(tray._controller_busy)
+            self.assertTrue(tray.onboarding_test_runner.active)
+
+            release_cleanup.set()
+            self.wait_until(
+                lambda: bool(results) and not tray.onboarding_test_runner.active
+            )
+
+            self.assertEqual(
+                results,
+                [(False, "Unexpected dialog processing failure: preview failed")],
+            )
+            self.assertFalse(tray._controller_busy)
+        finally:
+            release_cleanup.set()
+            tray.shutdown()
+
     def test_onboarding_test_shuts_down_when_cancelled_after_start(self):
-        class ImmediateThread:
-            def __init__(self, *, target, daemon):
-                self.target = target
-
-            def start(self):
-                self.target()
-
         controller = Mock()
         tray_application = TrayApplication(
             self.application,
@@ -5682,8 +5715,8 @@ class TrayApplicationTest(unittest.TestCase):
             lambda success, message: results.append((success, message))
         )
 
-        with patch("vntts.app.Thread", ImmediateThread):
-            tray_application.run_onboarding_test(AppSettings())
+        tray_application.onboarding_test_runner.thread_pool = ImmediateTaskPool()
+        tray_application.run_onboarding_test(AppSettings())
 
         controller.shutdown.assert_called_once_with()
         controller.test_current_dialog.assert_not_called()
@@ -5691,13 +5724,6 @@ class TrayApplicationTest(unittest.TestCase):
         tray_application.shutdown()
 
     def test_onboarding_test_displays_the_controller_startup_error(self):
-        class ImmediateThread:
-            def __init__(self, *, target, daemon):
-                self.target = target
-
-            def start(self):
-                self.target()
-
         controller = Mock()
         controller.start.return_value = False
         controller_factory = Mock(return_value=controller)
@@ -5716,21 +5742,14 @@ class TrayApplicationTest(unittest.TestCase):
             lambda success, message: results.append((success, message))
         )
 
-        with patch("vntts.app.Thread", ImmediateThread):
-            tray_application.run_onboarding_test(AppSettings())
+        tray_application.onboarding_test_runner.thread_pool = ImmediateTaskPool()
+        tray_application.run_onboarding_test(AppSettings())
 
         self.assertFalse(results[0][0])
         self.assertIn("invalid Pioneer reference", results[0][1])
         tray_application.shutdown()
 
     def test_onboarding_worker_errors_report_failure_and_allow_retry(self):
-        class ImmediateThread:
-            def __init__(self, *, target, daemon):
-                self.target = target
-
-            def start(self):
-                self.target()
-
         controller = Mock()
         controller.start.return_value = True
         controller.test_current_dialog.return_value = ("Narrator", "Ready.")
@@ -5744,32 +5763,134 @@ class TrayApplicationTest(unittest.TestCase):
             lambda success, message: results.append((success, message))
         )
         try:
-            with patch("vntts.app.Thread", ImmediateThread):
-                for operation in (
-                    controller.apply_settings,
-                    controller.prepare_startup,
-                    controller.start,
-                ):
-                    with self.subTest(operation=operation):
-                        operation.side_effect = RuntimeError("setup failure")
-                        tray.run_onboarding_test(AppSettings())
-                        self.assertFalse(tray._onboarding_test_active)
-                        self.assertFalse(results[-1][0])
-                        self.assertIn("setup failure", results[-1][1])
-                        operation.side_effect = None
-                        tray.run_onboarding_test(AppSettings())
-                        self.assertTrue(results[-1][0])
+            tray.onboarding_test_runner.thread_pool = ImmediateTaskPool()
+            for operation in (
+                controller.apply_settings,
+                controller.prepare_startup,
+                controller.start,
+            ):
+                with self.subTest(operation=operation):
+                    operation.side_effect = RuntimeError("setup failure")
+                    tray.run_onboarding_test(AppSettings())
+                    self.assertFalse(tray.onboarding_test_runner.active)
+                    self.assertFalse(results[-1][0])
+                    self.assertIn("setup failure", results[-1][1])
+                    operation.side_effect = None
+                    tray.run_onboarding_test(AppSettings())
+                    self.assertTrue(results[-1][0])
         finally:
             tray.shutdown()
 
+    def test_onboarding_test_waits_for_settings_apply_then_settles_lifecycle(self):
+        original = AppSettings()
+        candidate = original.updated(output_volume_percent=42)
+        entered = Event()
+        release = Event()
+        controller = Mock(settings=original, is_ready=True, is_live_running=False)
+
+        def blocked_apply(settings, **_options):
+            entered.set()
+            release.wait(2)
+            controller.settings = settings
+            return True
+
+        controller.apply_settings.side_effect = blocked_apply
+        tray = TrayApplication(
+            self.application,
+            original,
+            controller_factory=Mock(return_value=controller),
+        )
+        tray.set_ready(True)
+        dialog = Mock()
+        dialog.exec.return_value = QDialog.DialogCode.Accepted
+        dialog.settings.return_value = candidate
+        results = []
+        tray.signals.onboarding_test_finished.connect(
+            lambda success, message: results.append((success, message))
+        )
+        try:
+            with (
+                patch("vntts.app.SettingsDialog", return_value=dialog),
+                patch.object(
+                    tray,
+                    "_save_settings_candidate",
+                    return_value=Path("settings.json"),
+                ),
+            ):
+                tray.open_settings()
+                self.wait_until(entered.is_set)
+                tray.run_onboarding_test(candidate)
+
+                self.assertTrue(tray.configuration_runner.active)
+                self.assertFalse(tray.onboarding_test_runner.active)
+                self.assertEqual(
+                    results,
+                    [
+                        (
+                            False,
+                            "Reading controls are updating. "
+                            "Try the test again when ready.",
+                        )
+                    ],
+                )
+                controller.request_shutdown.assert_not_called()
+
+                release.set()
+                self.wait_until(lambda: not tray.configuration_runner.active)
+
+            controller.apply_settings.side_effect = lambda settings: (
+                setattr(controller, "settings", settings) or True
+            )
+            controller.start.return_value = True
+            controller.test_current_dialog.return_value = ("Narrator", "Ready.")
+            tray.onboarding_test_runner.thread_pool = ImmediateTaskPool()
+            tray.run_onboarding_test(candidate)
+
+            self.assertTrue(results[-1][0])
+            self.assertFalse(tray._controller_busy)
+            self.assertFalse(tray.onboarding_test_runner.active)
+        finally:
+            release.set()
+            tray.shutdown()
+
+    def test_shutdown_discards_late_onboarding_test_completion(self):
+        entered = Event()
+        release = Event()
+        completed = Event()
+        controller = Mock(is_ready=True)
+
+        def blocked_apply(_settings):
+            entered.set()
+            release.wait(2)
+            completed.set()
+            return True
+
+        controller.apply_settings.side_effect = blocked_apply
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        results = []
+        tray.signals.onboarding_test_finished.connect(
+            lambda success, message: results.append((success, message))
+        )
+        try:
+            tray.run_onboarding_test(AppSettings())
+            self.wait_until(entered.is_set)
+
+            tray.shutdown()
+            self.assertFalse(tray.onboarding_test_runner.active)
+            release.set()
+            self.wait_until(completed.is_set)
+            self.application.processEvents()
+
+            self.assertEqual(results, [])
+            self.assertTrue(tray._controller_busy)
+        finally:
+            release.set()
+
     def test_pocket_onboarding_cancellation_stops_startup_and_reports_cancelled(self):
-        class ImmediateThread:
-            def __init__(self, *, target, daemon):
-                self.target = target
-
-            def start(self):
-                self.target()
-
         controller = Mock()
         tray_application = TrayApplication(
             self.application,
@@ -5785,10 +5906,8 @@ class TrayApplicationTest(unittest.TestCase):
             lambda success, message: results.append((success, message))
         )
 
-        with patch("vntts.app.Thread", ImmediateThread):
-            tray_application.run_onboarding_test(
-                AppSettings(speech_backend="pocket-tts")
-            )
+        tray_application.onboarding_test_runner.thread_pool = ImmediateTaskPool()
+        tray_application.run_onboarding_test(AppSettings(speech_backend="pocket-tts"))
 
         controller.shutdown.assert_called_once_with()
         controller.test_current_dialog.assert_not_called()

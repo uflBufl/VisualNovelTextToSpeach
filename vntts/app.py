@@ -1737,6 +1737,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.initial_start_runner = LatestTaskRunner(self)
         self.initial_start_runner.finished.connect(self._initial_start_finished)
         self._initial_start_generation: int | None = None
+        self.onboarding_test_runner = LatestTaskRunner(self)
+        self.onboarding_test_runner.finished.connect(self._onboarding_test_finished)
+        self._onboarding_test_generation: int | None = None
         self.live_scope_runner = LatestTaskRunner(self)
         self.live_scope_runner.finished.connect(self._live_scope_finished)
         self._live_scope_generation: int | None = None
@@ -1775,7 +1778,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._quit_requested = False
         self._reported_live = False
         self._reported_speech_paused = False
-        self._onboarding_test_active = False
         self.correction_store = correction_store or OCRCorrectionStore.load()
         self.hotkey_listener = None
         self.calibration_overlay: DialogRegionOverlay | None = None
@@ -2809,6 +2811,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.open_settings()
 
     def run_onboarding(self) -> None:
+        if self._controller_busy or self._shutting_down or self.live_stop_runner.active:
+            self.set_status(
+                "Reading controls are updating. Try setup again when ready."
+            )
+            return
         if self.narrator_dialog is not None:
             self.dashboard.show_voices()
             return
@@ -2867,6 +2874,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             wizard.resume_after_editor(self.settings)
 
     def run_onboarding_test(self, settings: AppSettings) -> None:
+        if self._controller_busy or self._shutting_down or self.live_stop_runner.active:
+            self.signals.onboarding_test_finished.emit(
+                False, "Reading controls are updating. Try the test again when ready."
+            )
+            return
         model_name = settings.tts_model
         if settings.speech_backend == "coqui-xtts" and not model_name:
             self.signals.onboarding_test_finished.emit(
@@ -2874,86 +2886,81 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             )
             return
         cancel_event = Event()
-        self._lifecycle_generation = self.session_owner.begin(cancel_event)
-        generation = self._lifecycle_generation
+        generation = self._begin_controller_lifecycle(cancel_event)
+        self._onboarding_test_generation = generation
         self.onboarding_cancel_event = cancel_event
-        self._onboarding_test_active = True
-
-        Thread(
-            target=lambda: self._run_owned_onboarding_test(
-                generation,
-                lambda: self._run_onboarding_check(settings, model_name, cancel_event),
-            ),
-            daemon=True,
-        ).start()
+        self.onboarding_test_runner.start(
+            self._run_owned_onboarding_test,
+            generation,
+            settings,
+            model_name,
+            cancel_event,
+        )
 
     def _run_onboarding_check(
         self, settings: AppSettings, model_name: str | None, cancel_event: Event
-    ) -> None:
+    ) -> tuple[bool, str]:
         started = preview_succeeded = False
 
-        def cancelled() -> bool:
-            if not cancel_event.is_set():
-                return False
-            self.signals.onboarding_test_finished.emit(
-                False, "OCR-to-speech test cancelled."
-            )
-            return True
-
         try:
-            if cancelled():
-                return
-            if not self._prepare_onboarding_controller(
-                settings, model_name, cancel_event, cancelled
-            ):
-                return
-            started = self.controller.start()
-            if cancelled():
-                return
+            if cancel_event.is_set():
+                return False, "OCR-to-speech test cancelled."
+            preparation_error = self._prepare_onboarding_controller(
+                settings, model_name, cancel_event
+            )
+            if preparation_error is not None:
+                return False, preparation_error
+            started = bool(self.controller.start())
+            if cancel_event.is_set():
+                return False, "OCR-to-speech test cancelled."
             if not started:
-                self.signals.onboarding_test_finished.emit(
+                return (
                     False,
                     self.last_controller_error
                     or "The speech engine could not be initialized.",
                 )
-                return
-            preview_succeeded = self._preview_onboarding_dialog(cancelled)
-        except Exception as error:
-            self.signals.onboarding_test_finished.emit(
-                False, format_runtime_error(error)
+            character, text = self.controller.test_current_dialog()
+            if cancel_event.is_set():
+                return False, "OCR-to-speech test cancelled."
+            preview_succeeded = True
+            return (
+                True,
+                f"Success. Recognized {character}: {_onboarding_preview(text)}",
             )
+        except Exception as error:
+            return False, format_runtime_error(error)
         finally:
             try:
                 if cancel_event.is_set() or (started and not preview_succeeded):
                     self.controller.shutdown()
             except Exception as error:
                 self.report_controller_error(error)
-            finally:
-                self._onboarding_test_active = False
 
     def _prepare_onboarding_controller(
         self,
         settings: AppSettings,
         model_name: str | None,
         cancel_event: Event,
-        cancelled: Callable[[], bool],
-    ) -> bool:
+    ) -> str | None:
         self.controller.apply_settings(settings)
-        if cancelled():
-            return False
+        if cancel_event.is_set():
+            return "OCR-to-speech test cancelled."
         if settings.speech_backend == "coqui-xtts" and model_name:
-            if not self._download_onboarding_model(model_name, cancel_event):
-                return False
-        if cancelled():
-            return False
+            download_error = self._download_onboarding_model(model_name, cancel_event)
+            if download_error is not None:
+                return download_error
+        if cancel_event.is_set():
+            return "OCR-to-speech test cancelled."
         self.last_controller_error = None
         self.controller.prepare_startup()
-        if cancelled():
+        if cancel_event.is_set():
             self.controller.request_shutdown()
-            return False
-        return True
+            return "OCR-to-speech test cancelled."
+        return None
 
-    def _download_onboarding_model(self, model_name: str, cancel_event: Event) -> bool:
+    def _download_onboarding_model(
+        self, model_name: str, cancel_event: Event
+    ) -> str | None:
         try:
             self.controller.model_assets.download(
                 model_name,
@@ -2966,33 +2973,36 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 if isinstance(error, ModelDownloadCancelled)
                 else f"Model download or verification failed: {error}"
             )
-            self.signals.onboarding_test_finished.emit(False, message)
-            return False
-        return True
-
-    def _preview_onboarding_dialog(self, cancelled: Callable[[], bool]) -> bool:
-        try:
-            character, text = self.controller.test_current_dialog()
-        except Exception as error:
-            self.signals.onboarding_test_finished.emit(
-                False, format_runtime_error(error)
-            )
-            return False
-        if cancelled():
-            return False
-        self.signals.onboarding_test_finished.emit(
-            True,
-            f"Success. Recognized {character}: {_onboarding_preview(text)}",
-        )
-        return True
+            return message
+        return None
 
     def _run_owned_onboarding_test(
-        self, generation: int, run_test: Callable[[], None]
+        self,
+        generation: int,
+        settings: AppSettings,
+        model_name: str | None,
+        cancel_event: Event,
+    ) -> tuple[bool, str]:
+        return self.session_owner.run(
+            generation,
+            lambda _cancellation: self._run_onboarding_check(
+                settings, model_name, cancel_event
+            ),
+            (False, "OCR-to-speech test cancelled."),
+        )
+
+    def _onboarding_test_finished(
+        self, result: tuple[bool, str], error: Exception | None
     ) -> None:
-        try:
-            self.session_owner.run(generation, lambda _cancellation: run_test(), None)
-        finally:
-            self._onboarding_test_active = False
+        generation = self._onboarding_test_generation
+        self._onboarding_test_generation = None
+        if not self._lifecycle_is_current(generation):
+            return
+        self._finish_controller_lifecycle()
+        if error is not None:
+            result = False, format_runtime_error(error)
+        self.set_ready(self.controller.is_ready)
+        self.signals.onboarding_test_finished.emit(*result)
 
     def cancel_onboarding_download(self) -> None:
         self.session_owner.cancel()
@@ -4467,6 +4477,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.initial_start_runner.cancel()
         self.profile_restart_runner.cancel()
         self.configuration_runner.cancel()
+        self.onboarding_test_runner.cancel()
+        self._onboarding_test_generation = None
         self.moss_runtime_runner.cancel()
         if self._pregeneration_activation_cancellation is not None:
             self._pregeneration_activation_cancellation.set()
