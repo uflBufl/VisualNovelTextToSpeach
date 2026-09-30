@@ -4314,6 +4314,62 @@ class TrayApplicationTest(unittest.TestCase):
         )
         tray_application.shutdown()
 
+    def test_calibration_overlay_blocks_reentry_until_it_closes(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock(is_live_running=False)),
+        )
+        overlay = Mock()
+        try:
+            with (
+                patch("vntts.app.show_calibration_overlay", return_value=overlay),
+                patch("vntts.app.QTimer.singleShot") as schedule_capture,
+                patch.object(tray, "restore_control_window") as restore,
+            ):
+                tray._open_calibration_overlay(None, Mock())
+                close_overlay = overlay.closed.connect.call_args.args[0]
+
+                tray.calibrate()
+                schedule_capture.assert_not_called()
+
+                close_overlay()
+                self.assertIsNone(tray.calibration_overlay)
+                overlay.deleteLater.assert_called_once_with()
+                restore.assert_called_once_with()
+
+                tray.calibrate()
+                schedule_capture.assert_called_once_with(
+                    200, tray._start_calibration_capture
+                )
+        finally:
+            tray.shutdown()
+
+    def test_shutdown_closes_calibration_overlay_without_restoring_controls(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        overlay = Mock()
+        try:
+            with (
+                patch("vntts.app.show_calibration_overlay", return_value=overlay),
+                patch.object(tray, "restore_control_window") as restore,
+            ):
+                tray._open_calibration_overlay(None, Mock())
+                close_overlay = overlay.closed.connect.call_args.args[0]
+                overlay.close.side_effect = close_overlay
+
+                tray.shutdown()
+
+                overlay.close.assert_called_once_with()
+                overlay.deleteLater.assert_called_once_with()
+                self.assertIsNone(tray.calibration_overlay)
+                restore.assert_not_called()
+        finally:
+            tray.shutdown()
+
     def test_slow_calibration_capture_keeps_ui_responsive(self):
         started = Event()
         release = Event()

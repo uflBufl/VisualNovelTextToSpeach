@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -37,6 +37,107 @@ class DialogRegionOverlayTest(unittest.TestCase):
                 return
             QTest.qWait(5)
         self.fail("Timed out waiting for calibration OCR")
+
+    def test_review_failure_keeps_selection_visible_and_retryable(self):
+        for stage in ("construction", "execution"):
+            with self.subTest(stage=stage):
+                reviewer = Mock()
+                if stage == "construction":
+                    reviewer.side_effect = RuntimeError("review failed")
+                else:
+                    reviewer.return_value.exec.side_effect = RuntimeError(
+                        "review failed"
+                    )
+                save = Mock()
+                overlay = DialogRegionOverlay(
+                    background=Image.new("RGB", (800, 450), "black"),
+                    reviewer=reviewer,
+                    save_region=save,
+                )
+                self.addCleanup(overlay.deleteLater)
+                self.addCleanup(overlay.close)
+                overlay.resize(800, 450)
+                overlay.origin = QPoint(80, 270)
+                overlay.current = QPoint(720, 414)
+                overlay.show()
+
+                overlay._review_rectangle(QRect(80, 270, 640, 144))
+
+                self.assertTrue(overlay.isVisible())
+                self.assertIn("review failed", overlay.save_error)
+                self.assertEqual(overlay.origin, QPoint(80, 270))
+                save.assert_not_called()
+                overlay.reviewer = Mock(
+                    return_value=Mock(
+                        exec=Mock(return_value=QDialog.DialogCode.Accepted)
+                    )
+                )
+                overlay._review_rectangle(QRect(80, 270, 640, 144))
+                save.assert_called_once()
+                self.assertFalse(overlay.isVisible())
+
+    def test_closing_overlay_during_review_prevents_late_save(self):
+        save = Mock()
+        overlay = DialogRegionOverlay(
+            background=Image.new("RGB", (800, 450), "black"),
+            save_region=save,
+        )
+        self.addCleanup(overlay.deleteLater)
+        overlay.resize(800, 450)
+        overlay.show()
+
+        def finish_after_close():
+            overlay.close()
+            return QDialog.DialogCode.Accepted
+
+        overlay.reviewer = Mock(return_value=Mock(exec=finish_after_close))
+        overlay._review_rectangle(QRect(80, 270, 640, 144))
+
+        save.assert_not_called()
+        self.assertFalse(overlay.isVisible())
+
+    def test_closing_overlay_rejects_its_modal_review_and_cancels_ocr(self):
+        reviews = []
+
+        def reviewer(image):
+            review = CalibrationReviewDialog(
+                image, recognizer=lambda _image: OCRResult("", "", 0, "gray", 1)
+            )
+            reviews.append(review)
+            self.addCleanup(review.deleteLater)
+            return review
+
+        save = Mock()
+        overlay = DialogRegionOverlay(
+            background=Image.new("RGB", (800, 450), "black"),
+            reviewer=reviewer,
+            save_region=save,
+        )
+        self.addCleanup(overlay.deleteLater)
+        overlay.resize(800, 450)
+        overlay.show()
+        QTimer.singleShot(0, overlay.close)
+        # Bound the regression run if the modal is not closed by its owner.
+        timed_out = []
+        timeout = QTimer()
+        timeout.setSingleShot(True)
+
+        def reject_after_timeout():
+            timed_out.append(True)
+            reviews[0].reject()
+
+        timeout.timeout.connect(reject_after_timeout)
+        self.addCleanup(timeout.stop)
+        timeout.start(500)
+
+        overlay._review_rectangle(QRect(80, 270, 640, 144))
+        timeout.stop()
+
+        self.assertFalse(timed_out)
+        self.assertTrue(reviews[0]._ocr_cancelled.is_set())
+        self.assertFalse(reviews[0].runner.active)
+        self.assertEqual(reviews[0].result(), QDialog.DialogCode.Rejected)
+        save.assert_not_called()
 
     def test_macos_overlay_remains_visible_when_application_loses_focus(self):
         with TemporaryDirectory() as temporary_directory:

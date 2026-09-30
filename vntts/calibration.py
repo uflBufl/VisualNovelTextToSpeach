@@ -248,6 +248,8 @@ class DialogRegionOverlay(QWidget):
             pixmap_from_pil(background) if background is not None else None
         )
         self.reviewer = reviewer or CalibrationReviewDialog
+        self._review: _CalibrationReviewer | None = None
+        self._closed = False
         self.save_region = save_region or self.persist
         self.save_error: str | None = None
         self.setWindowTitle("Select the visual-novel dialog region")
@@ -307,6 +309,8 @@ class DialogRegionOverlay(QWidget):
         )
 
     def _review_rectangle(self, rectangle: QRect) -> None:
+        if self._closed:
+            return
         region = self._region_from_rectangle(rectangle)
         if self.background is None:
             # Keeps the overlay directly usable in tests and by callers that
@@ -315,8 +319,16 @@ class DialogRegionOverlay(QWidget):
             return
         crop = region.crop(self.background)
         self.hide()
-        review = self.reviewer(crop)
-        result = review.exec()
+        try:
+            self._review = self.reviewer(crop)
+            result = self._review.exec()
+        except Exception as error:
+            self._selection_failed(f"Unable to review the dialogue area: {error}")
+            return
+        finally:
+            self._review = None
+        if self._closed:
+            return
         if result == QDialog.DialogCode.Accepted:
             self._save_selection(region)
             return
@@ -331,19 +343,28 @@ class DialogRegionOverlay(QWidget):
         self.update()
 
     def _save_selection(self, region: DialogRegion) -> None:
+        if self._closed:
+            return
         try:
             self.save_region(region)
         except OSError as error:
-            self.save_error = f"Unable to save the dialogue area: {error}"
-            self.save_failed.emit(self.save_error)
-            self.show()
-            self.raise_()
-            self.activateWindow()
-            self.update()
+            self._selection_failed(f"Unable to save the dialogue area: {error}")
+            return
+        if self._closed:
             return
         self.save_error = None
         self.selected.emit(region)
         self.close()
+
+    def _selection_failed(self, message: str) -> None:
+        if self._closed:
+            return
+        self.save_error = message
+        self.save_failed.emit(message)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        self.update()
 
     def _set_suggested_keyboard_region(self) -> None:
         left = round(self.width() * 0.08)
@@ -429,7 +450,11 @@ class DialogRegionOverlay(QWidget):
         super().keyPressEvent(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        self.closed.emit()
+        if not self._closed:
+            self._closed = True
+            if isinstance(self._review, QDialog):
+                self._review.reject()
+            self.closed.emit()
         super().closeEvent(event)
 
     def paintEvent(self, _event: QPaintEvent) -> None:

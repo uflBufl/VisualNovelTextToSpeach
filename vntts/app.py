@@ -2578,6 +2578,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def calibrate(self) -> None:
         if self._calibration_capture_pending:
             return
+        if self.calibration_overlay is not None:
+            self.set_status("Calibration is already open; finish or cancel it first")
+            return
         if self._controller_busy or self._shutting_down:
             self.set_status("Controller reconfiguration is already in progress")
             return
@@ -2644,8 +2647,26 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.show_error(f"Unable to capture a calibration preview: {error}")
             return
         self.calibration_overlay = overlay
-        overlay.closed.connect(self.restore_control_window)
+        overlay.closed.connect(
+            lambda closed_overlay=overlay: self._calibration_overlay_closed(
+                closed_overlay
+            )
+        )
         overlay.save_failed.connect(self.set_status)
+
+    def _calibration_overlay_closed(self, overlay: DialogRegionOverlay) -> None:
+        is_current = self.calibration_overlay is overlay
+        if is_current:
+            self.calibration_overlay = None
+        overlay.deleteLater()
+        if is_current and not self._shutting_down:
+            self.restore_control_window()
+
+    def _cancel_calibration(self) -> None:
+        self._calibration_capture_pending = False
+        self.calibration_capture_runner.cancel()
+        if self.calibration_overlay is not None:
+            self.calibration_overlay.close()
 
     def _save_calibration_region(self, region: DialogRegion) -> None:
         profile_id = self.settings.active_profile_id
@@ -4431,8 +4452,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._live_stop_continuation = None
         self._live_stop_generation = None
         self.live_stop_runner.cancel()
-        self._calibration_capture_pending = False
-        self.calibration_capture_runner.cancel()
+        self._cancel_calibration()
         self._live_scope_generation = None
         self.live_scope_runner.cancel()
         self._cancel_diagnostics_refresh()
