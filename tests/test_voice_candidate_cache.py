@@ -194,6 +194,55 @@ class VoiceCandidateCacheTest(unittest.TestCase):
             )
         self.assertTrue(old.exists())
 
+    def test_deep_reference_defers_cleanup(self) -> None:
+        old = self._candidate("old")
+        job = self.jobs / ("a" * 24)
+        job.mkdir()
+        (job / "voice-plan.json").write_text(
+            "[" * 2000 + "0" + "]" * 2000, encoding="utf-8"
+        )
+
+        self.assertEqual(
+            prune_obsolete_voice_candidate_caches(self.root, self.jobs), ()
+        )
+        self.assertTrue(old.exists())
+
+    def test_unresolvable_home_path_defers_cleanup(self) -> None:
+        old = self._candidate("old")
+        job = self.jobs / ("a" * 24)
+        job.mkdir()
+        reference = job / "voice-plan.json"
+        unknown = Path("~vntts-nonexistent-user/reference.wav")
+        original_expanduser = Path.expanduser
+
+        def expand_known_user(path):
+            if path == unknown:
+                raise RuntimeError("Could not determine home directory")
+            return original_expanduser(path)
+
+        for location in ("candidate_root", "job_root", "protected_path", "reference"):
+            with self.subTest(location=location):
+                reference.write_text(
+                    json.dumps(
+                        {"note": str(unknown) if location == "reference" else ""}
+                    ),
+                    encoding="utf-8",
+                )
+                with patch.object(
+                    Path, "expanduser", autospec=True, side_effect=expand_known_user
+                ):
+                    self.assertEqual(
+                        prune_obsolete_voice_candidate_caches(
+                            unknown if location == "candidate_root" else self.root,
+                            unknown if location == "job_root" else self.jobs,
+                            protected_paths=(unknown,)
+                            if location == "protected_path"
+                            else (),
+                        ),
+                        (),
+                    )
+                self.assertTrue(old.exists())
+
     def test_symlink_defers_cleanup(self) -> None:
         old = self._candidate("old")
         linked = self.root / "linked"

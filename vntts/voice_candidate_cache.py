@@ -50,9 +50,11 @@ def voice_candidate_cache_guard(
     if _unsafe(root):
         raise ValueError("Voice candidate root must not be a symlink")
     root = root.resolve(strict=True)
-    with _thread_root_lock(root, blocking=blocking):
-        with exclusive_advisory_lock(root / _GC_GUARD, blocking=blocking):
-            yield _VoiceCandidateCacheGuard(root)
+    with (
+        _thread_root_lock(root, blocking=blocking),
+        exclusive_advisory_lock(root / _GC_GUARD, blocking=blocking),
+    ):
+        yield _VoiceCandidateCacheGuard(root)
 
 
 def claim_voice_candidate_cache(
@@ -74,11 +76,11 @@ def prune_obsolete_voice_candidate_caches(
     A read error, malformed reference, symlink, or unexpected cache layout makes
     this a no-op.  ``protected_paths`` covers manifests still held in memory.
     """
-    root = Path(candidate_root).expanduser()
-    jobs = Path(job_root).expanduser()
-    if _unsafe(root) or not root.is_dir() or _unsafe(jobs):
-        return ()
     try:
+        root = Path(candidate_root).expanduser()
+        jobs = Path(job_root).expanduser()
+        if _unsafe(root) or not root.is_dir() or _unsafe(jobs):
+            return ()
         with voice_candidate_cache_guard(root, blocking=False) as guard:
             root = guard.root
             candidates = _candidate_directories(root)
@@ -98,7 +100,7 @@ def prune_obsolete_voice_candidate_caches(
                     return tuple(removed)
                 removed.append(directory)
             return tuple(removed)
-    except AdvisoryLockBusyError, OSError, ValueError:
+    except AdvisoryLockBusyError, OSError, ValueError, RuntimeError:
         return ()
 
 
