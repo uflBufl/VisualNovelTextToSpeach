@@ -7,6 +7,7 @@ import hashlib
 from collections.abc import Iterable, Sequence
 from itertools import pairwise
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from vntts.authoring.authority import write_json_document_no_replace
 from vntts.cli import cli_error, cli_messages
@@ -40,16 +41,11 @@ def audit_live_replay_coverage(
         raise LiveReplayCoverageError(
             f"Coverage report parent does not exist: {output_path.parent}"
         )
-    story_path, story_payload = _read_regular_file(story_index, "Story index")
-    plan_path, plan_payload = _read_regular_file(sequence_plan, "Sequence plan")
+    story_path, story_payload = _read_coverage_file(story_index, "Story index")
+    plan_path, plan_payload = _read_coverage_file(sequence_plan, "Sequence plan")
     story_sha256 = hashlib.sha256(story_payload).hexdigest()
     plan_sha256 = hashlib.sha256(plan_payload).hexdigest()
-    try:
-        plan = LiveSequencePlan.load(plan_path, story_path)
-    except Exception as error:
-        raise LiveReplayCoverageError(
-            f"Story index and sequence plan are incompatible: {error}"
-        ) from error
+    plan = _load_snapshot_plan(story_payload, plan_payload)
     visible = _ordered_visible_events(plan)
     if len({event.chapter for event in visible}) != 1:
         raise LiveReplayCoverageError(
@@ -65,8 +61,8 @@ def audit_live_replay_coverage(
     if not selected_reviews:
         raise LiveReplayCoverageError("At least one sealed sequence review is required")
     for value in selected_reviews:
-        review_path, payload = _read_regular_file(value, "Sealed sequence review")
-        review_document = _decode_json(payload, "Sealed sequence review")
+        review_path, payload = _read_coverage_file(value, "Sealed sequence review")
+        review_document = _decode_coverage_json(payload, "Sealed sequence review")
         if (
             review_document.get("schema") != "vntts.sequence-replay-seal-review"
             or type(review_document.get("schema_version")) is not int
@@ -103,7 +99,8 @@ def audit_live_replay_coverage(
                     f"Review maps an unknown or non-visible event: {event_id!r}"
                 )
             event = plan.events[event_id]
-            if mapping.get("event_kind") not in {None, event.kind}:
+            event_kind = mapping.get("event_kind")
+            if event_kind is not None and event_kind != event.kind:
                 raise LiveReplayCoverageError(
                     f"Review event kind disagrees with the plan: {event_id!r}"
                 )
@@ -166,6 +163,38 @@ def audit_live_replay_coverage(
         output_path, document, "coverage report", error_type=LiveReplayCoverageError
     )
     return output_path, document
+
+
+def _read_coverage_file(value: str | Path, label: str) -> tuple[Path, bytes]:
+    try:
+        return _read_regular_file(value, label)
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
+        raise LiveReplayCoverageError(str(error)) from error
+
+
+def _decode_coverage_json(payload: bytes, label: str) -> dict[str, object]:
+    try:
+        return _decode_json(payload, label)
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
+        raise LiveReplayCoverageError(str(error)) from error
+
+
+def _load_snapshot_plan(
+    story_payload: bytes,
+    plan_payload: bytes,
+) -> LiveSequencePlan:
+    try:
+        with TemporaryDirectory(prefix=".live-replay-coverage-") as directory:
+            snapshot = Path(directory)
+            snapshot_story = snapshot / "story-index.jsonl"
+            snapshot_plan = snapshot / "sequence-plan.json"
+            snapshot_story.write_bytes(story_payload)
+            snapshot_plan.write_bytes(plan_payload)
+            return LiveSequencePlan.load(snapshot_plan, snapshot_story)
+    except Exception as error:
+        raise LiveReplayCoverageError(
+            f"Story index and sequence plan are incompatible: {error}"
+        ) from error
 
 
 def _validate_visible_path(
