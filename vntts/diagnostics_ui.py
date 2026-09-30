@@ -1,6 +1,5 @@
-from PIL import Image
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QCloseEvent, QImage, QPixmap, QResizeEvent
+from PySide6.QtGui import QCloseEvent, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -16,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from vntts.diagnostics import DiagnosticSnapshot
+from vntts.qt_images import pixmap_from_pil
 from vntts.ui_text import copy_text_button, make_text_copyable
 
 
@@ -245,9 +245,7 @@ class DiagnosticsDialog(QDialog):
 
     def set_snapshot(self, snapshot: DiagnosticSnapshot) -> None:
         source_pixmap = (
-            self._pixmap_from_image(snapshot.image)
-            if snapshot.image is not None
-            else None
+            pixmap_from_pil(snapshot.image) if snapshot.image is not None else None
         )
         self.last_capture_time = snapshot.captured_at.astimezone().strftime(
             "%b %d, %Y %H:%M:%S"
@@ -359,22 +357,6 @@ class DiagnosticsDialog(QDialog):
                 Qt.TransformationMode.SmoothTransformation,
             )
         )
-
-    @staticmethod
-    def _pixmap_from_image(image: Image.Image) -> QPixmap:
-        image = image.convert("RGB")
-        data = image.tobytes("raw", "RGB")
-        qimage = QImage(
-            data,
-            image.width,
-            image.height,
-            image.width * 3,
-            QImage.Format.Format_RGB888,
-        ).copy()
-        pixmap = QPixmap.fromImage(qimage)
-        if not isinstance(pixmap, QPixmap):
-            raise TypeError("Qt did not create a diagnostics preview pixmap")
-        return pixmap
 
     @staticmethod
     def _format_latency(value: float | None) -> str:

@@ -12,14 +12,12 @@ from PySide6.QtCore import QPoint, QRect, Qt, QThreadPool, Signal
 from PySide6.QtGui import (
     QCloseEvent,
     QColor,
-    QImage,
     QKeyEvent,
     QKeySequence,
     QMouseEvent,
     QPainter,
     QPaintEvent,
     QPen,
-    QPixmap,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -40,6 +38,7 @@ from vntts.ocr import (
     recognize_dialog_image_result,
     save_dialog_region,
 )
+from vntts.qt_images import pixmap_from_pil
 from vntts.window_capture import WindowGeometry
 
 
@@ -68,22 +67,6 @@ def capture_calibration_background(
         )
         screenshot = capture.grab(monitor)
     return Image.frombytes("RGB", screenshot.size, screenshot.bgra, "raw", "BGRX")
-
-
-def pixmap_from_pil(image: Image.Image) -> QPixmap:
-    if image.mode != "RGB":
-        image = image.convert("RGB")
-    qimage = QImage(
-        image.tobytes("raw", "RGB"),
-        image.width,
-        image.height,
-        image.width * 3,
-        QImage.Format.Format_RGB888,
-    ).copy()
-    pixmap = QPixmap.fromImage(qimage)
-    if not isinstance(pixmap, QPixmap):
-        raise TypeError("Qt did not create a calibration pixmap")
-    return pixmap
 
 
 class CalibrationReviewDialog(QDialog):
