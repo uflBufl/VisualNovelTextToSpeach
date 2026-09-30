@@ -185,17 +185,9 @@ class ReadinessDialog(QDialog):
     def refresh(self) -> None:
         self.runner.cancel()
         self._results = ()
-        self._checks_running = True
         self.table.setRowCount(0)
         self.summary.setText("Running readiness checks...")
-        self.progress.show()
-        self.copy_selected.hide()
-        self.copy_all.hide()
-        self.refresh_button.hide()
-        self.refresh_button.setEnabled(False)
-        self.cancel_button.setEnabled(True)
-        self.cancel_button.show()
-        self.reading_button.hide()
+        self._set_checks_running(True)
         self._update_remediation()
         self.runner.start(self.diagnostics.run, self.settings)
 
@@ -204,28 +196,22 @@ class ReadinessDialog(QDialog):
             return
         self.table.setRowCount(0)
         self._results = ()
-        self._checks_running = False
-        self.progress.hide()
-        self.copy_selected.show()
-        self.copy_all.show()
-        self.refresh_button.show()
-        self.refresh_button.setEnabled(True)
-        self.cancel_button.setEnabled(False)
-        self.cancel_button.hide()
-        self.reading_button.hide()
+        self._set_checks_running(False)
         self.summary.setText("Checks cancelled. No readiness result is active.")
         self._update_remediation()
 
+    def _set_checks_running(self, running: bool) -> None:
+        self._checks_running = running
+        self.progress.setVisible(running)
+        for widget in (self.copy_selected, self.copy_all, self.refresh_button):
+            widget.setVisible(not running)
+        self.refresh_button.setEnabled(not running)
+        self.cancel_button.setEnabled(running)
+        self.cancel_button.setVisible(running)
+        self.reading_button.hide()
+
     def _checks_finished(self, results: object, error: Exception | None) -> None:
-        self._checks_running = False
-        self.progress.hide()
-        self.copy_selected.show()
-        self.copy_all.show()
-        self.refresh_button.show()
-        self.refresh_button.setEnabled(True)
-        self.cancel_button.setEnabled(False)
-        self.cancel_button.hide()
-        self.reading_button.setVisible(False)
+        self._set_checks_running(False)
         if error is not None or not is_diagnostic_results(results):
             self._results = ()
             self.table.setRowCount(0)
