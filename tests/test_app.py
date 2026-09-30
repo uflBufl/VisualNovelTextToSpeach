@@ -4,7 +4,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Event
+from threading import Event, get_ident
 from types import ModuleType
 from unittest.mock import ANY, Mock, call, patch
 
@@ -4117,6 +4117,54 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application._run_diagnostics_remediation("settings")
         settings.assert_called_once_with()
         tray_application.shutdown()
+
+    def test_native_hotkey_callbacks_are_queued_on_the_qt_thread(self):
+        read_threads, live_threads = [], []
+        controller = Mock(is_live_running=False, live_reader=None)
+        controller.read_once.side_effect = lambda: read_threads.append(get_ident())
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        try:
+            with (
+                patch("vntts.app.keyboard.GlobalHotKeys") as listener_factory,
+                patch.object(
+                    tray,
+                    "_start_live_with_available_scope",
+                    side_effect=lambda: live_threads.append(get_ident()),
+                ),
+            ):
+                tray.start_hotkeys()
+                callbacks = listener_factory.call_args.args[0]
+
+                def activate():
+                    callbacks[tray.settings.read_hotkey]()
+                    callbacks[tray.settings.live_hotkey]()
+
+                with patch.object(
+                    tray,
+                    "_runtime_control_state",
+                    return_value=Mock(can_read=True, active=False, transition=None),
+                ):
+                    with ThreadPoolExecutor(max_workers=1) as executor:
+                        executor.submit(activate).result(timeout=2)
+                    self.assertEqual(read_threads, [])
+                    self.assertEqual(live_threads, [])
+                    self.wait_until(lambda: bool(read_threads and live_threads))
+                    self.assertEqual(read_threads, [get_ident()])
+                    self.assertEqual(live_threads, [get_ident()])
+
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    executor.submit(activate).result(timeout=2)
+                tray.shutdown()
+                self.application.processEvents()
+                self.assertEqual(read_threads, [get_ident()])
+                self.assertEqual(live_threads, [get_ident()])
+        finally:
+            tray.shutdown()
+
 
     def test_invalid_saved_hotkey_falls_back_without_preventing_startup(self):
         controller = Mock()

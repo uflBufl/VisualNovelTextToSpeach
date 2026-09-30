@@ -229,6 +229,8 @@ class AppSignals(QObject):
     sequence_status_changed = Signal(object)
     diagnostics_failed = Signal(str)
     hotkeys_requested = Signal()
+    read_requested = Signal()
+    live_requested = Signal()
     unknown_speaker = Signal(str)
 
 
@@ -1940,6 +1942,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.signals.sequence_status_changed.connect(self.set_sequence_status)
         self.signals.diagnostics_failed.connect(self.set_diagnostics_error)
         self.signals.hotkeys_requested.connect(self.schedule_hotkeys)
+        self.signals.read_requested.connect(
+            self.read_once, Qt.ConnectionType.QueuedConnection
+        )
+        self.signals.live_requested.connect(
+            self.toggle_live, Qt.ConnectionType.QueuedConnection
+        )
         self.signals.unknown_speaker.connect(self.offer_speaker_mapping)
         self.application.aboutToQuit.connect(self.shutdown)
         current_sequence_status = getattr(
@@ -2283,8 +2291,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         listener = keyboard.GlobalHotKeys(
             {
-                read_hotkey: self.read_once,
-                live_hotkey: self.toggle_live,
+                read_hotkey: self.signals.read_requested.emit,
+                live_hotkey: self.signals.live_requested.emit,
             }
         )
         self.hotkey_listener = listener
@@ -2296,6 +2304,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.controller.read_once()
 
     def toggle_live(self) -> bool:
+        if self._shutting_down:
+            return False
         state = self._runtime_control_state()
         if state.transition == "stopping":
             return False
