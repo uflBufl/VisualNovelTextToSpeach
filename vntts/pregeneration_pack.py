@@ -1027,7 +1027,7 @@ def _stage_live_sequence(
         write_live_sequence_plan(destination, document, staged_story)
         _safe_sequence_document(destination, staged_story)
         return destination
-    except OSError, ValueError, LiveSequencePlanError, json.JSONDecodeError:
+    except OSError, ValueError, LiveSequencePlanError:
         return None
 
 

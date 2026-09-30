@@ -530,7 +530,7 @@ def _read_bounded_json_lines(
     for line in payload.splitlines():
         try:
             entry = json.loads(line)
-        except TypeError, ValueError, json.JSONDecodeError:
+        except TypeError, ValueError:
             continue
         if isinstance(entry, dict):
             entries.append(entry)
@@ -1695,7 +1695,7 @@ def _active_story_ids(root: Path, component: SupportDocument) -> SupportDocument
                 and collection_id
             ):
                 story_ids.add(collection_id)
-    except OSError, UnicodeError, json.JSONDecodeError, ValueError:
+    except OSError, ValueError:
         return {"active_story_ids_available": False}
     values = sorted(story_ids)
     return {
@@ -2120,7 +2120,7 @@ def collect_ocr_metrics(directory: str | Path) -> SupportDocument:
                 attempts.append(attempt_count)
                 profiles[str(payload.get("preprocessing_profile") or "unknown")] += 1
                 resolved += payload.get("resolved") is True
-            except OSError, TypeError, ValueError, OverflowError, json.JSONDecodeError:
+            except OSError, TypeError, ValueError, OverflowError:
                 invalid += 1
     return {
         "sample_count": len(confidences),

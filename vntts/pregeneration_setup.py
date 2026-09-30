@@ -316,7 +316,7 @@ def _load_story_catalog(
             story_index_sha256=checksum,
             selections=selections,
         )
-    except OSError, KeyError, TypeError, ValueError, json.JSONDecodeError:
+    except OSError, KeyError, TypeError, ValueError:
         return None
 
 

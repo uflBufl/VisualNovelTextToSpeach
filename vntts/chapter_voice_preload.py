@@ -970,7 +970,7 @@ def _load_source_audio_extensions(
                     completion_contract=completion_contract,
                     semantic_authorized=False,
                 )
-    except OSError, TypeError, ValueError, json.JSONDecodeError:
+    except OSError, TypeError, ValueError:
         return {}
     return result
 
