@@ -173,6 +173,43 @@ class OCRCorrectionStoreTest(unittest.TestCase):
                 {"Mareus": "Marcus", "Vertln": "Vertin"},
             )
 
+    def test_loaded_entries_use_the_revision_of_the_decoded_snapshot(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "ocr-corrections.json"
+            initial = OCRCorrectionStore(path)
+            initial.upsert_entries({"Mareus": "Marcus"})
+            snapshot_a = path.read_bytes()
+            external = OCRCorrectionStore.load(path)
+            external.upsert_entries({"Vertln": "Vertin"})
+            snapshot_b = path.read_bytes()
+            path.write_bytes(snapshot_a)
+
+            from vntts.ocr_corrections import load_versioned_json as original_loader
+
+            def load_b_then_restore_a(*args, **kwargs):
+                path.write_bytes(snapshot_b)
+                document = original_loader(*args, **kwargs)
+                path.write_bytes(snapshot_a)
+                return document
+
+            with patch(
+                "vntts.ocr_corrections.load_versioned_json",
+                side_effect=load_b_then_restore_a,
+            ):
+                loaded = OCRCorrectionStore.load(path)
+
+            self.assertEqual(
+                loaded.global_entries,
+                {"Mareus": "Marcus", "Vertln": "Vertin"},
+            )
+            with self.assertRaisesRegex(OSError, "changed on disk"):
+                loaded.upsert_entries({"Poaeher": "Poacher"})
+
+            self.assertEqual(
+                OCRCorrectionStore.load(path).global_entries,
+                {"Mareus": "Marcus"},
+            )
+
     def test_invalid_file_falls_back_to_empty_dictionary(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "ocr-corrections.json"

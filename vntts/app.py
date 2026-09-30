@@ -133,6 +133,7 @@ from vntts.runtime_config import get_hotkey, get_live_hotkey
 from vntts.runtime_paths import configure_bundled_dependencies
 from vntts.settings import (
     AppSettings,
+    apply_app_settings_overrides,
     get_local_data_directory,
     get_settings_path,
     is_live_sequence_audio_mode,
@@ -1624,10 +1625,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.application = application
         self._settings_path = get_settings_path().expanduser().absolute()
         self._settings_commit_lock = Lock()
-        try:
-            self._settings_revision = file_revision(self._settings_path)
-        except OSError:
-            self._settings_revision = None
+        self._settings_revision: bytes | None = None
+        self._last_saved_settings: AppSettings | None = None
         uses_saved_settings = settings is None
         self.previous_session: SupportDocument = (
             preserve_previous_session(get_local_data_directory())
@@ -1639,24 +1638,29 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._startup_game_pack_errors: list[Exception] = []
         settings_started = perf_counter()
 
-        def invalidate_settings_revision() -> None:
-            self._settings_revision = None
-
-        self.settings = settings or load_app_settings(
-            self._settings_path,
-            on_game_pack_error=self._startup_game_pack_errors.append,
-            on_fallback=invalidate_settings_revision,
-        )
-        self._last_saved_settings: AppSettings | None = (
-            load_app_settings(
-                self._settings_path,
+        def remember_settings_snapshot(
+            saved_settings: AppSettings, revision: bytes | None
+        ) -> None:
+            self._settings_revision = revision
+            self._last_saved_settings = apply_app_settings_overrides(
+                saved_settings,
                 environment={},
                 warn=lambda _message: None,
                 on_game_pack_error=lambda _error: None,
             )
-            if uses_saved_settings
-            else None
-        )
+
+        if settings is None:
+            self.settings = load_app_settings(
+                self._settings_path,
+                on_game_pack_error=self._startup_game_pack_errors.append,
+                on_snapshot=remember_settings_snapshot,
+            )
+        else:
+            self.settings = settings
+            try:
+                self._settings_revision = file_revision(self._settings_path)
+            except OSError:
+                pass
         self.profile_store = profile_store or GameProfileStore.load()
         if uses_saved_settings:
             record_background_operation(

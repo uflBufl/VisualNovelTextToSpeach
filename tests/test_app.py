@@ -51,6 +51,7 @@ from vntts.settings import (  # noqa: E402
     load_app_settings,
     settings_schema_version,
 )
+from vntts.versioned_json import read_versioned_json_snapshot  # noqa: E402
 from vntts.voice_library import VoiceLibrary  # noqa: E402
 from vntts.window_capture import WindowGeometry  # noqa: E402
 
@@ -5282,6 +5283,53 @@ class TrayApplicationTest(unittest.TestCase):
                 with self.assertRaisesRegex(OSError, "changed on disk"):
                     tray._save_settings_candidate(tray.settings)
                 tray.shutdown()
+            self.assertEqual(path.read_bytes(), original)
+
+    def test_loaded_settings_and_save_baseline_share_the_exact_snapshot(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            AppSettings(game_window_title="Original game").save(path)
+            original = path.read_bytes()
+            AppSettings(game_window_title="Intervening game").save(path)
+            intervening = path.read_bytes()
+            path.write_bytes(original)
+
+            def read_intervening_snapshot(source, **kwargs):
+                if Path(source) != path:
+                    return read_versioned_json_snapshot(source, **kwargs)
+                path.write_bytes(intervening)
+                snapshot = read_versioned_json_snapshot(source, **kwargs)
+                path.write_bytes(original)
+                return snapshot
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "VNTTS_SETTINGS_FILE": str(path),
+                        "VNTTS_GAME_WINDOW_TITLE": "Temporary game",
+                    },
+                ),
+                patch(
+                    "vntts.versioned_json.read_versioned_json_snapshot",
+                    side_effect=read_intervening_snapshot,
+                ) as read_snapshot,
+            ):
+                tray = TrayApplication(
+                    self.application,
+                    controller_factory=Mock(return_value=Mock()),
+                    profile_store=GameProfileStore(Path(directory) / "profiles.json"),
+                )
+                self.addCleanup(tray.shutdown)
+                read_snapshot.assert_called_once()
+                self.assertEqual(tray.settings.game_window_title, "Temporary game")
+                self.assertEqual(
+                    tray._last_saved_settings.game_window_title, "Intervening game"
+                )
+                with self.assertRaisesRegex(OSError, "changed on disk"):
+                    tray._save_settings_candidate(
+                        tray.settings.updated(compact_controls=True)
+                    )
             self.assertEqual(path.read_bytes(), original)
 
     def test_second_application_cannot_replace_newer_settings(self):

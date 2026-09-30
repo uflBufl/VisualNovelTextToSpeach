@@ -1,13 +1,117 @@
 import json
 import unittest
+from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from vntts.versioned_json import load_versioned_json, write_versioned_json
+from vntts.versioned_json import (
+    load_versioned_json,
+    read_versioned_json,
+    read_versioned_json_snapshot,
+    write_versioned_json,
+)
 
 
 class VersionedJsonTest(unittest.TestCase):
+    def test_snapshot_digest_is_for_bytes_read_before_document_replacement(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "document.json"
+            original = b'{"schema_version": 1, "value": "original"}'
+            path.write_bytes(original)
+            replacement = b'{"schema_version": 1, "value": "replacement"}'
+            real_loads = json.loads
+
+            def replace_before_decode(raw):
+                path.write_bytes(replacement)
+                return real_loads(raw)
+
+            with patch("vntts.versioned_json.json.loads", replace_before_decode):
+                payload, revision = read_versioned_json_snapshot(
+                    path,
+                    schema_version=1,
+                    document_name="test document",
+                )
+
+            self.assertEqual(payload["value"], "original")
+            self.assertEqual(revision, sha256(original).digest())
+
+    def test_legacy_reader_delegates_to_snapshot_payload(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "document.json"
+            path.write_text(
+                json.dumps({"schema_version": 1, "value": "stable"}),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                read_versioned_json(
+                    path,
+                    schema_version=1,
+                    document_name="test document",
+                )["value"],
+                "stable",
+            )
+
+    def test_loader_revision_callback_only_runs_after_successful_decode(self):
+        revisions = []
+        warnings = []
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "document.json"
+            path.write_text(
+                json.dumps({"schema_version": 1, "value": "stable"}),
+                encoding="utf-8",
+            )
+            loaded = load_versioned_json(
+                path,
+                schema_version=1,
+                document_name="test document",
+                decode=lambda payload: payload["value"],
+                fallback=lambda: "fallback",
+                warn=warnings.append,
+                on_revision=revisions.append,
+            )
+
+            def fail_decode(_payload):
+                raise ValueError("bad")
+
+            failed = load_versioned_json(
+                path,
+                schema_version=1,
+                document_name="test document",
+                decode=fail_decode,
+                fallback=lambda: "fallback",
+                warn=warnings.append,
+                on_revision=revisions.append,
+            )
+            path.write_text("not json", encoding="utf-8")
+            malformed = load_versioned_json(
+                path,
+                schema_version=1,
+                document_name="test document",
+                decode=lambda payload: payload,
+                fallback=dict,
+                warn=warnings.append,
+                on_revision=revisions.append,
+            )
+            path.unlink()
+            missing = load_versioned_json(
+                path,
+                schema_version=1,
+                document_name="test document",
+                decode=lambda payload: payload,
+                fallback=dict,
+                warn=warnings.append,
+                on_revision=revisions.append,
+            )
+
+        self.assertEqual(loaded, "stable")
+        self.assertEqual(failed, "fallback")
+        self.assertEqual(malformed, {})
+        self.assertEqual(missing, {})
+        self.assertEqual(len(revisions), 1)
+        self.assertEqual(len(warnings), 2)
+
     def test_loader_applies_explicit_compatibility_policy(self):
         warnings = []
         with TemporaryDirectory() as temporary_directory:

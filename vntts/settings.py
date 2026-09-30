@@ -560,6 +560,7 @@ def load_app_settings(
     warn: WarningHandler | None = None,
     on_game_pack_error: Callable[[Exception], None] | None = None,
     on_fallback: Callable[[], None] | None = None,
+    on_snapshot: Callable[[AppSettings, bytes | None], None] | None = None,
 ) -> AppSettings:
     environment = os.environ if environment is None else environment
     report: WarningHandler = (
@@ -576,7 +577,13 @@ def load_app_settings(
             on_fallback()
         return AppSettings()
 
-    settings = load_versioned_json(
+    revision: bytes | None = None
+
+    def remember_revision(value: bytes) -> None:
+        nonlocal revision
+        revision = value
+
+    saved_settings = load_versioned_json(
         path,
         schema_version=settings_schema_version,
         document_name="settings",
@@ -585,8 +592,32 @@ def load_app_settings(
         warn=report,
         allow_older=True,
         allow_unversioned=True,
+        on_revision=remember_revision,
     )
 
+    settings = apply_app_settings_overrides(
+        saved_settings,
+        environment=environment,
+        warn=report,
+        on_game_pack_error=on_game_pack_error,
+    )
+    if on_snapshot is not None:
+        on_snapshot(saved_settings, revision)
+    return settings
+
+
+def apply_app_settings_overrides(
+    settings: AppSettings,
+    *,
+    environment: Environment | None = None,
+    warn: WarningHandler | None = None,
+    on_game_pack_error: Callable[[Exception], None] | None = None,
+) -> AppSettings:
+    """Apply environment and pack settings to an already decoded snapshot."""
+    environment = os.environ if environment is None else environment
+    report: WarningHandler = (
+        (lambda message: print(message, file=sys.stderr)) if warn is None else warn
+    )
     settings = settings.with_environment_overrides(environment, warn=report)
     if settings.game_pack:
         from vntts.game_pack import GamePackError, apply_game_pack

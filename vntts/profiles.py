@@ -215,6 +215,9 @@ class GameProfileStore:
             store.profiles = []
             store._revision = None
 
+        def remember_revision(revision: bytes) -> None:
+            store._revision = revision
+
         load_versioned_json(
             store.path,
             schema_version=profiles_schema_version,
@@ -223,6 +226,7 @@ class GameProfileStore:
             fallback=fallback,
             warn=report,
             allow_older=True,
+            on_revision=remember_revision,
         )
         return store
 

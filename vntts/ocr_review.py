@@ -6,9 +6,8 @@ from pathlib import Path
 
 from vntts.versioned_json import (
     StaleDocumentError,
-    file_revision,
     load_versioned_json,
-    read_versioned_json,
+    read_versioned_json_snapshot,
     write_versioned_json_if_unchanged,
 )
 
@@ -74,8 +73,7 @@ class OCRReviewStore:
         scope: str | None = None,
         corrections: Mapping[str, str] | None = None,
     ) -> None:
-        revision = file_revision(sample.metadata_path)
-        payload = read_versioned_json(
+        payload, revision = read_versioned_json_snapshot(
             sample.metadata_path,
             schema_version=OCR_REVIEW_SCHEMA_VERSION,
             document_name="OCR review metadata",

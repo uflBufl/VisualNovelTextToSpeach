@@ -20,6 +20,34 @@ class StaleDocumentError(OSError):
     """A document changed since it was loaded and must be reopened."""
 
 
+def read_versioned_json_snapshot(
+    path: str | Path,
+    *,
+    schema_version: int,
+    document_name: str,
+    allow_older: bool = False,
+    allow_unversioned: bool = False,
+) -> tuple[dict[str, object], bytes]:
+    """Read one document, returning its payload and exact raw-byte digest."""
+    path = Path(path)
+    with path.open("rb") as source:
+        raw = source.read(_DOCUMENT_READ_LIMIT + 1)
+    if len(raw) > _DOCUMENT_READ_LIMIT:
+        raise ValueError(f"{document_name} exceeds the size limit")
+    revision = sha256(raw).digest()
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise ValueError(f"{document_name} root must be an object")
+    if "schema_version" not in payload and allow_unversioned:
+        return payload, revision
+    version = payload.get("schema_version")
+    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+        raise ValueError(f"{document_name} schema version is missing or invalid")
+    if version > schema_version or (version != schema_version and not allow_older):
+        raise ValueError(f"unsupported {document_name} schema version: {version}")
+    return payload, revision
+
+
 def read_versioned_json(
     path: str | Path,
     *,
@@ -29,21 +57,13 @@ def read_versioned_json(
     allow_unversioned: bool = False,
 ) -> dict[str, object]:
     """Read one JSON object and enforce its document compatibility policy."""
-    path = Path(path)
-    with path.open("rb") as source:
-        raw = source.read(_DOCUMENT_READ_LIMIT + 1)
-    if len(raw) > _DOCUMENT_READ_LIMIT:
-        raise ValueError(f"{document_name} exceeds the size limit")
-    payload = json.loads(raw)
-    if not isinstance(payload, dict):
-        raise ValueError(f"{document_name} root must be an object")
-    if "schema_version" not in payload and allow_unversioned:
-        return payload
-    version = payload.get("schema_version")
-    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
-        raise ValueError(f"{document_name} schema version is missing or invalid")
-    if version > schema_version or (version != schema_version and not allow_older):
-        raise ValueError(f"unsupported {document_name} schema version: {version}")
+    payload, _revision = read_versioned_json_snapshot(
+        path,
+        schema_version=schema_version,
+        document_name=document_name,
+        allow_older=allow_older,
+        allow_unversioned=allow_unversioned,
+    )
     return payload
 
 
@@ -57,6 +77,7 @@ def load_versioned_json(
     warn: Callable[[str], object] | None = None,
     allow_older: bool = False,
     allow_unversioned: bool = False,
+    on_revision: Callable[[bytes], None] | None = None,
 ) -> Document:
     """Load and decode a document, returning a fresh fallback on any damage."""
     path = Path(path)
@@ -64,14 +85,17 @@ def load_versioned_json(
         return fallback()
     warn = (lambda _message: None) if warn is None else warn
     try:
-        payload = read_versioned_json(
+        payload, revision = read_versioned_json_snapshot(
             path,
             schema_version=schema_version,
             document_name=document_name,
             allow_older=allow_older,
             allow_unversioned=allow_unversioned,
         )
-        return decode(payload)
+        document = decode(payload)
+        if on_revision is not None:
+            on_revision(revision)
+        return document
     except (
         AttributeError,
         OSError,

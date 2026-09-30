@@ -23,7 +23,10 @@ from vntts.ocr_review import (  # noqa: E402
     OCRReviewStore,
 )
 from vntts.ocr_review_ui import OCRReviewDialog  # noqa: E402
-from vntts.versioned_json import StaleDocumentError  # noqa: E402
+from vntts.versioned_json import (  # noqa: E402
+    StaleDocumentError,
+    read_versioned_json_snapshot,
+)
 
 
 def record_uncertain_sample(directory):
@@ -214,16 +217,22 @@ class OCRReviewStoreTest(unittest.TestCase):
             sample = store.pending_samples()[0]
 
             def read_then_edit(path, **_kwargs):
-                payload = json.loads(path.read_text(encoding="utf-8"))
+                payload, revision = read_versioned_json_snapshot(
+                    path,
+                    schema_version=OCR_REVIEW_SCHEMA_VERSION,
+                    document_name="OCR review metadata",
+                    allow_unversioned=True,
+                )
                 path.write_text(
                     json.dumps({**payload, "note": "concurrent edit"}),
                     encoding="utf-8",
                 )
-                return payload
+                return payload, revision
 
             with (
                 patch(
-                    "vntts.ocr_review.read_versioned_json", side_effect=read_then_edit
+                    "vntts.ocr_review.read_versioned_json_snapshot",
+                    side_effect=read_then_edit,
                 ),
                 self.assertRaisesRegex(OSError, "changed on disk"),
             ):
@@ -233,6 +242,44 @@ class OCRReviewStoreTest(unittest.TestCase):
 
         self.assertEqual(preserved["note"], "concurrent edit")
         self.assertNotIn("resolved", preserved)
+
+    def test_resolution_uses_the_revision_of_the_decoded_snapshot(self):
+        with TemporaryDirectory() as directory:
+            store = OCRReviewStore(directory)
+            record_uncertain_sample(directory)
+            sample_a = store.pending_samples()[0]
+            snapshot_a = sample_a.metadata_path.read_bytes()
+            payload_b = json.loads(snapshot_a)
+            payload_b["text"] = "A concurrent observation."
+            sample_a.metadata_path.write_text(json.dumps(payload_b), encoding="utf-8")
+            sample_b = store.pending_samples()[0]
+            snapshot_b = sample_b.metadata_path.read_bytes()
+            sample_b.metadata_path.write_bytes(snapshot_a)
+
+            def read_b_then_restore_a(path, **_kwargs):
+                path.write_bytes(snapshot_b)
+                payload, revision = read_versioned_json_snapshot(
+                    path,
+                    schema_version=OCR_REVIEW_SCHEMA_VERSION,
+                    document_name="OCR review metadata",
+                    allow_unversioned=True,
+                )
+                path.write_bytes(snapshot_a)
+                return payload, revision
+
+            with (
+                patch(
+                    "vntts.ocr_review.read_versioned_json_snapshot",
+                    side_effect=read_b_then_restore_a,
+                ),
+                self.assertRaisesRegex(StaleDocumentError, "changed on disk"),
+            ):
+                store.mark_resolved(sample_b)
+
+            restored = json.loads(sample_b.metadata_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(restored["text"], sample_a.text)
+        self.assertNotIn("resolved", restored)
 
 
 class OCRReviewDialogTest(unittest.TestCase):

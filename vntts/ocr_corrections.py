@@ -101,6 +101,9 @@ class OCRCorrectionStore:
             store.profile_entries = {}
             store._revision = None
 
+        def remember_revision(revision: bytes) -> None:
+            store._revision = revision
+
         load_versioned_json(
             store.path,
             schema_version=corrections_schema_version,
@@ -108,6 +111,7 @@ class OCRCorrectionStore:
             decode=decode,
             fallback=fallback,
             warn=report,
+            on_revision=remember_revision,
         )
         return store
 

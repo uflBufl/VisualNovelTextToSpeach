@@ -124,6 +124,40 @@ class GameProfileStoreTest(unittest.TestCase):
                 GameProfileStore.load(path).get(profile.id).name, "Renamed"
             )
 
+    def test_loaded_profiles_use_the_revision_of_the_decoded_snapshot(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "profiles.json"
+            initial = GameProfileStore(path)
+            initial.create("A", AppSettings())
+            snapshot_a = path.read_bytes()
+            external = GameProfileStore.load(path)
+            external.create("B", AppSettings())
+            snapshot_b = path.read_bytes()
+            path.write_bytes(snapshot_a)
+
+            from vntts.profiles import load_versioned_json as original_loader
+
+            def load_b_then_restore_a(*args, **kwargs):
+                path.write_bytes(snapshot_b)
+                document = original_loader(*args, **kwargs)
+                path.write_bytes(snapshot_a)
+                return document
+
+            with patch(
+                "vntts.profiles.load_versioned_json",
+                side_effect=load_b_then_restore_a,
+            ):
+                loaded = GameProfileStore.load(path)
+
+            self.assertEqual([profile.name for profile in loaded.profiles], ["A", "B"])
+            with self.assertRaisesRegex(OSError, "changed on disk"):
+                loaded.create("C", AppSettings())
+
+            self.assertEqual(
+                [profile.name for profile in GameProfileStore.load(path).profiles],
+                ["A"],
+            )
+
     def test_restore_publishes_only_after_save_and_preserves_profile(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "profiles.json"

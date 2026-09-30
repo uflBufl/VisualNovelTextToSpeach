@@ -2,6 +2,7 @@ import json
 import sys
 import unittest
 from dataclasses import asdict
+from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -18,6 +19,45 @@ from vntts.settings import (
 
 
 class SettingsTest(unittest.TestCase):
+    def test_snapshot_reports_saved_values_before_environment_overrides(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            saved = AppSettings(game_window_title="Saved game")
+            saved.save(path)
+            raw = path.read_bytes()
+            snapshots = []
+            loaded = load_app_settings(
+                path,
+                environment={"VNTTS_GAME_WINDOW_TITLE": "Temporary game"},
+                on_snapshot=lambda settings, revision: snapshots.append(
+                    (settings, revision)
+                ),
+            )
+        self.assertEqual(loaded.game_window_title, "Temporary game")
+        self.assertEqual(snapshots, [(saved, sha256(raw).digest())])
+
+    def test_fallback_snapshot_has_no_revision(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            for raw in (None, "not JSON"):
+                with self.subTest(raw=raw):
+                    if raw is not None:
+                        path.write_text(raw, encoding="utf-8")
+                    snapshots = []
+                    fallbacks = []
+                    loaded = load_app_settings(
+                        path,
+                        environment={},
+                        warn=lambda _message: None,
+                        on_fallback=lambda: fallbacks.append(True),
+                        on_snapshot=lambda settings, revision: snapshots.append(
+                            (settings, revision)
+                        ),
+                    )
+                    self.assertEqual(loaded, AppSettings())
+                    self.assertEqual(snapshots, [(AppSettings(), None)])
+                    self.assertEqual(fallbacks, [True])
+
     def test_explicit_home_path_round_trips_between_save_and_load(self):
         with TemporaryDirectory() as directory:
             with patch.dict(
