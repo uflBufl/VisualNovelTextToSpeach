@@ -105,6 +105,20 @@ class LiveReplayCaptureRecoverTest(unittest.TestCase):
 
         return result, recognize
 
+    def test_rejects_noninteger_minimum_events_before_reading_inputs(self):
+        for value in (True, 1.5):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(
+                    LiveReplayCaptureRecoveryError, "minimum_events must be positive"
+                ):
+                    recover_live_replay_capture(
+                        "unread-capture.json",
+                        "unwritten-output",
+                        story_index="unread-story.jsonl",
+                        sequence_plan="unread-plan.json",
+                        minimum_events=value,
+                    )
+
     def test_recovers_explicit_speech_silent_run_and_preserves_concurrent_output(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -109,7 +109,7 @@ def recover_live_replay_capture(
     complete_visible_chapter: bool = False,
 ) -> CaptureRecoveryResult:
     """Publish a new raw corpus only when one explicit capture path meets its gate."""
-    if isinstance(minimum_events, bool) or minimum_events < 1:
+    if type(minimum_events) is not int or minimum_events < 1:
         raise LiveReplayCaptureRecoveryError("minimum_events must be positive")
     capture_path, capture_payload = _read_regular_file(
         capture_corpus, "Raw replay corpus"
