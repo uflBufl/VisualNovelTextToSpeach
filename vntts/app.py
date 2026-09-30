@@ -2279,8 +2279,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.show_error(f"Unable to register hotkeys: {error}")
 
     def start_hotkeys(self) -> None:
-        if self.hotkey_listener is not None:
-            self.hotkey_listener.stop()
         read_hotkey = get_hotkey(self.settings)
         live_hotkey = get_live_hotkey(self.settings)
         validate_hotkey_assignments(
@@ -2295,6 +2293,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 live_hotkey: self.signals.live_requested.emit,
             }
         )
+        if self.hotkey_listener is not None:
+            self.hotkey_listener.stop()
         self.hotkey_listener = listener
         listener.start()
 
@@ -2312,7 +2312,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if state.active or state.transition == "starting":
             self._request_stop_reading()
             return False
-        if self.narrator_dialog is not None:
+        if self._controller_busy or self.narrator_dialog is not None:
             return False
         return self._start_live_with_available_scope()
 

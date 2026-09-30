@@ -4165,6 +4165,37 @@ class TrayApplicationTest(unittest.TestCase):
         finally:
             tray.shutdown()
 
+    def test_hotkey_toggle_cannot_start_during_controller_reconfiguration(self):
+        controller = Mock(is_live_running=False, live_reader=None)
+        controller.toggle_live.return_value = True
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        try:
+            tray._controller_busy = True
+            self.assertFalse(tray.toggle_live())
+            controller.toggle_live.assert_not_called()
+            controller.unresolved_live_speakers.assert_not_called()
+        finally:
+            tray.shutdown()
+
+    def test_invalid_hotkey_replacement_preserves_the_current_listener(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(read_hotkey="<ctrl>+h", live_hotkey="<ctrl>+h"),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        current = Mock()
+        tray.hotkey_listener = current
+        try:
+            with self.assertRaises(ValueError):
+                tray.start_hotkeys()
+            current.stop.assert_not_called()
+            self.assertIs(tray.hotkey_listener, current)
+        finally:
+            tray.shutdown()
 
     def test_invalid_saved_hotkey_falls_back_without_preventing_startup(self):
         controller = Mock()
