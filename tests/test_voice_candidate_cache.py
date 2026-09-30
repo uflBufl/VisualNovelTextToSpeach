@@ -171,6 +171,29 @@ class VoiceCandidateCacheTest(unittest.TestCase):
         )
         self.assertTrue(old.exists())
 
+    def test_growing_reference_defers_cleanup(self) -> None:
+        old = self._candidate("old")
+        job = self.jobs / ("a" * 24)
+        job.mkdir()
+        reference = job / "voice-plan.json"
+        reference.write_text("{}", encoding="utf-8")
+        original_open = Path.open
+
+        def grow_before_read(path, mode="r", *args, **kwargs):
+            if path == reference and mode in {"r", "rb"}:
+                with original_open(reference, "wb") as destination:
+                    destination.write(b"{}" + b" " * 256)
+            return original_open(path, mode, *args, **kwargs)
+
+        with (
+            patch.object(cache, "_MAX_REFERENCE_DOCUMENT_BYTES", 128),
+            patch.object(Path, "open", autospec=True, side_effect=grow_before_read),
+        ):
+            self.assertEqual(
+                prune_obsolete_voice_candidate_caches(self.root, self.jobs), ()
+            )
+        self.assertTrue(old.exists())
+
     def test_symlink_defers_cleanup(self) -> None:
         old = self._candidate("old")
         linked = self.root / "linked"

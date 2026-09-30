@@ -492,6 +492,39 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
             self.assertTrue(cached.reused)
             self.assertEqual(cached.seed, preview.seed)
 
+    def test_growing_cached_manifest_is_read_with_a_bound(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            backend = FakeBackend("moss-tts")
+            service = VoiceAuditionPreviewService(
+                root / "auditions", backend_factory=lambda *_args, **_kwargs: backend
+            )
+            self.addCleanup(service.close)
+            source_id = group.candidates[0].source_id
+            preview = service.generate(plan, group, source_id)
+            manifest = preview.path.with_suffix(".json")
+            original_open = Path.open
+            source = io.BytesIO(b"{}" + b" " * 4096)
+            read = Mock(wraps=source.read)
+            source.read = read
+
+            def open_growing_manifest(path, *args, **kwargs):
+                if path == manifest:
+                    return source
+                return original_open(path, *args, **kwargs)
+
+            with (
+                patch.object(
+                    Path, "open", autospec=True, side_effect=open_growing_manifest
+                ),
+                self.assertRaisesRegex(VoiceAuditionError, "manifest is too large"),
+            ):
+                service.generate(plan, group, source_id)
+            read.assert_called_once_with(1025)
+            self.assertTrue(preview.path.is_file())
+            self.assertEqual(len(backend.requests), 1)
+
     def test_preview_manifest_write_failure_leaves_no_wav(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

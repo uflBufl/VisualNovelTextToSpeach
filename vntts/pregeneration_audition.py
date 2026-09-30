@@ -791,9 +791,8 @@ def _cached_preview_seed(target: Path, identity: str, plan: VoicePlan) -> int | 
             "Cached voice preview manifest must not be a symbolic link"
         )
     try:
-        if manifest.stat().st_size > 1024:
-            raise ValueError("preview manifest is too large")
-        payload = manifest.read_bytes()
+        with manifest.open("rb") as source:
+            payload = source.read(1025)
         if len(payload) > 1024:
             raise ValueError("preview manifest is too large")
         document = json.loads(payload)

@@ -285,9 +285,11 @@ def _references_in_document(root: Path, path: Path) -> set[str] | None:
     if _unsafe(path) or not path.is_file():
         return None
     try:
-        if path.stat().st_size > _MAX_REFERENCE_DOCUMENT_BYTES:
+        with path.open("rb") as source:
+            raw = source.read(_MAX_REFERENCE_DOCUMENT_BYTES + 1)
+        if len(raw) > _MAX_REFERENCE_DOCUMENT_BYTES:
             return None
-        payload = path.read_text(encoding="utf-8")
+        payload = raw.decode("utf-8")
         document = (
             [json.loads(line) for line in payload.splitlines() if line.strip()]
             if path.suffix == ".jsonl"
