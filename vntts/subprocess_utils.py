@@ -1,30 +1,24 @@
 """Small shared helpers for captured subprocesses."""
 
 import subprocess
+from contextlib import suppress
 
 
 def terminate_process(
     process: subprocess.Popen[str] | subprocess.Popen[bytes], *, timeout: float = 5
 ) -> None:
-    try:
+    with suppress(OSError):
         process.terminate()
-    except OSError:
-        pass
     try:
         process.communicate(timeout=timeout)
         return
     except subprocess.TimeoutExpired, OSError, ValueError:
         pass
-    try:
+    with suppress(OSError):
         process.kill()
-    except OSError:
-        pass
-    try:
+    # Kill is the strongest local action; leave OS cleanup rather than hanging.
+    with suppress(subprocess.TimeoutExpired, OSError):
         process.wait(timeout=timeout)
-    except subprocess.TimeoutExpired, OSError:
-        # ponytail: kill is the strongest local action; leave OS cleanup
-        # rather than hanging shutdown forever.
-        pass
 
 
 def last_output_line(value: object) -> str | None:
