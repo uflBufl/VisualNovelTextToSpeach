@@ -43,9 +43,6 @@ class FakeSoundDevice:
     def OutputStream(self, **_options):
         return FakeStream()
 
-    def get_stream(self):
-        return Mock(status=Mock(output_underflow=False))
-
     def play(self, _audio, _sample_rate, *, latency):
         del latency
 

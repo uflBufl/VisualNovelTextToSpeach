@@ -20,14 +20,6 @@ from vntts.playback import (
 AudioData: TypeAlias = NDArray[np.float32]
 
 
-class _AudioStatus(Protocol):
-    output_underflow: object
-
-
-class _AudioStream(Protocol):
-    status: _AudioStatus
-
-
 class StreamingAudioStream(Protocol):
     def write(self, audio: object) -> object: ...
 
@@ -60,8 +52,6 @@ class PlaybackAudioOutput(Protocol):
 
 
 class AudioOutput(PlaybackAudioOutput, Protocol):
-    def get_stream(self) -> _AudioStream: ...
-
     def OutputStream(
         self,
         *,
@@ -80,7 +70,6 @@ def _supports_streaming_output(value: object) -> TypeGuard[AudioOutput]:
             "play",
             "wait",
             "stop",
-            "get_stream",
             "OutputStream",
         )
     )
@@ -210,9 +199,6 @@ class _LoggedAudioOutput:
         self.output = output
         self.lock = Lock()
         self.convenience: tuple[str, dict[str, object], dict[str, object]] | None = None
-
-    def get_stream(self) -> _AudioStream:
-        return self.output.get_stream()
 
     def query_devices(self, *, kind: str) -> object:
         return self.output.query_devices(kind=kind)
@@ -352,23 +338,6 @@ class _LoggedAudioOutput:
 
     def __getattr__(self, name: str) -> object:
         return getattr(self.output, name)
-
-
-def playback_underflowed(
-    audio_output: AudioOutput | None, playback_status: object = None
-) -> bool:
-    """Read a reliable output-underflow flag without requiring a live stream."""
-    value = getattr(playback_status, "output_underflow", None)
-    if isinstance(value, (bool, np.bool_)):
-        return bool(value)
-    get_stream = getattr(audio_output, "get_stream", None)
-    if not callable(get_stream):
-        return False
-    try:
-        value = get_stream().status.output_underflow
-    except AttributeError, RuntimeError:
-        return False
-    return bool(value) if isinstance(value, (bool, np.bool_)) else False
 
 
 def match_output_sample_rate(
@@ -543,7 +512,6 @@ __all__ = [
     "StreamingAudioStream",
     "SynchronousPcmPlaybackMixin",
     "match_output_sample_rate",
-    "playback_underflowed",
     "resolve_audio_output",
     "write_pcm_chunks",
 ]

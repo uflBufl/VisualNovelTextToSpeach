@@ -72,8 +72,8 @@ Pinned in-process backend environments share one site-packages resolver for
 explicit paths, backend-specific environment overrides and repository-local
 defaults. Chatterbox, Pocket and MOSS retain their public activation functions,
 platform gates and actionable installation messages. Playback implementations
-likewise share lazy `sounddevice` resolution and conservative output-underflow
-inspection; render-only construction never imports or opens the device module.
+likewise share lazy `sounddevice` resolution and report underflow from stream
+writes; render-only construction never imports or opens the device module.
 
 `vntts.synthesis` defines the boundary between waveform generation and audio
 device playback. MOSS-TTS, Pocket TTS, Chatterbox Nano, and XTTS implement this
