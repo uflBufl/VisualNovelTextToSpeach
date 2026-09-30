@@ -295,17 +295,18 @@ def next_pending_quality_variant(
 def record_source_reference_quality_decision(
     session_path: str | Path, variant_id: str, decision: str, *, overwrite: bool = False
 ) -> JsonObject:
-    if decision not in QUALITY_DECISIONS:
+    if not isinstance(decision, str) or decision not in QUALITY_DECISIONS:
         raise SourceReferenceQualityError(
             "Quality decision must be accept, reject, or needs_sample"
         )
     session_path = Path(session_path).expanduser().resolve()
     with _decision_lock(session_path):
-        try:
-            original_payload = session_path.read_bytes()
-        except OSError as error:
-            raise SourceReferenceQualityError(str(error)) from error
-        session = load_source_reference_quality_review(session_path)
+        original_payload, session = _read_json(
+            session_path, "source-reference quality review"
+        )
+        session = validate_source_reference_quality_review_document(
+            session, session_path.parent
+        )
         if session_path.read_bytes() != original_payload:
             raise SourceReferenceQualityError(
                 "Quality review changed while the decision was loaded"

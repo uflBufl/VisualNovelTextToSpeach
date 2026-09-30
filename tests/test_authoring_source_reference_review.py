@@ -7,6 +7,7 @@ from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import numpy as np
 from vntts_artifacts import (
@@ -816,6 +817,84 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
                 for card in session["variants"]
             )
         )
+
+    def test_quality_decision_uses_one_snapshot_and_rejects_replacements(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _plan, _evaluation, _generation, result = self.publish_quality_fixture(root)
+            original_payload = result.session.read_bytes()
+            foreign = json.loads(original_payload)
+            foreign["variants"][0]["decision"] = {
+                "decision": "needs_sample",
+                "reviewed_at": "2026-08-18T00:00:00+00:00",
+            }
+            foreign["completed_count"] = 1
+            foreign["updated_at"] = "2026-08-18T00:00:00+00:00"
+            foreign_payload = json.dumps(foreign, sort_keys=True).encode()
+            original_load = load_source_reference_quality_review
+
+            def load_foreign_then_restore(path):
+                result.session.write_bytes(foreign_payload)
+                try:
+                    return original_load(path)
+                finally:
+                    result.session.write_bytes(original_payload)
+
+            with patch(
+                "vntts.authoring.source_reference_quality_records."
+                "load_source_reference_quality_review",
+                side_effect=load_foreign_then_restore,
+            ):
+                updated = record_source_reference_quality_decision(
+                    result.session, foreign["variants"][1]["variant_id"], "accept"
+                )
+
+            self.assertIsNone(updated["variants"][0]["decision"])
+            self.assertIsNone(
+                load_source_reference_quality_review(result.session)["variants"][0][
+                    "decision"
+                ]
+            )
+
+            original_validate = source_reference_quality_records.validate_source_reference_quality_review_document
+
+            def replace_after_validation(document, root):
+                validated = original_validate(document, root)
+                result.session.write_bytes(foreign_payload)
+                return validated
+
+            with patch(
+                "vntts.authoring.source_reference_quality_records."
+                "validate_source_reference_quality_review_document",
+                side_effect=replace_after_validation,
+            ):
+                with self.assertRaisesRegex(
+                    SourceReferenceQualityError,
+                    "changed while the decision was loaded",
+                ):
+                    record_source_reference_quality_decision(
+                        result.session, foreign["variants"][1]["variant_id"], "accept"
+                    )
+
+            original_progress = quality_review_progress
+
+            def replace_before_save(session):
+                result.session.write_bytes(original_payload)
+                return original_progress(session)
+
+            result.session.write_bytes(foreign_payload)
+            with patch(
+                "vntts.authoring.source_reference_quality_records."
+                "quality_review_progress",
+                side_effect=replace_before_save,
+            ):
+                with self.assertRaisesRegex(
+                    SourceReferenceQualityError,
+                    "changed before the decision was saved",
+                ):
+                    record_source_reference_quality_decision(
+                        result.session, foreign["variants"][1]["variant_id"], "accept"
+                    )
 
     def test_quality_portrait_png_requires_complete_checked_decode(self):
         with TemporaryDirectory() as directory:
