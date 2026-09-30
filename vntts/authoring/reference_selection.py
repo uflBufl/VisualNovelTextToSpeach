@@ -18,6 +18,7 @@ from vntts_artifacts.voice_manifest import (
 from vntts.authoring.authority import write_json_document_no_replace
 from vntts.authoring.publication import no_replace_destination
 from vntts.authoring.workspace_foundation import contained_regular_file
+from vntts.document_identity import is_lowercase_sha256
 from vntts.reference_quality import (
     ReferenceQualityReport,
     analyze_reference_bytes,
@@ -183,11 +184,7 @@ def validate_reference_selection_provenance(
         )
     for field in ("source_manifest_sha256", "selected_reference_sha256"):
         value = provenance.get(field)
-        if (
-            not isinstance(value, str)
-            or len(value) != 64
-            or any(character not in "0123456789abcdef" for character in value)
-        ):
+        if not is_lowercase_sha256(value):
             raise ReferenceSelectionError(
                 f"Voice reference-selection {field} is malformed"
             )
