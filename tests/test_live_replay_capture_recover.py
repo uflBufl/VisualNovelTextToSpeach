@@ -119,6 +119,105 @@ class LiveReplayCaptureRecoverTest(unittest.TestCase):
                         minimum_events=value,
                     )
 
+    def test_rejects_invalid_ledger_status_and_other_plan_recovery(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            lines = [
+                {
+                    "line_id": "story:1",
+                    "chapter": "1",
+                    "sequence": 1,
+                    "speaker": "Ada",
+                    "text": "Captured speech.",
+                }
+            ]
+            story = self.write_story(root, lines)
+            plan = self.write_plan(
+                root,
+                story,
+                [
+                    {
+                        "event_id": "first",
+                        "sequence": 1,
+                        "kind": "speech",
+                        "control": "terminal",
+                        "successors": [],
+                        "line_id": "story:1",
+                    }
+                ],
+            )
+            captured, _recognize = self.capture(
+                root,
+                story,
+                (((255, 0, 0), "Ada", "Captured speech."),),
+            )
+            raw = json.loads(captured.corpus.read_text(encoding="utf-8"))
+            binding = raw["capture"]["observation_ledger"]
+            ledger_path = captured.directory / binding["path"]
+            ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+            ledger["observations"][0]["status"] = "invalid-status"
+            ledger_payload = (json.dumps(ledger, indent=2) + "\n").encode("utf-8")
+            ledger_path.write_bytes(ledger_payload)
+            binding["sha256"] = hashlib.sha256(ledger_payload).hexdigest()
+            captured.corpus.write_text(
+                json.dumps(raw, indent=2) + "\n", encoding="utf-8"
+            )
+
+            with self.assertRaisesRegex(
+                LiveReplayCaptureRecoveryError, "ledger status is invalid"
+            ):
+                recover_live_replay_capture(
+                    captured.corpus,
+                    root / "invalid-ledger",
+                    story_index=story,
+                    sequence_plan=plan,
+                    minimum_events=1,
+                    require_silent=False,
+                )
+
+            ledger["observations"][0]["status"] = "canonical"
+            ledger_payload = (json.dumps(ledger, indent=2) + "\n").encode("utf-8")
+            ledger_path.write_bytes(ledger_payload)
+            binding["sha256"] = hashlib.sha256(ledger_payload).hexdigest()
+            captured.corpus.write_text(
+                json.dumps(raw, indent=2) + "\n", encoding="utf-8"
+            )
+            recovered = recover_live_replay_capture(
+                captured.corpus,
+                root / "recovered",
+                story_index=story,
+                sequence_plan=plan,
+                minimum_events=1,
+                require_silent=False,
+            )
+            other_plan = self.write_plan(
+                root,
+                story,
+                [
+                    {
+                        "event_id": "other",
+                        "sequence": 1,
+                        "kind": "speech",
+                        "control": "terminal",
+                        "successors": [],
+                        "line_id": "story:1",
+                    }
+                ],
+            )
+
+            with self.assertRaisesRegex(
+                LiveReplayCaptureRecoveryError,
+                "not bound to the selected sequence-plan",
+            ):
+                recover_live_replay_capture(
+                    recovered.corpus,
+                    root / "other-plan",
+                    story_index=story,
+                    sequence_plan=other_plan,
+                    minimum_events=1,
+                    require_silent=False,
+                )
+
     def test_recovers_explicit_speech_silent_run_and_preserves_concurrent_output(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

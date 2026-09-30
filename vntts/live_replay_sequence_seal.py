@@ -36,6 +36,15 @@ from vntts.settings import AppSettings, audio_source_policies, load_app_settings
 SEQUENCE_REPLAY_SEAL_VERSION = 1
 PathInput: TypeAlias = str | os.PathLike[str]
 JSONDocument: TypeAlias = dict[str, object]
+_CAPTURE_OBSERVATION_STATUSES = frozenset(
+    {
+        "canonical",
+        "punctuation-only",
+        "unresolved",
+        "uncertain",
+        "accepted-unbound",
+    }
+)
 
 
 class SequenceReplaySealError(RuntimeError):
@@ -134,11 +143,12 @@ def seal_sequence_replay(
         )
     recovery = capture_authority.get("recovery")
     if recovery is not None:
-        recovery_document = _required_document(recovery, "Capture recovery authority")
-        if recovery_document["sequence_plan_sha256"] != plan_sha256:
-            raise SequenceReplaySealError(
-                "Recovered capture is not bound to the selected sequence-plan bytes"
-            )
+        _validate_recovery_plan_binding(
+            capture_path.parent,
+            recovery,
+            capture_report_document,
+            plan_sha256,
+        )
     selected_output = Path(output_directory).expanduser()
     if selected_output.exists() or selected_output.is_symlink():
         raise SequenceReplaySealError(
@@ -881,13 +891,7 @@ def _validate_capture_observation_ledger(
         ):
             raise SequenceReplaySealError("Capture observation ledger order is invalid")
         status = observation.get("status")
-        if status not in {
-            "canonical",
-            "punctuation-only",
-            "unresolved",
-            "uncertain",
-            "accepted-unbound",
-        }:
+        if not isinstance(status, str) or status not in _CAPTURE_OBSERVATION_STATUSES:
             raise SequenceReplaySealError(
                 "Capture observation ledger status is invalid"
             )
@@ -943,11 +947,6 @@ def _validate_capture_observation_ledger(
             "Raw observation-ledger capture must recover one explicit sequence "
             "segment before sealing"
         )
-    _validate_recovery_authority(
-        capture_path.parent,
-        _required_document(recovery, "Capture recovery authority"),
-        report,
-    )
 
 
 def _validate_recovery_authority(
@@ -990,6 +989,20 @@ def _validate_recovery_authority(
         _path, payload = _read_contained(root, relative, label)
         if hashlib.sha256(payload).hexdigest() != recovery[field]:
             raise SequenceReplaySealError(f"{label} checksum changed")
+
+
+def _validate_recovery_plan_binding(
+    root: Path,
+    recovery: object,
+    report: JSONDocument,
+    plan_sha256: str,
+) -> None:
+    recovery_document = _required_document(recovery, "Capture recovery authority")
+    _validate_recovery_authority(root, recovery_document, report)
+    if recovery_document["sequence_plan_sha256"] != plan_sha256:
+        raise SequenceReplaySealError(
+            "Recovered capture is not bound to the selected sequence-plan bytes"
+        )
 
 
 def _normalized_exact(value: object) -> str:

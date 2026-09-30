@@ -30,6 +30,7 @@ from vntts.dialog_capture import (
     is_standalone_ellipsis_text,
 )
 from vntts.live_replay_sequence_seal import (
+    _CAPTURE_OBSERVATION_STATUSES,
     SequenceReplaySealError,
     _decode_json,
     _next_visible_events,
@@ -38,6 +39,7 @@ from vntts.live_replay_sequence_seal import (
     _read_regular_file,
     _required_sha256,
     _validate_capture_report,
+    _validate_recovery_plan_binding,
     _write_bytes,
     _write_json,
 )
@@ -154,6 +156,17 @@ def recover_live_replay_capture(
         raise LiveReplayCaptureRecoveryError(
             "Raw capture is not bound to the selected story-index bytes"
         )
+    recovery = capture_binding.get("recovery")
+    if recovery is not None:
+        try:
+            _validate_recovery_plan_binding(
+                capture_path.parent,
+                recovery,
+                report_document,
+                plan_sha256,
+            )
+        except SequenceReplaySealError as error:
+            raise LiveReplayCaptureRecoveryError(str(error)) from error
 
     selected_output = Path(output_directory).expanduser()
     if selected_output.exists() or selected_output.is_symlink():
@@ -463,7 +476,11 @@ def _load_ledger_observations(
         dialog_visible, bright_dialog_pixels = _frame_visibility(frame_payload)
         character = _optional_text(entry.get("observed_character"))
         text = _optional_text(entry.get("observed_text"))
-        status = str(entry.get("status") or "unknown")
+        status = entry.get("status")
+        if not isinstance(status, str) or status not in _CAPTURE_OBSERVATION_STATUSES:
+            raise LiveReplayCaptureRecoveryError(
+                "Capture observation ledger status is invalid"
+            )
         if status in {"unresolved", "uncertain"}:
             try:
                 with Image.open(io.BytesIO(frame_payload)) as image:

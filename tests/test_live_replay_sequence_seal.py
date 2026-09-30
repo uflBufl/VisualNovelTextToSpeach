@@ -541,6 +541,21 @@ class LiveReplaySequenceSealTest(unittest.TestCase):
                 ],
             )
             captured, recognize = self.capture(root, story, (("Ada", "One line."),))
+            raw_payload = captured.corpus.read_bytes()
+            forged = json.loads(raw_payload)
+            forged["capture"]["recovery"] = {}
+            captured.corpus.write_text(json.dumps(forged), encoding="utf-8")
+            with self.assertRaisesRegex(
+                SequenceReplaySealError, "Capture recovery authority is invalid"
+            ):
+                seal_sequence_replay(
+                    captured.corpus,
+                    root / "malformed-recovery",
+                    story_index=story,
+                    sequence_plan=plan,
+                    recognizer=recognize,
+                )
+            captured.corpus.write_bytes(raw_payload)
             report = json.loads(captured.report.read_text(encoding="utf-8"))
             report["dialogue_count"] = 2
             captured.report.write_text(
