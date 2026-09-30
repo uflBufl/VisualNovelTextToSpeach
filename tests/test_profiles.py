@@ -153,6 +153,31 @@ class GameProfileStoreTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "profile IDs must be unique"):
                 store.restore(removed)
 
+    def test_malformed_profile_ids_are_rejected_without_rewriting_the_file(self):
+        profile = GameProfile.from_settings("Game", AppSettings())
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "profiles.json"
+            for invalid in (None, 0, False, [], {}, "", "   "):
+                with self.subTest(profile_id=invalid):
+                    values = {**profile.to_mapping(), "id": invalid}
+                    with self.assertRaisesRegex(ValueError, "nonempty strings"):
+                        GameProfile.from_mapping(values)
+                    path.write_text(
+                        json.dumps(
+                            {
+                                "schema_version": profiles_schema_version,
+                                "profiles": [values],
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    before = path.read_bytes()
+                    warnings = []
+                    loaded = GameProfileStore.load(path, warn=warnings.append)
+                    self.assertEqual(loaded.profiles, [])
+                    self.assertIn("nonempty strings", warnings[0])
+                    self.assertEqual(path.read_bytes(), before)
+
     def test_profile_persists_and_preflights_game_pack_on_activation(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "profiles.json"

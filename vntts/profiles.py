@@ -80,6 +80,9 @@ class GameProfile:
         source_schema: int = profiles_schema_version,
     ) -> Self:
         region = _dialog_region(values.get("dialog_region"))
+        profile_id = values["id"]
+        if not isinstance(profile_id, str) or not profile_id.strip():
+            raise ValueError("profile IDs must be nonempty strings")
         force_live_narrator = values.get("force_live_narrator", False)
         if not isinstance(force_live_narrator, bool):
             raise ValueError("force_live_narrator must be a boolean")
@@ -102,7 +105,7 @@ class GameProfile:
         if not isinstance(ocr_language, str) or not ocr_language.strip():
             ocr_language = "eng"
         return cls(
-            id=str(values["id"]),
+            id=profile_id,
             name=_validated_name(values["name"]),
             capture_mode=capture_mode,
             game_window_title=_optional_text(values.get("game_window_title")),
