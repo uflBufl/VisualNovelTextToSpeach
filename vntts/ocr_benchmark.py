@@ -12,7 +12,7 @@ from typing import TypeAlias, TypedDict
 from PIL import Image
 from vntts_artifacts.atomic_io import atomic_write_json
 
-from vntts.cli import cli_messages
+from vntts.cli import cli_error, cli_messages
 from vntts.ocr import VoiceRegistry
 from vntts.ocr_backend import OCRBackend, RapidOCRBackend, TesseractOCRBackend
 from vntts.settings import get_local_data_directory
@@ -269,21 +269,26 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
-    manifest = find_default_voice_manifest()
-    registry = CharacterVoiceRegistry.from_file(manifest) if manifest else None
-    backend = (
-        RapidOCRBackend() if arguments.backend == "rapidocr" else TesseractOCRBackend()
-    )
-    report = benchmark_ocr(
-        arguments.images,
-        backend=backend,
-        registry=registry,
-        repeats=arguments.repeats,
-        warmups=arguments.warmups,
-        language=arguments.language,
-        expectations=load_expectations(arguments.expectations),
-    )
-    output = write_report(report, arguments.output)
+    try:
+        manifest = find_default_voice_manifest()
+        registry = CharacterVoiceRegistry.from_file(manifest) if manifest else None
+        backend = (
+            RapidOCRBackend()
+            if arguments.backend == "rapidocr"
+            else TesseractOCRBackend()
+        )
+        report = benchmark_ocr(
+            arguments.images,
+            backend=backend,
+            registry=registry,
+            repeats=arguments.repeats,
+            warmups=arguments.warmups,
+            language=arguments.language,
+            expectations=load_expectations(arguments.expectations),
+        )
+        output = write_report(report, arguments.output)
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
+        return int(cli_error(error))
     summary = report["summary"]
     return cli_messages(
         (

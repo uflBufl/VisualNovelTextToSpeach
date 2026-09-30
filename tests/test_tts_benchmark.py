@@ -896,6 +896,43 @@ class TTSBenchmarkTest(unittest.TestCase):
                 self.assertEqual(len(backend.render_requests), 1)
                 self.assertEqual(list(Path(directory).glob("*.wav")), [])
 
+    def test_cli_handles_malformed_corpus_without_starting_or_publishing(self):
+        errors = StringIO()
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = root / "corpus.json"
+            corpus.write_text("{", encoding="utf-8")
+            output = root / "output"
+            with (
+                patch(
+                    "vntts.tts_benchmark.find_default_voice_manifest",
+                    return_value=root / "manifest",
+                ),
+                patch(
+                    "vntts.tts_benchmark.CharacterVoiceRegistry.from_file",
+                    return_value=CharacterVoiceRegistry(),
+                ),
+                patch("vntts.tts_benchmark.benchmark_backend") as benchmark,
+                redirect_stderr(errors),
+            ):
+                self.assertEqual(
+                    main(
+                        [
+                            "--backend",
+                            "pocket-tts",
+                            "--corpus",
+                            str(corpus),
+                            "--output",
+                            str(output),
+                        ]
+                    ),
+                    1,
+                )
+            benchmark.assert_not_called()
+            self.assertFalse(output.exists())
+        self.assertIn("line 1 column 2", errors.getvalue())
+        self.assertNotIn("Traceback", errors.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

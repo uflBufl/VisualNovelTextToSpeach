@@ -852,98 +852,103 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
-    manifest = arguments.manifest or find_default_voice_manifest()
-    narrator_reference = (
-        arguments.narrator_reference.expanduser().resolve()
-        if arguments.narrator_reference is not None
-        else None
-    )
-    if narrator_reference is not None and not narrator_reference.is_file():
-        cli_error(f"Narrator reference does not exist: {narrator_reference}")
-        return 1
-    if manifest is None and narrator_reference is None:
-        cli_error("No complete voice manifest is available")
-        return 1
-    registry = (
-        CharacterVoiceRegistry.from_file(manifest)
-        if manifest is not None
-        else CharacterVoiceRegistry()
-    )
-    corpus = (
-        load_tts_benchmark_corpus(arguments.corpus)
-        if arguments.corpus is not None
-        else None
-    )
-    characters = (
-        sorted({sample["character"] for sample in corpus["samples"]})
-        if corpus is not None
-        else arguments.characters or ["Kamuta", "Fatutu"]
-    )
-    missing = [
-        character
-        for character in characters
-        if not is_narrator(character) and registry.resolve(character) is None
-    ]
-    if missing:
-        cli_error(f"Voice is not available: {missing[0]}")
-        return 1
-    backend_factory: BackendFactory = create_backend
-    if any(
-        value is not None
-        for value in (
-            arguments.model,
-            arguments.moss_first_chunk_frames,
-            arguments.moss_streaming_interval,
-            arguments.accept_xtts_terms or None,
-            narrator_reference,
+    try:
+        manifest = arguments.manifest or find_default_voice_manifest()
+        narrator_reference = (
+            arguments.narrator_reference.expanduser().resolve()
+            if arguments.narrator_reference is not None
+            else None
         )
-    ):
+        if narrator_reference is not None and not narrator_reference.is_file():
+            cli_error(f"Narrator reference does not exist: {narrator_reference}")
+            return 1
+        if manifest is None and narrator_reference is None:
+            cli_error("No complete voice manifest is available")
+            return 1
+        registry = (
+            CharacterVoiceRegistry.from_file(manifest)
+            if manifest is not None
+            else CharacterVoiceRegistry()
+        )
+        corpus = (
+            load_tts_benchmark_corpus(arguments.corpus)
+            if arguments.corpus is not None
+            else None
+        )
+        characters = (
+            sorted({sample["character"] for sample in corpus["samples"]})
+            if corpus is not None
+            else arguments.characters or ["Kamuta", "Fatutu"]
+        )
+        missing = [
+            character
+            for character in characters
+            if not is_narrator(character) and registry.resolve(character) is None
+        ]
+        if missing:
+            cli_error(f"Voice is not available: {missing[0]}")
+            return 1
+        backend_factory: BackendFactory = create_backend
+        if any(
+            value is not None
+            for value in (
+                arguments.model,
+                arguments.moss_first_chunk_frames,
+                arguments.moss_streaming_interval,
+                arguments.accept_xtts_terms or None,
+                narrator_reference,
+            )
+        ):
 
-        def configured_backend_factory(
-            name: str, registry: CharacterVoiceRegistry, cache: PathInput
-        ) -> object:
-            return create_backend(
-                name,
-                registry,
-                cache,
-                model_name=arguments.model,
-                moss_streaming_first_chunk_frames=(arguments.moss_first_chunk_frames),
-                moss_streaming_interval=arguments.moss_streaming_interval,
-                terms_accepted=arguments.accept_xtts_terms,
-                **(
-                    {"narrator_reference": narrator_reference}
-                    if narrator_reference is not None
-                    else {}
+            def configured_backend_factory(
+                name: str, registry: CharacterVoiceRegistry, cache: PathInput
+            ) -> object:
+                return create_backend(
+                    name,
+                    registry,
+                    cache,
+                    model_name=arguments.model,
+                    moss_streaming_first_chunk_frames=(
+                        arguments.moss_first_chunk_frames
+                    ),
+                    moss_streaming_interval=arguments.moss_streaming_interval,
+                    terms_accepted=arguments.accept_xtts_terms,
+                    **(
+                        {"narrator_reference": narrator_reference}
+                        if narrator_reference is not None
+                        else {}
+                    ),
+                )
+
+            backend_factory = configured_backend_factory
+
+        report = benchmark_backend(
+            arguments.backend,
+            registry,
+            characters,
+            arguments.text,
+            arguments.output,
+            benchmark_samples=corpus["samples"] if corpus is not None else None,
+            corpus_name=corpus["name"] if corpus is not None else None,
+            model_id=f"{arguments.backend}/{arguments.model or 'default'}",
+            seed=arguments.seed,
+            backend_factory=backend_factory,
+        )
+        report_path = write_report(report, arguments.output)
+        cli_messages(
+            (
+                report_path,
+                *(
+                    f"{sample['character']}: first audio {sample['first_audio_ms']:.0f} ms, "
+                    f"RTF {sample['realtime_factor']:.2f}, cache "
+                    f"{sample['cached_replay_ms']:.1f} ms"
+                    for sample in report["samples"]
                 ),
             )
-
-        backend_factory = configured_backend_factory
-
-    report = benchmark_backend(
-        arguments.backend,
-        registry,
-        characters,
-        arguments.text,
-        arguments.output,
-        benchmark_samples=corpus["samples"] if corpus is not None else None,
-        corpus_name=corpus["name"] if corpus is not None else None,
-        model_id=f"{arguments.backend}/{arguments.model or 'default'}",
-        seed=arguments.seed,
-        backend_factory=backend_factory,
-    )
-    report_path = write_report(report, arguments.output)
-    cli_messages(
-        (
-            report_path,
-            *(
-                f"{sample['character']}: first audio {sample['first_audio_ms']:.0f} ms, "
-                f"RTF {sample['realtime_factor']:.2f}, cache "
-                f"{sample['cached_replay_ms']:.1f} ms"
-                for sample in report["samples"]
-            ),
         )
-    )
-    return 0
+        return 0
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
+        return int(cli_error(error))
 
 
 if __name__ == "__main__":

@@ -1,3 +1,5 @@
+import contextlib
+import io
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -5,7 +7,7 @@ from tempfile import TemporaryDirectory
 from PIL import Image
 
 from vntts.ocr import OCRResult
-from vntts.ocr_benchmark import benchmark_ocr, write_report
+from vntts.ocr_benchmark import benchmark_ocr, main, write_report
 
 
 class FakeOCRBackend:
@@ -101,6 +103,29 @@ class OCRBenchmarkTest(unittest.TestCase):
 
         self.assertEqual(report["summary"]["images"], 0)
         self.assertIsNone(report["summary"]["median_cpu_utilization_percent"])
+
+    def test_cli_reports_malformed_expectations_without_traceback(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            expectations = root / "expectations.json"
+            expectations.write_text("{", encoding="utf-8")
+            output = root / "report.json"
+            stderr = io.StringIO()
+
+            with contextlib.redirect_stderr(stderr):
+                result = main(
+                    [
+                        str(root / "missing.png"),
+                        "--expectations",
+                        str(expectations),
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+        self.assertEqual(result, 1)
+        self.assertNotIn("Traceback", stderr.getvalue())
+        self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":
