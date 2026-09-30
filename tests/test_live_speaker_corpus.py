@@ -9,6 +9,20 @@ from vntts.live_speaker_corpus import LiveSpeakerCorpus
 
 
 class LiveSpeakerCorpusTest(unittest.TestCase):
+    def test_rejects_non_integer_schema_versions(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "speakers.json"
+            for version in (1.0, True, "1", None):
+                with self.subTest(version=version):
+                    path.write_text(
+                        json.dumps(
+                            {"schema_version": version, "speakers": ["Rhiannon"]}
+                        ),
+                        encoding="utf-8",
+                    )
+                    with self.assertRaisesRegex(ValueError, "schema version"):
+                        LiveSpeakerCorpus.load(path)
+
     def test_loads_a_versioned_unique_explicit_scope(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "speakers.json"

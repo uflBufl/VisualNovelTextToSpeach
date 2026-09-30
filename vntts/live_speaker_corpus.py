@@ -52,7 +52,7 @@ class LiveSpeakerCorpus:
         if not isinstance(document, dict):
             raise ValueError("live speaker corpus root must be an object")
         version = document.get("schema_version")
-        if isinstance(version, bool) or version != LIVE_SPEAKER_CORPUS_VERSION:
+        if type(version) is not int or version != LIVE_SPEAKER_CORPUS_VERSION:
             raise ValueError(
                 f"unsupported live speaker corpus schema version: {version}"
             )
