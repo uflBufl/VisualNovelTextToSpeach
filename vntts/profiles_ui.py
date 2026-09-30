@@ -220,7 +220,7 @@ class GameProfilesDialog(QDialog):
                 self.correction_store.remove_profile(profile.id)
             except OSError as error:
                 try:
-                    self.store._commit_profiles((*self.store.profiles, profile))
+                    self.store.restore(profile)
                 except OSError as rollback_error:
                     QMessageBox.warning(
                         self,

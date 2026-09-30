@@ -280,6 +280,10 @@ class GameProfileStore:
         self._commit_profiles(item for item in self.profiles if item.id != profile.id)
         return profile
 
+    def restore(self, profile: GameProfile) -> None:
+        """Restore a removed profile after a dependent cleanup fails."""
+        self._commit_profiles((*self.profiles, profile))
+
     def update_from_settings(
         self,
         profile_id: str,

@@ -124,6 +124,35 @@ class GameProfileStoreTest(unittest.TestCase):
                 GameProfileStore.load(path).get(profile.id).name, "Renamed"
             )
 
+    def test_restore_publishes_only_after_save_and_preserves_profile(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "profiles.json"
+            store = GameProfileStore(path)
+            remaining = store.create("Remaining", AppSettings())
+            removed = store.create(
+                "Removed",
+                AppSettings(game_window_title="Game"),
+                region=DialogRegion(0.2, 0.4, 0.7, 0.4),
+            )
+            store.remove(removed.id)
+            before = path.read_bytes()
+            with (
+                patch(
+                    "vntts.versioned_json.write_versioned_json",
+                    side_effect=OSError("disk full"),
+                ),
+                self.assertRaisesRegex(OSError, "disk full"),
+            ):
+                store.restore(removed)
+            self.assertEqual(store.profiles, [remaining])
+            self.assertEqual(path.read_bytes(), before)
+
+            store.restore(removed)
+            self.assertEqual(store.profiles, [remaining, removed])
+            self.assertEqual(GameProfileStore.load(path).profiles, store.profiles)
+            with self.assertRaisesRegex(ValueError, "profile IDs must be unique"):
+                store.restore(removed)
+
     def test_profile_persists_and_preflights_game_pack_on_activation(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "profiles.json"
