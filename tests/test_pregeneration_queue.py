@@ -26,8 +26,10 @@ from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
     canonical_document_sha256,
     load_source_audio_semantic_evidence,
+    project_source_audio_semantics,
     semantic_text_sha256,
     validate_source_audio_semantic_evidence,
+    validate_story_semantic_evidence,
 )
 from vntts.voice_library import VoiceLibrary
 from vntts.voices import CharacterVoiceRegistry, remember_voice_binding
@@ -285,6 +287,86 @@ class PregenerationInputStoreTest(unittest.TestCase):
                             ):
                                 validate_source_audio_semantic_evidence(document)
 
+    def test_story_semantic_binding_rejects_malformed_ids_and_counts(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = add_semantic_evidence(write_content(root / "content"))
+            story = load_story_index_document(path)
+            evidence_path = path.parent / "source-audio-semantic-evidence.json"
+            evidence = load_source_audio_semantic_evidence(evidence_path)
+            evidence_sha256 = sha256_file(evidence_path)
+            for entry_id in ([], {}, 1):
+                with self.subTest(entry_id=entry_id):
+                    records = [record.to_record() for record in story.records]
+                    record = next(
+                        record for record in records if record["line_id"] == "original"
+                    )
+                    record["source_audio_semantic_evidence_entry_id"] = entry_id
+                    write_story_index_document(path, story.metadata, records)
+                    with self.assertRaisesRegex(
+                        SourceAudioSemanticEvidenceError,
+                        "Story semantic evidence changed",
+                    ):
+                        validate_story_semantic_evidence(
+                            path, evidence_sha256, evidence
+                        )
+                    with self.assertRaisesRegex(
+                        SourceAudioSemanticEvidenceError,
+                        "Selected dialogue semantic entry ID",
+                    ):
+                        project_source_audio_semantics(story, records, root / "staging")
+                    self.assertFalse((root / "staging").exists())
+            for applied_count in (True, 2.0):
+                with self.subTest(applied_count=applied_count):
+                    metadata = dict(story.metadata)
+                    metadata["source_audio_semantics"] = dict(
+                        metadata["source_audio_semantics"], applied_count=applied_count
+                    )
+                    records = [record.to_record() for record in story.records]
+                    if applied_count is True:
+                        for record in records:
+                            if record["line_id"] == "not-selected":
+                                record.pop("source_audio_semantic_evidence_entry_id")
+                    write_story_index_document(path, metadata, records)
+                    with self.assertRaisesRegex(
+                        SourceAudioSemanticEvidenceError, "applied count changed"
+                    ):
+                        validate_story_semantic_evidence(
+                            path, evidence_sha256, evidence
+                        )
+
+    def test_story_semantic_binding_requires_line_provenance(self):
+        with TemporaryDirectory() as directory:
+            path = add_semantic_evidence(write_content(Path(directory) / "content"))
+            story = load_story_index_document(path)
+            evidence_path = path.parent / "source-audio-semantic-evidence.json"
+            evidence = json.loads(evidence_path.read_bytes())
+            evidence["entries"][0]["source_line_ids"] = ["unrelated-line"]
+            evidence["evidence_id"] = canonical_document_sha256(
+                {
+                    key: value
+                    for key, value in evidence.items()
+                    if key not in {"evidence_id", "generated_at"}
+                }
+            )
+            atomic_write_json(evidence_path, evidence, sort_keys=True)
+            metadata = dict(story.metadata)
+            metadata["source_audio_semantics"] = dict(
+                metadata["source_audio_semantics"],
+                evidence_id=evidence["evidence_id"],
+                evidence_sha256=sha256_file(evidence_path),
+            )
+            records = [record.to_record() for record in story.records]
+            for record in records:
+                if record.get("source_audio_semantic_evidence_entry_id") is not None:
+                    record["source_audio_semantic_evidence_id"] = evidence[
+                        "evidence_id"
+                    ]
+            write_story_index_document(path, metadata, records)
+            with self.assertRaisesRegex(
+                SourceAudioSemanticEvidenceError, "Story semantic evidence changed"
+            ):
+                load_source_audio_semantic_evidence(evidence_path, path)
 
     def test_semantic_evidence_rejects_invalid_utf8(self):
         with TemporaryDirectory() as directory:

@@ -233,10 +233,11 @@ def validate_story_semantic_evidence(
         entry_id = record.get("source_audio_semantic_evidence_entry_id")
         if entry_id is None:
             continue
-        entry = entry_by_id.get(entry_id)
+        entry = entry_by_id.get(entry_id) if isinstance(entry_id, str) else None
         if (
             record.get("source_audio_semantic_evidence_id") != evidence["evidence_id"]
             or entry is None
+            or line.line_id not in entry["source_line_ids"]
             or entry["locale"] != story.metadata.get("language")
             or entry["media_sha256"] != record.get("source_audio_duration_media_sha256")
             or entry["displayed_text_sha256"] != record.get("text_sha256")
@@ -249,7 +250,8 @@ def validate_story_semantic_evidence(
                 f"Story semantic evidence changed for {record.get('line_id')!r}"
             )
         matched += 1
-    if matched != metadata.get("applied_count") or matched <= 0:
+    applied_count = metadata.get("applied_count")
+    if type(applied_count) is not int or matched != applied_count or matched <= 0:
         raise SourceAudioSemanticEvidenceError(
             "Story semantic evidence applied count changed"
         )
@@ -272,12 +274,7 @@ def project_source_audio_semantics(
         raise SourceAudioSemanticEvidenceError(
             f"Selected dialogue source-audio evidence is invalid: {error}"
         ) from error
-    selected_line_ids = {record.get("line_id") for record in records}
-    selected_entry_ids = {
-        record.get("source_audio_semantic_evidence_entry_id")
-        for record in records
-        if record.get("source_audio_semantic_evidence_entry_id") is not None
-    }
+    selected_line_ids, selected_entry_ids = _selected_semantic_ids(records)
     if not selected_entry_ids:
         projected_metadata = deepcopy(metadata)
         projected_metadata.pop("source_audio_semantics", None)
@@ -333,6 +330,26 @@ def project_source_audio_semantics(
         ),
     }
     return projected_metadata, projected_records, destination
+
+
+def _selected_semantic_ids(records: list[JsonDocument]) -> tuple[set[str], set[str]]:
+    selected_line_ids: set[str] = set()
+    selected_entry_ids: set[str] = set()
+    for record in records:
+        line_id = record.get("line_id")
+        entry_id = record.get("source_audio_semantic_evidence_entry_id")
+        if not isinstance(line_id, str) or not line_id:
+            raise SourceAudioSemanticEvidenceError(
+                "Selected dialogue line ID is invalid"
+            )
+        selected_line_ids.add(line_id)
+        if entry_id is not None:
+            if not isinstance(entry_id, str):
+                raise SourceAudioSemanticEvidenceError(
+                    "Selected dialogue semantic entry ID is invalid"
+                )
+            selected_entry_ids.add(entry_id)
+    return selected_line_ids, selected_entry_ids
 
 
 def _require_sha256(value: object, label: str) -> str:
