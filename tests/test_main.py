@@ -892,6 +892,26 @@ class MainTest(unittest.TestCase):
         self.assertEqual(configuration["synthesis_options"]["temperature"], 0.70)
         self.assertIn("Using 'stable'", errors.getvalue())
 
+    def test_saved_profile_fallback_keeps_speed_local_to_each_configuration(self):
+        errors = io.StringIO()
+        settings = AppSettings(
+            speech_backend="coqui-xtts", tts_model="custom-xtts", tts_profile="robot"
+        )
+        with redirect_stderr(errors):
+            first = get_tts_configuration(settings.updated(speech_rate_percent=115))
+            first["synthesis_options"]["temperature"] = 0
+            second = get_tts_configuration(settings)
+
+        self.assertEqual(second["synthesis_options"]["temperature"], 0.70)
+        self.assertEqual(second["synthesis_options"]["speed"], 1.0)
+        self.assertEqual(errors.getvalue().count("Using 'stable'"), 2)
+        self.assertEqual(
+            get_tts_configuration(AppSettings(tts_profile="robot"))[
+                "synthesis_options"
+            ],
+            {"speed": 1.0},
+        )
+
     def test_voice_router_uses_configured_narrator(self):
         tts = Mock()
         with patch.dict(

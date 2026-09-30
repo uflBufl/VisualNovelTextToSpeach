@@ -188,6 +188,14 @@ def get_live_configuration(
     }
 
 
+def _tts_profile_or_default(name: str) -> dict[str, object]:
+    try:
+        return get_tts_profile(name)
+    except ValueError as error:
+        print(f"{error}. Using {default_tts_profile!r}", file=sys.stderr)
+        return get_tts_profile(default_tts_profile)
+
+
 def get_tts_configuration(settings: AppSettings | None = None) -> dict[str, object]:
     if settings is not None:
         if settings.speech_backend == "coqui-xtts" and not (
@@ -205,20 +213,13 @@ def get_tts_configuration(settings: AppSettings | None = None) -> dict[str, obje
             if value
         }
         configuration["volume"] = settings.output_volume_percent / 100
-        if settings.speech_backend == "coqui-xtts":
-            profile_name = settings.tts_profile
-            try:
-                configuration["synthesis_options"] = get_tts_profile(profile_name)
-            except ValueError as error:
-                print(f"{error}. Using {default_tts_profile!r}", file=sys.stderr)
-                configuration["synthesis_options"] = get_tts_profile(
-                    default_tts_profile
-                )
-        synthesis_options = configuration.get("synthesis_options")
-        if not isinstance(synthesis_options, dict):
-            synthesis_options = {}
-            configuration["synthesis_options"] = synthesis_options
+        synthesis_options = (
+            _tts_profile_or_default(settings.tts_profile)
+            if settings.speech_backend == "coqui-xtts"
+            else {}
+        )
         synthesis_options["speed"] = settings.speech_rate_percent / 100
+        configuration["synthesis_options"] = synthesis_options
         return configuration
 
     configuration = {
@@ -229,11 +230,7 @@ def get_tts_configuration(settings: AppSettings | None = None) -> dict[str, obje
     environment_profile = os.environ.get("VNTTS_TTS_PROFILE")
     if environment_profile:
         profile_name = environment_profile.strip().casefold()
-        try:
-            configuration["synthesis_options"] = get_tts_profile(profile_name)
-        except ValueError as error:
-            print(f"{error}. Using {default_tts_profile!r}", file=sys.stderr)
-            configuration["synthesis_options"] = get_tts_profile(default_tts_profile)
+        configuration["synthesis_options"] = _tts_profile_or_default(profile_name)
     return configuration
 
 
