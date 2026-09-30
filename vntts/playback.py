@@ -99,7 +99,7 @@ def prepared_playback_from_render(
 
 def synthesized_mono_pcm(
     backend: SynchronousRenderer, character: str, text: str
-) -> NDArray[np.generic]:
+) -> NDArray[np.float32]:
     return collect_synthesis(backend, character, text).pcm.reshape(-1)
 
 

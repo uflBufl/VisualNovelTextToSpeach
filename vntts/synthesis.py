@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Protocol, TypeAlias
 
 import numpy as np
+from numpy.typing import NDArray
 
 _SHORT_TRAILING_ELLIPSIS = re.compile(
     r"^\s*(?P<spoken>[\w'’]+(?:\s+[\w'’]+)?)\s*(?:\.{3}|…)\s*$"
@@ -99,7 +100,7 @@ class SynthesisDiagnostics:
 
 @dataclass(frozen=True)
 class SynthesisChunk:
-    pcm: np.ndarray
+    pcm: NDArray[np.float32]
     sample_rate: int
     index: int
     elapsed_ms: float
@@ -107,7 +108,7 @@ class SynthesisChunk:
 
 @dataclass(frozen=True)
 class SynthesisResult:
-    pcm: np.ndarray
+    pcm: NDArray[np.float32]
     sample_rate: int
     completion: SynthesisCompletion
     limits: SynthesisLimits
