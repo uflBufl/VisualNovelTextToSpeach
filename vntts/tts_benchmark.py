@@ -483,8 +483,10 @@ def _validate_render_result(
         raise RuntimeError(
             f"{stage} render did not complete: {result.completion.value}"
         )
-    if not isinstance(result.sample_rate, int) or result.sample_rate <= 0:
+    if type(result.sample_rate) is not int or result.sample_rate <= 0:
         raise RuntimeError(f"{stage} render returned an invalid sample rate")
+    if not result.pcm.size:
+        raise RuntimeError(f"{stage} render returned no audio")
     if (
         result.diagnostics.seed != request.seed
         or result.diagnostics.generation_profile != request.generation_profile

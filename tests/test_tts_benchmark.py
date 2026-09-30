@@ -63,13 +63,17 @@ class FakeRenderingBackend(FakeBackend):
         *,
         completions=(SynthesisCompletion.COMPLETE,),
         result_sample_rate=None,
+        pcm=None,
         diagnostics_profile=None,
         cache_sources=None,
     ):
         super().__init__()
         self.render_requests = []
         self.completions = tuple(completions)
-        self.result_sample_rate = result_sample_rate or self.sample_rate
+        self.result_sample_rate = (
+            result_sample_rate if result_sample_rate is not None else self.sample_rate
+        )
+        self.pcm = pcm
         self.diagnostics_profile = diagnostics_profile
         self.cache_sources = tuple(cache_sources or ())
         self.audio_cache = BoundedCache(2)
@@ -95,7 +99,11 @@ class FakeRenderingBackend(FakeBackend):
                 min(call_index, len(self.cache_sources) - 1)
             ]
         completion = self.completions[min(call_index, len(self.completions) - 1)]
-        audio = np.array([[0.0], [0.5], [-0.5], [0.0]], dtype=np.float32)
+        audio = (
+            self.pcm
+            if self.pcm is not None
+            else np.array([[0.0], [0.5], [-0.5], [0.0]], dtype=np.float32)
+        )
 
         def produce():
             yield SynthesisChunk(audio, self.sample_rate, 0, 25.0)
@@ -868,6 +876,25 @@ class TTSBenchmarkTest(unittest.TestCase):
             )
         self.assertEqual(len(backend.render_requests), 2)
         self.assertEqual(set(report["samples"][0]["persistent_cache"].values()), {None})
+
+    def test_rejects_invalid_complete_audio_before_publishing(self):
+        for options, error in (
+            ({"pcm": np.empty((0, 1), dtype=np.float32)}, "no audio"),
+            ({"result_sample_rate": True}, "sample rate"),
+        ):
+            with self.subTest(error=error), TemporaryDirectory() as directory:
+                backend = FakeRenderingBackend(**options)
+                with self.assertRaisesRegex(RuntimeError, error):
+                    benchmark_backend(
+                        "fake",
+                        CharacterVoiceRegistry(),
+                        ["Kamuta"],
+                        "Text",
+                        directory,
+                        backend_factory=lambda _name, _registry, _cache: backend,
+                    )
+                self.assertEqual(len(backend.render_requests), 1)
+                self.assertEqual(list(Path(directory).glob("*.wav")), [])
 
 
 if __name__ == "__main__":
