@@ -79,8 +79,7 @@ class GameProfilesDialog(QDialog):
         summary_label = QLabel("Stored settings")
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        self.use_button = _add_action_button(
-            buttons,
+        self.use_button = buttons.addButton(
             "Use selected profile",
             QDialogButtonBox.ButtonRole.AcceptRole,
         )
@@ -335,13 +334,3 @@ class GameProfilesDialog(QDialog):
     def _ask_name(self, title: str, label: str, value: str = "") -> str | None:
         name, accepted = QInputDialog.getText(self, title, label, text=value)
         return name.strip() if accepted else None
-
-
-def _add_action_button(
-    buttons: QDialogButtonBox,
-    text: str,
-    role: QDialogButtonBox.ButtonRole,
-) -> QPushButton:
-    button = QPushButton(text)
-    buttons.addButton(button, role)
-    return button
