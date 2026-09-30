@@ -7,7 +7,7 @@ from contextlib import nullcontext, redirect_stderr
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -796,6 +796,57 @@ class TTSBenchmarkTest(unittest.TestCase):
                     )
                 self.assertEqual(backend.shutdown_calls, 1)
                 self.assertEqual(len(list(output.glob("*.wav"))), 0 if error else 1)
+
+    def test_rejects_invalid_samples_before_starting_backend(self):
+        for text, digest in (("Text", "0" * 64), ("  ", None)):
+            with self.subTest(text=text), TemporaryDirectory() as directory:
+                factory = Mock(return_value=FakeRenderingBackend())
+                output = Path(directory) / "output"
+                sample = {"id": "one", "character": "Kamuta", "text": text}
+                if digest is not None:
+                    sample["text_sha256"] = digest
+                with self.assertRaises(ValueError):
+                    benchmark_backend(
+                        "fake",
+                        CharacterVoiceRegistry(),
+                        [],
+                        "unused",
+                        output,
+                        benchmark_samples=[sample],
+                        backend_factory=factory,
+                    )
+                factory.assert_not_called()
+                self.assertFalse(output.exists())
+
+    def test_samples_remain_bound_if_factory_mutates_original_inputs(self):
+        sample = {
+            "id": "one",
+            "line_id": "line:1",
+            "character": "Kamuta",
+            "text": "Original",
+            "text_sha256": hashlib.sha256(b"Original").hexdigest(),
+        }
+        backend = FakeRenderingBackend()
+
+        def factory(_name, _registry, _cache):
+            sample.update(id="replacement", text="Replaced")
+            return backend
+
+        with TemporaryDirectory() as directory:
+            report = benchmark_backend(
+                "fake",
+                CharacterVoiceRegistry(),
+                [],
+                "unused",
+                directory,
+                benchmark_samples=[sample],
+                backend_factory=factory,
+            )
+        self.assertEqual(report["samples"][0]["id"], "one")
+        self.assertEqual(report["samples"][0]["text"], "Original")
+        self.assertEqual(
+            {request.text for request in backend.render_requests}, {"Original"}
+        )
 
 
 if __name__ == "__main__":

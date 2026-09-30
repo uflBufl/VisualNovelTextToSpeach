@@ -587,6 +587,56 @@ def benchmark_backend(
     return report
 
 
+def _prepare_benchmark_samples(
+    backend_name: str,
+    characters: Sequence[str],
+    text: str,
+    benchmark_samples: Sequence[BenchmarkCorpusSample | BenchmarkSampleInput] | None,
+) -> list[tuple[BenchmarkCorpusSample, str]]:
+    backend_component = _safe_component(backend_name, "Backend")
+    requested_samples: tuple[BenchmarkCorpusSample | BenchmarkSampleInput, ...] = tuple(
+        benchmark_samples
+        or (
+            {"id": character, "character": character, "text": text}
+            for character in characters
+        )
+    )
+    work_items: list[BenchmarkCorpusSample] = []
+    output_names: list[str] = []
+    seen_ids: set[str] = set()
+    for index, item in enumerate(requested_samples, start=1):
+        sample_id = str(item.get("id") or item.get("character") or f"sample-{index}")
+        if sample_id in seen_ids:
+            raise ValueError(f"Duplicate benchmark sample ID: {sample_id!r}")
+        seen_ids.add(sample_id)
+        sample_text = item["text"]
+        if not sample_text.strip():
+            raise ValueError(f"Benchmark sample {sample_id!r} has no text")
+        text_digest = hashlib.sha256(sample_text.encode("utf-8")).hexdigest()
+        declared_digest = item.get("text_sha256")
+        if declared_digest is not None and declared_digest != text_digest:
+            raise ValueError(
+                f"Benchmark sample {sample_id!r} text_sha256 does not match exact text"
+            )
+        work_items.append(
+            {
+                "id": sample_id,
+                "line_id": str(item.get("line_id") or sample_id),
+                "character": item["character"],
+                "text": sample_text,
+                "text_sha256": text_digest,
+            }
+        )
+        character_component = _safe_component(item.get("character"), "Character")
+        sample_component = _safe_component(sample_id, "Sample ID")
+        output_names.append(
+            f"{backend_component}-{character_component}-{sample_component}.wav"
+        )
+    if len(output_names) != len({name.casefold() for name in output_names}):
+        raise ValueError("Benchmark samples collide as output WAV names")
+    return list(zip(work_items, output_names, strict=True))
+
+
 def _benchmark_backend_staged(
     backend_name: str,
     registry: CharacterVoiceRegistry,
@@ -604,28 +654,9 @@ def _benchmark_backend_staged(
     cpu_clock: Clock = process_time,
 ) -> BenchmarkReport:
     output_directory = Path(output_directory).expanduser().resolve()
-    backend_component = _safe_component(backend_name, "Backend")
-    work_items: tuple[BenchmarkCorpusSample | BenchmarkSampleInput, ...] = tuple(
-        benchmark_samples
-        or (
-            {"id": character, "character": character, "text": text}
-            for character in characters
-        )
+    work_items = _prepare_benchmark_samples(
+        backend_name, characters, text, benchmark_samples
     )
-    output_names: list[str] = []
-    seen_ids: set[str] = set()
-    for index, item in enumerate(work_items, start=1):
-        sample_id = str(item.get("id") or item.get("character") or f"sample-{index}")
-        if sample_id in seen_ids:
-            raise ValueError(f"Duplicate benchmark sample ID: {sample_id!r}")
-        seen_ids.add(sample_id)
-        character_component = _safe_component(item.get("character"), "Character")
-        sample_component = _safe_component(sample_id, "Sample ID")
-        output_names.append(
-            f"{backend_component}-{character_component}-{sample_component}.wav"
-        )
-    if len(output_names) != len({name.casefold() for name in output_names}):
-        raise ValueError("Benchmark samples collide as output WAV names")
     with TemporaryDirectory() as temporary_directory:
         wall_started = clock()
         cpu_started = cpu_clock()
@@ -637,8 +668,8 @@ def _benchmark_backend_staged(
         startup_wall_ms = (clock() - wall_started) * 1000
         startup_cpu_ms = (cpu_clock() - cpu_started) * 1000
         samples: list[BenchmarkSampleReport] = []
-        for item, output_name in zip(work_items, output_names, strict=True):
-            sample_id = str(item.get("id") or item["character"])
+        for item, output_name in work_items:
+            sample_id = item["id"]
             character = item["character"]
             sample_text = item["text"]
             conditioning_started = clock()
@@ -715,14 +746,6 @@ def _benchmark_backend_staged(
                     persistent_rendered.completion is SynthesisCompletion.LIMITED
                 )
 
-            expected_text_sha256 = hashlib.sha256(
-                sample_text.encode("utf-8")
-            ).hexdigest()
-            declared_text_sha256 = item.get("text_sha256")
-            if declared_text_sha256 not in {None, expected_text_sha256}:
-                raise ValueError(
-                    f"Benchmark sample {sample_id!r} text_sha256 does not match exact text"
-                )
             audio_path = write_wav(
                 _contained_child(output_directory, output_name, "Benchmark WAV"),
                 audio,
@@ -731,10 +754,10 @@ def _benchmark_backend_staged(
             samples.append(
                 {
                     "id": sample_id,
-                    "line_id": str(item.get("line_id") or sample_id),
+                    "line_id": item["line_id"],
                     "character": character,
                     "text": sample_text,
-                    "text_sha256": expected_text_sha256,
+                    "text_sha256": item["text_sha256"],
                     "audio": str(audio_path),
                     "audio_sha256": sha256_file(audio_path),
                     "duration_seconds": duration_seconds,
