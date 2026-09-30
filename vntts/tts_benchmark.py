@@ -498,6 +498,34 @@ def _validate_render_result(
     return result
 
 
+def _benchmark_render(
+    backend: _RenderableBackend,
+    request: SynthesisRequest,
+    stage: str,
+    cache_source: str,
+    clock: Clock,
+) -> tuple[SynthesisResult, float, CacheStageReport]:
+    started = clock()
+    result = _validate_render_result(
+        backend.render(request).collect(),
+        request,
+        stage,
+        expected_cache_source=cache_source,
+    )
+    wall_ms = (clock() - started) * 1000
+    return (
+        result,
+        wall_ms,
+        {
+            "cache_source": result.diagnostics.cache_source,
+            "first_pcm_ms": result.timing.first_chunk_ms,
+            "wall_ms": wall_ms,
+            "underrun": None,
+            "generation_limited": False,
+        },
+    )
+
+
 def benchmark_backend(
     backend_name: str,
     registry: CharacterVoiceRegistry,
@@ -677,8 +705,6 @@ def _benchmark_backend_staged(
             if callable(prime):
                 prime(character)
             conditioning_ms = (clock() - conditioning_started) * 1000
-            generation_started = clock()
-            cpu_started = cpu_clock()
             fresh_request = SynthesisRequest(
                 voice=character,
                 text=sample_text,
@@ -686,66 +712,53 @@ def _benchmark_backend_staged(
                 generation_profile=generation_profile,
                 cache_policy=SynthesisCachePolicy.REFRESH,
             )
-            rendered = _validate_render_result(
-                backend.render(fresh_request).collect(),
+            cpu_started = cpu_clock()
+            rendered, generation_wall_ms, fresh = _benchmark_render(
+                backend,
                 fresh_request,
                 "Fresh",
-                expected_cache_source="fresh-generation",
+                "fresh-generation",
+                clock,
             )
+            generation_cpu_ms = (cpu_clock() - cpu_started) * 1000
             audio = rendered.pcm
             audio_sample_rate = rendered.sample_rate
             first_audio_ms = rendered.timing.first_chunk_ms
-            fresh_cache_source = rendered.diagnostics.cache_source
-            generation_wall_ms = (clock() - generation_started) * 1000
-            generation_cpu_ms = (cpu_clock() - cpu_started) * 1000
             duration_seconds = len(audio) / audio_sample_rate
-            fresh_underrun = None
-            fresh_generation_limited = (
-                rendered.completion is SynthesisCompletion.LIMITED
-            )
+            realtime_factor = generation_wall_ms / (duration_seconds * 1000)
+            fresh["realtime_factor"] = realtime_factor
 
-            cached_started = clock()
             cache_request = replace(
                 fresh_request, cache_policy=SynthesisCachePolicy.USE
             )
-            memory_rendered = _validate_render_result(
-                backend.render(cache_request).collect(),
+            _memory_rendered, cached_replay_ms, memory_cache = _benchmark_render(
+                backend,
                 cache_request,
                 "Memory-cache",
-                expected_cache_source="memory-cache",
-            )
-            memory_cache_source = memory_rendered.diagnostics.cache_source
-            cached_replay_ms = (clock() - cached_started) * 1000
-            memory_first_audio_ms = memory_rendered.timing.first_chunk_ms
-            memory_underrun = None
-            memory_generation_limited = (
-                memory_rendered.completion is SynthesisCompletion.LIMITED
+                "memory-cache",
+                clock,
             )
 
-            persistent_replay_ms = None
-            persistent_first_audio_ms = None
-            persistent_cache_source = None
-            persistent_underrun = None
-            persistent_generation_limited = None
+            persistent_cache: CacheStageReport = {
+                "cache_source": None,
+                "first_pcm_ms": None,
+                "wall_ms": None,
+                "underrun": None,
+                "generation_limited": None,
+            }
             if hasattr(backend, "persistent_audio_cache"):
                 if not _is_persistent_cache_backend(backend):
                     raise RuntimeError("Persistent backend has no memory cache")
                 backend.audio_cache.clear()
-                persistent_started = clock()
-                persistent_rendered = _validate_render_result(
-                    backend.render(cache_request).collect(),
-                    cache_request,
-                    "Persistent-cache",
-                    expected_cache_source="persistent-cache",
+                _persistent_rendered, _persistent_ms, persistent_cache = (
+                    _benchmark_render(
+                        backend,
+                        cache_request,
+                        "Persistent-cache",
+                        "persistent-cache",
+                        clock,
+                    )
                 )
-                persistent_cache_source = persistent_rendered.diagnostics.cache_source
-                persistent_replay_ms = (clock() - persistent_started) * 1000
-                persistent_first_audio_ms = persistent_rendered.timing.first_chunk_ms
-                persistent_underrun = None
-                persistent_generation_limited = (
-                    persistent_rendered.completion is SynthesisCompletion.LIMITED
-                )
-
             audio_path = write_wav(
                 _contained_child(output_directory, output_name, "Benchmark WAV"),
                 audio,
@@ -765,31 +778,11 @@ def _benchmark_backend_staged(
                     "first_audio_ms": first_audio_ms,
                     "generation_wall_ms": generation_wall_ms,
                     "generation_cpu_ms": generation_cpu_ms,
-                    "realtime_factor": generation_wall_ms / (duration_seconds * 1000),
+                    "realtime_factor": realtime_factor,
                     "cached_replay_ms": cached_replay_ms,
-                    "fresh": {
-                        "cache_source": fresh_cache_source,
-                        "first_pcm_ms": first_audio_ms,
-                        "wall_ms": generation_wall_ms,
-                        "realtime_factor": generation_wall_ms
-                        / (duration_seconds * 1000),
-                        "underrun": fresh_underrun,
-                        "generation_limited": fresh_generation_limited,
-                    },
-                    "memory_cache": {
-                        "cache_source": memory_cache_source,
-                        "first_pcm_ms": memory_first_audio_ms,
-                        "wall_ms": cached_replay_ms,
-                        "underrun": memory_underrun,
-                        "generation_limited": memory_generation_limited,
-                    },
-                    "persistent_cache": {
-                        "cache_source": persistent_cache_source,
-                        "first_pcm_ms": persistent_first_audio_ms,
-                        "wall_ms": persistent_replay_ms,
-                        "underrun": persistent_underrun,
-                        "generation_limited": persistent_generation_limited,
-                    },
+                    "fresh": fresh,
+                    "memory_cache": memory_cache,
+                    "persistent_cache": persistent_cache,
                     "dialogue_to_first_pcm_ms": (
                         conditioning_ms + first_audio_ms
                         if first_audio_ms is not None

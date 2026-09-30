@@ -526,6 +526,12 @@ class TTSBenchmarkTest(unittest.TestCase):
             self.assertTrue(Path(sample["audio"]).is_file())
             self.assertEqual(sample["duration_seconds"], 1.0)
             self.assertAlmostEqual(sample["first_audio_ms"], 25.0)
+            self.assertAlmostEqual(sample["conditioning_ms"], 200.0)
+            self.assertAlmostEqual(sample["generation_wall_ms"], 400.0)
+            self.assertAlmostEqual(sample["generation_cpu_ms"], 100.0)
+            self.assertAlmostEqual(sample["fresh"]["wall_ms"], 400.0)
+            self.assertAlmostEqual(sample["memory_cache"]["wall_ms"], 10.0)
+            self.assertAlmostEqual(sample["persistent_cache"]["wall_ms"], 10.0)
             self.assertEqual(backend.primed, ["Kamuta"])
 
     def test_writes_valid_wave_and_json_report(self):
@@ -847,6 +853,21 @@ class TTSBenchmarkTest(unittest.TestCase):
         self.assertEqual(
             {request.text for request in backend.render_requests}, {"Original"}
         )
+
+    def test_reports_unmeasured_persistent_cache_when_not_supported(self):
+        backend = FakeRenderingBackend()
+        del backend.persistent_audio_cache
+        with TemporaryDirectory() as directory:
+            report = benchmark_backend(
+                "fake",
+                CharacterVoiceRegistry(),
+                ["Kamuta"],
+                "Text",
+                directory,
+                backend_factory=lambda _name, _registry, _cache: backend,
+            )
+        self.assertEqual(len(backend.render_requests), 2)
+        self.assertEqual(set(report["samples"][0]["persistent_cache"].values()), {None})
 
 
 if __name__ == "__main__":

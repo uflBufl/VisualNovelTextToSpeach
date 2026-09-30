@@ -1478,12 +1478,6 @@
       "count": 1
     },
     {
-      "code": "PLR0915",
-      "path": "vntts/tts_benchmark.py",
-      "scope": "_benchmark_backend_staged",
-      "count": 1
-    },
-    {
       "code": "C901",
       "path": "scripts/render_ui_catalog.py",
       "scope": "_render_stories.ocr_review",
