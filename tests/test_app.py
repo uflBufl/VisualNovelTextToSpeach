@@ -3085,6 +3085,70 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIn("speech reloaded", tray_application.status_action.toolTip())
         tray_application.shutdown()
 
+    def test_saved_backend_retry_reloads_restored_runtime(self):
+        previous = AppSettings(speech_backend="pocket-tts")
+        requested = previous.updated(speech_backend="moss-tts")
+        for first_outcome in (False, RuntimeError("startup failed"), "cancel"):
+            with self.subTest(first_outcome=first_outcome):
+                controller = Mock(settings=previous, is_ready=True)
+                controller.is_live_running = False
+
+                def apply(settings, **_options):
+                    controller.settings = settings
+                    return True
+
+                controller.apply_settings.side_effect = apply
+                controller.start.side_effect = (
+                    [RuntimeError("startup failed"), True, True]
+                    if isinstance(first_outcome, Exception)
+                    else [False, True, True]
+                )
+                tray = TrayApplication(
+                    self.application,
+                    previous,
+                    controller_factory=Mock(return_value=controller),
+                )
+                tray.set_ready(True)
+                dialog = Mock()
+                dialog.exec.return_value = QDialog.DialogCode.Accepted
+                dialog.settings.return_value = requested
+                with (
+                    patch("vntts.app.SettingsDialog", return_value=dialog),
+                    patch.object(
+                        tray,
+                        "_save_settings_candidate",
+                        return_value=Path("settings.json"),
+                    ),
+                ):
+                    if first_outcome == "cancel":
+
+                        def cancel_apply(settings, *, cancellation=None):
+                            if cancellation is not None:
+                                cancellation.set()
+                                return False
+                            return apply(settings)
+
+                        controller.apply_settings.side_effect = cancel_apply
+                        controller.start.side_effect = [True, True]
+                    tray.open_settings()
+                    self.wait_until(lambda: not tray.configuration_runner.active)
+                    self.assertEqual(tray.settings, requested)
+                    self.assertEqual(controller.settings, previous)
+
+                    controller.apply_settings.side_effect = apply
+                    controller.reset_mock()
+                    dialog.settings.return_value = requested.updated(
+                        output_volume_percent=42
+                    )
+                    tray.open_settings()
+                    self.wait_until(lambda: not tray.configuration_runner.active)
+
+                self.assertEqual(controller.settings, dialog.settings.return_value)
+                controller.shutdown.assert_called_once_with()
+                controller.start.assert_called_once_with()
+                self.assertIn("speech reloaded", tray.status_action.toolTip())
+                tray.shutdown()
+
     def test_macos_permission_action_opens_recovery_dialog(self):
         tray_application = TrayApplication(
             self.application,

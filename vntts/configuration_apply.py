@@ -53,7 +53,6 @@ class _Controller(Protocol):
     def set_auto_advance_enabled(self, enabled: bool) -> bool: ...
 
 
-
 class _Dashboard(Protocol):
     live_button: QPushButton
     sections: QTabWidget
@@ -190,6 +189,13 @@ class ConfigurationApplyMixin:
         refresh_hotkeys: bool = False,
         restart: bool = False,
     ) -> None:
+        # A cancelled replacement can leave the saved and loaded identities apart.
+        restart = restart or (
+            self._controller_ready
+            and bool(
+                restart_required_setting_changes(self.controller.settings, settings)
+            )
+        )
         self._refresh_preparation_settings()
         cancellation = Event()
         generation = self._begin_controller_lifecycle(cancellation)
@@ -325,7 +331,8 @@ class ConfigurationApplyMixin:
         if path is None:
             return
         restart_changes = restart_required_setting_changes(
-            original_settings, updated_settings
+            self.controller.settings if self._controller_ready else original_settings,
+            updated_settings,
         )
         self.settings = updated_settings
         self.dashboard.set_configuration(self.settings)
