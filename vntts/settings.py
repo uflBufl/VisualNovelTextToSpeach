@@ -40,7 +40,6 @@ WarningHandler: TypeAlias = Callable[[str], None]
 
 
 class AppSettingsChanges(TypedDict, total=False):
-    schema_version: int
     onboarding_completed: bool
     xtts_terms_accepted: bool
     pocket_gated_model_accepted: bool
