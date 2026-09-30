@@ -275,6 +275,14 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 (successor.story_index.parent / "timed-story-index.jsonl").exists()
             )
             semantic_arguments = run.call_args_list[1].args[0]
+            duration_arguments = run.call_args_list[0].args[0]
+            shared_cache = str(
+                importer.output_root / "reverse1999" / "source-audio-analysis-cache"
+            )
+            for arguments in (duration_arguments, semantic_arguments):
+                self.assertEqual(
+                    arguments[arguments.index("--cache-dir") + 1], shared_cache
+                )
             self.assertEqual(
                 semantic_arguments[semantic_arguments.index("--chapter") + 1],
                 "314501",

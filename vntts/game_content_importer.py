@@ -606,6 +606,8 @@ class Reverse1999GameImporter:
                 str(timed_story),
                 "--decoder",
                 str(decoder),
+                "--cache-dir",
+                str(self.output_root / "reverse1999" / "source-audio-analysis-cache"),
             ]
             for chapter in chapters:
                 duration_arguments.extend(("--chapter", chapter))
@@ -667,6 +669,8 @@ class Reverse1999GameImporter:
             str(semantic_story),
             "--decoder",
             str(decoder),
+            "--cache-dir",
+            str(self.output_root / "reverse1999" / "source-audio-analysis-cache"),
         ]
         for chapter in chapters:
             semantic_arguments.extend(("--chapter", chapter))

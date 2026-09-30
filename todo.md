@@ -23,7 +23,6 @@
 
 ## Active - Finish repeated UI scanability rollout
 
-- [ ] Revisit the current story tree: story title, readiness, line count, and diagnostics are still concatenated in one cell. Separate primary identity from state and detail without overwriting the in-progress grouping work.
 - [ ] Validate the integrated voice-route layout on Windows at normal and enlarged text sizes: wheel and keyboard navigation must reach the last route and Inspect/Edit/Generate actions; clicking or double-clicking a row must select and inspect that character. Check all-or-none portraits when game references are mixed, and retain screenshots.
 
 ## Active - Review remaining source-extraction UI
@@ -303,16 +302,11 @@ Planned implementation order after approval:
 
 ## P1 - Measure remaining player latency
 
-- [ ] **Reuse source-audio analysis across stage combinations:** the five-stage
-      Windows run measured 90/90 game cues in 25 seconds although four stages
-      already had prepared audio; those packs do not prove timing evidence was
-      previously saved. The timed/semantic successor cache is keyed by the
-      combined job ID, so changed stage sets cannot reuse that private output.
-      Measure how many media/text pairs are genuinely new, then reuse only
-      checksum-bound duration and semantic evidence for unchanged WEM bytes,
-      decoder/model identity, locale and displayed text. The next run should
-      analyze only new or changed cues while preserving safe fallback on stale
-      evidence and the ability to cancel.
+- [ ] On Windows, prepare stages A and then A+B from the same installed game.
+      Check the duration and ASR cache hit/miss counts in the support log and
+      confirm only B is newly analyzed; compare the second run with the earlier
+      90-cue/25-second run. Cancel and retry once to confirm incomplete private
+      output is not reused as published evidence.
 - [ ] **Validate repeated Voice plan in the real UI:** on the local 253 MB reference
       index, repeated role selection fell from 9.18 to 0.37 seconds. The plan-store
       fixture now produces identical groups while reducing library reads from

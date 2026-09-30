@@ -3326,7 +3326,7 @@ wheels = [
 [[package]]
 name = "reverse1999-extractor"
 version = "0.1.0"
-source = { git = "https://github.com/AlexRedby/r1999-extractor.git?rev=d27d6b8d40aa18b497f525724828cd64fb764df8#d27d6b8d40aa18b497f525724828cd64fb764df8" }
+source = { git = "https://github.com/AlexRedby/r1999-extractor.git?rev=3616439937b16a370503c5a0c3b494ecb79575ae#3616439937b16a370503c5a0c3b494ecb79575ae" }
 dependencies = [
     { name = "cryptography" },
     { name = "numpy" },
@@ -4336,7 +4336,7 @@ requires-dist = [
     { name = "pytesseract", specifier = ">=0.3.13" },
     { name = "python-xlib", marker = "sys_platform == 'linux'", specifier = ">=0.33" },
     { name = "rapidocr", marker = "extra == 'rapidocr'", specifier = ">=3.8.1,<4" },
-    { name = "reverse1999-extractor", git = "https://github.com/AlexRedby/r1999-extractor.git?rev=d27d6b8d40aa18b497f525724828cd64fb764df8" },
+    { name = "reverse1999-extractor", git = "https://github.com/AlexRedby/r1999-extractor.git?rev=3616439937b16a370503c5a0c3b494ecb79575ae" },
     { name = "sounddevice", specifier = ">=0.5.6,<0.6" },
     { name = "soundfile", specifier = ">=0.14,<0.15" },
     { name = "speechbrain", marker = "extra == 'speaker-identity'", specifier = "==1.1.1" },
