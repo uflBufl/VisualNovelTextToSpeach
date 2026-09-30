@@ -61,6 +61,17 @@ class PlayerSessionOwnerTest(unittest.TestCase):
         controller.shutdown.assert_called_once()
         assert not owner.is_current(generation)
 
+    def test_restart_shuts_down_after_start_failure(self) -> None:
+        controller = Mock()
+        controller.start.side_effect = RuntimeError("startup failed")
+        owner = PlayerSessionOwner(controller)
+        generation = owner.begin()
+
+        with self.assertRaisesRegex(RuntimeError, "startup failed"):
+            owner.restart(generation, AppSettings())
+
+        self.assertEqual(controller.shutdown.call_count, 2)
+
     def test_configure_restart_restores_previous_runtime_after_cancel(self) -> None:
         cancellation = Event()
         controller = Mock()

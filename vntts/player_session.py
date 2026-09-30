@@ -254,7 +254,11 @@ class PlayerSessionOwner:
             if not self.is_current(generation):
                 self.controller.request_shutdown()
                 return False
-            ready = bool(self.controller.start())
+            try:
+                ready = bool(self.controller.start())
+            except Exception:
+                self.controller.shutdown()
+                raise
             if not self.is_current(generation):
                 return False
             return ready
