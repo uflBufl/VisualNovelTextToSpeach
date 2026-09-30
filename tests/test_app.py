@@ -3220,6 +3220,27 @@ class TrayApplicationTest(unittest.TestCase):
         controller.live_reader.wait.assert_called_once_with(timeout_seconds=5.0)
         tray_application.shutdown()
 
+    def test_history_dialog_restores_live_capture_after_construction_failure(self):
+        controller = Mock()
+        controller.is_live_running = False
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        self.addCleanup(tray_application.shutdown)
+
+        with (
+            patch(
+                "vntts.app.DialogueHistoryDialog", side_effect=RuntimeError("failed")
+            ),
+            patch.object(tray_application, "toggle_live") as resume,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "failed"):
+                tray_application._open_history_dialog(True)
+
+        resume.assert_called_once_with()
+
     def test_support_bundle_export_runs_with_sanitized_runtime_inputs(self):
         controller = Mock()
         diagnostic = DiagnosticSnapshot(None, confidence=88)

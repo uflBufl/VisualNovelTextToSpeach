@@ -4002,12 +4002,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def _open_history_dialog(self, resume_live: bool) -> None:
         if self._shutting_down:
             return
-        dialog = DialogueHistoryDialog(
-            self.controller.history,
-            self.controller.replay_dialog,
-            stop_handler=self.controller.stop_voice_preview,
-        )
         try:
+            dialog = DialogueHistoryDialog(
+                self.controller.history,
+                self.controller.replay_dialog,
+                stop_handler=self.controller.stop_voice_preview,
+            )
             dialog.exec()
         finally:
             if (
