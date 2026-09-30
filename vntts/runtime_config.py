@@ -79,17 +79,9 @@ tts_environment_variables: dict[str, str] = {
 
 
 def get_validated_hotkey(environment_variable: str, default: str) -> str:
-    hotkey = os.environ.get(environment_variable, default)
-    try:
-        keyboard.HotKey.parse(hotkey)
-    except (TypeError, ValueError) as error:
-        print(
-            f"Invalid {environment_variable} {hotkey!r}: {error}. "
-            f"Using default {default!r}"
-        )
-        return default
-
-    return hotkey
+    return validate_hotkey(
+        os.environ.get(environment_variable, default), default, environment_variable
+    )
 
 
 def get_configured_hotkey(name: str, settings: AppSettings | None = None) -> str:
