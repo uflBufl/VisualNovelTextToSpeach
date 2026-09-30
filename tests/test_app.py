@@ -4151,15 +4151,26 @@ class TrayApplicationTest(unittest.TestCase):
             AppSettings(),
             controller_factory=Mock(return_value=Mock()),
         )
-        diagnostics_dialog = Mock(refresh_in_flight=False)
+        from vntts.diagnostics_ui import DiagnosticsDialog
+
+        diagnostics_dialog = DiagnosticsDialog()
         tray_application.diagnostics_dialog = diagnostics_dialog
         snapshot = DiagnosticSnapshot(None, text="Visible after capture")
-
-        tray_application.update_diagnostics_snapshot(snapshot)
-
-        diagnostics_dialog.set_snapshot.assert_called_once_with(snapshot)
-        diagnostics_dialog.restore_after_capture.assert_called_once_with()
-        tray_application.shutdown()
+        try:
+            for warning in (False, True):
+                with self.subTest(warning=warning):
+                    diagnostics_dialog.show()
+                    diagnostics_dialog.conceal_for_capture()
+                    if warning:
+                        tray_application.set_diagnostics_error("Window unavailable")
+                    else:
+                        tray_application.update_diagnostics_snapshot(snapshot)
+                        self.assertEqual(diagnostics_dialog.text.text(), snapshot.text)
+                    self.assertTrue(diagnostics_dialog.isVisible())
+                    self.assertFalse(diagnostics_dialog.concealed_for_capture)
+        finally:
+            tray_application.shutdown()
+            diagnostics_dialog.deleteLater()
 
     def test_diagnostic_warning_routes_one_typed_recovery_action(self):
         tray_application = TrayApplication(

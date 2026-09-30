@@ -2794,7 +2794,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             manual or not self.diagnostics_dialog.refresh_in_flight
         ):
             self.diagnostics_dialog.set_snapshot(snapshot)
-            self.diagnostics_dialog.restore_after_capture()
 
     def set_diagnostics_error(self, message: str) -> None:
         if self.diagnostics_dialog is not None:
@@ -2802,7 +2801,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 message,
                 remediation=diagnostic_remediation(message),
             )
-            self.diagnostics_dialog.restore_after_capture()
 
     def _run_diagnostics_remediation(self, remediation: str) -> None:
         if remediation == "macos-permissions":

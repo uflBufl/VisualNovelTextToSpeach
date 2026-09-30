@@ -308,6 +308,7 @@ class DiagnosticsDialog(QDialog):
         self.warning_remediation = remediation[0] if remediation else None
         self.warning_action.setText(remediation[1] if remediation else "")
         self.warning_action.setVisible(bool(message and remediation))
+        self.restore_after_capture()
 
     def set_permission_warnings(
         self,
