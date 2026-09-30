@@ -935,18 +935,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             backend_factory=backend_factory,
         )
         report_path = write_report(report, arguments.output)
-        cli_messages(
-            (
-                report_path,
-                *(
-                    f"{sample['character']}: first audio {sample['first_audio_ms']:.0f} ms, "
-                    f"RTF {sample['realtime_factor']:.2f}, cache "
-                    f"{sample['cached_replay_ms']:.1f} ms"
-                    for sample in report["samples"]
-                ),
+        messages: list[str | Path] = [report_path]
+        for sample in report["samples"]:
+            first_audio_ms = sample["first_audio_ms"]
+            first_audio = (
+                f"{first_audio_ms:.0f} ms"
+                if first_audio_ms is not None
+                else "not measured"
             )
-        )
-        return 0
+            messages.append(
+                f"{sample['character']}: first audio {first_audio}, "
+                f"RTF {sample['realtime_factor']:.2f}, cache "
+                f"{sample['cached_replay_ms']:.1f} ms"
+            )
+        return cli_messages(messages)
     except (OSError, RuntimeError, TypeError, ValueError) as error:
         return int(cli_error(error))
 

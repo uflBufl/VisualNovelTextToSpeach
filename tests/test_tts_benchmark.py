@@ -3,7 +3,7 @@ import json
 import os
 import unittest
 import wave
-from contextlib import nullcontext, redirect_stderr
+from contextlib import nullcontext, redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -932,6 +932,48 @@ class TTSBenchmarkTest(unittest.TestCase):
             self.assertFalse(output.exists())
         self.assertIn("line 1 column 2", errors.getvalue())
         self.assertNotIn("Traceback", errors.getvalue())
+
+    def test_cli_prints_unmeasured_first_audio(self):
+        registry = CharacterVoiceRegistry([CharacterVoice("Kamuta", "kamuta")])
+        report = {
+            "backend": "fake",
+            "samples": [
+                {
+                    "character": "Kamuta",
+                    "first_audio_ms": None,
+                    "realtime_factor": 1.0,
+                    "cached_replay_ms": 2.5,
+                }
+            ],
+        }
+        messages = StringIO()
+        with (
+            TemporaryDirectory() as directory,
+            patch(
+                "vntts.tts_benchmark.CharacterVoiceRegistry.from_file",
+                return_value=registry,
+            ),
+            patch("vntts.tts_benchmark.benchmark_backend", return_value=report),
+            redirect_stdout(messages),
+        ):
+            self.assertEqual(
+                main(
+                    [
+                        "--backend",
+                        "pocket-tts",
+                        "--manifest",
+                        "manifest.json",
+                        "--character",
+                        "Kamuta",
+                        "--output",
+                        directory,
+                    ]
+                ),
+                0,
+            )
+            self.assertTrue((Path(directory) / "fake.json").is_file())
+        self.assertIn("first audio not measured", messages.getvalue())
+        self.assertIn("RTF 1.00, cache 2.5 ms", messages.getvalue())
 
 
 if __name__ == "__main__":
