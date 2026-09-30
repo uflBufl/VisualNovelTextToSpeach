@@ -107,7 +107,7 @@ class OCRReviewStore:
         def fallback() -> None:
             return None
 
-        sample = load_versioned_json(
+        return load_versioned_json(
             metadata_path,
             schema_version=OCR_REVIEW_SCHEMA_VERSION,
             document_name="OCR review metadata",
@@ -115,9 +115,6 @@ class OCRReviewStore:
             fallback=fallback,
             allow_unversioned=True,
         )
-        if sample is not None and not isinstance(sample, OCRReviewSample):
-            raise TypeError("OCR review loader returned an invalid sample")
-        return sample
 
     @staticmethod
     def _sample_from_payload(

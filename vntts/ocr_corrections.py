@@ -86,7 +86,7 @@ class OCRCorrectionStore:
         report = (lambda _message: None) if warn is None else warn
         store = cls(path)
 
-        def decode(payload: dict[str, object]) -> OCRCorrectionStore:
+        def decode(payload: dict[str, object]) -> None:
             store.global_entries = normalize_correction_entries(payload["global"])
             profiles = payload["profiles"]
             if not isinstance(profiles, dict):
@@ -95,15 +95,13 @@ class OCRCorrectionStore:
                 str(profile_id): normalize_correction_entries(entries)
                 for profile_id, entries in profiles.items()
             }
-            return store
 
-        def fallback() -> OCRCorrectionStore:
+        def fallback() -> None:
             store.global_entries = {}
             store.profile_entries = {}
             store._revision = None
-            return store
 
-        loaded = load_versioned_json(
+        load_versioned_json(
             store.path,
             schema_version=corrections_schema_version,
             document_name="OCR corrections",
@@ -111,9 +109,7 @@ class OCRCorrectionStore:
             fallback=fallback,
             warn=report,
         )
-        if not isinstance(loaded, cls):
-            raise TypeError("OCR correction loader returned an invalid store")
-        return loaded
+        return store
 
     def save(self) -> Path:
         self._save_entries(self.global_entries, self.profile_entries)
