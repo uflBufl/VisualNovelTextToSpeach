@@ -3914,6 +3914,71 @@ class TrayApplicationTest(unittest.TestCase):
         set_snapshot.assert_not_called()
         tray_application.shutdown()
 
+    def test_diagnostics_retry_invalidates_worker_before_deferred_launch(self):
+        class ManualThreadPool:
+            def __init__(self):
+                self.tasks = []
+
+            def start(self, task):
+                self.tasks.append(task)
+
+        pool = ManualThreadPool()
+        controller = Mock()
+        controller.get_latest_diagnostic.return_value = None
+        controller.inspect_current_dialog.side_effect = (
+            DiagnosticSnapshot(None, text="Obsolete capture"),
+            DiagnosticSnapshot(None, text="Retry capture"),
+        )
+        controller.commit_diagnostic_snapshot.side_effect = lambda snapshot: snapshot
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray.diagnostics_refresh_runner = LatestTaskRunner(tray, thread_pool=pool)
+        tray.diagnostics_refresh_runner.finished.connect(
+            tray._diagnostics_refresh_finished
+        )
+        tray.open_diagnostics()
+        dialog = tray.diagnostics_dialog
+        pending = []
+        try:
+            with (
+                patch("vntts.app.macos_permission_warnings", return_value=[]),
+                patch(
+                    "vntts.app.get_macos_permission_status",
+                    return_value={"screen_capture": True},
+                ),
+                patch(
+                    "vntts.app.QTimer.singleShot",
+                    side_effect=lambda _delay, callback: pending.append(callback),
+                ),
+            ):
+                dialog.request_refresh()
+                pending.pop()()
+                dialog._refresh_timed_out(dialog.refresh_generation)
+                dialog.request_refresh()
+                pool.tasks.pop().run()
+                self.application.processEvents()
+                controller.commit_diagnostic_snapshot.assert_not_called()
+                self.assertTrue(dialog.refresh_in_flight)
+
+                pending.pop()()
+                pool.tasks.pop().run()
+                self.application.processEvents()
+                self.assertEqual(dialog.text.text(), "Retry capture")
+                self.assertFalse(dialog.refresh_in_flight)
+
+                controller.inspect_current_dialog.reset_mock()
+                dialog.request_refresh()
+                dialog._refresh_timed_out(dialog.refresh_generation)
+                pending.pop()()
+                self.assertEqual(pool.tasks, [])
+                controller.inspect_current_dialog.assert_not_called()
+        finally:
+            tray.shutdown()
+            dialog.deleteLater()
+
     def test_closed_diagnostics_dialog_cancels_deferred_capture(self) -> None:
         controller = Mock()
         tray_application = TrayApplication(

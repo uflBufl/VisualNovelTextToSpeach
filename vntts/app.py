@@ -2727,6 +2727,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.diagnostics_dialog.activateWindow()
 
     def refresh_diagnostics(self) -> None:
+        self._cancel_diagnostics_refresh()
         permission_status = get_macos_permission_status()
         if permission_status["screen_capture"] is False:
             self.signals.diagnostics_failed.emit(
@@ -2739,7 +2740,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self.diagnostics_dialog is not None:
             self.diagnostics_dialog.conceal_for_capture()
 
-        self.diagnostics_refresh_generation += 1
         generation = self.diagnostics_refresh_generation
         QTimer.singleShot(
             200,
@@ -2747,7 +2747,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
 
     def _capture_diagnostic_snapshot(self, generation: int) -> None:
-        if self._shutting_down or generation != self.diagnostics_refresh_generation:
+        if self._shutting_down or not self._diagnostics_refresh_is_current(generation):
             return
         self.diagnostics_refresh_runner.start(
             self.controller.inspect_current_dialog,
