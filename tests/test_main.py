@@ -1006,6 +1006,26 @@ class MainTest(unittest.TestCase):
         self.assertIn("Invalid VNTTS_LIVE_INTERVAL_MS", output.getvalue())
         self.assertIn("Invalid VNTTS_LIVE_STABILITY_FRAMES", output.getvalue())
 
+    def test_saved_live_configuration_ignores_unapplied_environment(self):
+        settings = AppSettings(
+            live_interval_ms=175,
+            live_idle_flush_ms=625,
+            live_stability_frames=4,
+            live_min_chunk_characters=13,
+        )
+        with patch.dict("os.environ", {"VNTTS_LIVE_INTERVAL_MS": "bad"}):
+            self.assertEqual(
+                get_live_configuration(settings),
+                {
+                    "interval_seconds": 0.175,
+                    "tracker_options": {
+                        "stability_frames": 4,
+                        "idle_flush_seconds": 0.625,
+                        "min_chunk_characters": 13,
+                    },
+                },
+            )
+
     def test_artifact_audio_policy_waits_for_one_exact_complete_dialogue(self):
         routed = AppController(AppSettings(audio_source_policy="prefer-game-audio"))
         live = AppController(AppSettings(audio_source_policy="live-tts-only"))

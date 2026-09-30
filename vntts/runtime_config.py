@@ -153,35 +153,31 @@ def get_live_configuration(
     settings: AppSettings | None = None,
 ) -> LiveConfiguration:
     if settings is not None:
-        return {
-            "interval_seconds": settings.live_interval_ms / 1000,
-            "tracker_options": {
-                "stability_frames": settings.live_stability_frames,
-                "idle_flush_seconds": settings.live_idle_flush_ms / 1000,
-                "min_chunk_characters": settings.live_min_chunk_characters,
-            },
-        }
-
-    interval_ms = get_numeric_environment_variable(
-        "VNTTS_LIVE_INTERVAL_MS",
-        default_live_interval_ms,
-        minimum=1,
-    )
-    idle_flush_ms = get_numeric_environment_variable(
-        "VNTTS_LIVE_IDLE_FLUSH_MS",
-        default_live_idle_flush_ms,
-        minimum=1,
-    )
-    stability_frames = get_numeric_environment_variable(
-        "VNTTS_LIVE_STABILITY_FRAMES",
-        default_live_stability_frames,
-        minimum=2,
-    )
-    min_chunk_characters = get_numeric_environment_variable(
-        "VNTTS_LIVE_MIN_CHUNK_CHARACTERS",
-        default_live_min_chunk_characters,
-        minimum=1,
-    )
+        interval_ms = settings.live_interval_ms
+        idle_flush_ms = settings.live_idle_flush_ms
+        stability_frames = settings.live_stability_frames
+        min_chunk_characters = settings.live_min_chunk_characters
+    else:
+        interval_ms = get_numeric_environment_variable(
+            "VNTTS_LIVE_INTERVAL_MS",
+            default_live_interval_ms,
+            minimum=1,
+        )
+        idle_flush_ms = get_numeric_environment_variable(
+            "VNTTS_LIVE_IDLE_FLUSH_MS",
+            default_live_idle_flush_ms,
+            minimum=1,
+        )
+        stability_frames = get_numeric_environment_variable(
+            "VNTTS_LIVE_STABILITY_FRAMES",
+            default_live_stability_frames,
+            minimum=2,
+        )
+        min_chunk_characters = get_numeric_environment_variable(
+            "VNTTS_LIVE_MIN_CHUNK_CHARACTERS",
+            default_live_min_chunk_characters,
+            minimum=1,
+        )
     return {
         "interval_seconds": interval_ms / 1000,
         "tracker_options": {
