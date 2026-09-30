@@ -47,7 +47,7 @@ class OCRSummaryReport(TypedDict):
     images: int
     median_latency_ms: float | None
     p95_latency_ms: float | None
-    median_cpu_utilization_percent: float
+    median_cpu_utilization_percent: float | None
 
 
 class OCRBenchmarkReport(TypedDict):
@@ -210,6 +210,16 @@ def benchmark_ocr(
                 ),
             }
         )
+    cpu_utilizations = [
+        cpu_ms / wall_ms * 100
+        for sample in samples
+        for cpu_ms, wall_ms in zip(
+            sample["cpu_ms"]["runs"],
+            sample["latency_ms"]["runs"],
+            strict=True,
+        )
+        if wall_ms > 0
+    ]
     return {
         "version": 1,
         "backend": backend.name,
@@ -225,15 +235,8 @@ def benchmark_ocr(
             "images": len(samples),
             "median_latency_ms": median(all_latencies) if all_latencies else None,
             "p95_latency_ms": _percentile(all_latencies, 0.95),
-            "median_cpu_utilization_percent": median(
-                cpu_ms / wall_ms * 100
-                for sample in samples
-                for cpu_ms, wall_ms in zip(
-                    sample["cpu_ms"]["runs"],
-                    sample["latency_ms"]["runs"],
-                    strict=True,
-                )
-                if wall_ms > 0
+            "median_cpu_utilization_percent": (
+                median(cpu_utilizations) if cpu_utilizations else None
             ),
         },
         "samples": samples,

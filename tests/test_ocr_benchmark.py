@@ -73,6 +73,35 @@ class OCRBenchmarkTest(unittest.TestCase):
                     cpu_clock=lambda: 0.0,
                 )
 
+    def test_cpu_utilization_is_none_without_positive_wall_intervals(self):
+        with TemporaryDirectory() as temporary_directory:
+            image_path = Path(temporary_directory) / "dialog.png"
+            Image.new("RGB", (10, 10), "black").save(image_path)
+
+            report = benchmark_ocr(
+                [image_path],
+                backend=FakeOCRBackend(),
+                repeats=1,
+                warmups=0,
+                clock=lambda: 1.0,
+                cpu_clock=lambda: 1.0,
+            )
+
+        self.assertIsNone(report["summary"]["median_cpu_utilization_percent"])
+
+    def test_empty_image_input_has_empty_timing_summary(self):
+        report = benchmark_ocr(
+            [],
+            backend=FakeOCRBackend(),
+            repeats=1,
+            warmups=0,
+            clock=lambda: 1.0,
+            cpu_clock=lambda: 1.0,
+        )
+
+        self.assertEqual(report["summary"]["images"], 0)
+        self.assertIsNone(report["summary"]["median_cpu_utilization_percent"])
+
 
 if __name__ == "__main__":
     unittest.main()
