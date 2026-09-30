@@ -1076,16 +1076,12 @@ def _recovered_dialogue_record(
         "source_audio_status": line.source_audio_status,
         "source_audio_id": line.source_audio_id,
         "source_audio_duration_seconds": line.source_audio_duration_seconds,
-        "source_audio_completeness": getattr(
-            line,
-            "source_audio_completeness",
-            "unknown",
-        ),
+        "source_audio_completeness": line.source_audio_completeness,
         "expected_source": (
             "game"
             if line.source_audio_status == "available"
-            and getattr(line, "source_audio_authoritative", False)
-            and getattr(line, "source_audio_completeness", "unknown") == "full"
+            and line.source_audio_authoritative
+            and line.source_audio_completeness == "full"
             else None
         ),
         "capture_boundary": "recovered-exact-sequence",
