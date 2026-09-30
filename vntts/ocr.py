@@ -541,10 +541,9 @@ def recognize_speaker_from_data(
     for position, line in enumerate(lines[:-1]):
         if len(line.text) > 40:
             continue
-        if (
-            _normalize_unknown_nameplate(line.text) != "???"
-            and not is_probable_character_name(line.text)
-        ):
+        if _normalize_unknown_nameplate(
+            line.text
+        ) != "???" and not is_probable_character_name(line.text):
             continue
         if image_height is not None and line.top > image_height * 0.6:
             continue
@@ -794,9 +793,11 @@ def _trim_trailing_ocr_noise(
     if terminal_position is None or terminal_position == len(words) - 1:
         return words
     suffix = words[terminal_position + 1 :]
-    return words[: terminal_position + 1] if all(
-        _is_suspicious_trailing_word(*word) for word in suffix
-    ) else words
+    return (
+        words[: terminal_position + 1]
+        if all(_is_suspicious_trailing_word(*word) for word in suffix)
+        else words
+    )
 
 
 def _is_suspicious_trailing_word(word: str, confidence: float) -> bool:

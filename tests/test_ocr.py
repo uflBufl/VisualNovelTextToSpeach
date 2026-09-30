@@ -365,7 +365,9 @@ class RecognizedDialogTest(unittest.TestCase):
                     profiles=(OCRPreprocessingProfile("balanced", 1.8, 180),),
                 )
 
-                self.assertEqual((result.character, result.text), ("???", "Who are you?"))
+                self.assertEqual(
+                    (result.character, result.text), ("???", "Who are you?")
+                )
 
     def test_short_unknown_interjection_drops_trailing_background_glyphs(self):
         merged_data = {
@@ -398,9 +400,7 @@ class RecognizedDialogTest(unittest.TestCase):
         result = recognize_dialog_image_result(
             Image.new("RGB", (2560, 560), "black"),
             recognize_text=Mock(return_value="Hey! - ™ \\\n| a\nSe\n"),
-            recognize_data=Mock(
-                side_effect=[merged_data, sparse_data, dialog_data]
-            ),
+            recognize_data=Mock(side_effect=[merged_data, sparse_data, dialog_data]),
             profiles=(OCRPreprocessingProfile("balanced", 1.8, 180),),
         )
 
