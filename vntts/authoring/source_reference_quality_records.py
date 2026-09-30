@@ -83,7 +83,10 @@ def validate_source_reference_quality_review_document(
         _validate_quality_review_variant(path.parent, card, index, seen)
         for index, card in enumerate(variants)
     )
-    if session.get("completed_count") != completed:
+    if (
+        type(session.get("completed_count")) is not int
+        or session["completed_count"] != completed
+    ):
         raise SourceReferenceQualityError("Quality review progress is inconsistent")
     for field in (
         "source_reference_plan_sha256",
@@ -97,7 +100,8 @@ def validate_source_reference_quality_review_document(
 def _validate_quality_review_header(session: JsonObject) -> None:
     if (
         session.get("schema") != QUALITY_REVIEW_SCHEMA
-        or session.get("schema_version") != QUALITY_REVIEW_VERSION
+        or type(session.get("schema_version")) is not int
+        or session["schema_version"] != QUALITY_REVIEW_VERSION
     ):
         raise SourceReferenceQualityError(
             "Unsupported source-reference quality review schema"
@@ -111,7 +115,8 @@ def _quality_review_variants(session: JsonObject) -> list[object]:
     if (
         not isinstance(variants, list)
         or not variants
-        or session.get("variant_count") != len(variants)
+        or type(session.get("variant_count")) is not int
+        or session["variant_count"] != len(variants)
     ):
         raise SourceReferenceQualityError("Quality review variant count is invalid")
     return variants
@@ -264,14 +269,19 @@ def _validate_variant_decision(
 ) -> int:
     if value is None:
         return 0
-    if not isinstance(value, dict) or value.get("decision") not in QUALITY_DECISIONS:
+    if not isinstance(value, dict):
+        raise SourceReferenceQualityError(
+            f"Quality variant {variant_id} decision is invalid"
+        )
+    decision = value.get("decision")
+    if not isinstance(decision, str) or decision not in QUALITY_DECISIONS:
         raise SourceReferenceQualityError(
             f"Quality variant {variant_id} decision is invalid"
         )
     _aware_timestamp(
         value.get("reviewed_at"), f"quality variant {variant_id} reviewed_at"
     )
-    if value["decision"] == "accept" and not generated:
+    if decision == "accept" and not generated:
         raise SourceReferenceQualityError(
             f"Quality variant {variant_id} was accepted without generated audio"
         )
@@ -377,12 +387,15 @@ def capture_quality_outcomes(
             common.get("queue_id"), "Quality sample queue ID", error_type
         )
         result_document = result if isinstance(result, Mapping) else {}
-        if result_document.get("status", "pending") not in {"generated", "approved"}:
+        status = result_document.get("status", "pending")
+        if not isinstance(status, str) or not status.strip():
+            raise error_type("Quality sample status must be non-empty text")
+        if status not in {"generated", "approved"}:
             failure = result_document.get("failure")
             excluded.append(
                 {
                     **common,
-                    "status": result_document.get("status", "pending"),
+                    "status": status,
                     "attempts": result_document.get("attempts", 0),
                     "error": _optional_text(result_document.get("last_error")),
                     "completion": _optional_failure_text(failure, "completion"),
@@ -448,7 +461,12 @@ def _validate_portrait_record(root: Path, value: object, label: str) -> Path:
     if hashlib.sha256(payload).hexdigest() != digest:
         raise SourceReferenceQualityError(f"Quality portrait changed: {label}")
     width, height = _probe_png(payload, f"quality portrait {label}")
-    if value.get("width") != width or value.get("height") != height:
+    if (
+        type(value.get("width")) is not int
+        or value["width"] != width
+        or type(value.get("height")) is not int
+        or value["height"] != height
+    ):
         raise SourceReferenceQualityError(f"Quality portrait metadata changed: {label}")
     return path
 
@@ -497,8 +515,10 @@ def _validate_audio_record(root: Path, value: object, label: str) -> Path:
             f"Invalid quality WAV {label}: {error}"
         ) from error
     if (
-        value.get("sample_rate") != info.sample_rate
-        or value.get("sample_count") != info.sample_count
+        type(value.get("sample_rate")) is not int
+        or value["sample_rate"] != info.sample_rate
+        or type(value.get("sample_count")) is not int
+        or value["sample_count"] != info.sample_count
         or value.get("duration_seconds") != round(info.duration_seconds, 6)
     ):
         raise SourceReferenceQualityError(f"Quality audio metadata changed: {label}")
@@ -530,7 +550,7 @@ def _read_json(path: str | Path, label: str) -> tuple[bytes, JsonObject]:
     try:
         payload = path.read_bytes()
         value = json.loads(payload)
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise SourceReferenceQualityError(
             f"Unable to read {label} {path}: {error}"
         ) from error

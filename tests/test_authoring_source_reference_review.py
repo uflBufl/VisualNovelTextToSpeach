@@ -933,6 +933,63 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
                     with self.assertRaises(SourceReferenceQualityError):
                         source_reference_quality_records._probe_png(payload, "portrait")
 
+    def test_quality_review_rejects_noncanonical_scalar_types(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _plan, _evaluation, _generation, result = self.publish_quality_fixture(root)
+            original = json.loads(result.session.read_text(encoding="utf-8"))
+            for field, value in (
+                ("schema_version", True),
+                ("schema_version", 1.0),
+                ("variant_count", 2.0),
+                ("completed_count", False),
+            ):
+                with self.subTest(field=field):
+                    document = json.loads(json.dumps(original))
+                    document[field] = value
+                    result.session.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaises(SourceReferenceQualityError):
+                        load_source_reference_quality_review(result.session)
+            result.session.write_text(json.dumps(original), encoding="utf-8")
+            document = json.loads(json.dumps(original))
+            document["variants"][0]["decision"] = {
+                "decision": [],
+                "reviewed_at": "2026-08-18T00:00:00+00:00",
+            }
+            result.session.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaises(SourceReferenceQualityError):
+                load_source_reference_quality_review(result.session)
+            for field in ("sample_rate", "sample_count"):
+                with self.subTest(field=field):
+                    document = json.loads(json.dumps(original))
+                    reference = document["variants"][0]["reference"]
+                    reference[field] = float(reference[field])
+                    result.session.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        SourceReferenceQualityError, "audio metadata"
+                    ):
+                        load_source_reference_quality_review(result.session)
+            for status in (None, [], {}, 1, ""):
+                with (
+                    self.subTest(status=status),
+                    self.assertRaisesRegex(SourceReferenceQualityError, "status"),
+                ):
+                    source_reference_quality_records.capture_quality_outcomes(
+                        [
+                            (
+                                {"queue_id": "sample"},
+                                {"status": status},
+                                Path("unused.wav"),
+                            )
+                        ],
+                        root,
+                        root,
+                        [],
+                    )
+            result.session.write_bytes(b"\xff")
+            with self.assertRaisesRegex(SourceReferenceQualityError, "Unable to read"):
+                load_source_reference_quality_review(result.session)
+
     def test_quality_review_copies_and_validates_available_portraits(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -947,14 +1004,15 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
 
             copied = [card["portrait_image"] for card in session["variants"]]
             self.assertTrue(all(record["width"] == 2 for record in copied))
-            copied[0]["width"] = 99
-            (result.session).write_text(
-                json.dumps(session, sort_keys=True), encoding="utf-8"
-            )
-            with self.assertRaisesRegex(
-                SourceReferenceQualityError, "portrait metadata changed"
-            ):
-                load_source_reference_quality_review(result.session)
+            for field, value in (("width", 2.0), ("height", 2.0), ("width", 99)):
+                with self.subTest(field=field, value=value):
+                    document = json.loads(json.dumps(session))
+                    document["variants"][0]["portrait_image"][field] = value
+                    result.session.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        SourceReferenceQualityError, "portrait metadata changed"
+                    ):
+                        load_source_reference_quality_review(result.session)
 
     def test_portrait_alias_requires_same_voice_evidence_and_human_decision(self):
         with TemporaryDirectory() as directory:
