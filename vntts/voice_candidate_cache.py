@@ -111,8 +111,6 @@ def _candidate_references(
     protected_paths: Iterable[str | Path],
 ) -> set[str] | None:
     referenced = _protected_candidates(root, protected_paths)
-    if referenced is None:
-        return None
     active = _active_candidate_claims(candidates)
     if active is None:
         return None
@@ -215,7 +213,7 @@ def _candidate_directories(root: Path) -> tuple[Path, ...] | None:
     )
 
 
-def _protected_candidates(root: Path, paths: Iterable[str | Path]) -> set[str] | None:
+def _protected_candidates(root: Path, paths: Iterable[str | Path]) -> set[str]:
     protected: set[str] = set()
     for value in paths:
         path = Path(value).expanduser()
