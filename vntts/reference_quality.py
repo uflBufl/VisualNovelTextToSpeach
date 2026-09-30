@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import io
+import math
 import wave
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -138,23 +139,32 @@ def _reference_metrics(
     silence_db: float,
     window_ms: float,
 ) -> ReferenceMetrics:
+    if not math.isfinite(window_ms) or window_ms <= 0:
+        raise ValueError("Reference analysis window must be finite and positive")
+    if not math.isfinite(silence_db):
+        raise ValueError("Reference silence threshold must be finite")
     absolute = np.abs(samples)
+    squared = np.square(samples)
     duration_seconds = len(samples) / sample_rate
     peak = float(np.max(absolute))
-    rms = float(np.sqrt(np.mean(np.square(samples))))
+    rms = float(np.sqrt(np.mean(squared)))
     clipping_fraction = float(np.mean(absolute >= 0.999))
     dc_offset = float(abs(np.mean(samples)))
-    window_samples = max(1, round(sample_rate * window_ms / 1000))
-    padded = np.pad(samples, (0, (-len(samples)) % window_samples))
-    windows = padded.reshape(-1, window_samples)
-    window_rms = np.sqrt(np.mean(np.square(windows), axis=1))
-    active = window_rms >= 10 ** (silence_db / 20)
+    window_samples = max(
+        1, round(sample_rate * min(window_ms, duration_seconds * 1000) / 1000)
+    )
+    starts = np.arange(0, len(samples), window_samples)
+    counts = np.minimum(window_samples, len(samples) - starts)
+    window_rms = np.sqrt(np.add.reduceat(squared, starts) / counts)
+    threshold = 10 ** (silence_db / 20) if silence_db <= 0 else math.inf
+    active = window_rms >= threshold
     active_indices = np.flatnonzero(active)
     if len(active_indices):
-        leading_silence_seconds = active_indices[0] * window_samples / sample_rate
-        trailing_silence_seconds = (
-            (len(active) - 1 - active_indices[-1]) * window_samples / sample_rate
+        leading_silence_seconds = int(starts[active_indices[0]]) / sample_rate
+        last_active_end = min(
+            int(starts[active_indices[-1]]) + window_samples, len(samples)
         )
+        trailing_silence_seconds = (len(samples) - last_active_end) / sample_rate
     else:
         leading_silence_seconds = duration_seconds
         trailing_silence_seconds = duration_seconds

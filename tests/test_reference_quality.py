@@ -23,6 +23,52 @@ def write_wav(path, samples, sample_rate=1000):
 
 
 class ReferenceQualityTest(unittest.TestCase):
+    def test_partial_windows_measure_only_recorded_samples(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "partial.wav"
+            for silent_tail in (0, 1):
+                with self.subTest(silent_tail=silent_tail):
+                    signal = np.concatenate(
+                        (self.tone(1001, 0.02), np.zeros(silent_tail))
+                    )
+                    write_wav(path, signal)
+                    report = analyze_reference(path)
+                    self.assertEqual(report["inactive_window_fraction"], 0.0)
+                    self.assertEqual(report["trailing_silence_seconds"], 0.0)
+            write_wav(path, np.concatenate((self.tone(1000), np.zeros(110))))
+            self.assertEqual(analyze_reference(path)["trailing_silence_seconds"], 0.11)
+
+    def test_oversized_window_uses_the_recording_without_padding(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "short.wav"
+            write_wav(path, self.tone(1001, 0.02))
+            payload = path.read_bytes()
+            for window_ms in (10_000.0, 1e308):
+                with self.subTest(window_ms=window_ms):
+                    report = analyze_reference_bytes(
+                        payload, path=path, window_ms=window_ms
+                    )
+                    self.assertEqual(report["inactive_window_fraction"], 0.0)
+                    self.assertEqual(report["leading_silence_seconds"], 0.0)
+                    self.assertEqual(report["trailing_silence_seconds"], 0.0)
+
+    def test_invalid_analysis_parameters_are_rejected(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "tone.wav"
+            write_wav(path, self.tone(1000))
+            for field, values in (
+                ("window_ms", (0.0, -1.0, float("nan"), float("inf"))),
+                ("silence_db", (float("nan"), float("inf"), -float("inf"))),
+            ):
+                for value in values:
+                    with (
+                        self.subTest(field=field, value=value),
+                        self.assertRaisesRegex(ValueError, "must be finite"),
+                    ):
+                        analyze_reference_bytes(
+                            path.read_bytes(), path=path, **{field: value}
+                        )
+
     def test_truncated_pcm_is_not_misreported_as_a_short_reference(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "voice.wav"
