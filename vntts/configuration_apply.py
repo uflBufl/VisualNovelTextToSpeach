@@ -27,9 +27,6 @@ class _SettingsDialog(Protocol):
     def settings(self) -> AppSettings: ...
 
 
-SettingsCommit = Callable[[AppSettings], object]
-
-
 class _Controller(Protocol):
     settings: AppSettings
 
@@ -55,27 +52,6 @@ class _Controller(Protocol):
 
     def set_auto_advance_enabled(self, enabled: bool) -> bool: ...
 
-    def assign_voice(
-        self,
-        character: str,
-        source_id: str,
-        *,
-        commit_settings: SettingsCommit | None = None,
-    ) -> AppSettings: ...
-
-    def clear_voice_assignment(
-        self,
-        character: str,
-        *,
-        commit_settings: SettingsCommit | None = None,
-    ) -> AppSettings: ...
-
-    def set_force_live_narrator(
-        self,
-        enabled: bool,
-        *,
-        commit_settings: SettingsCommit | None = None,
-    ) -> AppSettings: ...
 
 
 class _Dashboard(Protocol):

@@ -1,10 +1,9 @@
 """Failure-atomic settings mutations shared by the desktop application shell."""
 
-from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 from threading import Event, Lock
-from typing import TYPE_CHECKING, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Protocol
 
 from PySide6.QtWidgets import QDialog
 
@@ -12,12 +11,7 @@ from vntts.auto_advance_policy import (
     auto_advance_control_state,
     guard_auto_advance_settings,
 )
-from vntts.configuration_apply import (
-    SettingsCommit,
-    _Controller,
-    _Dashboard,
-    _Signals,
-)
+from vntts.configuration_apply import _Controller, _Dashboard, _Signals
 from vntts.profiles import GameProfileStore
 from vntts.settings import (
     AppSettings,
@@ -25,8 +19,6 @@ from vntts.settings import (
     settings_schema_version,
 )
 from vntts.versioned_json import write_versioned_json_if_unchanged
-
-VoiceChange: TypeAlias = Callable[[SettingsCommit], AppSettings]
 
 
 class _OnboardingTestPage(Protocol):
@@ -190,68 +182,6 @@ class DurableSettingsMixin:
             self.show_error(f"Unable to save the selected main section: {error}")
             return
         self.settings = candidate
-
-    def assign_voice(self, character: str, source_id: str) -> AppSettings:
-        path, suffix = self._persist_voice_change(
-            lambda commit: self.controller.assign_voice(
-                character,
-                source_id,
-                commit_settings=commit,
-            ),
-            f"Unable to save the voice for {character}",
-        )
-        self.set_status(f"Voice for {character} saved to {path}{suffix}")
-        return self.settings
-
-    def clear_voice_assignment(self, character: str) -> AppSettings:
-        path, suffix = self._persist_voice_change(
-            lambda commit: self.controller.clear_voice_assignment(
-                character,
-                commit_settings=commit,
-            ),
-            f"Unable to save automatic voice routing for {character}",
-        )
-        self.set_status(
-            f"Automatic voice routing for {character} saved to {path}{suffix}"
-        )
-        return self.settings
-
-    def set_force_live_narrator(self, enabled: bool) -> AppSettings:
-        path, suffix = self._persist_voice_change(
-            lambda commit: self.controller.set_force_live_narrator(
-                enabled,
-                commit_settings=commit,
-            ),
-            "Unable to save Narrator routing",
-        )
-        self.set_status(f"Narrator routing saved to {path}{suffix}")
-        return self.settings
-
-    def _persist_voice_change(
-        self, operation: VoiceChange, failure_message: str
-    ) -> tuple[Path, str]:
-        saved_path: list[Path] = []
-        section = self.settings.last_main_section
-
-        def commit(candidate: AppSettings) -> Path:
-            path = self._save_settings_candidate(
-                candidate.updated(last_main_section=section)
-            )
-            saved_path.append(path)
-            return path
-
-        try:
-            settings = operation(commit)
-        except OSError as error:
-            self.show_error(f"{failure_message}: {error}")
-            raise
-        self.settings = settings.updated(last_main_section=section)
-        self.dashboard.set_configuration(self.settings)
-        self._refresh_preparation_settings()
-        self._apply_controller_action_state()
-        profile_synced = self._sync_active_profile(self.settings)
-        suffix = "" if profile_synced else "; active profile could not be updated"
-        return saved_path[0], suffix
 
     def _sync_active_profile(self, settings: AppSettings | None = None) -> bool:
         settings = self.settings if settings is None else settings
