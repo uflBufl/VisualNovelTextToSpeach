@@ -132,16 +132,10 @@ class OCRCorrectionStore:
         )
 
     def dictionary_for(self, profile_id: str | None = None) -> OCRCorrectionDictionary:
-        combined = dict(self.global_entries)
-        if profile_id and profile_id in self.profile_entries:
-            profile_keys = {key.casefold() for key in self.profile_entries[profile_id]}
-            combined = {
-                key: value
-                for key, value in combined.items()
-                if key.casefold() not in profile_keys
-            }
-            combined.update(self.profile_entries[profile_id])
-        return OCRCorrectionDictionary(combined)
+        profile_entries = self.profile_entries.get(profile_id, {}) if profile_id else {}
+        return OCRCorrectionDictionary(
+            _overlay_correction_entries(self.global_entries, profile_entries)
+        )
 
     def replace_entries(
         self,
@@ -169,13 +163,7 @@ class OCRCorrectionStore:
         target = (
             profiles.get(str(profile_id), {}) if profile_id else self.global_entries
         )
-        replaced_keys = {key.casefold() for key in normalized}
-        merged = {
-            source: replacement
-            for source, replacement in target.items()
-            if source.casefold() not in replaced_keys
-        }
-        merged.update(normalized)
+        merged = _overlay_correction_entries(target, normalized)
         if profile_id:
             profiles[str(profile_id)] = merged
             global_entries = self.global_entries
@@ -199,6 +187,17 @@ class OCRCorrectionStore:
             profiles.pop(str(profile_id))
             self._save_entries(self.global_entries, profiles)
             self.profile_entries = profiles
+
+
+def _overlay_correction_entries(
+    base: Mapping[str, str], overrides: Mapping[str, str]
+) -> dict[str, str]:
+    replaced_keys = {source.casefold() for source in overrides}
+    return {
+        source: replacement
+        for source, replacement in base.items()
+        if source.casefold() not in replaced_keys
+    } | dict(overrides)
 
 
 def normalize_correction_entries(entries: object) -> dict[str, str]:
