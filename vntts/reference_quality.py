@@ -199,9 +199,9 @@ def _rejection_reasons(metrics: ReferenceMetrics) -> list[str]:
     ]
 
 
-def analyze_reference_set(paths: Iterable[str | Path]) -> ReferenceQualitySet:
-    references = [analyze_reference(path) for path in paths]
-    objective_ranking = sorted(
+def rank_reference_quality(references: Sequence[ReferenceQualityReport]) -> list[int]:
+    """Return zero-based objective ordering; ties preserve the configured order."""
+    return sorted(
         range(len(references)),
         key=lambda index: (
             references[index]["objective_preflight"] != "pass",
@@ -212,6 +212,11 @@ def analyze_reference_set(paths: Iterable[str | Path]) -> ReferenceQualitySet:
             index,
         ),
     )
+
+
+def analyze_reference_set(paths: Iterable[str | Path]) -> ReferenceQualitySet:
+    references = [analyze_reference(path) for path in paths]
+    objective_ranking = rank_reference_quality(references)
     return {
         "schema_version": 1,
         "references": references,

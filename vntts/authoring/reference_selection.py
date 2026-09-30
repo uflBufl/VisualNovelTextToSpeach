@@ -18,7 +18,11 @@ from vntts_artifacts.voice_manifest import (
 from vntts.authoring.authority import write_json_document_no_replace
 from vntts.authoring.publication import no_replace_destination
 from vntts.authoring.workspace_foundation import contained_regular_file
-from vntts.reference_quality import ReferenceQualityReport, analyze_reference_bytes
+from vntts.reference_quality import (
+    ReferenceQualityReport,
+    analyze_reference_bytes,
+    rank_reference_quality,
+)
 
 REFERENCE_SELECTION_SCHEMA_VERSION = 1
 REFERENCE_SELECTION_EXTENSION = "vntts.authoring.reference_selection"
@@ -308,16 +312,8 @@ def _capture_manifest(manifest_path: PathInput, character: str) -> _ManifestSnap
                 "analysis": analysis,
             }
         )
-    ranking = sorted(
-        range(len(candidates)),
-        key=lambda candidate_index: (
-            candidates[candidate_index]["analysis"]["objective_preflight"] != "pass",
-            candidates[candidate_index]["analysis"]["clipping_fraction"],
-            candidates[candidate_index]["analysis"]["leading_silence_seconds"]
-            + candidates[candidate_index]["analysis"]["trailing_silence_seconds"],
-            candidates[candidate_index]["analysis"]["inactive_window_fraction"],
-            candidate_index,
-        ),
+    ranking = rank_reference_quality(
+        [candidate["analysis"] for candidate in candidates]
     )
     report = {
         "schema": "vntts.authoring-reference-candidates",

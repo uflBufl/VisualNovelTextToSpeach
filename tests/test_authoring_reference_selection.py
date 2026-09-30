@@ -116,6 +116,7 @@ class AuthoringReferenceSelectionTest(unittest.TestCase):
             manifest = write_manifest(root)
             source = manifest.read_bytes()
             report = inspect_voice_reference_candidates(manifest, "The Hero")
+            self.assertEqual(report["objective_ranking"], [1, 2])
             output = root / "selected.json"
             result = select_voice_reference(manifest, "Hero", 2, output)
             selected = json.loads(output.read_text(encoding="utf-8"))
