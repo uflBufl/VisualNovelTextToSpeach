@@ -1,9 +1,9 @@
 import unittest
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from vntts.moss_runtime import RetainedMossRuntime, _is_moss_backend
+from vntts.moss_runtime import RetainedMossRuntime, _is_moss_backend, _LockedStream
 from vntts.synthesis import SynthesisChunkStream
 
 
@@ -59,6 +59,30 @@ class _Backend:
 
 
 class RetainedMossRuntimeTests(unittest.TestCase):
+    def test_stream_close_failure_still_releases_the_operation_lock(self):
+        finalized = Event()
+
+        def chunks():
+            try:
+                yield None
+            finally:
+                finalized.set()
+                raise RuntimeError("generator cleanup failed")
+
+        lock = Lock()
+        lock.acquire()
+        stream = _LockedStream(SynthesisChunkStream(chunks()), lock)
+        next(stream)
+
+        with self.assertRaisesRegex(RuntimeError, "generator cleanup failed"):
+            stream.close()
+
+        self.assertTrue(finalized.is_set())
+        self.assertTrue(lock.acquire(blocking=False))
+        stream.close()  # Closing again must not release another owner's lock.
+        self.assertTrue(lock.locked())
+        lock.release()
+
     def test_backend_guard_requires_mutable_lease_fields(self):
         for field in (
             "registry",

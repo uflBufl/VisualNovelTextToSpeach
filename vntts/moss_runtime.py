@@ -101,9 +101,7 @@ class _LockedStream:
 
     def close(self) -> None:
         try:
-            close = getattr(self._stream, "close", None)
-            if callable(close):
-                close()
+            self._stream.close()
         finally:
             self._release()
 

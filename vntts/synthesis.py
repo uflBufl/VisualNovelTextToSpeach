@@ -148,6 +148,4 @@ class SynthesisChunkStream(Iterator[SynthesisChunk]):
         return self.result
 
     def close(self) -> None:
-        close = getattr(self._producer, "close", None)
-        if callable(close):
-            close()
+        self._producer.close()
