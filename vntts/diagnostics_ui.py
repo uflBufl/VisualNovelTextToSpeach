@@ -221,12 +221,17 @@ class DiagnosticsDialog(QDialog):
         self.restore_after_capture()
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        # Route hidden-window close and Escape through the same completion path.
+        self.reject()
+        event.accept()
+
+    def done(self, result: int) -> None:
         self.refresh_timer.stop()
         self.refresh_in_flight = False
         self.refresh_generation += 1
         self.concealed_for_capture = False
         self.closed.emit()
-        super().closeEvent(event)
+        super().done(result)
 
     def conceal_for_capture(self) -> bool:
         if not self.isVisible():

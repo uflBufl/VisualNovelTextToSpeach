@@ -6,6 +6,8 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PIL import Image  # noqa: E402
+from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QScrollArea  # noqa: E402
 
 from vntts.diagnostics import (  # noqa: E402
@@ -225,6 +227,28 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertFalse(dialog.isVisible())
         self.assertFalse(dialog.concealed_for_capture)
         dialog.deleteLater()
+
+    def test_every_dialog_exit_cancels_refresh_and_emits_closed_once(self):
+        for action in ("close", "reject", "accept", "escape"):
+            with self.subTest(action=action):
+                dialog = DiagnosticsDialog(refresh_timeout_ms=60_000)
+                closed = Mock()
+                dialog.closed.connect(closed)
+                dialog.show()
+                dialog.request_refresh()
+                generation = dialog.refresh_generation
+                if action == "escape":
+                    QTest.keyClick(dialog, Qt.Key.Key_Escape)
+                else:
+                    dialog.conceal_for_capture()
+                    getattr(dialog, action)()
+                self.assertFalse(dialog.refresh_timer.isActive())
+                self.assertFalse(dialog.refresh_in_flight)
+                self.assertGreater(dialog.refresh_generation, generation)
+                closed.assert_called_once_with()
+                dialog.set_snapshot(DiagnosticSnapshot(None, text="Late"))
+                self.assertFalse(dialog.isVisible())
+                dialog.deleteLater()
 
     def test_macos_permission_warnings_explain_both_permissions(self):
         warnings = macos_permission_warnings(
