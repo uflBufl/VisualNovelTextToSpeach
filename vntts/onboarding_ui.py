@@ -8,7 +8,13 @@ from threading import Event
 from typing import Protocol, TypeGuard
 
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QPalette, QStandardItemModel
+from PySide6.QtGui import (
+    QCloseEvent,
+    QColor,
+    QDesktopServices,
+    QPalette,
+    QStandardItemModel,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -1258,6 +1264,11 @@ class CalibrationPage(QWizardPage):
         self.flow: OnboardingWizard
         self.calibrated = False
         self.overlay: DialogRegionOverlay | None = None
+        self.pending_geometry: WindowGeometry | None = None
+        self._calibration_cancelled = False
+        self.capture_timer = QTimer(self)
+        self.capture_timer.setSingleShot(True)
+        self.capture_timer.timeout.connect(self.open_overlay)
         self.setTitle("Calibrate the dialogue area")
         self.instructions = QLabel(
             "Open a scene with dialogue, click Calibrate, then drag over the "
@@ -1285,6 +1296,8 @@ class CalibrationPage(QWizardPage):
         self.completeChanged.emit()
 
     def calibrate(self) -> None:
+        if self.capture_timer.isActive() or self.overlay is not None:
+            return
         settings = self.flow.draft_settings
         geometry = None
         if settings.capture_mode == "window":
@@ -1296,12 +1309,16 @@ class CalibrationPage(QWizardPage):
                 QMessageBox.warning(self, "Unable to calibrate", str(error))
                 return
         self.pending_geometry = geometry
+        self._calibration_cancelled = False
         self.flow.hide()
-        QTimer.singleShot(200, self.open_overlay)
+        self.capture_timer.start(200)
 
     def open_overlay(self) -> None:
+        if self._calibration_cancelled or self.overlay is not None:
+            return
+        self.capture_timer.stop()
         try:
-            self.overlay = (
+            overlay = (
                 show_calibration_overlay(self.pending_geometry)
                 if self.save_region is None
                 else show_calibration_overlay(
@@ -1315,9 +1332,26 @@ class CalibrationPage(QWizardPage):
                 "and keep the game visible, then try again."
             )
             return
-        self.overlay.selected.connect(self.finish_calibration)
-        self.overlay.closed.connect(self.restore_wizard)
-        self.overlay.save_failed.connect(self.status.setText)
+        self.overlay = overlay
+        overlay.selected.connect(self.finish_calibration)
+        overlay.closed.connect(
+            lambda closed_overlay=overlay: self._overlay_closed(closed_overlay)
+        )
+        overlay.save_failed.connect(self.status.setText)
+
+    def _overlay_closed(self, overlay: DialogRegionOverlay) -> None:
+        is_current = self.overlay is overlay
+        if is_current:
+            self.overlay = None
+        overlay.deleteLater()
+        if is_current and not self._calibration_cancelled:
+            self.restore_wizard()
+
+    def cancel_calibration(self) -> None:
+        self.capture_timer.stop()
+        self._calibration_cancelled = True
+        if self.overlay is not None:
+            self.overlay.close()
 
     def finish_calibration(self, _region: object) -> None:
         self.calibrated = True
@@ -1482,6 +1516,7 @@ class OnboardingWizard(QDialog):
             reading_setup,
             save_region,
         )
+        self.finished.connect(self.calibration_page.cancel_calibration)
         navigation = self._build_navigation(reading_setup)
         self._build_layout(navigation)
         self.show_page(0)
@@ -1676,6 +1711,10 @@ class OnboardingWizard(QDialog):
             return
         self.diagnostics_page.cancel_checks()
         super().reject()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self.calibration_page.cancel_calibration()
+        super().closeEvent(event)
 
     def settings(self) -> AppSettings:
         return self.completed_settings or self.draft_settings

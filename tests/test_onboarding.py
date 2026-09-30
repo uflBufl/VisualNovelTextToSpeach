@@ -1170,12 +1170,10 @@ class OnboardingWizardTest(unittest.TestCase):
                     "vntts.onboarding_ui.show_calibration_overlay",
                     side_effect=show_overlay,
                 ),
-                patch(
-                    "vntts.onboarding_ui.QTimer.singleShot",
-                    side_effect=lambda _delay, callback: callback(),
-                ),
             ):
                 wizard.calibration_page.calibrate()
+                self.assertFalse(wizard.isVisible())
+                wizard.calibration_page.open_overlay()
 
             self.assertTrue(overlay.isVisible())
             self.assertFalse(wizard.isVisible())
@@ -1201,6 +1199,51 @@ class OnboardingWizardTest(unittest.TestCase):
         show_overlay.assert_called_once_with(None, save_region=save_region)
         wizard.close()
         wizard.deleteLater()
+
+    def test_calibration_finish_cancels_duplicate_pending_overlay_launches(self):
+        wizard = OnboardingWizard(AppSettings(capture_mode="screen"))
+        page = wizard.calibration_page
+        try:
+            with patch("vntts.onboarding_ui.show_calibration_overlay") as show_overlay:
+                page.calibrate()
+                self.assertTrue(page.capture_timer.isActive())
+                with patch.object(page.capture_timer, "start") as schedule_overlay:
+                    page.calibrate()
+                    schedule_overlay.assert_not_called()
+
+                wizard.done(QDialog.DialogCode.Rejected)
+                self.assertFalse(page.capture_timer.isActive())
+                page.open_overlay()
+
+                show_overlay.assert_not_called()
+                self.assertIsNone(page.overlay)
+        finally:
+            wizard.deleteLater()
+
+    def test_calibration_finish_closes_active_overlay_without_restoring_wizard(self):
+        wizard = OnboardingWizard(AppSettings(capture_mode="screen"))
+        page = wizard.calibration_page
+        overlay = Mock()
+        try:
+            with (
+                patch(
+                    "vntts.onboarding_ui.show_calibration_overlay", return_value=overlay
+                ),
+                patch.object(page, "restore_wizard") as restore,
+            ):
+                page.calibrate()
+                page.open_overlay()
+                close_overlay = overlay.closed.connect.call_args.args[0]
+                overlay.close.side_effect = close_overlay
+
+                wizard.done(QDialog.DialogCode.Rejected)
+
+                overlay.close.assert_called_once_with()
+                overlay.deleteLater.assert_called_once_with()
+                self.assertIsNone(page.overlay)
+                restore.assert_not_called()
+        finally:
+            wizard.deleteLater()
 
 
 if __name__ == "__main__":
