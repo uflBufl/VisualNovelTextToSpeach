@@ -239,7 +239,7 @@ class AppSettings:
     ) -> Self:
         report: WarningHandler = (lambda _message: None) if warn is None else warn
         defaults = cls() if fallback is None else fallback
-        parsed: dict[str, object] = {}
+        parsed: dict[str, object] = asdict(defaults)
         source_schema = values.get("schema_version", 0)
         if isinstance(source_schema, bool) or not isinstance(source_schema, int):
             source_schema = 0
@@ -307,6 +307,8 @@ class AppSettings:
                 parsed[name] = value.strip()
             else:
                 report(f"Invalid {name!r} setting; using its default")
+                if name == "live_sequence_mode" and fallback is None:
+                    parsed[name] = "off"
 
         for name in optional_string_fields:
             value = values.get(name, getattr(defaults, name))
@@ -390,17 +392,14 @@ class AppSettings:
         else:
             report("Invalid 'last_main_section' setting; using Stories")
 
-        if parsed["auto_advance_key"] not in {"space", "enter", "right", "down"}:
-            report("Invalid 'auto_advance_key' setting; using its default")
-            parsed["auto_advance_key"] = defaults.auto_advance_key
-
-        if parsed["audio_source_policy"] not in audio_source_policies:
-            report("Invalid 'audio_source_policy' setting; using its default")
-            parsed["audio_source_policy"] = defaults.audio_source_policy
-
-        if parsed["speaker_announcement_mode"] not in speaker_announcement_modes:
-            report("Invalid 'speaker_announcement_mode' setting; using its default")
-            parsed["speaker_announcement_mode"] = defaults.speaker_announcement_mode
+        for name, choices in (
+            ("auto_advance_key", {"space", "enter", "right", "down"}),
+            ("audio_source_policy", audio_source_policies),
+            ("speaker_announcement_mode", speaker_announcement_modes),
+        ):
+            if parsed[name] not in choices:
+                report(f"Invalid {name!r} setting; using its default")
+                parsed[name] = getattr(defaults, name)
         if parsed["live_sequence_mode"] not in live_sequence_modes:
             report(
                 "Invalid 'live_sequence_mode' setting; using saved/default value"

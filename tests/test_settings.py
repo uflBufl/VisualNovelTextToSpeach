@@ -492,6 +492,62 @@ class SettingsTest(unittest.TestCase):
         )
         self.assertTrue(any("VNTTS_LIVE_INTERVAL_MS" in value for value in warnings))
 
+    def test_invalid_mapping_shapes_preserve_custom_fallbacks(self):
+        fallback = AppSettings(
+            speech_backend="moss-tts",
+            tts_profile="custom",
+            auto_advance_key="enter",
+            audio_source_policy="prefer-game-audio",
+            speaker_announcement_mode="all-speakers",
+            live_sequence_mode="shadow",
+        )
+        fields = (
+            "speech_backend",
+            "tts_profile",
+            "auto_advance_key",
+            "audio_source_policy",
+            "speaker_announcement_mode",
+            "live_sequence_mode",
+        )
+
+        for field in fields:
+            for invalid in (None, 42, [], {}):
+                with self.subTest(field=field, invalid=invalid):
+                    warnings = []
+                    loaded = AppSettings.from_mapping(
+                        {field: invalid},
+                        fallback=fallback,
+                        warn=warnings.append,
+                    )
+
+                    self.assertEqual(getattr(loaded, field), getattr(fallback, field))
+                    self.assertTrue(warnings)
+
+    def test_invalid_mapping_shapes_use_defaults_without_enabling_sequence(self):
+        defaults = AppSettings()
+        for field in (
+            "speech_backend",
+            "tts_profile",
+            "auto_advance_key",
+            "audio_source_policy",
+            "speaker_announcement_mode",
+            "live_sequence_mode",
+        ):
+            for invalid in (None, 42, [], {}):
+                with self.subTest(field=field, invalid=invalid):
+                    warnings = []
+                    loaded = AppSettings.from_mapping(
+                        {"schema_version": settings_schema_version, field: invalid},
+                        warn=warnings.append,
+                    )
+                    self.assertEqual(
+                        getattr(loaded, field),
+                        "off"
+                        if field == "live_sequence_mode"
+                        else getattr(defaults, field),
+                    )
+                    self.assertTrue(warnings)
+
     def test_invalid_capture_mode_falls_back_to_screen(self):
         for invalid in ("desktop-magic", [], {}):
             warnings = []
