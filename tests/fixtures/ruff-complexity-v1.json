@@ -345,12 +345,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/hotkey_ui.py",
-      "scope": "qt_sequence_from_hotkey",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/live_tracking.py",
       "scope": "IncrementalDialogTracker.observe",
       "count": 1
@@ -863,12 +857,6 @@
       "code": "PLR0912",
       "path": "vntts/generated_audio.py",
       "scope": "_live_fallback_index",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/hotkey_ui.py",
-      "scope": "qt_sequence_from_hotkey",
       "count": 1
     },
     {
