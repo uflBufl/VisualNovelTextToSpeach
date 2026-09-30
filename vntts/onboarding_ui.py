@@ -5,7 +5,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from pathlib import Path
 from threading import Event
-from typing import Protocol, TypeGuard
+from typing import Protocol
 
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
@@ -54,7 +54,11 @@ from vntts.hotkeys import (
 )
 from vntts.macos_ui import MacOSPermissionsDialog
 from vntts.ocr import DialogRegion
-from vntts.onboarding import DiagnosticResult, OnboardingDiagnostics
+from vntts.onboarding import (
+    DiagnosticResult,
+    OnboardingDiagnostics,
+    is_diagnostic_results,
+)
 from vntts.release_backends import (
     packaged_speech_backend_available,
     speech_backend_options,
@@ -87,12 +91,6 @@ class _DiagnosticsService(Protocol):
 WindowLoader = Callable[[], Sequence[WindowInfo]]
 CaptureTargetFactory = Callable[[str | None], _CaptureTarget]
 ValidationError = tuple[QWidget, str]
-
-
-def _is_diagnostic_results(value: object) -> TypeGuard[tuple[DiagnosticResult, ...]]:
-    return isinstance(value, tuple) and all(
-        isinstance(result, DiagnosticResult) for result in value
-    )
 
 
 class ConfigurationPage(QWizardPage):
@@ -1113,7 +1111,7 @@ class DiagnosticsPage(QWizardPage):
             self._update_remediation()
             self.completeChanged.emit()
             return
-        if not _is_diagnostic_results(diagnostics):
+        if not is_diagnostic_results(diagnostics):
             self.complete = False
             self.diagnostic_results = ()
             self.results.clear()

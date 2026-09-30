@@ -25,7 +25,11 @@ from PySide6.QtWidgets import (
 )
 
 from vntts.async_ui import LatestTaskRunner
-from vntts.onboarding import DiagnosticResult, OnboardingDiagnostics
+from vntts.onboarding import (
+    DiagnosticResult,
+    OnboardingDiagnostics,
+    is_diagnostic_results,
+)
 from vntts.settings import AppSettings
 from vntts.ui_text import copy_text_button, make_text_copyable
 
@@ -222,13 +226,13 @@ class ReadinessDialog(QDialog):
         self.cancel_button.setEnabled(False)
         self.cancel_button.hide()
         self.reading_button.setVisible(False)
-        if error is not None:
+        if error is not None or not is_diagnostic_results(results):
             self._results = ()
             self.table.setRowCount(0)
-            self.summary.setText(f"Checks failed: {error}")
+            reason = error if error is not None else "Readiness results are malformed"
+            self.summary.setText(f"Checks failed: {reason}")
             self._update_remediation()
             return
-        results = _diagnostic_results(results)
         self._results = results
         self.table.setRowCount(len(results))
         dark = self.table.palette().color(QPalette.ColorRole.Base).lightness() < 128
@@ -432,11 +436,3 @@ class ReadinessDialog(QDialog):
     def closeEvent(self, event: QCloseEvent) -> None:
         self.runner.cancel()
         super().closeEvent(event)
-
-
-def _diagnostic_results(value: object) -> tuple[DiagnosticResult, ...]:
-    if not isinstance(value, tuple) or not all(
-        isinstance(result, DiagnosticResult) for result in value
-    ):
-        raise TypeError("Readiness results are malformed")
-    return value

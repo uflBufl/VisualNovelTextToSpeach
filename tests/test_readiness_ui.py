@@ -1,6 +1,6 @@
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -201,6 +201,34 @@ class ReadinessDialogTest(unittest.TestCase):
         self.assertEqual(dialog.table.rowCount(), 0)
         self.assertFalse(dialog.reading_button.isVisible())
         dialog.deleteLater()
+
+    def test_malformed_probe_result_is_a_visible_retryable_failure(self):
+        for result in (None, [], (object(),)):
+            with self.subTest(result=result):
+                pool = ManualThreadPool()
+                diagnostics = Mock()
+                diagnostics.run.return_value = result
+                dialog = ReadinessDialog(AppSettings(), diagnostics, thread_pool=pool)
+                pool.run_next()
+                self.application.processEvents()
+                self.assertIn("Checks failed", dialog.summary.text())
+                self.assertIn("malformed", dialog.summary.text())
+                self.assertEqual(dialog.table.rowCount(), 0)
+                self.assertTrue(dialog.refresh_button.isEnabled())
+                self.assertFalse(dialog.remediation_button.isEnabled())
+                self.assertTrue(dialog.reading_button.isHidden())
+                diagnostics.run.return_value = (DiagnosticResult("OCR", "ok", "Ready"),)
+                dialog.refresh_button.click()
+                self.assertFalse(dialog.refresh_button.isEnabled())
+                self.assertFalse(dialog.progress.isHidden())
+                pool.run_next()
+                self.application.processEvents()
+                self.assertEqual(dialog.table.rowCount(), 1)
+                self.assertFalse(dialog.reading_button.isHidden())
+                self.assertTrue(dialog.progress.isHidden())
+                dialog.close()
+                dialog.deleteLater()
+
 
     def test_selects_first_blocking_error_and_emits_only_its_remediation(self):
         pool = ManualThreadPool()

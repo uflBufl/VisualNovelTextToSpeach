@@ -3,7 +3,7 @@ import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypeGuard
 
 from vntts.assets import ModelAssetManager
 from vntts.auto_advance_policy import auto_advance_allowed
@@ -26,6 +26,12 @@ class DiagnosticResult:
     @property
     def passed(self) -> bool:
         return self.status != "error"
+
+
+def is_diagnostic_results(value: object) -> TypeGuard[tuple[DiagnosticResult, ...]]:
+    return isinstance(value, tuple) and all(
+        isinstance(result, DiagnosticResult) for result in value
+    )
 
 
 def _isolated_runtime_backend(backend: str) -> str:
