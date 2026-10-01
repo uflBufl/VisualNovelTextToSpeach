@@ -959,7 +959,7 @@ class TrayApplicationTest(unittest.TestCase):
         with patch.object(tray, "toggle_live") as start_reading:
             tray._read_prepared_story()
 
-        controller.apply_settings.assert_called_once_with(progress)
+        controller.apply_settings.assert_called_once_with(progress, cancellation=ANY)
         self.assertIs(
             backend.progress_wait_request,
             preparation.prioritize_line,
@@ -4863,7 +4863,9 @@ class TrayApplicationTest(unittest.TestCase):
 
             controller.shutdown.assert_called_once_with()
             save_region.assert_not_called()
-            controller.apply_settings.assert_called_once_with(selected_settings)
+            controller.apply_settings.assert_called_once_with(
+                selected_settings, cancellation=ANY
+            )
             controller.start.assert_called_once_with()
             self.assertIn("Reverse: 1999", tray_application.status_action.text())
             tray_application.shutdown()

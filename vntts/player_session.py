@@ -109,23 +109,36 @@ class PlayerSessionOwner:
             error.add_note(f"Player session shutdown failed: {shutdown_error}")
 
     def start(self, generation: int) -> bool:
-        def operation(_cancellation: Event) -> bool:
-            self.controller.prepare_startup()
-            try:
-                ready = bool(self.controller.start())
-            except BaseException as error:
-                self._shutdown_after_operation(error)
-                raise
-            if not self.is_current(generation):
-                return False
-            return ready
+        return self.run(
+            generation,
+            lambda cancellation: self._start_runtime(generation, cancellation),
+            False,
+        )
 
-        return self.run(generation, operation, False)
+    def _start_runtime(self, generation: int, cancellation: Event) -> bool:
+        self.controller.prepare_startup()
+        if cancellation.is_set() or not self.is_current(generation):
+            self.controller.request_shutdown()
+            return False
+        try:
+            ready = bool(self.controller.start())
+        except BaseException as error:
+            self._shutdown_after_operation(error)
+            raise
+        if not self.is_current(generation):
+            return False
+        if cancellation.is_set():
+            self.controller.shutdown()
+            return False
+        return ready
 
     def attach(self, generation: int, settings: AppSettings) -> bool:
         return self.run(
             generation,
-            lambda _cancellation: self.controller.apply_settings(settings) is not False,
+            lambda cancellation: (
+                self.controller.apply_settings(settings, cancellation=cancellation)
+                is not False
+            ),
             False,
         )
 
@@ -254,26 +267,18 @@ class PlayerSessionOwner:
             raise RuntimeError("Unable to restore previous speech runtime")
 
     def restart(self, generation: int, settings: AppSettings) -> bool:
-        def operation(_cancellation: Event) -> bool:
+        def operation(cancellation: Event) -> bool:
             self.controller.shutdown()
-            if not self.is_current(generation):
+            if cancellation.is_set() or not self.is_current(generation):
                 return False
-            if self.controller.apply_settings(settings) is False:
+            if (
+                self.controller.apply_settings(settings, cancellation=cancellation)
+                is False
+            ):
                 return False
-            if not self.is_current(generation):
+            if cancellation.is_set() or not self.is_current(generation):
                 return False
-            self.controller.prepare_startup()
-            if not self.is_current(generation):
-                self.controller.request_shutdown()
-                return False
-            try:
-                ready = bool(self.controller.start())
-            except BaseException as error:
-                self._shutdown_after_operation(error)
-                raise
-            if not self.is_current(generation):
-                return False
-            return ready
+            return self._start_runtime(generation, cancellation)
 
         return self.run(generation, operation, False)
 

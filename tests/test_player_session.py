@@ -120,6 +120,59 @@ class PlayerSessionOwnerTest(unittest.TestCase):
                 if fails:
                     self.assertIn("shutdown failed", operation_error.__notes__[0])
 
+    def test_start_and_restart_honor_cancellation_between_phases(self) -> None:
+        for restart in (False, True):
+            phases = ("prepare_startup", "start")
+            if restart:
+                phases = ("shutdown", "apply_settings", *phases)
+            for phase in phases:
+                with self.subTest(restart=restart, phase=phase):
+                    controller = Mock()
+                    controller.start.return_value = True
+                    shutdown_requested = Event()
+                    controller.request_shutdown.side_effect = shutdown_requested.set
+                    controller.prepare_startup.side_effect = shutdown_requested.clear
+                    owner = PlayerSessionOwner(controller)
+                    generation = owner.begin()
+
+                    def cancel(*_args: object, **_kwargs: object) -> bool:
+                        owner.cancel()
+                        if phase == "prepare_startup":
+                            shutdown_requested.clear()
+                        return True
+
+                    getattr(controller, phase).side_effect = cancel
+                    result = (
+                        owner.restart(generation, AppSettings())
+                        if restart
+                        else owner.start(generation)
+                    )
+
+                    self.assertFalse(result)
+                    self.assertTrue(owner.is_current(generation))
+                    self.assertTrue(shutdown_requested.is_set())
+                    self.assertEqual(controller.start.call_count, phase == "start")
+                    self.assertEqual(
+                        controller.shutdown.call_count,
+                        int(restart) + int(phase == "start"),
+                    )
+
+    def test_settings_apply_receives_the_owned_cancellation(self) -> None:
+        for operation in ("attach", "restart"):
+            with self.subTest(operation=operation):
+                controller = Mock()
+                controller.start.return_value = True
+                owner = PlayerSessionOwner(controller)
+                cancellation = Event()
+                generation = owner.begin(cancellation)
+                settings = AppSettings()
+
+                self.assertTrue(getattr(owner, operation)(generation, settings))
+
+                controller.apply_settings.assert_called_once_with(
+                    settings, cancellation=cancellation
+                )
+
     def test_configure_restart_restores_previous_runtime_after_cancel(self) -> None:
         cancellation = Event()
         controller = Mock()
