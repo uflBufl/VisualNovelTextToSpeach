@@ -2302,8 +2302,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         try:
             listener.start()
-        except BaseException:
-            listener.stop()
+        except BaseException as error:
+            try:
+                listener.stop()
+            except Exception as cleanup_error:
+                error.add_note(f"Hotkey listener cleanup failed: {cleanup_error}")
             raise
         previous = self.hotkey_listener
         self.hotkey_listener = listener

@@ -4384,21 +4384,27 @@ class TrayApplicationTest(unittest.TestCase):
                 RuntimeError("thread unavailable"),
                 OSError("listener unavailable"),
             ):
-                candidate = Mock()
-                candidate.start.side_effect = error
-                with (
-                    self.subTest(error=error),
-                    patch("vntts.app.sys.platform", "win32"),
-                    patch("vntts.app.keyboard.GlobalHotKeys", return_value=candidate),
-                    patch.object(tray, "show_error") as show_error,
-                ):
-                    tray._start_hotkeys_safely()
-                    self.assertIs(tray.hotkey_listener, current)
-                    current.stop.assert_not_called()
-                    candidate.stop.assert_called_once_with()
-                    show_error.assert_called_once_with(
-                        f"Unable to register hotkeys: {error}"
-                    )
+                for cleanup_error in (None, RuntimeError("cleanup unavailable")):
+                    candidate = Mock()
+                    candidate.start.side_effect = error
+                    candidate.stop.side_effect = cleanup_error
+                    with (
+                        self.subTest(error=error, cleanup_error=cleanup_error),
+                        patch("vntts.app.sys.platform", "win32"),
+                        patch(
+                            "vntts.app.keyboard.GlobalHotKeys", return_value=candidate
+                        ),
+                        patch.object(tray, "show_error") as show_error,
+                    ):
+                        tray._start_hotkeys_safely()
+                        self.assertIs(tray.hotkey_listener, current)
+                        current.stop.assert_not_called()
+                        candidate.stop.assert_called_once_with()
+                        show_error.assert_called_once_with(
+                            f"Unable to register hotkeys: {error}"
+                        )
+                        if cleanup_error is not None:
+                            self.assertIn(str(cleanup_error), error.__notes__[0])
         finally:
             tray.shutdown()
 
