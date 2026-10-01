@@ -411,11 +411,13 @@ def _subprocess_options() -> SubprocessOptions:
 
 
 def _finite_number(value: object) -> float | None:
-    if not isinstance(value, (str, bytes, bytearray, SupportsFloat)):
+    if isinstance(value, bool) or not isinstance(
+        value, (str, bytes, bytearray, SupportsFloat)
+    ):
         return None
     try:
         number = float(value)
-    except TypeError, ValueError:
+    except TypeError, ValueError, OverflowError:
         return None
     return number if math.isfinite(number) else None
 

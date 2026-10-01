@@ -2,10 +2,6 @@
 
 ## Active - Audit audio cache and native resource ownership
 
-- [ ] Reject boolean/overflowing native resource numbers in `_finite_number`.
-      `10**400` currently raises through shared integer decoding and stops later
-      sampling; verify unavailable bad metrics alongside valid later samples and
-      preserve finite numeric strings and the existing snapshot schema.
 - [ ] Consolidate resource count decoding on `_nonnegative_integer`: process and
       system byte/thread/core counts currently allow negative values and silently
       truncate fractions via `_integer`, while GPU indices already enforce the

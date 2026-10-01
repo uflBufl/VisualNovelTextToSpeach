@@ -178,6 +178,66 @@ class NativeResourceSamplerTest(unittest.TestCase):
         self.assertIsNone(summary["native_process"]["cpu_seconds_delta"])
         self.assertIsNone(summary["native_process"]["avg_cores_used"])
 
+    def test_invalid_resource_numbers_do_not_stop_later_samples(self):
+        for invalid in (10**400, True):
+            psutil = self.fake_psutil(
+                native_samples=((invalid, 1.0, 0.5, invalid), (250, 1.4, 0.7, 5)),
+                host_samples=((invalid, 0, 0, 1), (80, 0, 0, 1)),
+            )
+            psutil.virtual_memory = Mock(
+                side_effect=(
+                    SimpleNamespace(total=invalid, available=invalid),
+                    SimpleNamespace(total=1000, available=400),
+                )
+            )
+            psutil.swap_memory = Mock(
+                side_effect=(
+                    SimpleNamespace(used=invalid),
+                    SimpleNamespace(used=20),
+                )
+            )
+            psutil.cpu_count = Mock(side_effect=(invalid, 8))
+            with (
+                self.subTest(value_type=type(invalid).__name__),
+                patch("vntts.native_resources.psutil", psutil),
+                patch("vntts.native_resources.os.getpid", return_value=1),
+                patch(
+                    "vntts.native_resources.subprocess.run",
+                    side_effect=FileNotFoundError(),
+                ),
+            ):
+                sampler = NativeResourceSampler(42)
+                sampler._sample(10.0)
+                partial = sampler._summary()
+                for group, fields in (
+                    ("native_process", ("rss_bytes_peak", "thread_count_peak")),
+                    ("host_app", ("rss_bytes_peak",)),
+                    (
+                        "system",
+                        (
+                            "ram_total_bytes",
+                            "ram_available_bytes_min",
+                            "swap_used_bytes",
+                            "cpu_logical_count",
+                        ),
+                    ),
+                ):
+                    for field in fields:
+                        self.assertIsNone(partial[group][field], (group, field))
+                sampler._sample(12.0)
+                summary = sampler.finish()
+
+            self.assertEqual(summary["sample_count"], 2)
+            self.assertEqual(summary["native_process"]["rss_bytes_peak"], 250)
+            self.assertEqual(summary["native_process"]["thread_count_peak"], 5)
+            self.assertEqual(summary["host_app"]["rss_bytes_peak"], 80)
+            self.assertAlmostEqual(summary["native_process"]["cpu_seconds_delta"], 0.6)
+            self.assertEqual(summary["system"]["ram_total_bytes"], 1000)
+            self.assertEqual(summary["system"]["ram_available_bytes_min"], 400)
+            self.assertEqual(summary["system"]["swap_used_bytes"], 20)
+            self.assertEqual(summary["system"]["cpu_logical_count"], 8)
+            json.dumps(summary, allow_nan=False)
+
     def test_gpu_probe_is_bounded_private_and_limited_to_eight_boards(self):
         psutil = self.fake_psutil()
         output = "\n".join(f"{index}, 555.42, 1, 2, 3" for index in range(10))
