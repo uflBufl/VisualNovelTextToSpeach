@@ -179,14 +179,4 @@ class QtPcmPlayer(QObject):
         )
 
 
-def play_audio_bytes(
-    player: QtPcmPlayer, _parent: QObject | None, payload: bytes, source: str
-) -> PcmClip | None:
-    return player.play_bytes(payload, source)
-
-
-def release_audio_buffer(player: QtPcmPlayer, _clip: object) -> None:
-    player.setSource(QUrl())
-
-
-__all__ = ["QtPcmPlayer", "play_audio_bytes", "release_audio_buffer"]
+__all__ = ["QtPcmPlayer"]

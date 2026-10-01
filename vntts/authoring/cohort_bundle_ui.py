@@ -17,6 +17,7 @@ from PySide6.QtCore import (
     Qt,
     QThreadPool,
     QTimer,
+    QUrl,
 )
 from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
@@ -59,6 +60,7 @@ from vntts.authoring.cohort_review import (
     COHORT_REVIEW_DEFECT_REASONS,
     CohortReviewError,
 )
+from vntts.authoring.pcm_playback import PcmClip
 from vntts.authoring.review_context_ui import (
     ReviewDecisionContext,
     review_model_label,
@@ -70,7 +72,6 @@ from vntts.authoring.voice_quality_gate import (
     load_voice_quality_gate,
 )
 from vntts.authoring.workbench import prepare_review_audio, review_technical_summary
-from vntts.qt_audio import PcmClip, play_audio_bytes, release_audio_buffer
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.qt_dialogs import CloseGuardedDialog
 
@@ -1401,9 +1402,7 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
             self._update_actions()
             return
         self._discard_playback_buffer()
-        playback = play_audio_bytes(
-            self.player, self, audio_bytes, "vntts-bundle-review.wav"
-        )
+        playback = self.player.play_bytes(audio_bytes, "vntts-bundle-review.wav")
         if playback is None:
             self.status.setText("REPLAY BLOCKED: immutable audio buffer failed")
             self._update_actions()
@@ -1480,9 +1479,8 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
         self._update_actions()
 
     def _discard_playback_buffer(self) -> None:
-        playback = self._playback_buffer
         self._playback_buffer = None
-        release_audio_buffer(self.player, playback)
+        self.player.setSource(QUrl())
 
     def _select_queue_id(self, queue_id: str) -> None:
         for row in range(self.table.rowCount()):

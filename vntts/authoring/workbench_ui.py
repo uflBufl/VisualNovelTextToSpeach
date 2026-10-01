@@ -88,7 +88,6 @@ from vntts.authoring.workbench import (
     workspace_voice_snapshot,
 )
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
-from vntts.qt_audio import play_audio_bytes, release_audio_buffer
 from vntts.qt_dialogs import CloseGuardedDialog
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
@@ -2143,9 +2142,8 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
     def _discard_review_playback_copy(self) -> None:
         self.player.stop()
         self._review_evidence.cancel()
-        playback = self._review_playback_buffer
         self._review_playback_buffer = None
-        release_audio_buffer(self.player, playback)
+        self.player.setSource(QUrl())
 
     def _row_for_queue_id(self, queue_id: str | None) -> int:
         if queue_id is None:
@@ -2418,7 +2416,7 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
             self._fail_closed("Replay worker returned bytes with the wrong digest")
             return
         self._discard_review_playback_copy()
-        playback = play_audio_bytes(self.player, self, audio_bytes, "vntts-review.wav")
+        playback = self.player.play_bytes(audio_bytes, "vntts-review.wav")
         if playback is None:
             self._fail_closed(
                 "Unable to open immutable generated-audio playback buffer"

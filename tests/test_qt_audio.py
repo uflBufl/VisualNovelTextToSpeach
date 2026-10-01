@@ -6,7 +6,7 @@ from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication, QWidget
 
 from vntts.authoring.pcm_playback import PcmClip, PlaybackSnapshot
-from vntts.qt_audio import QtPcmPlayer, play_audio_bytes
+from vntts.qt_audio import QtPcmPlayer
 
 
 class _PcmPlayer:
@@ -57,7 +57,7 @@ class QtAudioTest(unittest.TestCase):
         player.errorOccurred.connect(lambda _error, message: failures.append(message))
 
         with patch("vntts.support.record_audio_lifecycle") as lifecycle:
-            clip = play_audio_bytes(player, None, b"exact audio", "memory:test.wav")
+            clip = player.play_bytes(b"exact audio", "memory:test.wav")
             pcm.snapshot_value = PlaybackSnapshot(
                 pcm.token, 4, 4, True, False, True, False, None
             )
@@ -75,7 +75,7 @@ class QtAudioTest(unittest.TestCase):
         self.assertEqual(finished, [QtPcmPlayer.MediaStatus.EndOfMedia])
         self.assertEqual(failures, [])
 
-        play_audio_bytes(player, None, b"exact audio", "memory:test.wav")
+        player.play_bytes(b"exact audio", "memory:test.wav")
         pcm.snapshot_value = PlaybackSnapshot(
             pcm.token, 4, 4, True, False, True, True, None
         )

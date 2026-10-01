@@ -8,7 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Literal, NotRequired, TypedDict, TypeGuard
 
-from PySide6.QtCore import Qt, QThreadPool, QTimer
+from PySide6.QtCore import Qt, QThreadPool, QTimer, QUrl
 from PySide6.QtGui import QCloseEvent, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -39,7 +39,6 @@ from vntts.authoring.source_reference_quality_records import (
     record_source_reference_quality_decision,
 )
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
-from vntts.qt_audio import play_audio_bytes, release_audio_buffer
 from vntts.qt_dialogs import CloseGuardedDialog
 
 QualityDecision = Literal["accept", "reject", "needs_sample"]
@@ -717,9 +716,7 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         ):
             self.status.setText("Playback cancelled: audio selection changed")
             return
-        self._audio_buffer = play_audio_bytes(
-            self.player, self, payload, "buffer:review.wav"
-        )
+        self._audio_buffer = self.player.play_bytes(payload, "buffer:review.wav")
         if self._audio_buffer is None:
             self.status.setText("Playback blocked: audio buffer could not be opened")
             return
@@ -764,7 +761,7 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
             self.playback_runner.cancel()
         if hasattr(self, "player"):
             self.player.stop()
-            release_audio_buffer(self.player, self._audio_buffer)
+            self.player.setSource(QUrl())
         self._playing_token = None
         self.stop.setEnabled(False)
         self._audio_buffer = None
