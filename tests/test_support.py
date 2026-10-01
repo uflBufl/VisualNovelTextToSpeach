@@ -647,6 +647,47 @@ class RuntimeSupportLogTest(unittest.TestCase):
         )
         self.assertEqual(log.snapshot(), [persisted])
 
+    def test_byte_limit_trimming_serializes_each_event_once(self):
+        from vntts import support
+
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "runtime.log"
+            log = RuntimeSupportLog(
+                maximum_bytes=700,
+                clock=lambda: datetime(2026, 8, 10, tzinfo=timezone.utc),
+            )
+            for index in range(100):
+                log.add("status", f"event-{index}-" + "\u00e9" * 80)
+            before = log.snapshot()
+            log.path = path
+            with patch(
+                "vntts.support.sanitize_event", wraps=support.sanitize_event
+            ) as sanitize:
+                log.add("status", "last")
+            payload = path.read_bytes()
+            persisted = [json.loads(line) for line in payload.splitlines()]
+
+        self.assertEqual(sanitize.call_count, len(before) + 1)
+        self.assertLessEqual(len(payload), 700)
+        self.assertEqual(persisted, log.snapshot())
+        expected = before + [
+            {
+                "recorded_at": before[-1]["recorded_at"],
+                "level": "status",
+                "message": "last",
+            }
+        ]
+        while (
+            len(
+                "".join(
+                    json.dumps(entry, ensure_ascii=False) + "\n" for entry in expected
+                ).encode("utf-8")
+            )
+            > 700
+        ):
+            expected.pop(0)
+        self.assertEqual(persisted, expected)
+
     def test_audio_route_fields_are_kept_in_one_sanitized_record(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "runtime.log"

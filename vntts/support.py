@@ -483,27 +483,26 @@ class RuntimeSupportLog:
         if self.path is None:
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = self._json_lines()
-        while len(payload) > self.maximum_bytes and len(self.entries) > 1:
+        lines = deque(self._json_line(entry) for entry in self.entries)
+        payload_size = sum(map(len, lines))
+        while payload_size > self.maximum_bytes and len(self.entries) > 1:
             self.entries.popleft()
-            payload = self._json_lines()
-        if len(payload) > self.maximum_bytes:
+            payload_size -= len(lines.popleft())
+        if payload_size > self.maximum_bytes:
             entry = self.entries[-1]
             self.entries[-1] = {
                 "recorded_at": entry["recorded_at"],
                 "level": entry["level"],
                 "message": "<runtime event exceeded persistent log limit>",
             }
-            payload = self._json_lines()
+            lines[-1] = self._json_line(self.entries[-1])
         with atomic_output_path(self.path) as temporary_path:
-            temporary_path.write_bytes(payload)
+            temporary_path.write_bytes(b"".join(lines))
 
-    def _json_lines(self) -> bytes:
-        return b"".join(
-            (json.dumps(sanitize_event(entry), ensure_ascii=False) + "\n").encode(
-                "utf-8"
-            )
-            for entry in self.entries
+    @staticmethod
+    def _json_line(entry: SupportDetails) -> bytes:
+        return (json.dumps(sanitize_event(entry), ensure_ascii=False) + "\n").encode(
+            "utf-8"
         )
 
     def snapshot(self) -> SupportEntries:
@@ -1065,9 +1064,7 @@ class AudioLifecycleLog(RuntimeSupportLog):
             existing_bytes = self.path.stat().st_size
         except OSError:
             existing_bytes = 0
-        latest = (
-            json.dumps(sanitize_event(self.entries[-1]), ensure_ascii=False) + "\n"
-        ).encode("utf-8")
+        latest = self._json_line(self.entries[-1])
         if (
             not self.persistence_initialized
             or existing_bytes + len(latest) > self.maximum_bytes
