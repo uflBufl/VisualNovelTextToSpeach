@@ -150,20 +150,11 @@ class GameProfile:
     def updated_from_settings(
         self, settings: AppSettings, *, region: DialogRegion | None = None
     ) -> Self:
-        return replace(
-            self,
-            capture_mode=settings.capture_mode,
-            game_window_title=settings.game_window_title,
-            dialog_region=region if region is not None else self.dialog_region,
-            ocr_language=settings.ocr_language,
-            game_pack=settings.game_pack,
-            voice_manifest=settings.voice_manifest,
-            story_index=settings.story_index,
-            live_sequence_plan=settings.live_sequence_plan,
-            live_sequence_mode=settings.live_sequence_mode,
-            generated_audio_manifest=settings.generated_audio_manifest,
-            audio_source_policy=settings.audio_source_policy,
-            force_live_narrator=settings.force_live_narrator,
+        return self.from_settings(
+            self.name,
+            settings,
+            region=region if region is not None else self.dialog_region,
+            profile_id=self.id,
         )
 
 

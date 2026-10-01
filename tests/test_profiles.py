@@ -56,9 +56,27 @@ class GameProfileStoreTest(unittest.TestCase):
         self.assertEqual(applied.generated_audio_manifest, "audio/generated.json")
         self.assertEqual(applied.audio_source_policy, "prefer-generated")
         self.assertFalse(applied.force_live_narrator)
-        updated = profile.updated_from_settings(settings, region=region)
+        updated = profile.updated_from_settings(
+            settings.updated(
+                capture_mode="screen",
+                game_window_title=None,
+                ocr_language="pol",
+                voice_manifest="voices/other.json",
+                force_live_narrator=True,
+            )
+        )
+        self.assertEqual((updated.id, updated.name), (profile.id, profile.name))
+        self.assertEqual(updated.dialog_region, region)
+        applied_update = updated.apply(AppSettings())
+        self.assertEqual(applied_update.capture_mode, "screen")
+        self.assertIsNone(applied_update.game_window_title)
+        self.assertEqual(applied_update.ocr_language, "pol")
+        self.assertEqual(applied_update.voice_manifest, "voices/other.json")
+        self.assertTrue(applied_update.force_live_narrator)
+        new_region = DialogRegion(0.2, 0.5, 0.7, 0.4)
         self.assertEqual(
-            updated.apply(AppSettings()).voice_manifest, settings.voice_manifest
+            updated.updated_from_settings(settings, region=new_region).dialog_region,
+            new_region,
         )
 
     def test_profiles_can_be_duplicated_renamed_and_removed(self):
