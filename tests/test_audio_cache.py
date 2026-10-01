@@ -89,6 +89,17 @@ class PersistentAudioCacheTest(unittest.TestCase):
         self.assertIsNotNone(path)
         np.testing.assert_allclose(audio, [0.1, -0.1])
 
+    def test_archives_with_numeric_names_are_not_waveforms(self):
+        with TemporaryDirectory() as directory:
+            cache = PersistentAudioCache(directory)
+            path = Path(directory) / "archive.npy"
+            with path.open("wb") as destination:
+                np.savez(destination, **{"1": np.array([0.1]), "2": np.array([-0.1])})
+            original = path.read_bytes()
+
+            self.assertIsNone(cache.get("archive"))
+            self.assertEqual(path.read_bytes(), original)
+
     def test_uncacheable_audio_preserves_the_existing_entry(self):
         with TemporaryDirectory() as directory:
             cache = PersistentAudioCache(directory)

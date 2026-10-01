@@ -89,7 +89,7 @@ class PersistentAudioCache:
             return None
         try:
             with path.open("rb") as source:
-                loaded = np.load(source, allow_pickle=False)
+                loaded = np.lib.format.read_array(source, allow_pickle=False)
             audio = _prepared_audio(loaded)
             if audio is None:
                 return None

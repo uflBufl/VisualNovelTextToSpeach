@@ -1,5 +1,20 @@
 # TODO
 
+## Active - Audit audio cache and native resource ownership
+
+- [ ] Reject boolean/overflowing native resource numbers in `_finite_number`.
+      `10**400` currently raises through shared integer decoding and stops later
+      sampling; verify unavailable bad metrics alongside valid later samples and
+      preserve finite numeric strings and the existing snapshot schema.
+- [ ] Consolidate resource count decoding on `_nonnegative_integer`: process and
+      system byte/thread/core counts currently allow negative values and silently
+      truncate fractions via `_integer`, while GPU indices already enforce the
+      correct contract. Migrate all seven count fields, delete the weaker helper,
+      and check invalid counts become null while later valid measurements survive.
+- [ ] Record/fix confirmed findings, check siblings, run changed tests first and
+      independent review, commit repairs separately, push main and remove finished
+      audit work without changing external platform-validation TODOs.
+
 ## Validate OpenMOSS progress on Windows
 
 - [ ] The September 29 22:48 support bundle still records `[WinError 5] Access is
