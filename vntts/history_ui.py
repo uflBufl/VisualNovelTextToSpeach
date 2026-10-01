@@ -119,32 +119,15 @@ class DialogueHistoryDialog(CloseGuardedDialog):
         previous_scroll = scroll_bar.value()
         latest = self.history.search(self.search.text())
         self.export_button.setEnabled(bool(self.history.snapshot()))
-        if latest == self.visible_entries:
-            if not latest:
-                self.status.setText(
-                    "No matching lines. Try another search."
-                    if self.search.text()
-                    else "No dialogue has been captured in this session yet."
-                )
-            return
-        self.visible_entries = latest
-        signal_blocker = QSignalBlocker(self.entries)
-        self.entries.clear()
-        for entry in self.visible_entries:
-            recorded_at = datetime.fromisoformat(entry.recorded_at).astimezone()
-            preview = entry.text if len(entry.text) <= 100 else f"{entry.text[:97]}..."
-            self.entries.addItem(
-                f"{recorded_at:%H:%M:%S}  {entry.character}\n{preview}"
-            )
-        if not self.visible_entries:
-            del signal_blocker
-            self.show_entry(-1)
+        if not latest:
             self.status.setText(
                 "No matching lines. Try another search."
                 if self.search.text()
                 else "No dialogue has been captured in this session yet."
             )
+        if latest == self.visible_entries:
             return
+        self.visible_entries = latest
         selected_index = next(
             (
                 index
@@ -153,9 +136,20 @@ class DialogueHistoryDialog(CloseGuardedDialog):
             ),
             len(self.visible_entries) - 1,
         )
-        self.entries.setCurrentRow(selected_index)
-        del signal_blocker
+        with QSignalBlocker(self.entries):
+            self.entries.clear()
+            for entry in self.visible_entries:
+                recorded_at = datetime.fromisoformat(entry.recorded_at).astimezone()
+                preview = (
+                    entry.text if len(entry.text) <= 100 else f"{entry.text[:97]}..."
+                )
+                self.entries.addItem(
+                    f"{recorded_at:%H:%M:%S}  {entry.character}\n{preview}"
+                )
+            self.entries.setCurrentRow(selected_index)
         self.show_entry(selected_index)
+        if not self.visible_entries:
+            return
         if self.status.text().startswith(("No matching lines", "No dialogue has")):
             self.status.clear()
         if selected_id is not None:
