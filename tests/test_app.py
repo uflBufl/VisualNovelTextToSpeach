@@ -3324,6 +3324,49 @@ class TrayApplicationTest(unittest.TestCase):
         controller.live_reader.wait.assert_called_once_with(timeout_seconds=5.0)
         tray_application.shutdown()
 
+    def test_modal_dialog_blocks_background_read_starts_until_dismissed(self):
+        controller = Mock(is_ready=True, is_live_running=False)
+        controller.is_one_shot_read_running = False
+        controller.unresolved_live_speakers.return_value = ()
+        controller.toggle_live.return_value = True
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray_application.set_ready(True)
+        modal = QDialog()
+        modal.setModal(True)
+        live_started = True
+
+        def try_background_actions():
+            nonlocal live_started
+            try:
+                tray_application.read_once()
+                live_started = tray_application.toggle_live()
+                controller.is_live_running = True
+                tray_application.toggle_live()
+            finally:
+                controller.is_live_running = False
+                modal.accept()
+
+        QTimer.singleShot(0, try_background_actions)
+        with patch.object(tray_application, "_request_stop_reading") as stop_reading:
+            modal.exec()
+
+        stop_reading.assert_called_once_with()
+        self.assertFalse(live_started)
+        controller.read_once.assert_not_called()
+        controller.toggle_live.assert_not_called()
+        self.assertTrue(tray_application._runtime_control_state().ready)
+        self.assertTrue(tray_application.read_action.isEnabled())
+        self.assertTrue(tray_application.live_action.isEnabled())
+        tray_application.read_once()
+        self.assertTrue(tray_application.toggle_live())
+        controller.read_once.assert_called_once_with()
+        controller.toggle_live.assert_called_once_with()
+        tray_application.shutdown()
+
     def test_history_dialog_restores_live_capture_after_construction_failure(self):
         controller = Mock()
         controller.is_live_running = False

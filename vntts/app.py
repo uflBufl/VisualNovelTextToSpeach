@@ -2311,7 +2311,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             previous.stop()
 
     def read_once(self) -> None:
-        if not self._runtime_control_state().can_read:
+        if (
+            QApplication.activeModalWidget() is not None
+            or not self._runtime_control_state().can_read
+        ):
             return
         self.controller.read_once()
 
@@ -2325,6 +2328,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self._request_stop_reading()
             return False
         if self._controller_busy or self.narrator_dialog is not None:
+            return False
+        if QApplication.activeModalWidget() is not None:
+            self.set_status("Close the dialog before reading")
             return False
         return self._start_live_with_available_scope()
 
