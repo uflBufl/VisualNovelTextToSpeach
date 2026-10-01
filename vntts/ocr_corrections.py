@@ -22,7 +22,17 @@ def get_ocr_corrections_path() -> Path:
 
 class OCRCorrectionDictionary:
     def __init__(self, entries: object = None) -> None:
-        self.entries = normalize_correction_entries(entries or {})
+        rules: list[tuple[re.Pattern[str], str, str]] = []
+        for source, replacement in sorted(
+            normalize_correction_entries(entries or {}).items(),
+            key=lambda item: len(item[0]),
+            reverse=True,
+        ):
+            prefix = r"(?<!\w)" if source[0].isalnum() else ""
+            suffix = r"(?!\w)" if source[-1].isalnum() else ""
+            pattern = re.compile(f"{prefix}{re.escape(source)}{suffix}", re.IGNORECASE)
+            rules.append((pattern, source, replacement))
+        self._rules = tuple(rules)
 
     def correct_result(self, result: OCRResult) -> OCRResult:
         character, character_changes = self.correct_text(result.character)
@@ -40,15 +50,7 @@ class OCRCorrectionDictionary:
     def correct_text(self, value: str | None) -> tuple[str, tuple[str, ...]]:
         corrected = value or ""
         changes: list[str] = []
-        entries = sorted(
-            self.entries.items(),
-            key=lambda item: len(item[0]),
-            reverse=True,
-        )
-        for source, replacement in entries:
-            prefix = r"(?<!\w)" if source[0].isalnum() else ""
-            suffix = r"(?!\w)" if source[-1].isalnum() else ""
-            pattern = re.compile(f"{prefix}{re.escape(source)}{suffix}", re.IGNORECASE)
+        for pattern, source, replacement in self._rules:
             corrected, count = pattern.subn(lambda _match: replacement, corrected)
             if count:
                 changes.append(f"{source} -> {replacement}")

@@ -1,5 +1,15 @@
 # TODO
 
+## Active - Audit OCR correction and review workflow
+
+- [ ] Normalize oversized numeric review metadata to the finite-number validation
+      error. Integer-to-float overflow currently escapes the fail-soft loader and
+      aborts pending sample discovery; test both numeric fields alongside a valid
+      later sample and keep corrupt metadata unchanged.
+- [ ] Complete justified fixes with focused checks, changed-test selector first,
+      independent review and separate English commits; push main and remove
+      finished TODO work without altering other chats' platform gates.
+
 ## Validate OpenMOSS progress on Windows
 
 - [ ] The September 29 22:48 support bundle still records `[WinError 5] Access is

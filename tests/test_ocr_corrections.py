@@ -30,6 +30,30 @@ from vntts.ocr_corrections_ui import OCRCorrectionsDialog  # noqa: E402
 
 
 class OCRCorrectionDictionaryTest(unittest.TestCase):
+    def test_loaded_rules_are_reused_beyond_the_regex_cache_capacity(self):
+        rules = {f"wrong{index}": f"right{index}" for index in range(600)}
+        dictionary = OCRCorrectionDictionary(rules)
+        rules["wrong1"] = "changed later"
+        with patch(
+            "vntts.ocr_corrections.re.compile",
+            side_effect=AssertionError("rules recompiled"),
+        ):
+            for _ in range(3):
+                corrected, changes = dictionary.correct_text("wrong1 wrong599 wrongly1")
+                self.assertEqual(corrected, "right1 right599 wrongly1")
+                self.assertEqual(changes, ("wrong599 -> right599", "wrong1 -> right1"))
+
+        replacement = OCRCorrectionDictionary(rules)
+        self.assertEqual(replacement.correct_text("wrong1")[0], "changed later")
+
+    def test_equal_length_rules_keep_insertion_order_and_cascade(self):
+        dictionary = OCRCorrectionDictionary({"cat": "dog", "dog": "fox"})
+
+        corrected, changes = dictionary.correct_text("cat dog")
+
+        self.assertEqual(corrected, "fox fox")
+        self.assertEqual(changes, ("cat -> dog", "dog -> fox"))
+
     def test_corrects_speaker_and_dialog_and_reports_each_change(self):
         dictionary = OCRCorrectionDictionary(
             {"Mareus": "Marcus", "tiniekeeper": "timekeeper"}
