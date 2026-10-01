@@ -14,6 +14,7 @@ from vntts.playback import PlaybackStatus, PreparedPlayback
 from vntts.synthesis import SynthesisCachePolicy
 
 SpeakerWav: TypeAlias = str | PathLike[str] | list[str]
+_AudioCacheKey: TypeAlias = tuple[str, tuple[tuple[str, object], ...]]
 
 
 class _TorchCuda(Protocol):
@@ -175,7 +176,9 @@ class TTSEngine(SynchronousPcmPlaybackMixin):
         self.set_volume(volume)
         self.cached_speakers: set[str] = set()
         self.persisted_voice_cache = bool(persisted_voice_cache)
-        self.audio_cache: BoundedCache[object, object] = BoundedCache(audio_cache_size)
+        self.audio_cache: BoundedCache[_AudioCacheKey, object] = BoundedCache(
+            audio_cache_size
+        )
         # Coqui model inference and the audio device are independent resources.
         # Separate locks let live mode prepare the next sentence while the
         # current sentence is playing, without allowing two model inferences or
@@ -368,7 +371,9 @@ class TTSEngine(SynchronousPcmPlaybackMixin):
             self.audio_cache.put(cache_key, audio)
         return audio
 
-    def _audio_cache_key(self, text: str, arguments: Mapping[str, object]) -> object:
+    def _audio_cache_key(
+        self, text: str, arguments: Mapping[str, object]
+    ) -> _AudioCacheKey:
         reusable_arguments = dict(arguments)
         if reusable_arguments.get("speaker") is not None:
             # Once a named voice has been cloned, Coqui only needs its ID. This
