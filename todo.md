@@ -1,5 +1,33 @@
 # TODO
 
+## Active - Audit global shortcut conversion and registration
+
+- [ ] Express parsed shortcut sets with the known `keyboard.Key | KeyCode`
+      contract instead of `object`; annotate modifier constants as `Key` values.
+      Verify against pynput's parser and the whole-production mypy gate.
+- [ ] Make listener acquisition failure-safe in GUI and CLI. GUI currently stops
+      and replaces the working listener before the new thread starts; preserve it
+      on startup failure, clean the candidate, and report operational errors from
+      the deferred callback. CLI's context-manager entry can fail during `wait()`
+      before `__exit__` exists; use explicit try/finally ownership and report
+      operational listener failures while still shutting down the controller.
+      Check startup failure, successful replacement, readiness interruption and
+      CLI error status; retain shutdown guards and macOS GUI policy.
+- [ ] Inspect `hotkeys.py` and `hotkey_ui.py` with settings, CLI and app callers;
+      map persisted shortcut strings, platform modifiers, validation, registration
+      and listener shutdown. Preserve supported saved shortcuts and error behavior.
+- [ ] Inventory function sizes, run disabled Ruff complexity rules, and inspect
+      design/readability separately from bug hunting, including Qt typing adapters.
+- [ ] Inspect correctness and typing: parser/recorder round trips, special keys,
+      duplicate and reserved shortcuts, and malformed saved values.
+- [ ] Inspect lifecycle and performance: registration replacement, deferred starts,
+      shutdown and repeated parsing; distinguish actual repeated work from setup.
+- [ ] Inspect tests/observability and dependencies/tooling: existing tests, PySide
+      and pynput contracts, macOS support policy, migrations and compatibility gates.
+- [ ] Record and fix qualified findings, search their repetitions, run the local
+      changed-test selector first, obtain independent review, commit each repair
+      separately and push main. Remove completed audit work.
+
 ## Validate OpenMOSS progress on Windows
 
 - [ ] The September 29 22:48 support bundle still records `[WinError 5] Access is

@@ -98,10 +98,14 @@ class HotkeyRecorderTest(unittest.TestCase):
             "<ctrl>+<media_eject>",
             "<ctrl>+<f36>",
             "<ctrl>+<f¹>",
+            "<ctrl>+<f" + "9" * 5000 + ">",
             "<ctrl>+ß",
         ):
-            with self.subTest(hotkey=hotkey), self.assertRaises(HotkeyValidationError):
-                qt_sequence_from_hotkey(hotkey, platform="win32")
+            with self.subTest(hotkey=hotkey):
+                with self.assertRaises(HotkeyValidationError):
+                    qt_sequence_from_hotkey(hotkey, platform="win32")
+                recorder = HotkeyRecorder(hotkey, platform="win32")
+                self.assertTrue(recorder.keySequence().isEmpty())
 
     def test_recorder_captures_complete_shortcut_from_key_event(self):
         recorder = HotkeyRecorder("<cmd>+h", platform="darwin")

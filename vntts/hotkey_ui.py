@@ -133,7 +133,10 @@ def _qt_key_from_token(key: str) -> Qt.Key:
     if key.startswith("<") and key.endswith(">"):
         name = key[1:-1]
         if name.startswith("f") and name[1:].isdecimal():
-            function_number = int(name[1:])
+            try:
+                function_number = int(name[1:])
+            except ValueError as error:
+                raise HotkeyValidationError(f"unsupported key {key}") from error
             if 1 <= function_number <= 35:
                 return Qt.Key(Qt.Key.Key_F1.value + function_number - 1)
         qt_key = _token_qt_keys.get(key)
