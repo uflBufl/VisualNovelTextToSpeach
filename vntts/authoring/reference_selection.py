@@ -305,7 +305,7 @@ def _capture_manifest(manifest_path: PathInput, character: str) -> _ManifestSnap
             {
                 "relative": relative,
                 "path": path,
-                "sha256": hashlib.sha256(reference_payload).hexdigest(),
+                "sha256": analysis["sha256"],
                 "analysis": analysis,
             }
         )

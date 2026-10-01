@@ -44,7 +44,7 @@ from vntts.authoring.source_reference_review import FIXED_EVALUATION_CORPUS
 from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.cli import cli_error, cli_success
 from vntts.document_identity import is_lowercase_sha256
-from vntts.reference_quality import analyze_reference_bytes
+from vntts.reference_quality import ReferenceQualityReport, analyze_reference_bytes
 
 COMPOSITE_SCHEMA = "vntts.authoring-exact-bank-reference-composite"
 COMPOSITE_VERSION = 1
@@ -665,8 +665,10 @@ def _write_composite_artifacts(
     staged: _StagedCompositeClips,
 ) -> ReferenceCompositeResult:
     composite, composite_path = _write_composite_wav(staging, staged, gap_ms)
-    composite_payload = composite_path.read_bytes()
-    composite_sha256 = hashlib.sha256(composite_payload).hexdigest()
+    preflight = analyze_reference_bytes(
+        composite_path.read_bytes(), path=composite_path
+    )
+    composite_sha256 = preflight["sha256"]
     ledger_path = staging / "composite.json"
     atomic_write_json(
         ledger_path,
@@ -683,7 +685,7 @@ def _write_composite_artifacts(
             staged,
             composite,
             composite_path,
-            composite_sha256,
+            preflight,
         ),
     )
     _write_composite_evaluation_inputs(
@@ -725,11 +727,8 @@ def _composite_ledger(
     staged: _StagedCompositeClips,
     composite: NDArray[np.float32],
     composite_path: Path,
-    composite_sha256: str,
+    preflight: ReferenceQualityReport,
 ) -> JsonObject:
-    preflight = analyze_reference_bytes(
-        composite_path.read_bytes(), path=composite_path
-    )
     preflight["path"] = composite_path.name
     return {
         "schema": COMPOSITE_SCHEMA,
@@ -752,7 +751,7 @@ def _composite_ledger(
         },
         "composite": {
             "path": composite_path.name,
-            "sha256": composite_sha256,
+            "sha256": preflight["sha256"],
             "sample_rate": staged.sample_rate,
             "frame_count": int(len(composite)),
             "duration_seconds": len(composite) / staged.sample_rate,

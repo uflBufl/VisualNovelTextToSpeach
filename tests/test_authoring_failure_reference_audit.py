@@ -12,6 +12,7 @@ from tests.test_authoring_workbench import create_test_workspace
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_reference_audit import (
     FailureReferenceAuditError,
+    _reference_candidate,
     load_failure_reference_audit,
     load_failure_reference_decisions,
     publish_failure_reference_audit,
@@ -176,6 +177,22 @@ class FailureReferenceAuditTest(unittest.TestCase):
         )
         state_path.write_text(json.dumps(state, sort_keys=True))
         return created.directory, queue_id
+
+    def test_invalid_reference_keeps_byte_identity_when_analysis_fails(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "reference.wav"
+            payload = b"not a WAV"
+            reference.write_bytes(payload)
+
+            candidate = _reference_candidate(
+                root / "manifest.json", Path(reference.name)
+            )
+
+            self.assertEqual(candidate["sha256"], hashlib.sha256(payload).hexdigest())
+            self.assertIsNone(candidate["analysis"])
+            self.assertIn("Unable to read reference WAV", candidate["analysis_error"])
+            self.assertEqual(reference.read_bytes(), payload)
 
     def test_audit_binds_case_candidates_and_private_key(self):
         with TemporaryDirectory() as directory:

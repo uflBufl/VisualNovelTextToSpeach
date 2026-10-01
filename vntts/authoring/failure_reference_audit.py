@@ -42,7 +42,7 @@ from vntts.authoring.workbench import (
     load_workspace_authority,
 )
 from vntts.authoring.workspace_foundation import contained_regular_file
-from vntts.reference_quality import analyze_reference_bytes
+from vntts.reference_quality import ReferenceQualityReport, analyze_reference_bytes
 
 JsonDocument: TypeAlias = dict[str, object]
 
@@ -94,7 +94,7 @@ class _ReferenceCandidate(TypedDict):
     source: Path
     source_reference: Path
     sha256: str
-    analysis: object
+    analysis: ReferenceQualityReport | None
     analysis_error: str | None
 
 
@@ -507,12 +507,14 @@ def _reference_candidate(manifest_path: Path, reference: Path) -> _ReferenceCand
     if not source.is_file() or source.is_symlink():
         raise FailureReferenceAuditError(f"Reference is missing or unsafe: {reference}")
     payload = source.read_bytes()
-    digest = hashlib.sha256(payload).hexdigest()
+    analysis: ReferenceQualityReport | None
     try:
-        analysis: object = analyze_reference_bytes(payload, path=source)
+        analysis = analyze_reference_bytes(payload, path=source)
+        digest = analysis["sha256"]
         analysis_error = None
     except ValueError as error:
         analysis = None
+        digest = hashlib.sha256(payload).hexdigest()
         analysis_error = str(error)
     return {
         "source": source,
