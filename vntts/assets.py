@@ -567,7 +567,7 @@ class VoicePackManager:
                     replacement_started = True
                     atomic_write_json(manifest_path, document)
                     registry = CharacterVoiceRegistry.from_file(manifest_path)
-                    self._write_voice_checksums(pack_path, manifest_path)
+                    self._write_voice_checksums(pack_path, manifest_path, registry)
                 except Exception:
                     for destination, backup in backups:
                         if backup.exists():
@@ -655,8 +655,9 @@ class VoicePackManager:
             )
 
     @staticmethod
-    def _write_voice_checksums(pack_path: Path, manifest_path: Path) -> None:
-        registry = CharacterVoiceRegistry.from_file(manifest_path)
+    def _write_voice_checksums(
+        pack_path: Path, manifest_path: Path, registry: CharacterVoiceRegistry
+    ) -> None:
         voices = registry.unique_voices()
         files = {
             str(reference.relative_to(pack_path)): sha256_file(reference)
