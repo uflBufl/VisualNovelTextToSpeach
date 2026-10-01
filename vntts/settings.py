@@ -278,14 +278,14 @@ class AppSettings:
             "active_profile_id",
         )
         numeric_fields = {
-            "live_interval_ms": 1,
-            "live_stability_frames": 2,
-            "live_idle_flush_ms": 1,
-            "live_min_chunk_characters": 1,
-            "auto_advance_delay_ms": 0,
-            "ocr_minimum_confidence": 0,
-            "output_volume_percent": 0,
-            "speech_rate_percent": 50,
+            "live_interval_ms": (1, None),
+            "live_stability_frames": (2, None),
+            "live_idle_flush_ms": (1, None),
+            "live_min_chunk_characters": (1, None),
+            "auto_advance_delay_ms": (0, None),
+            "ocr_minimum_confidence": (0, 100),
+            "output_volume_percent": (0, 100),
+            "speech_rate_percent": (50, 150),
         }
         boolean_fields = (
             "onboarding_completed",
@@ -319,15 +319,13 @@ class AppSettings:
             else:
                 report(f"Invalid {name!r} setting; using its default")
 
-        for name, minimum in numeric_fields.items():
+        for name, (minimum, maximum) in numeric_fields.items():
             value = values.get(name, getattr(defaults, name))
             if (
                 isinstance(value, int)
                 and not isinstance(value, bool)
                 and value >= minimum
-                and (name != "ocr_minimum_confidence" or value <= 100)
-                and (name != "output_volume_percent" or value <= 100)
-                and (name != "speech_rate_percent" or value <= 150)
+                and (maximum is None or value <= maximum)
             ):
                 parsed[name] = value
             else:

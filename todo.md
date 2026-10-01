@@ -2,9 +2,6 @@
 
 ## Active - Audit game profiles and configuration persistence
 
-- [ ] Consolidate numeric settings lower/upper bounds in one declaration instead
-      of scattering maximums through the generic validation predicate; preserve
-      warning, fallback, environment override and historical migration behavior.
 - [ ] Move configuration protocol imports behind TYPE_CHECKING: durable settings
       only references them in static declarations, so persistence need not import
       the background configuration owner at runtime. Verify mypy and app tests.
