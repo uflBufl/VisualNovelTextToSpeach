@@ -85,5 +85,5 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: windows-release-evidence-${{ inputs.profile }}
-          path: build/windows/release-evidence.json
+          path: build/windows/release-evidence-*.json
           if-no-files-found: error

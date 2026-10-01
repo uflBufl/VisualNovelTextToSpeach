@@ -31,6 +31,7 @@ if ($MinimumDisplayCount -lt 1) {
 }
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
+$TestId = [guid]::NewGuid().ToString("N")
 $BundleDirectory = (Resolve-Path $BundleDirectory).Path
 $BundleArchive = (Resolve-Path $BundleArchive).Path
 $Executable = Join-Path $BundleDirectory "VisualNovelTextToSpeech.exe"
@@ -51,12 +52,12 @@ if (-not $AllowUnsigned -and $Signature.Status -ne "Valid") {
     throw "Portable executable signature is not valid: $($Signature.Status)"
 }
 if (-not $EvidenceReport) {
-    $EvidenceReport = Join-Path $ProjectRoot "build\windows\release-evidence.json"
+    $EvidenceReport = Join-Path $ProjectRoot "build\windows\release-evidence-$TestId.json"
 }
 $EvidenceReport = [System.IO.Path]::GetFullPath($EvidenceReport)
 $EvidenceDirectory = Split-Path -Parent $EvidenceReport
 New-Item -ItemType Directory -Path $EvidenceDirectory -Force | Out-Null
-$SmokeEvidenceReport = Join-Path $EvidenceDirectory "installed-smoke-evidence.json"
+$SmokeEvidenceReport = Join-Path $EvidenceDirectory "installed-smoke-evidence-$TestId.json"
 Remove-Item $SmokeEvidenceReport -Force -ErrorAction SilentlyContinue
 
 $OperatingSystem = Get-CimInstance Win32_OperatingSystem
@@ -119,7 +120,6 @@ if ($ExpectedDpiScale -and $DpiScale -ne $ExpectedDpiScale) {
     throw "Expected $ExpectedDpiScale% DPI scaling, found $DpiScale%."
 }
 
-$TestId = [guid]::NewGuid().ToString("N")
 $WindowTitle = "VNTTS capture fixture $TestId"
 $ReadyFile = Join-Path $env:TEMP "vntts-fixture-ready-$TestId"
 $StopFile = Join-Path $env:TEMP "vntts-fixture-stop-$TestId"
