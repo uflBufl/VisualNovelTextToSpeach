@@ -27,6 +27,7 @@ from numpy.typing import NDArray
 
 from vntts.audio_output import AudioOutput, StreamingAudioStream, resolve_audio_output
 from vntts.moss_delay_backend import MossTTSDelayVoiceRouterBackend
+from vntts.path_safety import contained_path
 from vntts.playback import (
     PlaybackOutcome,
     PlaybackStatus,
@@ -544,6 +545,14 @@ def _runtime_paths(
         raise TTSConfigurationError(
             f"{backend} isolated runtime is unavailable at {root}. {remediation}"
         )
+    if bundle_root is not None:
+        for path in (interpreter, site_packages):
+            contained_path(
+                bundle_root,
+                path,
+                f"{backend} bundled runtime path",
+                error_type=TTSConfigurationError,
+            )
     return root, interpreter, site_packages.resolve()
 
 

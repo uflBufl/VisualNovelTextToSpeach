@@ -1,9 +1,11 @@
 import os
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from tests.symlink_support import symlink_or_skip
 from vntts.audio_cache import BoundedCache
 from vntts.services.tts_engine import TTSConfigurationError
 from vntts.speech_backend_runtime import (
@@ -85,6 +87,41 @@ class SpeechBackendRuntimeTest(unittest.TestCase):
                     backend_directory="pocket-tts",
                     missing_message="run uv sync",
                 )
+
+    def test_activation_validates_nested_site_before_changing_sys_path(self):
+        for inside in (False, True):
+            with self.subTest(inside=inside), TemporaryDirectory() as directory:
+                base = Path(directory).resolve()
+                bundle = base / "bundle"
+                runtime = bundle / "speech-runtimes/pocket-tts"
+                site = runtime / "Lib/site-packages"
+                site.parent.mkdir(parents=True)
+                outside = (bundle if inside else base) / "shared"
+                outside.mkdir()
+                symlink_or_skip(site, outside, target_is_directory=True)
+                with (
+                    patch.dict(os.environ, {}, clear=True),
+                    patch("vntts.speech_backend_runtime.sys.platform", "win32"),
+                    patch("vntts.runtime_paths.get_bundle_root", return_value=bundle),
+                    patch("sys.path", list(sys.path)),
+                ):
+                    before = list(sys.path)
+                    options = dict(
+                        environment_variable="VNTTS_TEST_RUNTIME",
+                        backend_directory="pocket-tts",
+                        missing_message="missing",
+                    )
+                    if inside:
+                        self.assertEqual(
+                            activate_backend_runtime(None, **options), site
+                        )
+                        self.assertEqual(sys.path, [str(site), *before])
+                    else:
+                        with self.assertRaisesRegex(
+                            TTSConfigurationError, "owning directory"
+                        ):
+                            activate_backend_runtime(None, **options)
+                        self.assertEqual(sys.path, before)
 
     def test_bounded_cache_evicts_the_least_recently_used_value(self):
         cache = BoundedCache(2)

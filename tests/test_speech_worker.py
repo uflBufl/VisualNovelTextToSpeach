@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
+from tests.symlink_support import symlink_or_skip
 from vntts.speech_backend import TTSConfigurationError, TTSSynthesisError
 from vntts.speech_worker import (
     _REQUIRED_MODULES,
@@ -25,6 +26,7 @@ from vntts.speech_worker import (
     _serialize_registry,
     _write_frame,
     create_moss_worker_backend,
+    resolve_speech_runtime_paths,
     worker_main,
 )
 from vntts.synthesis import (
@@ -446,6 +448,80 @@ class SpeechWorkerTest(unittest.TestCase):
                 self.assertRaisesRegex(TTSConfigurationError, "outside.*package"),
             ):
                 _runtime_paths("pocket-tts")
+
+    def test_bundled_runtime_accepts_only_contained_nested_paths(self):
+        for escape, inside in (
+            ("interpreter", False),
+            ("site-packages", False),
+            ("interpreter", True),
+            ("site-packages", True),
+        ):
+            with (
+                self.subTest(escape=escape, inside=inside),
+                TemporaryDirectory() as directory,
+            ):
+                base = Path(directory).resolve()
+                bundle = base / "bundle"
+                root = bundle / "speech-runtimes/pocket-tts"
+                interpreter = root / (
+                    "python.exe" if sys.platform == "win32" else "bin/python"
+                )
+                site = root / (
+                    "Lib/site-packages"
+                    if sys.platform == "win32"
+                    else "lib/python3.14/site-packages"
+                )
+                interpreter.parent.mkdir(parents=True)
+                site.mkdir(parents=True)
+                interpreter.touch()
+                outside = (bundle if inside else base) / "shared"
+                if escape == "interpreter":
+                    outside.touch()
+                    interpreter.unlink()
+                    symlink_or_skip(interpreter, outside)
+                else:
+                    outside.mkdir()
+                    site.rmdir()
+                    symlink_or_skip(site, outside, target_is_directory=True)
+                with (
+                    patch.dict(os.environ, {}, clear=True),
+                    patch("vntts.runtime_paths.get_bundle_root", return_value=bundle),
+                ):
+                    if inside:
+                        self.assertEqual(
+                            resolve_speech_runtime_paths("pocket-tts"),
+                            (root, interpreter, site.resolve()),
+                        )
+                    else:
+                        with self.assertRaisesRegex(
+                            TTSConfigurationError, "owning directory"
+                        ):
+                            resolve_speech_runtime_paths("pocket-tts")
+
+    def test_explicit_runtime_keeps_external_interpreter_symlink(self):
+        with TemporaryDirectory() as directory:
+            base = Path(directory).resolve()
+            root = base / "explicit"
+            interpreter = root / (
+                "python.exe" if sys.platform == "win32" else "bin/python"
+            )
+            site = root / (
+                "Lib/site-packages"
+                if sys.platform == "win32"
+                else "lib/python3.14/site-packages"
+            )
+            interpreter.parent.mkdir(parents=True)
+            site.mkdir(parents=True)
+            outside = base / "python"
+            outside.touch()
+            symlink_or_skip(interpreter, outside)
+            with patch(
+                "vntts.runtime_paths.get_bundle_root", return_value=base / "bundle"
+            ):
+                self.assertEqual(
+                    resolve_speech_runtime_paths("pocket-tts", root),
+                    (root, interpreter, site),
+                )
 
     def test_parent_launches_isolated_interpreter_without_host_support_paths(self):
         registry = CharacterVoiceRegistry()

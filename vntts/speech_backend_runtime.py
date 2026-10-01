@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Protocol, TypeAlias
 
 from vntts_artifacts.file_integrity import sha256_file
 
+from vntts.path_safety import contained_path
 from vntts.runtime_paths import resolve_speech_runtime_root
 from vntts.services.tts_engine import TTSConfigurationError
 
@@ -62,6 +63,13 @@ def activate_backend_runtime(
                 "package. Reinstall the application from a complete release package."
             )
         raise TTSConfigurationError(missing_message)
+    if bundle_root is not None:
+        contained_path(
+            bundle_root,
+            site_packages,
+            f"{backend_directory} bundled site-packages",
+            error_type=TTSConfigurationError,
+        )
     site_packages_text = str(site_packages)
     if bundle_root is None and site_packages_text not in _managed_runtime_uses:
         from vntts.runtime_ownership import claim_runtime
