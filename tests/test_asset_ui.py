@@ -111,6 +111,24 @@ class AssetManagerDialogTest(unittest.TestCase):
         self.assertIn("Model ready", dialog.model_status.text())
         self.assertEqual(dialog.settings().tts_model, default_model)
 
+    def test_empty_model_selection_does_not_start_verification(self):
+        model_manager = Mock()
+        model_manager.model_path.return_value = Path("managed/model")
+        dialog = AssetManagerDialog(
+            AppSettings(speech_backend="coqui-xtts"),
+            model_manager=model_manager,
+            voice_manager=Mock(),
+        )
+        dialog.model.setCurrentText(" ")
+
+        with patch.object(QMessageBox, "warning") as warning:
+            dialog.verify_model()
+
+        warning.assert_called_once_with(dialog, "No model", "Choose a model to verify.")
+        model_manager.validate.assert_not_called()
+        self.assertFalse(dialog.operation_running)
+        self.assertFalse(dialog.model_runner.active)
+
     def test_model_verification_discards_stale_completion(self):
         class ManualThreadPool:
             def __init__(self):

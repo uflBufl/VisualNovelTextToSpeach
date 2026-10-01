@@ -502,6 +502,9 @@ class AssetManagerDialog(QDialog):
     def verify_model(self) -> None:
         if self.operation_running or not self.model_management_available:
             return
+        if not self.model_name():
+            QMessageBox.warning(self, "No model", "Choose a model to verify.")
+            return
         self.set_operation_running(True, "verify")
         self.model_status.setStyleSheet("")
         self.model_status.setText("Verifying model checksums...")
