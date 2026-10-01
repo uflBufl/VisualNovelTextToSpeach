@@ -518,6 +518,33 @@ class VoicePackManagerTest(unittest.TestCase):
 
                 self.assertEqual(manifest.read_bytes(), payload)
 
+    def test_import_voice_validates_stored_names_before_sorting(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "voice.wav"
+            source.write_bytes(b"voice")
+            manager = VoicePackManager(root / "managed")
+            manifest = manager.import_voice("Ada", [source])
+            document = json.loads(manifest.read_bytes())
+            checksum = manifest.parent / "vntts-asset.json"
+            original_checksum = checksum.read_bytes()
+            references = set((manifest.parent / "references").iterdir())
+
+            for name in (1, None, ""):
+                with self.subTest(name=name):
+                    document["voices"][0]["character"] = name
+                    malformed = json.dumps(document).encode()
+                    manifest.write_bytes(malformed)
+
+                    with self.assertRaisesRegex(VoiceManifestError, "character"):
+                        manager.import_voice("Other", [source])
+
+                    self.assertEqual(manifest.read_bytes(), malformed)
+                    self.assertEqual(checksum.read_bytes(), original_checksum)
+                    self.assertEqual(
+                        set((manifest.parent / "references").iterdir()), references
+                    )
+
     def test_import_voice_alias_conflict_preserves_existing_pack(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

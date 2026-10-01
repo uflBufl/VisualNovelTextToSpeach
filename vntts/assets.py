@@ -470,9 +470,9 @@ class VoicePackManager:
                 if str(item.get("character", "")).casefold() != character.casefold()
             ]
             voices.append(voice)
-            voices.sort(key=lambda item: item["character"].casefold())
             updated_manifest = {"version": 2, "voices": voices}
             validate_voice_manifest(updated_manifest, allow_legacy=False)
+            voices.sort(key=lambda item: item["character"].casefold())
             references_path.mkdir(parents=True, exist_ok=True)
             try:
                 for source, output in zip(references, copied, strict=True):
