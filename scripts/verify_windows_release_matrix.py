@@ -1,6 +1,7 @@
 import argparse
+from collections.abc import Sequence
 
-from vntts.cli import cli_messages, cli_success
+from vntts.cli import cli_error, cli_messages, cli_success
 from vntts.release_matrix import (
     load_evidence,
     load_release_matrix,
@@ -8,7 +9,7 @@ from vntts.release_matrix import (
 )
 
 
-def main(argv=None):
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--matrix",
@@ -18,13 +19,16 @@ def main(argv=None):
     parser.add_argument("--allow-unsigned", action="store_true")
     arguments = parser.parse_args(argv)
 
-    profiles = load_release_matrix(arguments.matrix)
-    reports = load_evidence(arguments.evidence_directory)
-    errors = validate_release_evidence(
-        profiles,
-        reports,
-        allow_unsigned=arguments.allow_unsigned,
-    )
+    try:
+        profiles = load_release_matrix(arguments.matrix)
+        reports = load_evidence(arguments.evidence_directory)
+        errors = validate_release_evidence(
+            profiles,
+            reports,
+            allow_unsigned=arguments.allow_unsigned,
+        )
+    except (OSError, TypeError, ValueError) as error:
+        return cli_error(error)
     if errors:
         return cli_messages(errors, exit_code=1, error=True)
     return cli_success(f"All {len(profiles)} Windows release profiles passed.")
