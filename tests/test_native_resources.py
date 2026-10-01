@@ -179,7 +179,7 @@ class NativeResourceSamplerTest(unittest.TestCase):
         self.assertIsNone(summary["native_process"]["avg_cores_used"])
 
     def test_invalid_resource_numbers_do_not_stop_later_samples(self):
-        for invalid in (10**400, True):
+        for invalid in (10**400, True, -1, 1.5):
             psutil = self.fake_psutil(
                 native_samples=((invalid, 1.0, 0.5, invalid), (250, 1.4, 0.7, 5)),
                 host_samples=((invalid, 0, 0, 1), (80, 0, 0, 1)),

@@ -191,15 +191,20 @@ class NativeResourceSampler:
                 self._cpu_start = total if self._cpu_start is None else self._cpu_start
                 self._cpu_end = total
             self._native_rss_peak = _peak(
-                self._native_rss_peak, _integer(getattr(memory, "rss", None))
+                self._native_rss_peak,
+                _nonnegative_integer(getattr(memory, "rss", None)),
             )
-            self._thread_count_peak = _peak(self._thread_count_peak, _integer(threads))
+            self._thread_count_peak = _peak(
+                self._thread_count_peak, _nonnegative_integer(threads)
+            )
         try:
             if self._host_process is None:
                 self._host_process = psutil.Process(os.getpid())
             self._host_rss_peak = _peak(
                 self._host_rss_peak,
-                _integer(getattr(self._host_process.memory_info(), "rss", None)),
+                _nonnegative_integer(
+                    getattr(self._host_process.memory_info(), "rss", None)
+                ),
             )
             self._host_status = "available"
         except Exception as error:
@@ -215,9 +220,10 @@ class NativeResourceSampler:
             self._system_status = _process_status(error)
         else:
             available = True
-            self._ram_total = _integer(getattr(memory, "total", None))
+            self._ram_total = _nonnegative_integer(getattr(memory, "total", None))
             self._ram_available_min = _minimum(
-                self._ram_available_min, _integer(getattr(memory, "available", None))
+                self._ram_available_min,
+                _nonnegative_integer(getattr(memory, "available", None)),
             )
         try:
             swap = psutil.swap_memory()
@@ -225,14 +231,14 @@ class NativeResourceSampler:
             pass
         else:
             available = True
-            self._swap_used = _integer(getattr(swap, "used", None))
+            self._swap_used = _nonnegative_integer(getattr(swap, "used", None))
         try:
             logical_count = psutil.cpu_count(logical=True)
         except Exception:
             pass
         else:
             available = True
-            self._cpu_logical_count = _integer(logical_count)
+            self._cpu_logical_count = _nonnegative_integer(logical_count)
         if available:
             self._system_status = "available"
 
@@ -420,11 +426,6 @@ def _finite_number(value: object) -> float | None:
     except TypeError, ValueError, OverflowError:
         return None
     return number if math.isfinite(number) else None
-
-
-def _integer(value: object) -> int | None:
-    number = _finite_number(value)
-    return int(number) if number is not None else None
 
 
 def _nonnegative_integer(value: object) -> int | None:
