@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 from dataclasses import dataclass
@@ -41,7 +40,6 @@ class _ReferenceCandidate(TypedDict):
 
 class _ManifestSnapshot(TypedDict):
     manifest_path: Path
-    manifest_payload: bytes
     manifest_sha256: str
     document: JsonDocument
     entry_index: int
@@ -77,7 +75,7 @@ def inspect_voice_reference_candidates(
 ) -> JsonDocument:
     """Return objective metrics over one read-once manifest/reference snapshot."""
     snapshot = _capture_manifest(manifest_path, character)
-    return copy.deepcopy(snapshot["report"])
+    return snapshot["report"]
 
 
 def select_voice_reference(
@@ -113,7 +111,7 @@ def select_voice_reference(
         for index, value in enumerate(candidates)
         if index != reference_number - 1
     ]
-    document = copy.deepcopy(snapshot["document"])
+    document = snapshot["document"]
     if REFERENCE_SELECTION_EXTENSION in document:
         raise ReferenceSelectionError(
             f"Source manifest already defines {REFERENCE_SELECTION_EXTENSION!r}"
@@ -339,7 +337,6 @@ def _capture_manifest(manifest_path: PathInput, character: str) -> _ManifestSnap
     }
     return {
         "manifest_path": manifest_path,
-        "manifest_payload": payload,
         "manifest_sha256": report["manifest_sha256"],
         "document": document,
         "entry_index": index,
