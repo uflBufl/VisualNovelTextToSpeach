@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 from io import BytesIO
 from math import gcd
 from pathlib import Path
 from threading import Lock
-from typing import Protocol
+from typing import NotRequired, Protocol, TypedDict
 
 import numpy as np
 import soundfile as sf
@@ -30,8 +29,14 @@ class _AudioStream(Protocol):
     def close(self) -> None: ...
 
 
+class _OutputDevice(TypedDict):
+    default_samplerate: float
+    max_output_channels: int
+    name: NotRequired[str]
+
+
 class _AudioModule(Protocol):
-    def query_devices(self, *, kind: str) -> Mapping[str, float]: ...
+    def query_devices(self, *, kind: str) -> _OutputDevice: ...
 
     def OutputStream(self, **options: object) -> _AudioStream: ...
 
