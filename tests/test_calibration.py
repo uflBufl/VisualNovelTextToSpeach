@@ -303,6 +303,37 @@ class DialogRegionOverlayTest(unittest.TestCase):
             finally:
                 pool.waitForDone(6_000)
 
+    def test_accept_close_and_escape_cancel_pending_recognition(self):
+        for outcome in ("accept", "close", "escape"):
+            with self.subTest(outcome=outcome):
+                started = Event()
+                release = Event()
+
+                def slow_recognizer(_image):
+                    started.set()
+                    release.wait(3)
+                    return OCRResult("Selone", "Late text", 94.5, "gray", 1)
+
+                dialog = CalibrationReviewDialog(
+                    Image.new("RGB", (640, 180)), recognizer=slow_recognizer
+                )
+                self.addCleanup(dialog.deleteLater)
+                self.addCleanup(dialog.close)
+                self.addCleanup(release.set)
+                dialog.show()
+                self.wait_for(started.is_set)
+                if outcome == "escape":
+                    QTest.keyClick(dialog, Qt.Key.Key_Escape)
+                else:
+                    getattr(dialog, outcome)()
+
+                self.assertTrue(dialog._ocr_cancelled.is_set())
+                self.assertFalse(dialog.runner.active)
+                release.set()
+                self.assertTrue(dialog.runner.thread_pool.waitForDone(3_000))
+                self.application.processEvents()
+                self.assertNotIn("Late text", dialog.result_text.toPlainText())
+
     def test_failed_ocr_requires_explicit_capture_only_save(self):
         dialog = CalibrationReviewDialog(
             Image.new("RGB", (640, 180), "black"),

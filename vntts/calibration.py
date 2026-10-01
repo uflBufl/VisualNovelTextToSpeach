@@ -194,17 +194,9 @@ class CalibrationReviewDialog(QDialog):
         self._ocr_cancelled.set()
         self.runner.cancel()
 
-    def closeEvent(self, event: QCloseEvent) -> None:
-        self._cancel_recognition()
-        super().closeEvent(event)
-
     def done(self, result: int) -> None:
         self._cancel_recognition()
         super().done(result)
-
-    def reject(self) -> None:
-        self._cancel_recognition()
-        super().reject()
 
 
 class DialogRegionOverlay(QWidget):
