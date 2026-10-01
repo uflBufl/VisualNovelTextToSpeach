@@ -122,7 +122,10 @@ class PersistentPcmPlayer:
             stream.start()
         except Exception as error:
             if stream is not None:
-                stream.close()
+                try:
+                    stream.close()
+                except Exception as cleanup_error:
+                    error.add_note(f"Output stream cleanup failed: {cleanup_error}")
             raise PcmPlaybackError(
                 f"Unable to open the output stream: {error}"
             ) from error

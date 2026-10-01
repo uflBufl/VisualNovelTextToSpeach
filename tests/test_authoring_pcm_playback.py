@@ -3,11 +3,16 @@ from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import soundfile as sf
 
-from vntts.authoring.pcm_playback import PcmClip, PersistentPcmPlayer
+from vntts.authoring.pcm_playback import (
+    PcmClip,
+    PcmPlaybackError,
+    PersistentPcmPlayer,
+)
 
 
 class FakeStatus:
@@ -173,6 +178,28 @@ class PersistentPcmPlayerTest(unittest.TestCase):
 
         self.assertTrue(audio.stream.aborted)
         self.assertTrue(audio.stream.closed)
+
+    def test_startup_failure_survives_a_stream_cleanup_failure(self):
+        for cleanup_error in (None, RuntimeError("device refused cleanup")):
+            with self.subTest(cleanup_error=cleanup_error):
+                audio = FakeAudioModule()
+                startup_error = RuntimeError("device refused startup")
+                with (
+                    patch.object(FakeOutputStream, "start", side_effect=startup_error),
+                    patch.object(
+                        FakeOutputStream, "close", side_effect=cleanup_error
+                    ) as close,
+                    self.assertRaisesRegex(
+                        PcmPlaybackError,
+                        "Unable to open the output stream: device refused startup",
+                    ) as caught,
+                ):
+                    PersistentPcmPlayer(audio)
+
+                close.assert_called_once_with()
+                self.assertIs(caught.exception.__cause__, startup_error)
+                if cleanup_error is not None:
+                    self.assertIn("device refused cleanup", startup_error.__notes__[0])
 
 
 if __name__ == "__main__":
