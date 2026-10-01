@@ -1,3 +1,4 @@
+import json
 import shutil
 import subprocess
 import unittest
@@ -109,6 +110,50 @@ if ($null -eq $node) {{ throw "AST node was not found" }}
             self.assertEqual(explicit, str(Path(temporary_directory) / "explicit.json"))
             self.assertNotEqual(smoke_path("run-a"), smoke_path("run-b"))
             self.assertIn("installed-smoke-evidence-run-a.json", smoke_path("run-a"))
+
+    def _cleanup_result(self, force_exits: bool) -> dict:
+        finally_block = self._ast_extent(
+            "$n -is [System.Management.Automation.Language.TryStatementAst] "
+            "-and $null -ne $n.Finally",
+            "$node.Finally.Extent.Text",
+        )
+        harness = rf"""
+$WarningPreference = 'SilentlyContinue'
+class FakeProcess {{
+    [bool]$HasExited = $false
+    [void]WaitForExit([int]$Milliseconds) {{}}
+}}
+$script:StopCalls = 0
+$script:ForceExits = [bool]::Parse($args[1])
+function Stop-Process {{
+    param($InputObject, [switch]$Force)
+    $script:StopCalls++
+    if ($script:ForceExits) {{ $InputObject.HasExited = $true }}
+}}
+$ReadyFile = Join-Path $args[0] 'ready'
+$StopFile = Join-Path $args[0] 'stop'
+Set-Content $ReadyFile ready
+$Fixture = [FakeProcess]::new()
+& {finally_block}
+@{{ stopped = $StopCalls; exited = $Fixture.HasExited; stop = Test-Path $StopFile; ready = Test-Path $ReadyFile }} |
+    ConvertTo-Json -Compress
+"""
+        with TemporaryDirectory() as temporary_directory:
+            return json.loads(
+                self._powershell(harness, temporary_directory, str(force_exits))
+            )
+
+    def test_cleanup_force_stops_hung_fixture_and_removes_stop_file(self):
+        self.assertEqual(
+            self._cleanup_result(True),
+            {"stopped": 1, "exited": True, "stop": False, "ready": False},
+        )
+
+    def test_cleanup_retains_stop_file_when_force_stop_does_not_work(self):
+        self.assertEqual(
+            self._cleanup_result(False),
+            {"stopped": 1, "exited": False, "stop": True, "ready": False},
+        )
 
     def test_workflow_uploads_only_primary_evidence(self):
         workflow = (

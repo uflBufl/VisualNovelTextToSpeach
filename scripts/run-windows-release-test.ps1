@@ -209,6 +209,16 @@ finally {
     Set-Content -Path $StopFile -Value "stop" -ErrorAction SilentlyContinue
     if ($Fixture -and -not $Fixture.HasExited) {
         $Fixture.WaitForExit(5000) | Out-Null
+        if (-not $Fixture.HasExited) {
+            Stop-Process -InputObject $Fixture -Force -ErrorAction SilentlyContinue
+            $Fixture.WaitForExit(5000) | Out-Null
+        }
     }
-    Remove-Item $ReadyFile, $StopFile -Force -ErrorAction SilentlyContinue
+    Remove-Item $ReadyFile -Force -ErrorAction SilentlyContinue
+    if (-not $Fixture -or $Fixture.HasExited) {
+        Remove-Item $StopFile -Force -ErrorAction SilentlyContinue
+    }
+    else {
+        Write-Warning "Capture fixture is still running; retained stop file: $StopFile"
+    }
 }
