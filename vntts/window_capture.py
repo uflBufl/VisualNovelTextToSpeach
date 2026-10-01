@@ -421,7 +421,11 @@ class LinuxX11WindowBackend:
         if not title:
             return None
         process_ids = self._property(window, "_NET_WM_PID")
-        process_id = self._integer(process_ids[0]) if process_ids is not None else 0
+        process_id = (
+            self._integer(process_ids[0])
+            if process_ids is not None and len(process_ids)
+            else 0
+        )
         states = self._property(window, "_NET_WM_STATE")
         hidden = self._atom("_NET_WM_STATE_HIDDEN")
         minimized = attributes.map_state != 2 or (

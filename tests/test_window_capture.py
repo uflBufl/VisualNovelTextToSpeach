@@ -314,6 +314,20 @@ class LinuxWindowBackendTest(unittest.TestCase):
             WindowGeometry(120, 80, 1600, 900),
         )
 
+    def test_x11_empty_pid_property_defaults_to_zero(self):
+        game = FakeX11Window(
+            100,
+            {
+                "_NET_WM_NAME": b"Reverse: 1999",
+                "_NET_WM_PID": [],
+            },
+        )
+
+        self.assertEqual(
+            LinuxX11WindowBackend(display=FakeX11Display([game], [100])).list_windows(),
+            [WindowInfo(100, "Reverse: 1999", 0)],
+        )
+
     def test_x11_reports_hidden_window_as_minimized(self):
         game = FakeX11Window(
             100,
