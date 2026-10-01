@@ -70,7 +70,7 @@ def configure_release_smoke_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--release-smoke-test-image")
     parser.add_argument("--release-smoke-test-window-title")
     parser.add_argument("--release-smoke-test-report")
-    parser.add_argument("--release-smoke-test-model", default=default_smoke_test_model)
+    parser.add_argument("--release-smoke-test-model")
     parser.add_argument("--release-smoke-test-expected-speaker")
     parser.add_argument("--release-smoke-test-auto-advance-expected-text")
 

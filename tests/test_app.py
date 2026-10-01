@@ -6060,6 +6060,32 @@ class TrayApplicationTest(unittest.TestCase):
         )
         application.assert_not_called()
 
+    def test_incomplete_release_smoke_options_do_not_start_qt(self):
+        for option in (
+            "--release-smoke-test-auto-advance-expected-text",
+            "--release-smoke-test-expected-speaker",
+            "--release-smoke-test-model",
+        ):
+            with self.subTest(option=option), TemporaryDirectory() as directory:
+                report_path = Path(directory) / "report.json"
+                with (
+                    patch("vntts.app.configure_bundled_dependencies"),
+                    patch("vntts.app.QApplication") as application,
+                ):
+                    result = main(
+                        [
+                            option,
+                            "value",
+                            "--release-smoke-test-report",
+                            str(report_path),
+                        ]
+                    )
+                self.assertEqual(result, 1)
+                application.assert_not_called()
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                self.assertFalse(report["success"])
+                self.assertIn("exactly one", report["checks"][0]["message"])
+
 
 if __name__ == "__main__":
     unittest.main()

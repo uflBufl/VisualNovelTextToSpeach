@@ -127,6 +127,7 @@ from vntts.release_backends import (
 )
 from vntts.release_smoke_test import (
     configure_release_smoke_arguments,
+    default_smoke_test_model,
     run_release_smoke_test,
 )
 from vntts.runtime_config import get_hotkey, get_live_hotkey
@@ -4605,12 +4606,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         return live_sequence_main(qt_arguments)
     if arguments.package_self_test:
         return run_package_self_test(arguments.package_self_test_report).exit_code
-    if arguments.release_smoke_test_image or arguments.release_smoke_test_window_title:
+    if any(
+        value is not None
+        for name, value in vars(arguments).items()
+        if name.startswith("release_smoke_test_")
+    ):
         return run_release_smoke_test(
             image_path=arguments.release_smoke_test_image,
             window_title=arguments.release_smoke_test_window_title,
             report_path=arguments.release_smoke_test_report,
-            model_name=arguments.release_smoke_test_model,
+            model_name=(
+                arguments.release_smoke_test_model
+                if arguments.release_smoke_test_model is not None
+                else default_smoke_test_model
+            ),
             expected_speaker=arguments.release_smoke_test_expected_speaker,
             auto_advance_expected_text=(
                 arguments.release_smoke_test_auto_advance_expected_text
