@@ -82,7 +82,8 @@ class QtAudioTest(unittest.TestCase):
         player._poll()
         self.assertEqual(len(finished), 1)
         self.assertEqual(failures, ["Audio output underflowed; replay the sample"])
-        player._close()
+        player.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
     def test_pcm_adapter_times_out_without_start_and_can_replay(self):
         pcm = _PcmPlayer()
@@ -115,7 +116,8 @@ class QtAudioTest(unittest.TestCase):
             failures, ["Audio output did not start within 5 seconds; replay the sample"]
         )
         self.assertEqual(finished, [QtPcmPlayer.MediaStatus.EndOfMedia])
-        player._close()
+        player.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
     def test_pcm_adapter_reports_invalidated_playback_token(self):
         pcm = _PcmPlayer()
@@ -134,7 +136,8 @@ class QtAudioTest(unittest.TestCase):
         )
         self.assertTrue(pcm.stopped)
         self.assertFalse(player._timer.isActive())
-        player._close()
+        player.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
     def test_pcm_adapter_ignores_finished_snapshot_after_started_slot_replays(self):
         pcm = _PcmPlayer()
@@ -168,7 +171,8 @@ class QtAudioTest(unittest.TestCase):
         )
         player._poll()
         self.assertEqual(finished, [QtPcmPlayer.MediaStatus.EndOfMedia])
-        player._close()
+        player.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
     def test_deleting_player_or_owner_closes_pcm_stream(self):
         for delete_owner in (False, True):

@@ -178,11 +178,6 @@ class QtPcmPlayer(QObject):
             channels=clip.samples.shape[1] if clip is not None else None,
         )
 
-    def _close(self, *_args: object) -> None:
-        if self._player is not None:
-            self._player.close()
-            self._player = None
-
 
 def play_audio_bytes(
     player: QtPcmPlayer, _parent: QObject | None, payload: bytes, source: str
