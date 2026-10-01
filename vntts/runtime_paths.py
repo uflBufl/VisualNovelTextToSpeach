@@ -52,8 +52,7 @@ def find_managed_speech_runtime(backend: str) -> Path | None:
         return None
     report = read_record(location / "verified.json")
     if (
-        isinstance(report, dict)
-        and report.get("schema")
+        report.get("schema")
         in {
             "vntts.speech-runtime-installation-v1",
             "vntts.speech-runtime-installation-v2",

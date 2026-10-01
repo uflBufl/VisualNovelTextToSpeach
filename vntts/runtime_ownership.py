@@ -63,7 +63,7 @@ def read_record(path: PathInput) -> dict[str, object]:
         value: object = json.loads(payload)
         if not isinstance(value, dict):
             return {}
-        return {key: item for key, item in value.items() if isinstance(key, str)}
+        return value
     except OSError, ValueError:
         return {}
 
