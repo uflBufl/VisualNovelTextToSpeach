@@ -1,6 +1,7 @@
 import argparse
 import os
 from collections.abc import Callable
+from math import isfinite
 from pathlib import Path
 from time import monotonic, sleep
 from typing import Protocol, TypeAlias
@@ -106,6 +107,11 @@ def run_release_smoke_test(
     auto_advance_dispatched = False
     auto_advance_acknowledged = False
     try:
+        if (
+            not isfinite(auto_advance_timeout_seconds)
+            or auto_advance_timeout_seconds < 0
+        ):
+            raise ValueError("Auto-advance timeout must be finite and nonnegative")
         if bool(image_path) == bool(window_title):
             raise ValueError("Provide exactly one smoke-test image or window title")
         if auto_advance_expected_text and not window_title:

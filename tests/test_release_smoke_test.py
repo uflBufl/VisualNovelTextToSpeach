@@ -202,6 +202,28 @@ class ReleaseSmokeTest(unittest.TestCase):
         self.assertFalse(successful)
         self.assertIn("exactly one", report["checks"][0]["message"])
 
+    def test_invalid_auto_advance_timeout_fails_before_side_effects(self):
+        for timeout in (-1, float("nan"), float("inf"), float("-inf")):
+            with self.subTest(timeout=timeout), TemporaryDirectory() as directory:
+                capture = Mock()
+                engine_factory = Mock()
+                auto_advance = Mock()
+                successful, report_path = run_release_smoke_test(
+                    window_title="VNTTS fixture",
+                    report_path=Path(directory) / "report.json",
+                    capture=capture,
+                    engine_factory=engine_factory,
+                    auto_advance=auto_advance,
+                    auto_advance_expected_text="Next dialog.",
+                    auto_advance_timeout_seconds=timeout,
+                )
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                self.assertFalse(successful)
+                self.assertIn("finite and nonnegative", report["checks"][0]["message"])
+                capture.assert_not_called()
+                engine_factory.assert_not_called()
+                auto_advance.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
