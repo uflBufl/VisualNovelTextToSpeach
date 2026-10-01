@@ -124,16 +124,18 @@ class SpeechBackendRuntimeTest(unittest.TestCase):
                         self.assertEqual(sys.path, before)
 
     def test_bounded_cache_evicts_the_least_recently_used_value(self):
-        cache = BoundedCache(2)
-        cache.put("first", 1)
-        cache.put("second", 2)
-        self.assertEqual(cache.get("first"), 1)
+        for first in (1, None):
+            with self.subTest(first=first):
+                cache = BoundedCache(2)
+                cache.put("first", first)
+                cache.put("second", 2)
+                self.assertEqual(cache.get("first"), first)
 
-        cache.put("third", 3)
+                cache.put("third", 3)
 
-        self.assertIsNone(cache.get("second"))
-        self.assertEqual(cache.get("first"), 1)
-        self.assertEqual(cache.get("third"), 3)
+                self.assertIsNone(cache.get("second"))
+                self.assertEqual(cache.get("first"), first)
+                self.assertEqual(cache.get("third"), 3)
 
     def test_speech_settings_share_validation(self):
         self.assertEqual(validate_volume(0.5), 0.5)

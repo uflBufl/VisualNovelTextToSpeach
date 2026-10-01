@@ -37,16 +37,17 @@ class BoundedCache(Generic[CacheKey, CacheValue]):
         self._values: OrderedDict[CacheKey, CacheValue] = OrderedDict()
 
     def get(self, key: CacheKey) -> CacheValue | None:
-        value = self._values.pop(key, None)
-        if value is not None:
-            self._values[key] = value
-        return value
+        try:
+            self._values.move_to_end(key)
+        except KeyError:
+            return None
+        return self._values[key]
 
     def put(self, key: CacheKey, value: CacheValue) -> None:
         if self.max_entries == 0:
             return
-        self._values.pop(key, None)
         self._values[key] = value
+        self._values.move_to_end(key)
         while len(self._values) > self.max_entries:
             self._values.popitem(last=False)
 
