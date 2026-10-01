@@ -543,12 +543,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/release_matrix.py",
-      "scope": "validate_release_evidence",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/release_runtime.py",
       "scope": "_prune_runtime_entrypoints",
       "count": 1
@@ -941,12 +935,6 @@
       "code": "PLR0912",
       "path": "vntts/pregeneration_voices.py",
       "scope": "VoicePlanStore._resolve_group",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/release_matrix.py",
-      "scope": "validate_release_evidence",
       "count": 1
     },
     {
@@ -1415,12 +1403,6 @@
       "code": "PLR0915",
       "path": "vntts/readiness_ui.py",
       "scope": "ReadinessDialog.__init__",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/release_matrix.py",
-      "scope": "validate_release_evidence",
       "count": 1
     },
     {

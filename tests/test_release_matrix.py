@@ -88,6 +88,66 @@ class ReleaseMatrixTest(unittest.TestCase):
 
             self.assertEqual(load_evidence(root), [(report_path, report)])
 
+    def test_missing_requirements_cannot_match_missing_report_fields(self):
+        with TemporaryDirectory() as temporary_directory:
+            matrix_path = Path(temporary_directory) / "matrix.json"
+            for field in (
+                "gpu_vendor",
+                "dpi_scale_percent",
+                "capture_mode",
+                "game_process_level",
+                "minimum_displays",
+            ):
+                with self.subTest(field=field):
+                    profile = dict(self.profiles[0])
+                    report = self.evidence_for(profile)
+                    del profile[field]
+                    report.pop(field, None)
+                    if field == "game_process_level":
+                        report.pop("smoke_test_process_level")
+                    errors = validate_release_evidence(
+                        [profile], [(Path("incomplete.json"), report)]
+                    )
+                    self.assertTrue(any(field in error for error in errors))
+                    matrix_path.write_text(
+                        json.dumps({"version": 1, "required_profiles": [profile]}),
+                        encoding="utf-8",
+                    )
+                    with self.assertRaisesRegex(ValueError, field):
+                        load_release_matrix(matrix_path)
+
+        self.assertTrue(validate_release_evidence([], []))
+
+    def test_invalid_profile_requirements_are_rejected_before_reports(self):
+        for field, invalid in (
+            ("gpu_vendor", []),
+            ("capture_mode", "unsupported"),
+            ("game_process_level", None),
+            ("dpi_scale_percent", True),
+            ("minimum_displays", 0),
+        ):
+            with self.subTest(field=field):
+                profile = dict(self.profiles[0], **{field: invalid})
+                self.assertTrue(
+                    any(
+                        field in error
+                        for error in validate_release_evidence([profile], [])
+                    )
+                )
+
+    def test_environment_identity_is_text_and_legacy_integer_counts_still_work(self):
+        profile = self.profiles[0]
+        report = self.evidence_for(profile)
+        report.update(
+            build_number="26100", display_count=float(profile["minimum_displays"])
+        )
+        self.assertEqual(
+            validate_release_evidence([profile], [(Path("valid.json"), report)]), []
+        )
+        report["operating_system"] = {"caption": "Windows 11"}
+        errors = validate_release_evidence([profile], [(Path("bad-os.json"), report)])
+        self.assertTrue(any("Windows 11" in error for error in errors))
+
     def test_rejects_missing_mismatched_and_unsigned_evidence(self):
         report = self.evidence_for(self.profiles[0])
         report["dpi_scale_percent"] = 200
