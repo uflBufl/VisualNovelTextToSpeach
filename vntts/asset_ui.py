@@ -70,7 +70,6 @@ class _VoiceManager(Protocol):
 
 class AssetSignals(QObject):
     progress = Signal(object, str)
-    voice_imported = Signal(str, str)
 
 
 class VoiceImportDialog(QDialog):
@@ -231,7 +230,6 @@ class AssetManagerDialog(QDialog):
         layout.addWidget(self.buttons)
 
         self.signals.progress.connect(self.update_progress)
-        self.signals.voice_imported.connect(self.voice_imported)
 
     def _create_models_tab(self) -> QWidget:
         tab = QWidget()
