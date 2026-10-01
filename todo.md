@@ -1,13 +1,5 @@
 # TODO
 
-## Active - Audit game profiles and configuration persistence
-
-- [ ] Move configuration protocol imports behind TYPE_CHECKING: durable settings
-      only references them in static declarations, so persistence need not import
-      the background configuration owner at runtime. Verify mypy and app tests.
-- [ ] Fix each confirmed cause, run changed tests first and independent review,
-      commit each repair separately, push main and remove completed TODO work.
-
 ## Validate OpenMOSS progress on Windows
 
 - [ ] The September 29 22:48 support bundle still records `[WinError 5] Access is

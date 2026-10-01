@@ -11,7 +11,6 @@ from vntts.auto_advance_policy import (
     auto_advance_control_state,
     guard_auto_advance_settings,
 )
-from vntts.configuration_apply import _Controller, _Dashboard, _Signals
 from vntts.profiles import GameProfileStore
 from vntts.settings import (
     AppSettings,
@@ -19,6 +18,9 @@ from vntts.settings import (
     settings_schema_version,
 )
 from vntts.versioned_json import write_versioned_json_if_unchanged
+
+if TYPE_CHECKING:
+    from vntts.configuration_apply import _Controller, _Dashboard, _Signals
 
 
 class _OnboardingTestPage(Protocol):
