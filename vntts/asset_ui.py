@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from pathlib import Path
 from threading import Event
-from typing import Protocol, TypeAlias
+from typing import Literal, Protocol, TypeAlias
 
 from PySide6.QtCore import QObject, QThreadPool, Signal
 from PySide6.QtGui import QCloseEvent, QPalette
@@ -37,7 +37,8 @@ default_model = "tts_models/multilingual/multi-dataset/xtts_v2"
 ManifestIdentity: TypeAlias = tuple[str, str]
 ManifestValidationResult: TypeAlias = tuple[str, str, str]
 ProgressCallback: TypeAlias = Callable[[int | None, str], None]
-VoiceImportOperation: TypeAlias = Callable[..., object]
+VoiceImportOperation: TypeAlias = Callable[..., Path]
+AssetOperationKind: TypeAlias = Literal["download", "verify", "voice-import"]
 
 
 class _ModelManager(Protocol):
@@ -179,7 +180,7 @@ class AssetManagerDialog(QDialog):
         self.signals = AssetSignals()
         self.cancel_event = Event()
         self.operation_running = False
-        self.operation_kind: str | None = None
+        self.operation_kind: AssetOperationKind | None = None
         self._operation_model_name: str | None = None
         self._close_pending = False
         self._voice_import_message: str | None = None
@@ -563,7 +564,9 @@ class AssetManagerDialog(QDialog):
             self._close_pending = False
             self.close()
 
-    def set_operation_running(self, running: bool, kind: str | None = None) -> None:
+    def set_operation_running(
+        self, running: bool, kind: AssetOperationKind | None = None
+    ) -> None:
         self.operation_running = running
         self.operation_kind = kind if running else None
         self._operation_model_name = (
