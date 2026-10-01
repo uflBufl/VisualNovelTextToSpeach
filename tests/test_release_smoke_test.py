@@ -249,6 +249,37 @@ class ReleaseSmokeTest(unittest.TestCase):
         self.assertEqual(capture.call_count, 1)
         auto_advance.assert_not_called()
 
+    def test_acknowledgement_must_be_new_nonblank_text(self):
+        for text in ("", "  ", "Already visible."):
+            with self.subTest(text=text), TemporaryDirectory() as directory:
+                capture = Mock(
+                    return_value=(Image.new("RGB", (400, 120), "white"), None)
+                )
+                recognize = Mock(
+                    return_value=OCRResult(
+                        "Marcus", "Already visible.", 95.0, "balanced", 1
+                    )
+                )
+                engine_factory = Mock()
+                auto_advance = Mock(return_value=True)
+                successful, report_path = run_release_smoke_test(
+                    window_title="VNTTS fixture",
+                    report_path=Path(directory) / "report.json",
+                    capture=capture,
+                    recognize=recognize,
+                    engine_factory=engine_factory,
+                    auto_advance=auto_advance,
+                    auto_advance_expected_text=text,
+                )
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                self.assertFalse(successful)
+                expected = "already visible" if text.strip() else "must not be blank"
+                self.assertIn(expected, report["checks"][-1]["message"])
+                self.assertFalse(report["auto_advance_acknowledged"])
+                self.assertEqual(capture.call_count, 1 if text.strip() else 0)
+                engine_factory.assert_not_called()
+                auto_advance.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

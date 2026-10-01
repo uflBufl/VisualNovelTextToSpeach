@@ -116,6 +116,11 @@ def run_release_smoke_test(
             raise ValueError("Provide exactly one smoke-test image or window title")
         if auto_advance_expected_text and not window_title:
             raise ValueError("Auto-advance verification requires a window title")
+        if (
+            auto_advance_expected_text is not None
+            and not auto_advance_expected_text.strip()
+        ):
+            raise ValueError("Auto-advance acknowledgement text must not be blank")
 
         if image_path:
             image_path = Path(image_path).expanduser().resolve()
@@ -175,6 +180,13 @@ def run_release_smoke_test(
         ):
             raise RuntimeError(
                 f"Expected speaker {expected_speaker!r}, got {recognized_speaker!r}"
+            )
+        if (
+            auto_advance_expected_text
+            and auto_advance_expected_text.casefold() in recognized_text.casefold()
+        ):
+            raise RuntimeError(
+                "Auto-advance acknowledgement is already visible before dispatch"
             )
         checks.append(
             {
