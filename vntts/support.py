@@ -1246,6 +1246,7 @@ def record_pregeneration_failure(
 def _pregeneration_job_summary(job: object | None) -> SupportDocument:
     if job is None:
         return {"available": False}
+    selected_story_ids = tuple(getattr(job, "selected_story_ids", ()))
     return {
         "available": True,
         "job_id": _plain_support_value(getattr(job, "job_id", None)),
@@ -1255,9 +1256,9 @@ def _pregeneration_job_summary(job: object | None) -> SupportDocument:
             getattr(job, "story_index_sha256", None)
         ),
         "selected_story_ids": [
-            _plain_support_value(value)
-            for value in tuple(getattr(job, "selected_story_ids", ()))[:64]
+            _plain_support_value(value) for value in selected_story_ids[:64]
         ],
+        "selected_story_ids_truncated": max(0, len(selected_story_ids) - 64),
         "selected_line_count": len(tuple(getattr(job, "selected_line_ids", ()))),
     }
 
@@ -1428,7 +1429,7 @@ def _loaded_pregeneration_support(document: object) -> SupportDocument | None:
             source.get("job"),
             strings=("job_id", "status", "provider_id"),
             hashes=("story_index_sha256",),
-            integers=("selected_line_count",),
+            integers=("selected_line_count", "selected_story_ids_truncated"),
             lists=("selected_story_ids",),
         ),
         "input": _loaded_pregeneration_section(
@@ -1563,26 +1564,35 @@ def correlate_active_preparation(
     active: SupportDocument, preparation: SupportDocument
 ) -> SupportDocument:
     """Explain whether the saved pack came from the preparation that failed."""
-    job = preparation.get("job") if isinstance(preparation, dict) else None
-    generation_input = (
-        preparation.get("input") if isinstance(preparation, dict) else None
-    )
+    job = preparation.get("job")
+    generation_input = preparation.get("input")
     if not active.get("available") or not isinstance(job, dict):
         return {"classification": "insufficient-evidence"}
     selected_story_ids = job.get("selected_story_ids")
     active_story_ids = active.get("active_story_ids")
     generation_state = preparation.get("generation_state")
+    selected_stories_present: bool | None = None
+    if (
+        isinstance(selected_story_ids, list)
+        and selected_story_ids
+        and all(isinstance(value, str) for value in selected_story_ids)
+        and isinstance(active_story_ids, list)
+        and active_story_ids
+        and all(isinstance(value, str) for value in active_story_ids)
+    ):
+        selected_truncated = _nonnegative_support_int(
+            job.get("selected_story_ids_truncated")
+        )
+        # Old reports did not distinguish exactly 64 selected stories from truncation.
+        if selected_truncated is None and len(selected_story_ids) < 64:
+            selected_truncated = 0
+        if set(selected_story_ids).issubset(active_story_ids):
+            if selected_truncated == 0:
+                selected_stories_present = True
+        elif _nonnegative_support_int(active.get("active_story_ids_truncated", 0)) == 0:
+            selected_stories_present = False
     comparisons: dict[str, bool | None] = {
-        "selected_stories_present": (
-            set(selected_story_ids).issubset(active_story_ids)
-            if isinstance(selected_story_ids, list)
-            and all(isinstance(value, str) for value in selected_story_ids)
-            and isinstance(active_story_ids, list)
-            and all(isinstance(value, str) for value in active_story_ids)
-            and selected_story_ids
-            and active_story_ids
-            else None
-        ),
+        "selected_stories_present": selected_stories_present,
         "same_job": (
             active.get("active_pregeneration_job_id") == job.get("job_id")
             if active.get("active_pregeneration_job_id") and job.get("job_id")

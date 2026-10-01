@@ -1089,6 +1089,80 @@ class SupportBundleBuilderTest(unittest.TestCase):
         self.assertEqual(metrics["average_confidence"], 42)
         self.assertEqual(imports["events"][0]["missing"], ["game configuration"])
 
+    def test_truncated_story_evidence_does_not_contradict_matching_job(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            (root / "story-index.jsonl").write_text(
+                "".join(
+                    json.dumps({"collection_id": f"story-{index:03}"}) + "\n"
+                    for index in range(257)
+                ),
+                encoding="utf-8",
+            )
+            pack = root / "game-pack.json"
+            pack.write_text(
+                json.dumps(
+                    {
+                        "components": {"story_index": {"path": "story-index.jsonl"}},
+                        "vntts.self-service": {"job_id": "same-job"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            active = collect_active_content_identity(AppSettings(game_pack=str(pack)))
+            for selected, expected in (("story-000", True), ("story-256", None)):
+                with self.subTest(selected=selected):
+                    preparation = PregenerationSupportState().record(
+                        "prepare",
+                        "failed",
+                        job=SimpleNamespace(
+                            job_id="same-job", selected_story_ids=(selected,)
+                        ),
+                    )
+                    correlation = correlate_active_preparation(active, preparation)
+                    self.assertIs(correlation["selected_stories_present"], expected)
+                    self.assertEqual(correlation["classification"], "same-preparation")
+
+    def test_selected_story_truncation_survives_restart_and_limits_correlation(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "pregeneration.json"
+            for count, expected in ((63, True), (64, True), (65, None)):
+                with self.subTest(count=count):
+                    stories = [f"story-{index:03}" for index in range(count)]
+                    support = PregenerationSupportState(path)
+                    support.record(
+                        "prepare",
+                        "failed",
+                        job=SimpleNamespace(selected_story_ids=stories),
+                    )
+                    restored = PregenerationSupportState(path).report()
+                    active = {"available": True, "active_story_ids": stories[:64]}
+
+                    correlation = correlate_active_preparation(active, restored)
+
+                    self.assertEqual(
+                        restored["job"]["selected_story_ids_truncated"],
+                        max(0, count - 64),
+                    )
+                    self.assertIs(correlation["selected_stories_present"], expected)
+                    active["active_story_ids"] = ["unrelated"]
+                    self.assertIs(
+                        correlate_active_preparation(active, restored)[
+                            "selected_stories_present"
+                        ],
+                        False,
+                    )
+
+            legacy = json.loads(path.read_text(encoding="utf-8"))
+            del legacy["job"]["selected_story_ids_truncated"]
+            path.write_text(json.dumps(legacy), encoding="utf-8")
+            restored = PregenerationSupportState(path).report()
+            correlation = correlate_active_preparation(
+                {"available": True, "active_story_ids": stories}, restored
+            )
+            self.assertIsNone(correlation["selected_stories_present"])
+            self.assertEqual(correlation["classification"], "insufficient-evidence")
+
     def test_support_correlates_active_pack_with_bounded_preparation_failure(self):
         with TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)

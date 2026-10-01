@@ -1,15 +1,5 @@
 # TODO
 
-## Active - Audit support telemetry and export ownership
-
-- [ ] Preserve truncation evidence for selected stories and make correlation
-      three-valued: a missing ID in an incomplete active list is unknown; a
-      matching incomplete selection cannot prove inclusion of every story.
-      Restore old support records safely and test both 64/256 boundaries.
-- [ ] Finish qualified fixes in separate English commits, run the changed-test
-      selector first after edits, verify branch coverage, push main and remove
-      completed work from this TODO. Preserve other chats' platform gates.
-
 ## Validate OpenMOSS progress on Windows
 
 - [ ] The September 29 22:48 support bundle still records `[WinError 5] Access is
