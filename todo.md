@@ -1,5 +1,19 @@
 # TODO
 
+## Active - Audit game profiles and configuration persistence
+
+- [ ] Reuse GameProfile.from_settings when updating an existing snapshot, keeping
+      its ID/name and existing region unless a new region is supplied. Remove
+      the duplicated settings field projection and verify changed-field updates.
+- [ ] Consolidate numeric settings lower/upper bounds in one declaration instead
+      of scattering maximums through the generic validation predicate; preserve
+      warning, fallback, environment override and historical migration behavior.
+- [ ] Move configuration protocol imports behind TYPE_CHECKING: durable settings
+      only references them in static declarations, so persistence need not import
+      the background configuration owner at runtime. Verify mypy and app tests.
+- [ ] Fix each confirmed cause, run changed tests first and independent review,
+      commit each repair separately, push main and remove completed TODO work.
+
 ## Validate OpenMOSS progress on Windows
 
 - [ ] The September 29 22:48 support bundle still records `[WinError 5] Access is

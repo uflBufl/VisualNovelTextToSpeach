@@ -124,9 +124,7 @@ class GameProfile:
         )
 
     def to_mapping(self) -> dict[str, object]:
-        values = asdict(self)
-        values["dialog_region"] = self.dialog_region.to_json()
-        return values
+        return asdict(self)
 
     def apply(self, settings: AppSettings) -> AppSettings:
         settings = settings.updated(
