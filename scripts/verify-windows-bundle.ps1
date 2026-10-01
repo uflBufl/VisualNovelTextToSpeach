@@ -109,7 +109,7 @@ finally {
 if (-not (Test-Path $ReportPath -PathType Leaf)) {
     throw "The standalone package did not create a self-test report."
 }
-$Report = Get-Content $ReportPath -Raw | ConvertFrom-Json
+$Report = Get-Content $ReportPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $Report | ConvertTo-Json -Depth 5
 if ($SelfTest.ExitCode -ne 0) {
     throw "The standalone package self-test failed."
@@ -198,7 +198,7 @@ if ($SmokeTestWindowTitle) {
         if (-not (Test-Path $SmokeReport -PathType Leaf)) {
             throw "Portable auto-advance smoke report is missing."
         }
-        $SmokeEvidence = Get-Content $SmokeReport -Raw | ConvertFrom-Json
+        $SmokeEvidence = Get-Content $SmokeReport -Raw -Encoding UTF8 | ConvertFrom-Json
         if (
             $SmokeEvidence.auto_advance_dispatched -ne $true -or
             $SmokeEvidence.auto_advance_acknowledged -ne $true -or

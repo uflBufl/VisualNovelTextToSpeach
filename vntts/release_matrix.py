@@ -24,7 +24,7 @@ def _report_integer(value: object) -> int:
 
 
 def load_release_matrix(path: PathInput) -> list[ReleaseDocument]:
-    values = json.loads(Path(path).read_text(encoding="utf-8"))
+    values = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     if not isinstance(values, dict):
         raise ValueError("Release matrix root must be an object")
     if type(values.get("version")) is not int or values.get("version") != 1:
@@ -44,7 +44,7 @@ def load_evidence(directory: PathInput) -> list[ReleaseEvidence]:
         if path.is_symlink():
             continue
         try:
-            report = json.loads(path.read_text(encoding="utf-8"))
+            report = json.loads(path.read_text(encoding="utf-8-sig"))
         except OSError, UnicodeError, json.JSONDecodeError:
             continue
         if isinstance(report, dict) and "profile" in report:

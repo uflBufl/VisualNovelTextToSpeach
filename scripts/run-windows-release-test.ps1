@@ -172,7 +172,7 @@ try {
     }
     & (Join-Path $PSScriptRoot "verify-windows-bundle.ps1") @VerifyArguments
 
-    $SmokeEvidence = Get-Content $SmokeEvidenceReport -Raw | ConvertFrom-Json
+    $SmokeEvidence = Get-Content $SmokeEvidenceReport -Raw -Encoding UTF8 | ConvertFrom-Json
     $Evidence = [ordered]@{
         success = $true
         profile = $ProfileName
@@ -201,7 +201,7 @@ try {
         auto_advance_controller = $SmokeEvidence.auto_advance_controller
     }
     $TemporaryReport = "$EvidenceReport.tmp"
-    $Evidence | ConvertTo-Json -Depth 4 | Set-Content $TemporaryReport
+    $Evidence | ConvertTo-Json -Depth 4 | Set-Content $TemporaryReport -Encoding UTF8
     Move-Item $TemporaryReport $EvidenceReport -Force
     Write-Host "Windows release evidence: $EvidenceReport"
 }

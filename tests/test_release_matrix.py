@@ -88,6 +88,26 @@ class ReleaseMatrixTest(unittest.TestCase):
 
             self.assertEqual(load_evidence(root), [(report_path, report)])
 
+    def test_powershell_utf8_bom_preserves_matrix_and_evidence(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            matrix_path = root / "matrix.json"
+            matrix_path.write_text(
+                json.dumps({"version": 1, "required_profiles": self.profiles}),
+                encoding="utf-8-sig",
+            )
+            self.assertEqual(load_release_matrix(matrix_path), self.profiles)
+            report = self.evidence_for(self.profiles[0])
+            report["executable_signer_subject"] = "CN=Выпуск игры"
+            report_path = root / "evidence.json"
+            report_path.write_text(
+                json.dumps(report, ensure_ascii=False), encoding="utf-8-sig"
+            )
+            self.assertEqual(load_evidence(root), [(report_path, report)])
+            self.assertEqual(
+                validate_release_evidence([self.profiles[0]], load_evidence(root)), []
+            )
+
     def test_missing_requirements_cannot_match_missing_report_fields(self):
         with TemporaryDirectory() as temporary_directory:
             matrix_path = Path(temporary_directory) / "matrix.json"

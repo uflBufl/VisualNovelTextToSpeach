@@ -155,6 +155,45 @@ $Fixture = [FakeProcess]::new()
             {"stopped": 1, "exited": False, "stop": True, "ready": False},
         )
 
+    def test_unicode_report_survives_legacy_powershell_encoding_defaults(self):
+        writer = self._ast_extent(
+            "$n -is [System.Management.Automation.Language.PipelineAst] "
+            "-and $n.Extent.Text.StartsWith('$Evidence | ConvertTo-Json')"
+        )
+        reader = self._ast_extent(
+            "$n -is [System.Management.Automation.Language.AssignmentStatementAst] "
+            "-and $n.Left.Extent.Text -eq '$SmokeEvidence'"
+        )
+        text = "Выпуск 日本語"
+        harness = rf"""
+function Set-Content {{
+    [CmdletBinding()]
+    param(
+        [Parameter(Position=0)]$Path,
+        [Parameter(ValueFromPipeline=$true)]$Value,
+        [string]$Encoding = 'ascii'
+    )
+    process {{ Microsoft.PowerShell.Management\Set-Content -Path $Path -Value $Value -Encoding $Encoding }}
+}}
+function Get-Content {{
+    param($Path, [switch]$Raw, [string]$Encoding = 'ascii')
+    Microsoft.PowerShell.Management\Get-Content -Path $Path -Raw:$Raw -Encoding $Encoding
+}}
+$TemporaryReport = $args[0]
+$Evidence = @{{ profile = 'test'; executable_signer_subject = '{text}' }}
+{writer}
+$SmokeEvidenceReport = $TemporaryReport
+{reader}
+$SmokeEvidence | ConvertTo-Json -Compress
+"""
+        with TemporaryDirectory() as directory:
+            report_path = Path(directory) / "report.json"
+            actual = json.loads(self._powershell(harness, str(report_path)))
+            self.assertEqual(actual["executable_signer_subject"], text)
+            self.assertEqual(
+                json.loads(report_path.read_text(encoding="utf-8-sig")), actual
+            )
+
     def test_workflow_uploads_only_primary_evidence(self):
         workflow = (
             PROJECT_ROOT / ".github/workflows/windows-release-test.yml"
