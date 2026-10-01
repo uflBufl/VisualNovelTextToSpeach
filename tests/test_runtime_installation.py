@@ -619,11 +619,11 @@ class RuntimeInstallationTest(unittest.TestCase):
                     ensure_speech_runtime("pocket-tts")
             with (
                 patch(
-                    "vntts.speech_worker.get_bundle_root",
+                    "vntts.runtime_paths.get_bundle_root",
                     return_value=self.root / "bundle",
                 ),
                 patch(
-                    "vntts.speech_worker.find_bundled_speech_runtime", return_value=None
+                    "vntts.runtime_paths.find_bundled_speech_runtime", return_value=None
                 ),
                 patch(
                     "vntts.runtime_installation.get_bundle_root",

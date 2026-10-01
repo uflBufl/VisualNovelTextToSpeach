@@ -36,9 +36,8 @@ from vntts.playback import (
 from vntts.qwen_backend import QWEN_CUDA_MODEL, QWEN_MODEL, QwenTTSVoiceRouterBackend
 from vntts.runtime_paths import (
     RUNTIME_ENVIRONMENT_VARIABLES,
-    default_source_speech_runtime,
-    find_bundled_speech_runtime,
     get_bundle_root,
+    resolve_speech_runtime_root,
 )
 from vntts.speech_backend import (
     ChatterboxNanoVoiceRouterBackend,
@@ -511,25 +510,7 @@ def _runtime_paths(
     configured = RUNTIME_ENVIRONMENT_VARIABLES[backend]
     folder = backend
     configured_root = runtime_directory or os.environ.get(configured, "")
-    bundle_root = get_bundle_root() if not configured_root else None
-    bundled_root = find_bundled_speech_runtime(backend) if not configured_root else None
-    root_value: str | Path
-    if configured_root:
-        root_value = configured_root
-    elif bundled_root is not None:
-        root_value = bundled_root
-    else:
-        root_value = (
-            bundle_root / "speech-runtimes" / folder
-            if bundle_root is not None
-            else default_source_speech_runtime(backend)
-        )
-    root = Path(root_value).expanduser().resolve()
-    if bundle_root is not None and not root.is_relative_to(bundle_root.resolve()):
-        raise TTSConfigurationError(
-            f"{backend} isolated runtime is outside the application package. "
-            "Reinstall the application from a complete release package."
-        )
+    root, bundle_root = resolve_speech_runtime_root(backend, configured_root)
     if sys.platform == "win32":
         interpreter = next(
             (

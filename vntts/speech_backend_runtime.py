@@ -12,11 +12,7 @@ from typing import TYPE_CHECKING, Protocol, TypeAlias
 
 from vntts_artifacts.file_integrity import sha256_file
 
-from vntts.runtime_paths import (
-    default_source_speech_runtime,
-    find_bundled_speech_runtime,
-    get_bundle_root,
-)
+from vntts.runtime_paths import resolve_speech_runtime_root
 from vntts.services.tts_engine import TTSConfigurationError
 
 if TYPE_CHECKING:
@@ -47,30 +43,9 @@ def activate_backend_runtime(
 ) -> Path:
     """Expose one standalone backend environment to the current interpreter."""
     configured = runtime_directory or os.environ.get(environment_variable, "")
-    bundle_root = get_bundle_root() if not configured else None
-    bundled = (
-        find_bundled_speech_runtime(backend_directory, bundle_root)
-        if bundle_root is not None
-        else None
+    runtime_directory, bundle_root = resolve_speech_runtime_root(
+        backend_directory, configured
     )
-    source_runtime = (
-        None
-        if configured or bundled
-        else default_source_speech_runtime(backend_directory)
-        if bundle_root is None
-        else bundle_root / "speech-runtimes" / backend_directory
-    )
-    selected_runtime = configured or bundled or source_runtime
-    if selected_runtime is None:
-        raise TTSConfigurationError(missing_message)
-    runtime_directory = Path(selected_runtime).expanduser().resolve()
-    if bundle_root is not None and not runtime_directory.is_relative_to(
-        bundle_root.resolve()
-    ):
-        raise TTSConfigurationError(
-            f"{backend_directory} runtime is outside the application package. "
-            "Reinstall the application from a complete release package."
-        )
     if sys.platform == "win32":
         site_packages = runtime_directory / "Lib" / "site-packages"
     else:

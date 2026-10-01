@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from typing import TypeAlias
 
+from vntts.services.tts_engine import TTSConfigurationError
+
 PathInput: TypeAlias = str | Path
 
 RUNTIME_ENVIRONMENT_VARIABLES = {
@@ -89,6 +91,28 @@ def default_source_speech_runtime(backend: str) -> Path:
     if source.exists():
         return source
     return find_managed_speech_runtime(backend) or source
+
+
+def resolve_speech_runtime_root(
+    backend: str, configured: PathInput | None
+) -> tuple[Path, Path | None]:
+    """Select an explicit, bundled or source runtime before inspecting its layout."""
+    bundle_root = get_bundle_root() if not configured else None
+    if configured:
+        selected = Path(configured)
+    elif bundle_root is not None:
+        selected = find_bundled_speech_runtime(backend, bundle_root) or (
+            bundle_root / "speech-runtimes" / backend
+        )
+    else:
+        selected = default_source_speech_runtime(backend)
+    runtime = selected.expanduser().resolve()
+    if bundle_root is not None and not runtime.is_relative_to(bundle_root.resolve()):
+        raise TTSConfigurationError(
+            f"{backend} runtime is outside the application package. "
+            "Reinstall the application from a complete release package."
+        )
+    return runtime, bundle_root
 
 
 def get_bundle_root() -> Path | None:

@@ -27,7 +27,7 @@ class SpeechBackendRuntimeTest(unittest.TestCase):
                 patch.dict(os.environ, {}, clear=True),
                 patch("vntts.speech_backend_runtime.sys.platform", "win32"),
                 patch(
-                    "vntts.speech_backend_runtime.get_bundle_root",
+                    "vntts.runtime_paths.get_bundle_root",
                     return_value=bundle_root,
                 ),
             ):
@@ -45,7 +45,7 @@ class SpeechBackendRuntimeTest(unittest.TestCase):
             with (
                 patch.dict(os.environ, {}, clear=True),
                 patch(
-                    "vntts.speech_backend_runtime.get_bundle_root",
+                    "vntts.runtime_paths.get_bundle_root",
                     return_value=Path(directory),
                 ),
                 self.assertRaisesRegex(
@@ -70,11 +70,11 @@ class SpeechBackendRuntimeTest(unittest.TestCase):
                 patch.dict(os.environ, {}, clear=True),
                 patch("vntts.speech_backend_runtime.sys.platform", "win32"),
                 patch(
-                    "vntts.speech_backend_runtime.get_bundle_root",
+                    "vntts.runtime_paths.get_bundle_root",
                     return_value=bundle_root,
                 ),
                 patch(
-                    "vntts.speech_backend_runtime.find_bundled_speech_runtime",
+                    "vntts.runtime_paths.find_bundled_speech_runtime",
                     return_value=runtime,
                 ),
                 self.assertRaisesRegex(TTSConfigurationError, "outside.*package"),

@@ -396,10 +396,10 @@ class SpeechWorkerTest(unittest.TestCase):
             with (
                 patch.dict(os.environ, {}, clear=True),
                 patch(
-                    "vntts.speech_worker.find_bundled_speech_runtime",
+                    "vntts.runtime_paths.find_bundled_speech_runtime",
                     return_value=root,
                 ),
-                patch("vntts.speech_worker.get_bundle_root", return_value=bundle_root),
+                patch("vntts.runtime_paths.get_bundle_root", return_value=bundle_root),
             ):
                 resolved_root, resolved_python, resolved_site = _runtime_paths(
                     "pocket-tts"
@@ -415,10 +415,10 @@ class SpeechWorkerTest(unittest.TestCase):
             with (
                 patch.dict(os.environ, {}, clear=True),
                 patch(
-                    "vntts.speech_worker.find_bundled_speech_runtime",
+                    "vntts.runtime_paths.find_bundled_speech_runtime",
                     return_value=None,
                 ),
-                patch("vntts.speech_worker.get_bundle_root", return_value=bundle_root),
+                patch("vntts.runtime_paths.get_bundle_root", return_value=bundle_root),
                 self.assertRaisesRegex(
                     TTSConfigurationError, "complete release package"
                 ) as raised,
@@ -439,10 +439,10 @@ class SpeechWorkerTest(unittest.TestCase):
             with (
                 patch.dict(os.environ, {}, clear=True),
                 patch(
-                    "vntts.speech_worker.find_bundled_speech_runtime",
+                    "vntts.runtime_paths.find_bundled_speech_runtime",
                     return_value=runtime,
                 ),
-                patch("vntts.speech_worker.get_bundle_root", return_value=bundle_root),
+                patch("vntts.runtime_paths.get_bundle_root", return_value=bundle_root),
                 self.assertRaisesRegex(TTSConfigurationError, "outside.*package"),
             ):
                 _runtime_paths("pocket-tts")
