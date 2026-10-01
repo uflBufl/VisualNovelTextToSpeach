@@ -243,6 +243,15 @@ class LiveReplayCaptureTest(unittest.TestCase):
         draw.rectangle((20, 34, 21, 35), fill="white")
         self.assertFalse(detect_standalone_ellipsis_frame(image))
 
+    def test_visual_ellipsis_connects_diagonal_pixels_and_keeps_color_thresholds(self):
+        for color, expected in (((150, 150, 195), True), ((150, 150, 196), False)):
+            with self.subTest(color=color):
+                image = Image.new("RGB", (100, 60))
+                for left in (2, 8, 14):
+                    image.putpixel((left, 34), color)
+                    image.putpixel((left + 1, 35), color)
+                self.assertEqual(detect_standalone_ellipsis_frame(image), expected)
+
     def test_visual_ellipsis_preserves_checksum_bound_nameplate_speaker(self):
         image = Image.new("RGB", (100, 60), "black")
         draw = ImageDraw.Draw(image)

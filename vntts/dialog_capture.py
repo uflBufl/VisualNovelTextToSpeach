@@ -13,8 +13,9 @@ from uuid import uuid4
 
 import mss
 import numpy as np
+from numpy.typing import NDArray
 from PIL import Image, ImageFilter
-from scipy.ndimage import maximum_filter
+from scipy.ndimage import label, maximum_filter
 
 from vntts.diagnostics import DiagnosticSnapshot
 from vntts.dialog import is_empty, speak_dialog
@@ -296,6 +297,16 @@ def dialog_glyphs_visible(frame: object) -> bool:
     return 3 <= bright_pixels <= round(pixels * 0.25)
 
 
+def _pixel_components(mask: NDArray[np.bool_]) -> list[list[tuple[int, int]]]:
+    # Diagonal neighbors belong to the same glyph, just like horizontal ones.
+    labels, count = label(mask, structure=np.ones((3, 3)))
+    components: list[list[tuple[int, int]]] = [[] for _ in range(count)]
+    ys, xs = np.nonzero(mask)
+    for x, y, component in zip(xs, ys, labels[ys, xs], strict=True):
+        components[int(component) - 1].append((int(x), int(y)))
+    return components
+
+
 def dialog_completion_cue_visible(frame: object) -> bool:
     """Detect the game's small downward continue indicator, not dialogue text."""
     if not dialog_glyphs_visible(frame):
@@ -306,26 +317,7 @@ def dialog_completion_cue_visible(frame: object) -> bool:
     top = min(height - 1, round(height * 0.68))
     bottom = min(height, max(top + 1, round(height * 0.96)))
     region = grayscale.crop((left, top, width, bottom))
-    bright = {
-        (x, y)
-        for y in range(region.height)
-        for x in range(region.width)
-        if isinstance((pixel := region.getpixel((x, y))), (int, float)) and pixel >= 150
-    }
-    components = []
-    while bright:
-        pending = [bright.pop()]
-        component = []
-        while pending:
-            x, y = pending.pop()
-            component.append((x, y))
-            for neighbor_y in range(max(0, y - 1), min(region.height, y + 2)):
-                for neighbor_x in range(max(0, x - 1), min(region.width, x + 2)):
-                    neighbor = (neighbor_x, neighbor_y)
-                    if neighbor in bright:
-                        bright.remove(neighbor)
-                        pending.append(neighbor)
-        components.append(component)
+    components = _pixel_components(np.asarray(region) >= 150)
 
     minimum_component_pixels = max(4, round(width / 240))
     maximum_width = max(6, round(width * 0.02))
@@ -361,50 +353,18 @@ def detect_standalone_ellipsis_frame(image: object) -> bool:
     right = min(width, max(30, round(width * 0.12)))
     top = min(height - 1, round(height * 0.38))
     bottom = min(height, max(top + 1, round(height * 0.88)))
-    pixels = rgb.load()
-    assert pixels is not None
-    bright = set()
-    for y in range(top, bottom):
-        for x in range(right):
-            pixel = pixels[x, y]
-            assert isinstance(pixel, tuple) and len(pixel) == 3
-            red, green, blue = pixel
-            if (
-                min(red, green, blue) >= 150
-                and max(red, green, blue) - min(red, green, blue) <= 45
-            ):
-                bright.add((x, y))
-    if not 6 <= len(bright) <= 30:
+    pixels = np.asarray(rgb.crop((0, top, right, bottom)))
+    brightness = pixels.min(axis=2)
+    bright = (brightness >= 150) & (pixels.max(axis=2) - brightness <= 45)
+    if not 6 <= np.count_nonzero(bright) <= 30:
         return False
-    components = []
-    remaining = set(bright)
-    while remaining:
-        pending = [remaining.pop()]
-        component = []
-        while pending:
-            point = pending.pop()
-            component.append(point)
-            x, y = point
-            for neighbor in (
-                (x - 1, y - 1),
-                (x, y - 1),
-                (x + 1, y - 1),
-                (x - 1, y),
-                (x + 1, y),
-                (x - 1, y + 1),
-                (x, y + 1),
-                (x + 1, y + 1),
-            ):
-                if neighbor in remaining:
-                    remaining.remove(neighbor)
-                    pending.append(neighbor)
-        components.append(component)
+    components = _pixel_components(bright)
     if len(components) != 3:
         return False
     centers = []
     for component in components:
         xs = [point[0] for point in component]
-        ys = [point[1] for point in component]
+        ys = [point[1] + top for point in component]
         if (
             not 2 <= len(component) <= 12
             or max(xs) - min(xs) > 3

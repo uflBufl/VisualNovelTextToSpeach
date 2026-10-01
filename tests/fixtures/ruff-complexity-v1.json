@@ -309,12 +309,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/dialog_capture.py",
-      "scope": "detect_standalone_ellipsis_frame",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/game_audio_decoder.py",
       "scope": "ensure_game_decoder",
       "count": 1
