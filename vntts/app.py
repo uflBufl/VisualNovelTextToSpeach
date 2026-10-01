@@ -2282,7 +2282,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return
         try:
             self.start_hotkeys()
-        except (TypeError, ValueError) as error:
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
             self.show_error(f"Unable to register hotkeys: {error}")
 
     def start_hotkeys(self) -> None:
@@ -2300,10 +2300,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 live_hotkey: self.signals.live_requested.emit,
             }
         )
-        if self.hotkey_listener is not None:
-            self.hotkey_listener.stop()
+        try:
+            listener.start()
+        except BaseException:
+            listener.stop()
+            raise
+        previous = self.hotkey_listener
         self.hotkey_listener = listener
-        listener.start()
+        if previous is not None:
+            previous.stop()
 
     def read_once(self) -> None:
         if not self._runtime_control_state().can_read:

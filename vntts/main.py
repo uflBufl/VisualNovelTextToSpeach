@@ -63,13 +63,18 @@ def listen_for_hotkeys(
     print(
         f"Press {live_hotkey} to start reading or immediately stop reading and speech"
     )
-    with keyboard.GlobalHotKeys(
+    listener = keyboard.GlobalHotKeys(
         {
             hotkey: on_activate,
             live_hotkey: on_live_toggle,
         }
-    ) as listener:
+    )
+    try:
+        listener.start()
+        listener.wait()
         listener.join()
+    finally:
+        listener.stop()
 
 
 def main(tts_factory: Callable[..., object] = TTSEngine) -> int:
@@ -120,6 +125,8 @@ def main(tts_factory: Callable[..., object] = TTSEngine) -> int:
         )
     except KeyboardInterrupt:
         return 130
+    except (OSError, RuntimeError) as error:
+        return cli_error(f"Unable to listen for hotkeys: {error}")
     finally:
         controller.shutdown()
 

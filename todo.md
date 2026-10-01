@@ -1,19 +1,5 @@
 # TODO
 
-## Active - Audit global shortcut conversion and registration
-
-- [ ] Make listener acquisition failure-safe in GUI and CLI. GUI currently stops
-      and replaces the working listener before the new thread starts; preserve it
-      on startup failure, clean the candidate, and report operational errors from
-      the deferred callback. CLI's context-manager entry can fail during `wait()`
-      before `__exit__` exists; use explicit try/finally ownership and report
-      operational listener failures while still shutting down the controller.
-      Check startup failure, successful replacement, readiness interruption and
-      CLI error status; retain shutdown guards and macOS GUI policy.
-- [ ] Record and fix qualified findings, search their repetitions, run the local
-      changed-test selector first, obtain independent review, commit each repair
-      separately and push main. Remove completed audit work.
-
 ## Validate OpenMOSS progress on Windows
 
 - [ ] The September 29 22:48 support bundle still records `[WinError 5] Access is

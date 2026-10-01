@@ -64,6 +64,7 @@ from vntts.main import (
     get_tts_configuration,
     initialize_tts,
     initialize_voice_router,
+    listen_for_hotkeys,
     main,
     read_dialog,
     read_dialog_safely,
@@ -1832,6 +1833,40 @@ class MainTest(unittest.TestCase):
         self.assertEqual(result, 130)
         self.assertEqual(errors.getvalue(), "")
         controller.shutdown.assert_called_once_with()
+
+    def test_listener_is_stopped_when_acquisition_or_waiting_is_interrupted(self):
+        for stage in ("start", "wait", "join"):
+            listener = Mock()
+            getattr(listener, stage).side_effect = KeyboardInterrupt
+            with (
+                self.subTest(stage=stage),
+                redirect_stdout(io.StringIO()),
+                patch("vntts.main.keyboard.GlobalHotKeys", return_value=listener),
+                self.assertRaises(KeyboardInterrupt),
+            ):
+                listen_for_hotkeys("<ctrl>+h", "<ctrl>+l", Mock(), Mock())
+            listener.stop.assert_called_once_with()
+
+    def test_main_reports_listener_failure_and_shuts_down(self):
+        controller = Mock()
+        controller.start.return_value = True
+        for error in (
+            OSError("listener unavailable"),
+            RuntimeError("thread unavailable"),
+        ):
+            errors = io.StringIO()
+            controller.shutdown.reset_mock()
+            with (
+                self.subTest(error=error),
+                redirect_stderr(errors),
+                patch("vntts.main.load_app_settings", return_value=AppSettings()),
+                patch("vntts.main.AppController", return_value=controller),
+                patch("vntts.main.listen_for_hotkeys", side_effect=error),
+            ):
+                result = main()
+            self.assertNotEqual(result, 0)
+            self.assertIn(f"Unable to listen for hotkeys: {error}", errors.getvalue())
+            controller.shutdown.assert_called_once_with()
 
     def test_controller_applies_window_capture_settings_without_restart(self):
         capture_target = Mock()

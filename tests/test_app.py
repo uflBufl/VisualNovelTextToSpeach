@@ -4301,6 +4301,56 @@ class TrayApplicationTest(unittest.TestCase):
         listener_factory.return_value.start.assert_called_once_with()
         tray_application.shutdown()
 
+    def test_failed_hotkey_start_preserves_the_current_listener_and_reports_error(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(read_hotkey="<ctrl>+h", live_hotkey="<ctrl>+l"),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        current = Mock()
+        tray.hotkey_listener = current
+        try:
+            for error in (
+                RuntimeError("thread unavailable"),
+                OSError("listener unavailable"),
+            ):
+                candidate = Mock()
+                candidate.start.side_effect = error
+                with (
+                    self.subTest(error=error),
+                    patch("vntts.app.sys.platform", "win32"),
+                    patch("vntts.app.keyboard.GlobalHotKeys", return_value=candidate),
+                    patch.object(tray, "show_error") as show_error,
+                ):
+                    tray._start_hotkeys_safely()
+                    self.assertIs(tray.hotkey_listener, current)
+                    current.stop.assert_not_called()
+                    candidate.stop.assert_called_once_with()
+                    show_error.assert_called_once_with(
+                        f"Unable to register hotkeys: {error}"
+                    )
+        finally:
+            tray.shutdown()
+
+    def test_hotkey_replacement_starts_before_stopping_the_current_listener(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        current, candidate = Mock(), Mock()
+        events = []
+        candidate.start.side_effect = lambda: events.append("start")
+        current.stop.side_effect = lambda: events.append("stop")
+        tray.hotkey_listener = current
+        try:
+            with patch("vntts.app.keyboard.GlobalHotKeys", return_value=candidate):
+                tray.start_hotkeys()
+            self.assertEqual(events, ["start", "stop"])
+            self.assertIs(tray.hotkey_listener, candidate)
+        finally:
+            tray.shutdown()
+
     def test_hotkey_registration_is_deferred_on_the_qt_thread(self):
         controller = Mock()
         controller.start.return_value = True
