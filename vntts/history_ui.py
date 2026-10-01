@@ -189,7 +189,7 @@ class DialogueHistoryDialog(CloseGuardedDialog):
 
     def replay_selected(self) -> None:
         entry = self.current_entry()
-        if entry is None or self.replay_runner.active:
+        if entry is None or self.replay_runner.active or self.stop_runner.active:
             return
         self._stop_unsupported = False
         self.replay_button.setEnabled(False)
@@ -222,13 +222,15 @@ class DialogueHistoryDialog(CloseGuardedDialog):
             )
         else:
             self.status.setText("Speech finished.")
-        if self._close_pending:
+        if self._close_pending and not self.stop_runner.active:
             self._close_pending = False
             self.close()
 
     def stop_replay(self, *, close_after: bool = False) -> None:
         if close_after:
             self._close_pending = True
+        if self.stop_runner.active:
+            return
         if not self.replay_runner.active:
             if self._close_pending:
                 self._close_pending = False
@@ -241,8 +243,6 @@ class DialogueHistoryDialog(CloseGuardedDialog):
             self.status.setText(
                 "This speech engine cannot stop playback. Wait for it to finish."
             )
-            return
-        if self.stop_runner.active:
             return
         self.replay_button.setEnabled(False)
         self.stop_button.setEnabled(False)
@@ -271,7 +271,7 @@ class DialogueHistoryDialog(CloseGuardedDialog):
             self.close()
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        if self.replay_runner.active:
+        if self.replay_runner.active or self.stop_runner.active:
             self.stop_replay(close_after=True)
             event.ignore()
             return

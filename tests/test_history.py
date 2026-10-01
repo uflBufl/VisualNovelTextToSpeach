@@ -208,6 +208,50 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         self.assertFalse(dialog.replay_runner.active)
         release.set()
 
+    def test_close_waits_for_stop_even_when_replay_finishes_first(self):
+        for outcome in ("early-close", "late-close", "failed-stop"):
+            with self.subTest(outcome=outcome):
+                history = DialogueHistory()
+                history.add("Marcus", "Hello.")
+                replay_release = Event()
+                stop_started = Event()
+                stop_release = Event()
+
+                def stop():
+                    stop_started.set()
+                    stop_release.wait(3)
+                    if outcome == "failed-stop":
+                        raise OSError("stop failed")
+                    return True
+
+                dialog = DialogueHistoryDialog(
+                    history, lambda *_args: replay_release.wait(3), stop_handler=stop
+                )
+                self.addCleanup(dialog.deleteLater)
+                self.addCleanup(dialog.close)
+                self.addCleanup(stop_release.set)
+                self.addCleanup(replay_release.set)
+                dialog.show()
+                dialog.replay_selected()
+                if outcome == "late-close":
+                    dialog.stop_replay()
+                else:
+                    dialog.close()
+                self.wait_for(stop_started.is_set)
+                replay_release.set()
+                self.wait_for(lambda: not dialog.replay_runner.active)
+                dialog.close()
+
+                self.assertTrue(dialog.isVisible())
+                self.assertTrue(dialog.stop_runner.active)
+                stop_release.set()
+                self.wait_for(lambda: not dialog.stop_runner.active)
+                if outcome == "failed-stop":
+                    self.assertTrue(dialog.isVisible())
+                    self.assertIn("stop failed", dialog.status.text())
+                    dialog.close()
+                self.assertFalse(dialog.isVisible())
+
     def test_escape_stops_active_replay_before_closing(self):
         history = DialogueHistory()
         history.add("Marcus", "The suitcase is ready.")
