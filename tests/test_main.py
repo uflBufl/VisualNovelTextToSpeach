@@ -549,6 +549,25 @@ class MainTest(unittest.TestCase):
         capture_target.capture_box.assert_called_once()
         screen.grab.assert_called_once_with(capture_target.capture_box.return_value)
 
+    def test_capture_without_saving_does_not_create_screenshot_directory(self):
+        screen = Mock()
+        screen.monitors = [None, {"height": 100, "width": 100}]
+        screen.grab.return_value = Mock(size=(1, 1), bgra=b"\x00\x00\x00\xff")
+        with TemporaryDirectory() as temporary_directory:
+            blocked = Path(temporary_directory) / "not-a-directory"
+            blocked.write_text("existing file")
+            with patch("vntts.dialog_capture.mss.mss") as mss_factory:
+                mss_factory.return_value.__enter__.return_value = screen
+                image, output = capture_dialog(
+                    blocked / "screenshots",
+                    save_screenshot=False,
+                    region=DialogRegion(0.1, 0.6, 0.8, 0.3),
+                )
+
+            self.assertEqual(image.size, (1, 1))
+            self.assertIsNone(output)
+            self.assertEqual(blocked.read_text(), "existing file")
+
     def test_ocr_failure_identifies_tesseract_stage(self):
         with patch(
             "vntts.dialog_capture.recognize_dialog_image_result",

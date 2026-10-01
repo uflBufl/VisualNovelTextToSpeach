@@ -106,7 +106,8 @@ def capture_dialog(
         if screenshot_directory is None:
             screenshot_directory = get_screenshot_directory()
         screenshot_directory = Path(screenshot_directory)
-        screenshot_directory.mkdir(parents=True, exist_ok=True)
+        if save_screenshot:
+            screenshot_directory.mkdir(parents=True, exist_ok=True)
 
         with mss.mss() as sct:
             region = region or get_dialog_region()
