@@ -13,7 +13,7 @@ class HotkeyValidationError(ValueError):
     pass
 
 
-_modifier_keys = {
+_modifier_keys: set[keyboard.Key] = {
     keyboard.Key.alt,
     keyboard.Key.alt_l,
     keyboard.Key.alt_r,
@@ -40,7 +40,7 @@ def validate_hotkey_assignments(
     assignments: Mapping[str, str], *, platform: str | None = None
 ) -> None:
     platform = sys.platform if platform is None else platform
-    parsed_assignments: dict[str, frozenset[object]] = {}
+    parsed_assignments: dict[str, frozenset[keyboard.Key | keyboard.KeyCode]] = {}
     for label, hotkey in assignments.items():
         try:
             parsed = keyboard.HotKey.parse(hotkey)
@@ -53,7 +53,7 @@ def validate_hotkey_assignments(
             )
         parsed_assignments[label] = frozenset(parsed)
 
-    seen: dict[frozenset[object], str] = {}
+    seen: dict[frozenset[keyboard.Key | keyboard.KeyCode], str] = {}
     for label, parsed in parsed_assignments.items():
         if parsed in seen:
             raise HotkeyValidationError(
