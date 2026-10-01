@@ -73,7 +73,13 @@ def listen_for_hotkeys(
         listener.start()
         listener.wait()
         listener.join()
-    finally:
+    except BaseException as error:
+        try:
+            listener.stop()
+        except Exception as cleanup_error:
+            error.add_note(f"Hotkey listener cleanup failed: {cleanup_error}")
+        raise
+    else:
         listener.stop()
 
 

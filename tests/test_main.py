@@ -1855,16 +1855,50 @@ class MainTest(unittest.TestCase):
 
     def test_listener_is_stopped_when_acquisition_or_waiting_is_interrupted(self):
         for stage in ("start", "wait", "join"):
+            for cleanup_error in (None, RuntimeError("cleanup unavailable")):
+                listener = Mock()
+                interruption = KeyboardInterrupt()
+                getattr(listener, stage).side_effect = interruption
+                listener.stop.side_effect = cleanup_error
+                with (
+                    self.subTest(stage=stage, cleanup_error=cleanup_error),
+                    redirect_stdout(io.StringIO()),
+                    patch("vntts.main.keyboard.GlobalHotKeys", return_value=listener),
+                    self.assertRaises(KeyboardInterrupt) as caught,
+                ):
+                    listen_for_hotkeys("<ctrl>+h", "<ctrl>+l", Mock(), Mock())
+                listener.stop.assert_called_once_with()
+                self.assertIs(caught.exception, interruption)
+                if cleanup_error is not None:
+                    self.assertIn(str(cleanup_error), interruption.__notes__[0])
+
+    def test_main_preserves_interrupt_but_reports_normal_listener_cleanup_failure(self):
+        for interrupted in (False, True):
+            controller = Mock()
+            controller.start.return_value = True
             listener = Mock()
-            getattr(listener, stage).side_effect = KeyboardInterrupt
+            if interrupted:
+                listener.join.side_effect = KeyboardInterrupt
+            listener.stop.side_effect = RuntimeError("cleanup unavailable")
+            errors = io.StringIO()
             with (
-                self.subTest(stage=stage),
+                self.subTest(interrupted=interrupted),
                 redirect_stdout(io.StringIO()),
+                redirect_stderr(errors),
+                patch("vntts.main.load_app_settings", return_value=AppSettings()),
+                patch("vntts.main.AppController", return_value=controller),
                 patch("vntts.main.keyboard.GlobalHotKeys", return_value=listener),
-                self.assertRaises(KeyboardInterrupt),
             ):
-                listen_for_hotkeys("<ctrl>+h", "<ctrl>+l", Mock(), Mock())
+                result = main()
+            if interrupted:
+                self.assertEqual(result, 130)
+                self.assertEqual(errors.getvalue(), "")
+            else:
+                self.assertNotEqual(result, 0)
+                self.assertNotEqual(result, 130)
+                self.assertIn("cleanup unavailable", errors.getvalue())
             listener.stop.assert_called_once_with()
+            controller.shutdown.assert_called_once_with()
 
     def test_main_reports_listener_failure_and_shuts_down(self):
         controller = Mock()
