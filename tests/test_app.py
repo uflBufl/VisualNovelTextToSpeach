@@ -3247,6 +3247,7 @@ class TrayApplicationTest(unittest.TestCase):
     def test_history_dialog_uses_controller_session_and_replay(self):
         controller = Mock()
         controller.is_live_running = False
+        controller.is_one_shot_read_running = False
         controller.inspect_current_dialog.return_value = DiagnosticSnapshot(
             None,
             text="Fresh manual capture",
@@ -3267,6 +3268,32 @@ class TrayApplicationTest(unittest.TestCase):
             stop_handler=controller.stop_voice_preview,
         )
         dialog.exec.assert_called_once_with()
+        tray_application.shutdown()
+
+    def test_history_waits_for_one_shot_read_before_opening(self):
+        controller = Mock()
+        controller.is_live_running = False
+        controller.is_one_shot_read_running = True
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        dialog = Mock()
+
+        with patch("vntts.app.DialogueHistoryDialog", return_value=dialog) as factory:
+            tray_application.open_history()
+            self.assertIn("current dialog read", tray_application.status_action.text())
+            controller.is_one_shot_read_running = False
+            tray_application.open_history()
+
+        factory.assert_called_once_with(
+            controller.history,
+            controller.replay_dialog,
+            stop_handler=controller.stop_voice_preview,
+        )
+        dialog.exec.assert_called_once_with()
+        controller.toggle_live.assert_not_called()
         tray_application.shutdown()
 
     def test_history_dialog_pauses_live_capture_and_restores_it_after_close(self):

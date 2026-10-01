@@ -4039,6 +4039,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         # Region capture has no focus probe. A modal over the calibrated region
         # makes OCR append the history list repeatedly. Stop
         # capture for the modal session, then restore the previous live state.
+        if getattr(self.controller, "is_one_shot_read_running", False) is True:
+            self.set_status("Finish the current dialog read before opening history")
+            return
         resume_live = bool(self.controller.is_live_running)
         if resume_live:
             self._stop_live_then(
