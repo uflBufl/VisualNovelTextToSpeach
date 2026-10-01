@@ -76,6 +76,39 @@ class DialogRegionOverlayTest(unittest.TestCase):
                 save.assert_called_once()
                 self.assertFalse(overlay.isVisible())
 
+    def test_selection_clipped_below_minimum_reports_error_and_can_be_retried(self):
+        for frozen_preview in (False, True):
+            with self.subTest(frozen_preview=frozen_preview):
+                reviewer = Mock(
+                    return_value=Mock(
+                        exec=Mock(return_value=QDialog.DialogCode.Accepted)
+                    )
+                )
+                save = Mock()
+                overlay = DialogRegionOverlay(
+                    background=Image.new("RGB", (800, 450)) if frozen_preview else None,
+                    reviewer=reviewer,
+                    save_region=save,
+                )
+                self.addCleanup(overlay.deleteLater)
+                self.addCleanup(overlay.close)
+                failures = []
+                overlay.save_failed.connect(failures.append)
+                overlay.resize(800, 450)
+                overlay.origin = QPoint(795, 200)
+                overlay.current = QPoint(850, 250)
+                overlay.show()
+
+                overlay._review_rectangle(QRect(overlay.origin, overlay.current))
+
+                self.assertTrue(overlay.isVisible())
+                self.assertIn("at least 20 by 20 pixels", failures[0])
+                reviewer.assert_not_called()
+                save.assert_not_called()
+                overlay._review_rectangle(QRect(80, 270, 640, 144))
+                save.assert_called_once()
+                self.assertFalse(overlay.isVisible())
+
     def test_closing_overlay_during_review_prevents_late_save(self):
         save = Mock()
         overlay = DialogRegionOverlay(

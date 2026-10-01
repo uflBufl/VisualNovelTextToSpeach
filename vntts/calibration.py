@@ -294,17 +294,17 @@ class DialogRegionOverlay(QWidget):
     def _review_rectangle(self, rectangle: QRect) -> None:
         if self._closed:
             return
-        region = self._region_from_rectangle(rectangle)
-        if self.background is None:
-            # Keeps the overlay directly usable in tests and by callers that
-            # deliberately opt out of the frozen preview workflow.
-            self._save_selection(region)
-            return
-        crop = region.crop(self.background)
-        self.hide()
         try:
-            self._review = self.reviewer(crop)
-            result = self._review.exec()
+            region = self._region_from_rectangle(rectangle)
+            if self.background is None:
+                # Keeps the overlay directly usable in tests and by callers that
+                # deliberately opt out of the frozen preview workflow.
+                result: int = QDialog.DialogCode.Accepted
+            else:
+                crop = region.crop(self.background)
+                self.hide()
+                self._review = self.reviewer(crop)
+                result = self._review.exec()
         except Exception as error:
             self._selection_failed(f"Unable to review the dialogue area: {error}")
             return
