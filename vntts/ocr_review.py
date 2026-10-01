@@ -17,7 +17,10 @@ OCR_REVIEW_SCHEMA_VERSION = 1
 def _float_field(value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, (str, int, float)):
         raise TypeError("OCR review number must be numeric")
-    result = float(value)
+    try:
+        result = float(value)
+    except OverflowError as error:
+        raise ValueError("OCR review number must be finite") from error
     if not isfinite(result):
         raise ValueError("OCR review number must be finite")
     return result

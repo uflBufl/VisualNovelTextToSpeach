@@ -123,7 +123,9 @@ class OCRReviewStoreTest(unittest.TestCase):
         cases = (
             ("confidence", True),
             ("confidence", "NaN"),
+            ("confidence", 10**400),
             ("minimum_confidence", "Infinity"),
+            ("minimum_confidence", 10**400),
             ("attempts", True),
             ("attempts", 1.5),
             ("attempts", -1),
@@ -145,7 +147,20 @@ class OCRReviewStoreTest(unittest.TestCase):
                     encoding="utf-8",
                 )
 
-            self.assertEqual(OCRReviewStore(directory).pending_samples(), [])
+            valid = directory / "uncertain-000-valid.json"
+            valid.write_text(
+                json.dumps(
+                    {"image": image.name, "confidence": "42.5", "attempts": "1"}
+                ),
+                encoding="utf-8",
+            )
+            samples = OCRReviewStore(directory).pending_samples()
+
+            self.assertEqual([sample.metadata_path for sample in samples], [valid])
+            self.assertEqual(samples[0].confidence, 42.5)
+            self.assertEqual(
+                len(list(directory.glob("uncertain-invalid-number-*.json"))), len(cases)
+            )
 
     def test_future_metadata_schema_is_not_offered_for_review(self):
         with TemporaryDirectory() as temporary_directory:
