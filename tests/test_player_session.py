@@ -72,6 +72,54 @@ class PlayerSessionOwnerTest(unittest.TestCase):
 
         self.assertEqual(controller.shutdown.call_count, 2)
 
+    def test_start_errors_survive_failed_shutdown(self) -> None:
+        for restart in (False, True):
+            for error in (ValueError("startup failed"), KeyboardInterrupt()):
+                with self.subTest(restart=restart, error=type(error)):
+                    controller = Mock()
+                    controller.start.side_effect = error
+                    controller.shutdown.side_effect = (
+                        [None, RuntimeError("shutdown failed")]
+                        if restart
+                        else RuntimeError("shutdown failed")
+                    )
+                    owner = PlayerSessionOwner(controller)
+                    generation = owner.begin()
+
+                    with self.assertRaises(type(error)) as raised:
+                        if restart:
+                            owner.restart(generation, AppSettings())
+                        else:
+                            owner.start(generation)
+
+                    self.assertIs(raised.exception, error)
+                    self.assertIn("shutdown failed", error.__notes__[0])
+
+    def test_stale_cleanup_preserves_operation_error_but_reports_its_own(self) -> None:
+        for fails in (False, True):
+            with self.subTest(fails=fails):
+                controller = Mock()
+                cleanup_error = RuntimeError("shutdown failed")
+                controller.shutdown.side_effect = cleanup_error
+                owner = PlayerSessionOwner(controller)
+                generation = owner.begin()
+                operation_error = ValueError("operation failed")
+
+                def operation(_cancellation: Event) -> bool:
+                    owner.begin()
+                    if fails:
+                        raise operation_error
+                    return True
+
+                with self.assertRaises(ValueError if fails else RuntimeError) as raised:
+                    owner.run(generation, operation, False)
+
+                self.assertIs(
+                    raised.exception, operation_error if fails else cleanup_error
+                )
+                if fails:
+                    self.assertIn("shutdown failed", operation_error.__notes__[0])
+
     def test_configure_restart_restores_previous_runtime_after_cancel(self) -> None:
         cancellation = Event()
         controller = Mock()

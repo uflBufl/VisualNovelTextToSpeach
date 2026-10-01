@@ -87,22 +87,34 @@ class PlayerSessionOwner:
                     return stale_result
                 cancellation = self._cancellation
                 self._active = True
+            error: BaseException | None = None
             try:
                 return operation(cancellation)
+            except BaseException as operation_error:
+                error = operation_error
+                raise
             finally:
                 with self._state_lock:
                     self._active = False
                     stale = self._closed or generation != self._generation
                 if stale:
-                    self.controller.shutdown()
+                    self._shutdown_after_operation(error)
+
+    def _shutdown_after_operation(self, error: BaseException | None = None) -> None:
+        try:
+            self.controller.shutdown()
+        except Exception as shutdown_error:
+            if error is None:
+                raise
+            error.add_note(f"Player session shutdown failed: {shutdown_error}")
 
     def start(self, generation: int) -> bool:
         def operation(_cancellation: Event) -> bool:
             self.controller.prepare_startup()
             try:
                 ready = bool(self.controller.start())
-            except Exception:
-                self.controller.shutdown()
+            except BaseException as error:
+                self._shutdown_after_operation(error)
                 raise
             if not self.is_current(generation):
                 return False
@@ -256,8 +268,8 @@ class PlayerSessionOwner:
                 return False
             try:
                 ready = bool(self.controller.start())
-            except Exception:
-                self.controller.shutdown()
+            except BaseException as error:
+                self._shutdown_after_operation(error)
                 raise
             if not self.is_current(generation):
                 return False
