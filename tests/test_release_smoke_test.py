@@ -16,7 +16,7 @@ class ReleaseSmokeTest(unittest.TestCase):
     @unittest.skipUnless(shutil.which("tesseract"), "Tesseract is not installed")
     def test_real_sample_reaches_speech_stage(self):
         sample = Path(__file__).resolve().parents[1] / "samples" / "01.jpeg"
-        engine = Mock()
+        engine = Mock(speak=Mock(return_value=True))
         with TemporaryDirectory() as temporary_directory:
             successful, report_path = run_release_smoke_test(
                 image_path=sample,
@@ -47,7 +47,7 @@ class ReleaseSmokeTest(unittest.TestCase):
                     1,
                 )
             )
-            engine = Mock()
+            engine = Mock(speak=Mock(return_value=True))
             engine_factory = Mock(return_value=engine)
 
             result = run_release_smoke_test(
@@ -81,7 +81,7 @@ class ReleaseSmokeTest(unittest.TestCase):
                 1,
             )
         )
-        engine = Mock()
+        engine = Mock(speak=Mock(return_value=True))
         with TemporaryDirectory() as temporary_directory:
             successful, _ = run_release_smoke_test(
                 window_title="Reverse: 1999",
@@ -121,7 +121,7 @@ class ReleaseSmokeTest(unittest.TestCase):
                 expected_speaker="Marcus",
                 capture=capture,
                 recognize=recognize,
-                engine_factory=Mock(return_value=Mock()),
+                engine_factory=Mock(return_value=Mock(speak=Mock(return_value=True))),
                 auto_advance_expected_text="Auto advance acknowledged.",
                 auto_advance=auto_advance,
             )
@@ -149,7 +149,7 @@ class ReleaseSmokeTest(unittest.TestCase):
                 report_path=Path(temporary_directory) / "report.json",
                 capture=capture,
                 recognize=recognize,
-                engine_factory=Mock(return_value=Mock()),
+                engine_factory=Mock(return_value=Mock(speak=Mock(return_value=True))),
                 auto_advance_expected_text="Next dialog.",
                 auto_advance=Mock(return_value=True),
                 auto_advance_timeout_seconds=0,
@@ -223,6 +223,31 @@ class ReleaseSmokeTest(unittest.TestCase):
                 capture.assert_not_called()
                 engine_factory.assert_not_called()
                 auto_advance.assert_not_called()
+
+    def test_incomplete_playback_fails_before_auto_advance(self):
+        capture = Mock(return_value=(Image.new("RGB", (400, 120), "white"), None))
+        recognize = Mock(
+            return_value=OCRResult("Marcus", "Initial dialog.", 95.0, "balanced", 1)
+        )
+        engine = Mock(speak=Mock(return_value=False))
+        auto_advance = Mock(return_value=True)
+        with TemporaryDirectory() as directory:
+            successful, report_path = run_release_smoke_test(
+                window_title="VNTTS fixture",
+                report_path=Path(directory) / "report.json",
+                capture=capture,
+                recognize=recognize,
+                engine_factory=Mock(return_value=engine),
+                auto_advance=auto_advance,
+                auto_advance_expected_text="Next dialog.",
+            )
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        self.assertFalse(successful)
+        self.assertIn("playback did not complete", report["checks"][-1]["message"])
+        self.assertFalse(report["auto_advance_dispatched"])
+        self.assertFalse(report["auto_advance_acknowledged"])
+        self.assertEqual(capture.call_count, 1)
+        auto_advance.assert_not_called()
 
 
 if __name__ == "__main__":

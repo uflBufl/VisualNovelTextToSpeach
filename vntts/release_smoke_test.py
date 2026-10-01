@@ -59,7 +59,7 @@ class _Capture(Protocol):
 
 
 class _SpeechEngine(Protocol):
-    def speak(self, text: str) -> object: ...
+    def speak(self, text: str) -> bool: ...
 
 
 class _EngineFactory(Protocol):
@@ -191,7 +191,8 @@ def run_release_smoke_test(
             TTSEngine if engine_factory is None else engine_factory
         )
         engine = selected_engine_factory(model_name=model_name)
-        engine.speak(recognized_text)
+        if engine.speak(recognized_text) is not True:
+            raise RuntimeError("Speech playback did not complete")
         checks.append(
             {
                 "name": "Speech synthesis and playback",
