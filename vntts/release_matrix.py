@@ -42,7 +42,7 @@ def load_evidence(directory: PathInput) -> list[ReleaseEvidence]:
             continue
         try:
             report = json.loads(path.read_text(encoding="utf-8"))
-        except OSError, json.JSONDecodeError:
+        except OSError, UnicodeError, json.JSONDecodeError:
             continue
         if isinstance(report, dict) and "profile" in report:
             reports.append((path, report))

@@ -78,6 +78,16 @@ class ReleaseMatrixTest(unittest.TestCase):
 
         self.assertEqual(reports, [])
 
+    def test_corrupt_utf8_does_not_hide_valid_release_evidence(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            (root / "corrupt.json").write_bytes(b"\xff")
+            report_path = root / "valid.json"
+            report = self.evidence_for(self.profiles[0])
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            self.assertEqual(load_evidence(root), [(report_path, report)])
+
     def test_rejects_missing_mismatched_and_unsigned_evidence(self):
         report = self.evidence_for(self.profiles[0])
         report["dpi_scale_percent"] = 200
