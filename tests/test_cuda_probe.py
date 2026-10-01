@@ -1,5 +1,10 @@
+import sys
 import unittest
-from unittest.mock import patch
+from contextlib import redirect_stderr
+from io import StringIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import Mock, patch
 
 from vntts.cuda_probe import CudaProbeError, inspect_cuda, main
 
@@ -67,6 +72,46 @@ class CudaProbeTest(unittest.TestCase):
         report = inspect_cuda(torch)
 
         self.assertIsNone(report["bf16_supported"])
+
+    def test_rejects_malformed_cudnn_version(self):
+        torch = FakeTorch()
+        torch.backends.cudnn.version = Mock(return_value=True)
+
+        with self.assertRaisesRegex(CudaProbeError, "non-integer"):
+            inspect_cuda(torch)
+
+    def test_rejects_malformed_vram_values(self):
+        torch = FakeTorch()
+        torch.cuda.mem_get_info = Mock(return_value=("invalid", 34))
+
+        with self.assertRaisesRegex(CudaProbeError, "invalid literal"):
+            inspect_cuda(torch)
+
+    def test_cli_reports_probe_failures_without_writing_report(self):
+        cases = (
+            ("is_available", "availability failed"),
+            ("cudnn.version", "cuDNN failed"),
+            ("is_bf16_supported", "BF16 failed"),
+        )
+        for probe, message in cases:
+            with self.subTest(probe=probe), TemporaryDirectory() as directory:
+                torch = FakeTorch()
+                if probe == "is_available":
+                    torch.cuda.is_available = Mock(side_effect=RuntimeError(message))
+                elif probe == "cudnn.version":
+                    torch.backends.cudnn.version = Mock(
+                        side_effect=RuntimeError(message)
+                    )
+                else:
+                    torch.cuda.is_bf16_supported = Mock(
+                        side_effect=RuntimeError(message)
+                    )
+                output = Path(directory) / "report.json"
+                stderr = StringIO()
+                with patch.dict(sys.modules, {"torch": torch}), redirect_stderr(stderr):
+                    self.assertEqual(main(["--output", str(output)]), 2)
+                self.assertIn(message, stderr.getvalue())
+                self.assertFalse(output.exists())
 
     def test_cli_returns_failure_without_traceback(self):
         with patch(

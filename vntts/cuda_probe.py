@@ -8,7 +8,7 @@ import platform
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Protocol, TypedDict, runtime_checkable
 
 CUDA_PROBE_SCHEMA = "vntts.cuda-probe"
 SCHEMA_VERSION = 1
@@ -16,6 +16,22 @@ SCHEMA_VERSION = 1
 
 class CudaProbeError(RuntimeError):
     """The selected runtime cannot safely start a CUDA experiment."""
+
+
+class CudaProbeReport(TypedDict):
+    schema: str
+    schema_version: int
+    python: str
+    platform: str
+    torch: str
+    cuda_runtime: str
+    cudnn: int | None
+    device_index: int
+    device_name: str
+    compute_capability: list[int]
+    bf16_supported: bool | None
+    free_vram_bytes: int
+    total_vram_bytes: int
 
 
 class _CudaDeviceProperties(Protocol):
@@ -38,7 +54,7 @@ class _CudaInspection(Protocol):
     def get_device_capability(self, index: int) -> tuple[int, ...]: ...
 
 
-def inspect_cuda(torch_module: object | None = None) -> dict[str, object]:
+def inspect_cuda(torch_module: object | None = None) -> CudaProbeReport:
     """Return stable CUDA provenance without loading model weights."""
     if torch_module is None:
         try:
@@ -57,29 +73,37 @@ def inspect_cuda(torch_module: object | None = None) -> dict[str, object]:
             f"({getattr(torch_module, '__version__', 'unknown')}); run the probe "
             "from the CUDA speech runtime"
         )
-    if not cuda.is_available():
-        raise CudaProbeError(
-            f"PyTorch includes CUDA {cuda_runtime}, but no CUDA device is "
-            "available; check the NVIDIA driver, GPU visibility and selected "
-            "runtime. Model weights were not loaded"
-        )
     try:
+        if not cuda.is_available():
+            raise CudaProbeError(
+                f"PyTorch includes CUDA {cuda_runtime}, but no CUDA device is "
+                "available; check the NVIDIA driver, GPU visibility and selected "
+                "runtime. Model weights were not loaded"
+            )
         if not isinstance(cuda, _CudaInspection):
             raise AttributeError("CUDA device inspection is unavailable")
         device_index = int(cuda.current_device())
         properties = cuda.get_device_properties(device_index)
-        free_memory, total_memory = cuda.mem_get_info(device_index)
+        free_memory_raw, total_memory_raw = cuda.mem_get_info(device_index)
+        free_memory = int(free_memory_raw)
+        total_memory = int(total_memory_raw)
         capability = tuple(
             int(value) for value in cuda.get_device_capability(device_index)
         )
+        backends: object = getattr(torch_module, "backends", None)
+        cudnn: object = getattr(backends, "cudnn", None)
+        cudnn_version_probe = getattr(cudnn, "version", None)
+        cudnn_version: object = (
+            cudnn_version_probe() if callable(cudnn_version_probe) else None
+        )
+        if cudnn_version is not None and type(cudnn_version) is not int:
+            raise TypeError("cuDNN version probe returned a non-integer")
+        bf16_probe = getattr(cuda, "is_bf16_supported", None)
+        bf16_supported = bool(bf16_probe()) if callable(bf16_probe) else None
+    except CudaProbeError:
+        raise
     except (AttributeError, RuntimeError, TypeError, ValueError) as error:
         raise CudaProbeError(f"Unable to inspect the CUDA device: {error}") from error
-    backends: object = getattr(torch_module, "backends", None)
-    cudnn: object = getattr(backends, "cudnn", None)
-    cudnn_version_probe = getattr(cudnn, "version", None)
-    cudnn_version = cudnn_version_probe() if callable(cudnn_version_probe) else None
-    bf16_probe = getattr(cuda, "is_bf16_supported", None)
-    bf16_supported = bool(bf16_probe()) if callable(bf16_probe) else None
     return {
         "schema": CUDA_PROBE_SCHEMA,
         "schema_version": SCHEMA_VERSION,
@@ -92,8 +116,8 @@ def inspect_cuda(torch_module: object | None = None) -> dict[str, object]:
         "device_name": str(getattr(properties, "name", "unknown")),
         "compute_capability": list(capability),
         "bf16_supported": bf16_supported,
-        "free_vram_bytes": int(free_memory),
-        "total_vram_bytes": int(total_memory),
+        "free_vram_bytes": free_memory,
+        "total_vram_bytes": total_memory,
     }
 
 
