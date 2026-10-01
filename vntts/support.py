@@ -790,7 +790,7 @@ class NativeSpeechLog(RuntimeSupportLog):
         self.outcomes: Counter[str] = Counter()
         self.request_seconds: dict[str, float] = {}
         self.latest_runtime: SupportDocument | None = None
-        self.active_requests: OrderedDict[object, SupportDocument] = OrderedDict()
+        self.active_requests: OrderedDict[str, SupportDocument] = OrderedDict()
         try:
             self._load_previous()
         except Exception:
@@ -841,21 +841,27 @@ class NativeSpeechLog(RuntimeSupportLog):
             key = "other"
         self.outcomes[key] += 1
         seconds = details.get("request_s")
-        if isinstance(seconds, (int, float)) and math.isfinite(seconds):
+        if (
+            isinstance(seconds, (int, float))
+            and not isinstance(seconds, bool)
+            and abs(seconds) <= sys.float_info.max
+        ):
             self.request_seconds[key] = self.request_seconds.get(key, 0.0) + max(
                 0, float(seconds)
             )
         if operation == "server-start":
             self.latest_runtime = details
         attempt_id = details.get("attempt_id")
-        if attempt_id and operation == "request-start":
+        if not isinstance(attempt_id, str) or not attempt_id:
+            return
+        if operation == "request-start":
             self.active_requests[attempt_id] = {
                 **details,
                 "recorded_at": recorded_at,
             }
             if len(self.active_requests) > 64:
                 self.active_requests.popitem(last=False)
-        elif attempt_id and operation == "fresh-generation":
+        elif operation == "fresh-generation":
             self.active_requests.pop(attempt_id, None)
 
     def report(self) -> SupportDocument:

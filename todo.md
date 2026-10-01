@@ -2,9 +2,6 @@
 
 ## Active - Audit support telemetry and export ownership
 
-- [ ] Narrow native active-request identifiers to nonempty strings and reject
-      boolean durations. Malformed restored identifiers must not abort the
-      remaining log restoration; verify bad records followed by valid events.
 - [ ] Preserve truncation evidence for selected stories and make correlation
       three-valued: a missing ID in an incomplete active list is unknown; a
       matching incomplete selection cannot prove inclusion of every story.

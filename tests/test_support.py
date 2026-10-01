@@ -42,6 +42,61 @@ from vntts.voice_library import VoiceLibrary
 
 
 class NativeSpeechLogTest(unittest.TestCase):
+    def test_invalid_request_identifiers_do_not_abort_restoration(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "native-speech.log"
+            events = [
+                {
+                    "level": "moss-native",
+                    "native": {
+                        "operation": "request-start",
+                        "attempt_id": value,
+                        "request_s": seconds,
+                    },
+                }
+                for value, seconds in (
+                    (["bad"], True),
+                    ({"bad": "id"}, True),
+                    (True, True),
+                    (12, 10**400),
+                    ("", True),
+                )
+            ]
+            events.extend(
+                [
+                    {
+                        "level": "moss-native",
+                        "native": {
+                            "operation": "server-start",
+                            "native_version": "0.3.0",
+                        },
+                    },
+                    {
+                        "level": "moss-native",
+                        "native": {
+                            "operation": "request-start",
+                            "attempt_id": "valid",
+                            "request_s": 1.5,
+                        },
+                    },
+                ]
+            )
+            path.write_text(
+                "".join(json.dumps(entry) + "\n" for entry in events), encoding="utf-8"
+            )
+
+            log = NativeSpeechLog(path=path)
+            report = log.report()
+
+        self.assertEqual(report["total_events"], len(events))
+        self.assertEqual(report["latest_runtime"]["native_version"], "0.3.0")
+        self.assertEqual(report["request_seconds"], {"request-start/unknown": 1.5})
+        self.assertEqual(
+            [request["attempt_id"] for request in report["active_requests"]], ["valid"]
+        )
+        log.record({"operation": "fresh-generation", "attempt_id": "valid"})
+        self.assertEqual(log.report()["active_requests"], [])
+
     def test_bounded_sanitized_log_survives_restart(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "native-speech.log"
