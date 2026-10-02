@@ -5,7 +5,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Literal, Protocol
 
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import load_generated_audio_document
 from vntts_artifacts.story_index import StoryIndexRecord, load_story_index_document
 
@@ -15,6 +14,8 @@ from vntts.generated_audio import GeneratedAudioLibrary
 from vntts.pregeneration_setup import (
     GameContent,
     PregenerationJobStore,
+    StoryContentChanged,
+    load_verified_story_index_document,
 )
 from vntts.pregeneration_voices import (
     PregenerationVoiceError,
@@ -56,7 +57,14 @@ class StoryVoiceImpact:
 
 
 def _verified_records(content: GameContent) -> dict[str, StoryIndexRecord]:
-    story = load_story_index_document(content.story_index)
+    try:
+        story = load_verified_story_index_document(
+            content.story_index, content.story_index_sha256
+        )
+    except StoryContentChanged as error:
+        raise PregenerationVoiceError(
+            "Story content changed. Refresh Stories and retry."
+        ) from error
     return {record.line_id: record for record in story.records}
 
 
@@ -270,10 +278,6 @@ def inspect_voice_default_impact(
 ) -> tuple[StoryVoiceImpact, ...]:
     """Use the real planner and saved decisions without changing durable work."""
     _raise_if_cancelled(cancellation)
-    if sha256_file(content.story_index) != content.story_index_sha256:
-        raise PregenerationVoiceError(
-            "Story content changed. Refresh Stories and retry."
-        )
     records = _verified_records(content)
     selected = _compatible_packs(content, job_store, settings, records, cancellation)
     if not selected:
