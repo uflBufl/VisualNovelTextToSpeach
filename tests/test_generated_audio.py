@@ -107,6 +107,37 @@ def write_wav(path, samples, sample_rate=24_000):
 
 
 class GeneratedAudioTest(unittest.TestCase):
+    def test_manual_override_restores_story_match_when_lookup_fails(self):
+        for result_aware in (False, True):
+            with self.subTest(result_aware=result_aware):
+                previous = object()
+                resolver = SimpleNamespace(
+                    current_match=previous,
+                    resolve_exact=Mock(),
+                    line_for_id=Mock(),
+                )
+
+                def lookup(_character, _text):
+                    resolver.current_match = object()
+                    raise LookupError("lookup failed")
+
+                method = (
+                    "resolve_exact_with_result" if result_aware else "resolve_exact"
+                )
+                setattr(resolver, method, Mock(side_effect=lookup))
+                live = self.create_live_backend()
+                backend = GeneratedAudioFallbackBackend(
+                    live, None, resolver, audio_output=FakeAudioOutput()
+                )
+                backend.voice_override = lambda _speaker: True
+
+                with self.assertRaisesRegex(LookupError, "lookup failed"):
+                    backend.prepare_route("Ada", "Hello.")
+
+                self.assertIs(resolver.current_match, previous)
+                getattr(resolver, method).assert_called_once_with("Ada", "Hello.")
+                live.prepare_playback.assert_not_called()
+
     def test_runtime_progress_waits_for_the_exact_generated_line(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

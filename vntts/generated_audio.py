@@ -1102,12 +1102,8 @@ class GeneratedAudioFallbackBackend:
     ) -> ChapterDialogue | None:
         current_match = getattr(self.line_resolver, "current_match", None)
         try:
-            if _has_result_resolver(self.line_resolver):
-                line, _result = self.line_resolver.resolve_exact_with_result(
-                    character, text
-                )
-                return line
-            return self.line_resolver.resolve_exact(character, text)
+            line, _result = self._resolve_line(character, text, False)
+            return line
         finally:
             if hasattr(self.line_resolver, "current_match"):
                 setattr(self.line_resolver, "current_match", current_match)
