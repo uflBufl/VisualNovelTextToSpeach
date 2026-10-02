@@ -540,9 +540,10 @@ class VoiceLibrary:
         target = VoiceLibrary(path)
         if target.root.exists():
             raise VoiceLibraryError("Voice library copy destination already exists")
-        self.validate()
         if self.path.exists():
-            shutil.copytree(self.root, target.root)
+            with self._write_transaction():
+                self.validate()
+                shutil.copytree(self.root, target.root)
         return target
 
     def _load(self) -> _VoiceLibraryDocument:

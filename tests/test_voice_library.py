@@ -21,6 +21,78 @@ def write_wav(path: Path, frames: bytes) -> None:
         output.writeframes(frames)
 
 
+class _CopySnapshotProbe:
+    def __init__(self, source: VoiceLibrary, new_reference: Path) -> None:
+        self.source = source
+        self.new_reference = new_reference
+        self.copytree_started = Event()
+        self.writer_finished = Event()
+        self.writer_reached = Event()
+        self.writer_completed = Event()
+        self.writer_errors: list[BaseException] = []
+        self.worker: Thread | None = None
+
+    def __enter__(self):
+        if self._lock.acquire(blocking=False):
+            if self.copytree_started.is_set():
+                self.writer_completed.set()
+                self.writer_reached.set()
+        else:
+            self.writer_reached.set()
+            self._lock.acquire()
+        return self
+
+    def __exit__(self, *args) -> None:
+        self._lock.release()
+
+    def start(self) -> None:
+        self._lock = voice_library.RLock()
+
+        def writer() -> None:
+            try:
+                self.copytree_started.wait(5)
+                self.source.discover("Role", self.new_reference)
+            except BaseException as error:  # pragma: no cover - surfaced below
+                self.writer_errors.append(error)
+            finally:
+                self.writer_finished.set()
+
+        self.worker = Thread(target=writer)
+        self.worker.start()
+
+    def finish(self) -> None:
+        self.copytree_started.set()
+        if not self.writer_finished.wait(5):
+            raise AssertionError("writer did not finish")
+        assert self.worker is not None
+        self.worker.join(5)
+
+    def copytree(self, source_path, destination_path, *args, **kwargs):
+        del args, kwargs
+        source_path = Path(source_path)
+        destination_path = Path(destination_path)
+        snapshot = {
+            path.relative_to(source_path): path.read_bytes()
+            for path in source_path.rglob("*")
+            if path.is_file()
+            and path.name not in {"voice-library.json", ".voice-library.lock"}
+        }
+        self.copytree_started.set()
+        if not self.writer_reached.wait(5):
+            raise AssertionError("writer did not reach the source lock")
+        destination_path.mkdir(parents=True)
+        for relative, payload in snapshot.items():
+            target = destination_path / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(payload)
+        if self.writer_completed.is_set() and not self.writer_finished.wait(5):
+            raise AssertionError("writer did not finish publishing")
+        (destination_path / "voice-library.json").write_bytes(
+            (source_path / "voice-library.json").read_bytes()
+        )
+        return destination_path
+
+
 class VoiceLibraryTest(unittest.TestCase):
     def test_thread_lock_creates_one_shared_lock_per_path(self) -> None:
         with (
@@ -160,6 +232,36 @@ class VoiceLibraryTest(unittest.TestCase):
                 {binding.role for binding in VoiceLibrary(root).bindings()},
                 {"Alice", "Bob"},
             )
+
+    def test_copy_to_keeps_index_and_blobs_from_one_snapshot(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            old_reference = root / "old.wav"
+            new_reference = root / "new.wav"
+            write_wav(old_reference, b"\x00\x00")
+            write_wav(new_reference, b"\x01\x00")
+            source = VoiceLibrary(root / "source")
+            source.discover("Role", old_reference)
+            destination = root / "copy"
+            lock_path = source.root / ".voice-library.lock"
+            probe = _CopySnapshotProbe(source, new_reference)
+            with (
+                patch.object(
+                    voice_library,
+                    "_THREAD_LOCKS",
+                    {lock_path: probe},
+                ),
+                patch.object(voice_library.shutil, "copytree", probe.copytree),
+            ):
+                probe.start()
+                try:
+                    copied = source.copy_to(destination)
+                finally:
+                    probe.finish()
+            assert probe.worker is not None
+            self.assertFalse(probe.worker.is_alive())
+            self.assertEqual(probe.writer_errors, [])
+            copied.validate()
 
     def test_rollback_restores_only_unchanged_roles(self) -> None:
         with TemporaryDirectory() as directory:
