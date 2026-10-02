@@ -37,7 +37,6 @@ class _CompatiblePack:
     selection_id: str
     title: str
     line_ids: tuple[str, ...]
-    records: dict[str, StoryIndexRecord]
     library: GeneratedAudioLibrary | None
     authoritative_source_line_ids: frozenset[str]
 
@@ -149,7 +148,6 @@ def _compatible_packs(
                         selection.selection_id,
                         selection.title,
                         selection.line_ids,
-                        pack_records,
                         library,
                         authoritative_source_line_ids,
                     )
