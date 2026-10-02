@@ -159,24 +159,32 @@ class OCRCorrectionStoreTest(unittest.TestCase):
                 global_entries={"Mareus": "Marcus"},
                 profile_entries={"game": {"Vertln": "Vertin"}},
             )
-            with (
-                patch(
-                    "vntts.versioned_json.write_versioned_json",
-                    side_effect=OSError("disk full"),
-                ),
-                self.assertRaisesRegex(OSError, "disk full"),
+            store.save()
+            original = store.path.read_bytes()
+            revision = store._revision
+            for method, arguments in (
+                ("replace_entries", ({"New": "Global"}, "game", {"New": "Profile"})),
+                ("upsert_entries", ({"New": "Global"},)),
+                ("upsert_entries", ({"New": "Profile"}, "game")),
+                ("copy_profile", ("game", "copy")),
+                ("remove_profile", ("game",)),
             ):
-                store.replace_entries(
-                    {"New": "Global"},
-                    "game",
-                    {"New": "Profile"},
-                )
+                with self.subTest(method=method, arguments=arguments):
+                    with (
+                        patch(
+                            "vntts.versioned_json.write_versioned_json",
+                            side_effect=OSError("disk full"),
+                        ),
+                        self.assertRaisesRegex(OSError, "disk full"),
+                    ):
+                        getattr(store, method)(*arguments)
 
-            self.assertEqual(store.global_entries, {"Mareus": "Marcus"})
-            self.assertEqual(
-                store.profile_entries,
-                {"game": {"Vertln": "Vertin"}},
-            )
+                    self.assertEqual(store.global_entries, {"Mareus": "Marcus"})
+                    self.assertEqual(
+                        store.profile_entries, {"game": {"Vertln": "Vertin"}}
+                    )
+                    self.assertEqual(store._revision, revision)
+                    self.assertEqual(store.path.read_bytes(), original)
 
     def test_stale_store_cannot_overwrite_another_store(self):
         with TemporaryDirectory() as directory:

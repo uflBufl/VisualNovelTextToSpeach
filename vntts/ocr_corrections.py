@@ -118,10 +118,10 @@ class OCRCorrectionStore:
         return store
 
     def save(self) -> Path:
-        self._save_entries(self.global_entries, self.profile_entries)
+        self._commit_entries(self.global_entries, self.profile_entries)
         return self.path
 
-    def _save_entries(
+    def _commit_entries(
         self,
         global_entries: dict[str, str],
         profile_entries: dict[str, dict[str, str]],
@@ -136,6 +136,8 @@ class OCRCorrectionStore:
             revision=self._revision,
             document_name="OCR corrections",
         )
+        self.global_entries = global_entries
+        self.profile_entries = profile_entries
 
     def dictionary_for(self, profile_id: str | None = None) -> OCRCorrectionDictionary:
         profile_entries = self.profile_entries.get(profile_id, {}) if profile_id else {}
@@ -159,9 +161,7 @@ class OCRCorrectionStore:
                 profiles[str(profile_id)] = normalized_profile
             else:
                 profiles.pop(str(profile_id), None)
-        self._save_entries(normalized_global, profiles)
-        self.global_entries = normalized_global
-        self.profile_entries = profiles
+        self._commit_entries(normalized_global, profiles)
 
     def upsert_entries(self, entries: object, profile_id: str | None = None) -> None:
         normalized = normalize_correction_entries(entries)
@@ -175,24 +175,20 @@ class OCRCorrectionStore:
             global_entries = self.global_entries
         else:
             global_entries = merged
-        self._save_entries(global_entries, profiles)
-        self.global_entries = global_entries
-        self.profile_entries = profiles
+        self._commit_entries(global_entries, profiles)
 
     def copy_profile(self, source_id: str, destination_id: str) -> None:
         entries = self.profile_entries.get(str(source_id))
         if entries:
             profiles = dict(self.profile_entries)
             profiles[str(destination_id)] = dict(entries)
-            self._save_entries(self.global_entries, profiles)
-            self.profile_entries = profiles
+            self._commit_entries(self.global_entries, profiles)
 
     def remove_profile(self, profile_id: str) -> None:
         if str(profile_id) in self.profile_entries:
             profiles = dict(self.profile_entries)
             profiles.pop(str(profile_id))
-            self._save_entries(self.global_entries, profiles)
-            self.profile_entries = profiles
+            self._commit_entries(self.global_entries, profiles)
 
 
 def _overlay_correction_entries(
