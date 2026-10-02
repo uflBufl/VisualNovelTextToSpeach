@@ -78,6 +78,7 @@ from vntts.voices import (
 
 if TYPE_CHECKING:
     from vntts.runtime_ownership import RuntimeUse
+    from vntts.speech_backend_contract import SpeechBackend
 
 _FRAME_LENGTH = struct.Struct(">I")
 _BOOTSTRAP = (
@@ -122,7 +123,9 @@ _REQUIRED_MODULES = {
     "moss-tts-delay": _COMMON_REQUIRED_MODULES
     + ("torch", "transformers", "tokenizers", "safetensors"),
 }
-_BACKEND_CLASSES = {
+_BACKEND_CLASSES: dict[
+    str, type[SpeechBackend] | type[MossTTSDelayVoiceRouterBackend]
+] = {
     "pocket-tts": PocketTTSVoiceRouterBackend,
     "chatterbox-nano": ChatterboxNanoVoiceRouterBackend,
     "moss-tts": MossTTSVoiceRouterBackend,
@@ -130,11 +133,7 @@ _BACKEND_CLASSES = {
     "moss-tts-delay": MossTTSDelayVoiceRouterBackend,
 }
 _CAPABILITIES = {
-    "pocket-tts": PocketTTSVoiceRouterBackend.capabilities,
-    "chatterbox-nano": ChatterboxNanoVoiceRouterBackend.capabilities,
-    "moss-tts": MossTTSVoiceRouterBackend.capabilities,
-    "qwen-tts": QwenTTSVoiceRouterBackend.capabilities,
-    "moss-tts-delay": MossTTSDelayVoiceRouterBackend.capabilities,
+    name: backend.capabilities for name, backend in _BACKEND_CLASSES.items()
 }
 
 WorkerFrame: TypeAlias = tuple[FrameDocument, bytes]
