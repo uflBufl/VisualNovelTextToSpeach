@@ -521,6 +521,44 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
             [("b",), ("a",)],
         )
 
+    def test_priority_changes_preserve_remaining_order_and_ignore_completed_lines(self):
+        with TemporaryDirectory() as directory:
+            generation_input, current, voice_plan = inputs(Path(directory))
+            generator = Mock()
+            generator.inspect.side_effect = OfflineGenerationError
+            worker = OfflineRecoveryWorker(generator)
+            events = []
+
+            def generate(*_arguments, **options):
+                queue_id = options["queue_ids"][0]
+                events.append(queue_id)
+                if queue_id == "a":
+                    worker.prioritize_line("line:c", "c" * 64)
+                elif queue_id == "c":
+                    worker.prioritize_line("line:a", "a" * 64)
+                return current
+
+            generator.generate.side_effect = generate
+            with (
+                patch(
+                    "vntts.pregeneration_recovery._ordered_generation_queue_ids",
+                    return_value=(
+                        ("a", "b", "c", "d"),
+                        {
+                            ("line:a", "a" * 64): "a",
+                            ("line:c", "c" * 64): "c",
+                        },
+                    ),
+                ),
+                patch.object(
+                    worker,
+                    "recover",
+                    return_value=OfflineRecoveryResult(current, 0, 0, 0, ()),
+                ),
+            ):
+                worker.generate_and_recover(generation_input, voice_plan)
+        self.assertEqual(events, ["a", "c", "b", "d"])
+
     def test_generation_resume_repairs_existing_failure_before_new_generation(self):
         with TemporaryDirectory() as temporary_directory:
             generation_input, current, voice_plan = inputs(Path(temporary_directory))

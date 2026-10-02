@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, OrderedDict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from threading import Event, Lock
@@ -365,10 +365,13 @@ class OfflineRecoveryWorker:
             statuses = _generation_queue_statuses(current, generation_input)
         attempted = recovered = live_fallbacks = 0
         remaining: Counter[str] = Counter()
-        pending = list(queue_ids)
+        pending = OrderedDict.fromkeys(queue_ids)
         while pending:
-            queue_id = self._take_priority(line_queue_ids, pending) or pending[0]
-            pending.remove(queue_id)
+            queue_id = self._take_priority(line_queue_ids, pending)
+            if queue_id is None:
+                queue_id, _ = pending.popitem(last=False)
+            else:
+                del pending[queue_id]
             if statuses.get(queue_id) in {
                 "generated",
                 "approved",
@@ -398,7 +401,6 @@ class OfflineRecoveryWorker:
             recovered += result.recovered
             live_fallbacks += result.live_fallbacks
             remaining.update(dict(result.remaining_action_counts))
-            statuses[queue_id] = "failed" if result.remaining_failed else "generated"
         if current is None:
             current = self.generator.generate(
                 generation_input,
@@ -418,7 +420,7 @@ class OfflineRecoveryWorker:
     def _take_priority(
         self,
         line_queue_ids: Mapping[tuple[str, str], str],
-        pending: list[str],
+        pending: Mapping[str, None],
     ) -> str | None:
         with self._priority_lock:
             identity, self._priority_line = self._priority_line, None
@@ -503,10 +505,11 @@ def _ordered_generation_queue_ids(
         ) from error
     if len(queue_ids) != generation_input.ready_items:
         raise OfflineRecoveryError("Offline generation queue readiness changed")
+    selected_ids = set(queue_ids)
     return queue_ids, {
         (item.line_id, item.text_sha256): item.queue_id
         for item in queue.items
-        if item.queue_id in queue_ids
+        if item.queue_id in selected_ids
     }
 
 
