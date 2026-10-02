@@ -595,8 +595,10 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
     def test_close_is_deferred_during_authority_work(self):
         with TemporaryDirectory() as directory:
             bundle = self.create_bundle(Path(directory))
-            dialog = CohortReviewBundleDialog(bundle)
+            with patch.object(CohortReviewBundleDialog, "reload_bundle"):
+                dialog = CohortReviewBundleDialog(bundle)
             dialog._load_active = True
+            dialog._update_actions()
             event = QCloseEvent()
 
             dialog.closeEvent(event)
@@ -608,7 +610,8 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
 
     def test_reject_does_not_finish_during_authority_work(self):
         with TemporaryDirectory() as directory:
-            dialog = CohortReviewBundleDialog(self.create_bundle(Path(directory)))
+            with patch.object(CohortReviewBundleDialog, "reload_bundle"):
+                dialog = CohortReviewBundleDialog(self.create_bundle(Path(directory)))
             finished = Mock()
             rejected = Mock()
             dialog.finished.connect(finished)
@@ -631,7 +634,8 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
 
     def test_worker_success_results_are_validated_at_qt_boundaries(self):
         with TemporaryDirectory() as directory:
-            dialog = CohortReviewBundleDialog(self.create_bundle(Path(directory)))
+            with patch.object(CohortReviewBundleDialog, "reload_bundle"):
+                dialog = CohortReviewBundleDialog(self.create_bundle(Path(directory)))
             dialog._load_active = True
             dialog._load_finished(object(), None)
             self.assertIn("BLOCKED", dialog.status.text())
