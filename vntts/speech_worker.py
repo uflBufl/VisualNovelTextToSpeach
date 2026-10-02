@@ -198,29 +198,6 @@ class _RetainedBackend(Protocol):
     def set_volume(self, volume: object) -> None: ...
 
 
-class _AudioStream(Protocol):
-    def __enter__(self) -> "_AudioStream": ...
-
-    def __exit__(
-        self, exception_type: object, exception: object, traceback: object
-    ) -> bool | None: ...
-
-    def write(self, audio: NDArray[np.float32]) -> object: ...
-
-    def abort(self) -> object: ...
-
-
-class _AudioOutput(Protocol):
-    def OutputStream(
-        self,
-        *,
-        samplerate: int,
-        channels: int,
-        dtype: str,
-        latency: str,
-    ) -> _AudioStream: ...
-
-
 class _WorkerBackend(Protocol):
     registry: CharacterVoiceRegistry
     narrator_reference: str | Path | None
@@ -240,23 +217,15 @@ def _is_document(value: object) -> TypeGuard[FrameDocument]:
     return isinstance(value, dict) and all(isinstance(key, str) for key in value)
 
 
-def _is_text(value: object) -> TypeGuard[str]:
-    return isinstance(value, str)
-
-
-def _required_document_value(document: Mapping[str, object], field: str) -> object:
-    return document[field]
-
-
 def _required_text(document: Mapping[str, object], field: str) -> str:
-    value = _required_document_value(document, field)
+    value = document[field]
     if not isinstance(value, str):
         raise TTSConfigurationError(f"Speech worker {field} must be text")
     return value
 
 
 def _required_integer(document: Mapping[str, object], field: str) -> int:
-    value = _required_document_value(document, field)
+    value = document[field]
     if not isinstance(value, int) or isinstance(value, bool):
         raise TTSConfigurationError(f"Speech worker {field} must be an integer")
     return value
@@ -275,7 +244,7 @@ def _is_startup_progress(value: object) -> TypeGuard[StartupProgress]:
 
 
 def _required_float(document: Mapping[str, object], field: str) -> float:
-    value = _required_document_value(document, field)
+    value = document[field]
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise TTSConfigurationError(f"Speech worker {field} must be a number")
     return float(value)
@@ -289,7 +258,7 @@ def _document_path(document: Mapping[str, object], field: str) -> Path:
 
 
 def _chunk_shape(document: Mapping[str, object]) -> tuple[int, ...]:
-    value = _required_document_value(document, "shape")
+    value = document["shape"]
     if not isinstance(value, list) or not all(
         isinstance(item, int) and not isinstance(item, bool) for item in value
     ):
