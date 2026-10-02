@@ -1212,7 +1212,6 @@ class AudioRoutePlaybackOwner:
         self.source_audio_completion_stop = Event()
         self.generated_audio_stop = Event()
         self.progress_wait_stop = Event()
-        self.active_generated_stream: object | None = None
         self.active_playback_source: str | None = None
         self.playback_active = False
 
@@ -1408,7 +1407,6 @@ class AudioRoutePlaybackOwner:
                         dtype="float32",
                         latency=self.router.playback_latency,
                     ) as stream:
-                        self.active_generated_stream = stream
                         completed, underflowed = write_pcm_chunks(
                             stream,
                             samples,
@@ -1453,7 +1451,6 @@ class AudioRoutePlaybackOwner:
                     error=str(error),
                 )
             finally:
-                self.active_generated_stream = None
                 self._deactivate()
 
     def _play_live_route(
