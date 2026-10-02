@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from itertools import combinations
 
 from vntts_artifacts.story_index import StoryIndexRecord
 from vntts_artifacts.voice_manifest import normalize_character_name
@@ -50,27 +51,25 @@ def suggest_person_links(
         for alias, target in (existing_aliases or {}).items()
         if normalize_character_name(alias) and normalize_character_name(target)
     }
-    ordered_roles = sorted(roles.items())
     suggestions: list[PersonLinkSuggestion] = []
-    for index, (left_key, left) in enumerate(ordered_roles):
-        for right_key, right in ordered_roles[index + 1 :]:
-            if canonical_names.get(left_key, left_key) == canonical_names.get(
-                right_key, right_key
-            ):
-                continue
-            portraits = tuple(sorted(left.portraits & right.portraits))
-            source_banks = tuple(
-                sorted(left.voiced_source_banks & right.voiced_source_banks)
-            )
-            if len(portraits) >= 2 and source_banks:
-                suggestions.append(
-                    PersonLinkSuggestion(
-                        left_role=left.role,
-                        right_role=right.role,
-                        shared_portraits=portraits,
-                        shared_source_banks=source_banks,
-                    )
+    for (left_key, left), (right_key, right) in combinations(sorted(roles.items()), 2):
+        if canonical_names.get(left_key, left_key) == canonical_names.get(
+            right_key, right_key
+        ):
+            continue
+        portraits = tuple(sorted(left.portraits & right.portraits))
+        source_banks = tuple(
+            sorted(left.voiced_source_banks & right.voiced_source_banks)
+        )
+        if len(portraits) >= 2 and source_banks:
+            suggestions.append(
+                PersonLinkSuggestion(
+                    left_role=left.role,
+                    right_role=right.role,
+                    shared_portraits=portraits,
+                    shared_source_banks=source_banks,
                 )
+            )
     return tuple(suggestions)
 
 
