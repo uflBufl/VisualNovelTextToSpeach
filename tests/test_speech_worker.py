@@ -180,6 +180,27 @@ class SpeechWorkerTest(unittest.TestCase):
                         _result_document_value(document)
                     document[group][field] = original
 
+    def test_worker_frames_ignore_previous_process_and_report_current_exit(self):
+        backend = object.__new__(IsolatedSpeechBackend)
+        backend.name = "pocket-tts"
+        backend._messages = queue.Queue()
+        backend._stderr = ["native failure"]
+        process = FakeProcess(None)
+        previous = FakeProcess(None)
+        document = {"type": "chunk", "request_id": "current"}
+        payload = b"current PCM"
+        backend._messages.put((previous, {"type": "eof"}, b""))
+        backend._messages.put((process, document, payload))
+
+        self.assertEqual(backend._next_frame(process, timeout=0), (document, payload))
+        with self.assertRaises(queue.Empty):
+            backend._next_frame(process, timeout=0)
+        process.returncode = 1
+        with self.assertRaisesRegex(
+            TTSSynthesisError, "exited unexpectedly: native failure"
+        ):
+            backend._next_frame(process, timeout=0)
+
     def test_worker_process_guard_checks_stream_contracts(self):
         self.assertTrue(_is_worker_process(FakeProcess(None)))
         for name, incomplete in (

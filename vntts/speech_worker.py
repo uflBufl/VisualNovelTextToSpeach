@@ -1128,7 +1128,9 @@ class IsolatedSpeechBackend:
                         + (f": {details}" if details else "")
                     )
                 try:
-                    message = self._next_message(process, timeout=min(0.1, remaining))
+                    message, _payload = self._next_frame(
+                        process, timeout=min(0.1, remaining)
+                    )
                 except queue.Empty:
                     continue
                 break
@@ -1212,23 +1214,6 @@ class IsolatedSpeechBackend:
             raise TTSSynthesisError(f"{self.name} isolated worker stdin is unavailable")
         with self._send_lock:
             _write_frame(process.stdin, document)
-
-    def _next_message(
-        self, process: WorkerProcess, *, timeout: float = 0.1
-    ) -> FrameDocument:
-        while True:
-            try:
-                owner, document, _payload = self._messages.get(timeout=timeout)
-            except queue.Empty as error:
-                if process.poll() is not None:
-                    details = "\n".join(self._stderr)
-                    raise TTSSynthesisError(
-                        f"{self.name} isolated worker exited unexpectedly"
-                        + (f": {details}" if details else "")
-                    ) from error
-                raise
-            if owner is process:
-                return document
 
     def _next_frame(
         self, process: WorkerProcess, *, timeout: float = 0.1
