@@ -1,3 +1,4 @@
+import json
 import os
 import queue
 import subprocess
@@ -18,10 +19,13 @@ from vntts.speech_worker import (
     _REQUIRED_MODULES,
     IsolatedSpeechBackend,
     RetainedWorkerRuntime,
+    _is_worker_backend,
     _is_worker_process,
     _module_health,
     _read_frame,
     _registry_from_document,
+    _result_document,
+    _result_document_value,
     _runtime_paths,
     _serialize_registry,
     _write_frame,
@@ -147,6 +151,35 @@ class FakeProcess:
 
 
 class SpeechWorkerTest(unittest.TestCase):
+    def test_worker_integer_boundaries_reject_booleans(self):
+        backend = FakeWorkerBackend(CharacterVoiceRegistry())
+        self.assertTrue(_is_worker_backend(backend))
+        document = _result_document(
+            backend.render(SynthesisRequest("Narrator", "A line.")).collect()
+        )
+        document["limits"]["max_tokens"] = 256
+        document["diagnostics"]["seed"] = 7
+        self.assertEqual(_result_document_value(document), document)
+
+        for value in (False, True):
+            with self.subTest(payload_bytes=value):
+                header = json.dumps({"payload_bytes": value}).encode()
+                stream = BytesIO(len(header).to_bytes(4, "big") + header + b"x")
+                with self.assertRaisesRegex(ValueError, "invalid payload size"):
+                    _read_frame(stream)
+            with self.subTest(sample_rate=value):
+                backend.sample_rate = value
+                self.assertFalse(_is_worker_backend(backend))
+            for group, field in (("limits", "max_tokens"), ("diagnostics", "seed")):
+                with self.subTest(field=field, value=value):
+                    original = document[group][field]
+                    document[group][field] = value
+                    with self.assertRaisesRegex(
+                        TTSConfigurationError, "render result is malformed"
+                    ):
+                        _result_document_value(document)
+                    document[group][field] = original
+
     def test_worker_process_guard_checks_stream_contracts(self):
         self.assertTrue(_is_worker_process(FakeProcess(None)))
         for name, incomplete in (

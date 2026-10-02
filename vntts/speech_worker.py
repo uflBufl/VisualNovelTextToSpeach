@@ -336,7 +336,7 @@ def _result_document_value(value: object) -> SynthesisResultDocument:
         not isinstance(document.get("sample_rate"), int)
         or not isinstance(document.get("completion"), str)
         or max_tokens is not None
-        and not isinstance(max_tokens, int)
+        and (not isinstance(max_tokens, int) or isinstance(max_tokens, bool))
         or max_audio_seconds is not None
         and not isinstance(max_audio_seconds, float)
         or first_chunk_ms is not None
@@ -346,7 +346,7 @@ def _result_document_value(value: object) -> SynthesisResultDocument:
         or not isinstance(diagnostics.get("cache_source"), str)
         or not isinstance(diagnostics.get("generation_profile"), str)
         or seed is not None
-        and not isinstance(seed, int)
+        and (not isinstance(seed, int) or isinstance(seed, bool))
         or not isinstance(diagnostics.get("chunk_count"), int)
         or not isinstance(diagnostics.get("sample_count"), int)
     ):
@@ -388,7 +388,8 @@ def _is_worker_backend(value: object) -> TypeGuard[_WorkerBackend]:
     return (
         hasattr(value, "registry")
         and hasattr(value, "narrator_reference")
-        and isinstance(getattr(value, "sample_rate", None), int)
+        and isinstance(sample_rate := getattr(value, "sample_rate", None), int)
+        and not isinstance(sample_rate, bool)
         and callable(getattr(value, "render", None))
         and callable(getattr(value, "prime", None))
         and callable(getattr(value, "set_live_mode_active", None))
@@ -463,7 +464,11 @@ def _read_frame(stream: _ReadableBinaryStream) -> WorkerFrame | None:
     if not _is_document(document):
         raise ValueError("Speech worker emitted an invalid frame header")
     payload_size = document.pop("payload_bytes", 0)
-    if not isinstance(payload_size, int) or not 0 <= payload_size <= 512_000_000:
+    if (
+        not isinstance(payload_size, int)
+        or isinstance(payload_size, bool)
+        or not 0 <= payload_size <= 512_000_000
+    ):
         raise ValueError("Speech worker emitted an invalid payload size")
     payload = _read_exact(stream, payload_size)
     if payload is None:
