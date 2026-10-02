@@ -12,6 +12,7 @@ from types import ModuleType
 from typing import TypeAlias
 
 from vntts_artifacts.atomic_io import atomic_write_json
+from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.cli import CLIReportResult
 from vntts.game_audio_decoder import (
@@ -122,13 +123,6 @@ def probe_bundled_pocket_runtime(
     return report
 
 
-def _sha256(path: str | Path) -> str:
-    import hashlib
-
-    with Path(path).open("rb") as source:
-        return hashlib.file_digest(source, "sha256").hexdigest()
-
-
 def _huggingface_snapshot_inventory(
     cache_root: str | Path,
 ) -> list[dict[str, str | int]]:
@@ -153,7 +147,7 @@ def _huggingface_snapshot_inventory(
                     "revision": revision,
                     "path": relative_path,
                     "size": path.stat().st_size,
-                    "sha256": _sha256(path.resolve()),
+                    "sha256": sha256_file(path.resolve()),
                 }
             )
     return artifacts
