@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from hashlib import sha256
 from pathlib import Path
 from traceback import format_exception
 from typing import Protocol, TypeAlias
@@ -43,6 +44,9 @@ from vntts.voices import default_voice_choice_id
 class _PreviewAudio(Protocol):
     @property
     def path(self) -> Path: ...
+
+    @property
+    def audio_sha256(self) -> str: ...
 
 
 CandidateEntry: TypeAlias = tuple[VoiceCandidate, str, bool]
@@ -90,6 +94,13 @@ _speech_runtime_label: Callable[[object | None], str] = speech_runtime_label
 
 class VoiceAuditionUIError(RuntimeError):
     """The player audition card received an invalid unresolved plan."""
+
+
+def _read_verified_audio(path: Path, expected_sha256: str | None) -> bytes:
+    payload = path.read_bytes()
+    if sha256(payload).hexdigest() != expected_sha256:
+        raise VoiceAuditionUIError("Voice sample changed after validation")
+    return payload
 
 
 class VoiceAuditionPanel(QGroupBox):
@@ -685,20 +696,24 @@ class VoiceAuditionPanel(QGroupBox):
         self.status.setText(
             "Playing the generated preview. Use this voice only if the sample is suitable."
         )
-        if not self._play_preview(preview):
-            self._accepted_choice = None
-            self.a_use.setEnabled(False)
+        self._play_preview(preview)
 
     def _play_preview(self, preview: _PreviewAudio) -> bool:
+        self._accepted_choice = None
+        self.a_use.setEnabled(False)
         try:
-            payload = preview.path.read_bytes()
-        except OSError as error:
+            payload = _read_verified_audio(preview.path, preview.audio_sha256)
+        except (OSError, VoiceAuditionUIError) as error:
+            self._previews.pop(self._preview_key(self._current_entry()[0]), None)
+            self._set_playing_source(None)
             self.status.setText(f"Unable to play generated preview: {error}")
             return False
         player = self._ensure_player()
         player.stop()
         playing = player.play_bytes(payload, source=str(preview.path)) is not None
         if playing:
+            self._accepted_choice = self._current_entry()[1]
+            self.a_use.setEnabled(True)
             self._set_playing_source("preview")
             self.status.setText(
                 "Playing the generated preview. Use this voice only if the sample "
@@ -744,8 +759,8 @@ class VoiceAuditionPanel(QGroupBox):
             record_game_import("voice-original-playback", outcome="unavailable")
             return
         try:
-            payload = reference.read_bytes()
-        except OSError as error:
+            payload = _read_verified_audio(reference, reference_sha256)
+        except (OSError, VoiceAuditionUIError) as error:
             self.status.setText(f"Unable to play original reference: {error}")
             record_game_import(
                 "voice-original-playback", outcome="failed", reason=str(error)

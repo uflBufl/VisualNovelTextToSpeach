@@ -83,7 +83,7 @@ def with_second_group(plan, group):
 def generated_preview(root: Path):
     path = root / "preview.wav"
     path.write_bytes(clean_wav_bytes())
-    return Mock(path=path)
+    return Mock(path=path, audio_sha256=sha256_file(path))
 
 
 class VoiceAuditionPanelTest(unittest.TestCase):
@@ -271,6 +271,73 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                     failed.assert_not_called()
                     self.assertFalse(panel.retry_save_button.isVisible())
 
+    def test_cached_preview_playback_failure_cannot_accept_the_voice(self):
+        for failure in ("changed", "missing", "unplayable"):
+            with self.subTest(failure=failure), TemporaryDirectory() as directory:
+                root = Path(directory)
+                plan, _group, _manifest = ambiguous_fixture(root)
+                preview = generated_preview(root)
+                service, decisions, player = Mock(), Mock(), Mock()
+                service.generate.return_value = preview
+                pool = ManualThreadPool()
+                panel = VoiceAuditionPanel(
+                    decisions, preview_service=service, thread_pool=pool, player=player
+                )
+                self.addCleanup(panel.deleteLater)
+                self.addCleanup(panel.shutdown)
+                panel.start(plan)
+                panel.a_play.click()
+                pool.tasks.pop().run()
+                self.application.processEvents()
+                self.assertTrue(panel.a_use.isEnabled())
+                panel._stop_player()
+                if failure == "changed":
+                    preview.path.write_bytes(clean_wav_bytes(amplitude=0.2))
+                elif failure == "missing":
+                    preview.path.unlink()
+                else:
+                    player.play_bytes.return_value = None
+                player.reset_mock()
+                panel.a_play.click()
+                self.assertFalse(panel.a_use.isEnabled())
+                panel.a_use.click()
+                decisions.remember_many.assert_not_called()
+                if failure != "unplayable":
+                    player.play_bytes.assert_not_called()
+                    self.assertEqual(panel.a_play.text(), "Generate preview")
+                else:
+                    player.play_bytes.return_value = object()
+                    panel.a_play.click()
+                    self.assertTrue(panel.a_use.isEnabled())
+                    self.assertEqual(service.generate.call_count, 1)
+
+    def test_original_playback_verifies_the_bytes_after_reference_resolution(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            service = Mock()
+            verifier = VoiceAuditionPreviewService()
+            self.addCleanup(verifier.close)
+
+            def replace_reference(*arguments):
+                reference = verifier.reference_audio(*arguments)
+                reference.write_bytes(clean_wav_bytes(amplitude=0.2))
+                return reference
+
+            service.reference_audio.side_effect = replace_reference
+            player, decisions = Mock(), Mock()
+            panel = VoiceAuditionPanel(
+                decisions, preview_service=service, player=player
+            )
+            self.addCleanup(panel.deleteLater)
+            self.addCleanup(panel.shutdown)
+            panel.start(plan, group_id=group.group_id)
+            panel.a_original.click()
+            player.play_bytes.assert_not_called()
+            self.assertFalse(panel.a_use.isEnabled())
+            self.assertIn("changed after validation", panel.status.text())
+            service.generate.assert_not_called()
+            decisions.remember_many.assert_not_called()
 
     def test_retry_after_shutdown_gets_a_usable_preview_service(self):
         with TemporaryDirectory() as temporary_directory:
@@ -333,9 +400,9 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             )
             decisions = VoiceDecisionStore(root / "decisions.json")
             preview_service = Mock()
-            reference = root / "reference.wav"
-            reference.write_bytes(clean_wav_bytes())
-            preview_service.reference_audio.return_value = reference
+            verifier = VoiceAuditionPreviewService()
+            self.addCleanup(verifier.close)
+            preview_service.reference_audio.side_effect = verifier.reference_audio
             pool = ManualThreadPool()
             panel = VoiceAuditionPanel(
                 decisions,
@@ -388,7 +455,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             def generated_preview(_plan, _group, source, **_options):
                 path = root / f"{source.removeprefix('character:')}.wav"
                 path.write_bytes(clean_wav_bytes())
-                return Mock(path=path)
+                return Mock(path=path, audio_sha256=sha256_file(path))
 
             preview_service.generate.side_effect = generated_preview
             player = Mock()
@@ -518,7 +585,9 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             )
             generated = root / "generated.wav"
             generated.write_bytes(clean_wav_bytes())
-            service.generate.return_value = Mock(path=generated)
+            service.generate.return_value = Mock(
+                path=generated, audio_sha256=sha256_file(generated)
+            )
             player = Mock()
             pool = ManualThreadPool()
             panel = VoiceAuditionPanel(

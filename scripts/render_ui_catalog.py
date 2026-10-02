@@ -1301,7 +1301,9 @@ def _render_stories(
         elif state == "preview-ready":
             preview = Path(dialog._catalog_temporary_directory.name) / "preview.wav"
             write_silent_wav(preview)
-            panel._preview_finished(SimpleNamespace(path=preview), None)
+            panel._preview_finished(
+                SimpleNamespace(path=preview, audio_sha256=sha256_file(preview)), None
+            )
             panel._set_playing_source(None)
             panel.status.setText("Generated preview ready. Use this voice if suitable.")
         elif state == "preview-failure":
