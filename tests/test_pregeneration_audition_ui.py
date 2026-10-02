@@ -226,6 +226,52 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.assertIn("spoken text unknown", panel.a_reason.text())
             panel.cancel()
 
+    def test_shutdown_waits_for_save_without_emitting_terminal_signals(self):
+        for save_error, preview_active, save_first in (
+            (None, False, False),
+            (OSError("save failed"), False, False),
+            (None, True, False),
+            (None, True, True),
+        ):
+            with self.subTest(
+                error=save_error, preview=preview_active, save_first=save_first
+            ):
+                with TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    plan, _group, _manifest = ambiguous_fixture(root)
+                    decisions = Mock()
+                    decisions.remember_many.side_effect = save_error
+                    service = Mock()
+                    service.generate.side_effect = VoiceAuditionCancelled("cancelled")
+                    pool = ManualThreadPool()
+                    panel = VoiceAuditionPanel(
+                        decisions,
+                        preview_service=service,
+                        thread_pool=pool,
+                        player=Mock(),
+                    )
+                    self.addCleanup(panel.deleteLater)
+                    completed, failed = Mock(), Mock()
+                    panel.completed.connect(completed)
+                    panel.saveFailed.connect(failed)
+                    panel.start(plan)
+                    if preview_active:
+                        panel.a_play.click()
+                    panel.choose_all_button.click()
+                    panel.shutdown()
+                    service.close.assert_not_called()
+                    tasks = list(reversed(pool.tasks)) if save_first else pool.tasks
+                    for index, task in enumerate(tasks):
+                        task.run()
+                        self.application.processEvents()
+                        if index < len(tasks) - 1:
+                            service.close.assert_not_called()
+                    service.close.assert_called_once_with()
+                    completed.assert_not_called()
+                    failed.assert_not_called()
+                    self.assertFalse(panel.retry_save_button.isVisible())
+
+
     def test_retry_after_shutdown_gets_a_usable_preview_service(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

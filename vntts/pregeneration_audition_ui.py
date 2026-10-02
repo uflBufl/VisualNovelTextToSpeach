@@ -797,6 +797,10 @@ class VoiceAuditionPanel(QGroupBox):
         )
 
     def _decision_finished(self, _result: object, error: Exception | None) -> None:
+        if self._shutdown_requested:
+            if not self.active:
+                self.preview_service.close()
+            return
         if self._cancel_requested:
             if not self.active:
                 self._emit_cancelled()
