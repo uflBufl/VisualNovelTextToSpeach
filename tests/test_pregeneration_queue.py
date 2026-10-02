@@ -630,6 +630,55 @@ class PregenerationInputStoreTest(unittest.TestCase):
             result = PregenerationInputStore(jobs).materialize(job, plan)
             queue = VoiceGenerationQueue.load(result.queue)
             queue_by_line = {item.line_id: item.queue_id for item in queue.items}
+            input_path = result.directory / "input.json"
+            original = json.loads(input_path.read_text(encoding="utf-8"))
+            for field, value, error in (
+                (
+                    "audio_event_projection_queue_ids",
+                    ["unknown"],
+                    "projection queue ids changed",
+                ),
+                (
+                    "audio_event_projection_queue_ids",
+                    [queue_by_line["pure-event"]],
+                    "projection queue ids changed",
+                ),
+                (
+                    "audio_event_projection_queue_ids",
+                    [],
+                    "projection queue ids changed",
+                ),
+                (
+                    "audio_event_omission_queue_ids",
+                    [queue_by_line["mixed-event"]],
+                    "omission queue ids changed",
+                ),
+                ("audio_event_omission_queue_ids", [], "omission queue ids changed"),
+                (
+                    "audio_event_projection_queue_ids",
+                    [1],
+                    "projection queue ids are invalid",
+                ),
+                ("queue_items", 5, "queue item counts changed"),
+                ("queue_items", True, "queue items must be"),
+                ("ready_items", 6, "queue item counts changed"),
+                ("ready_items", 4, "queue item counts changed"),
+                ("narrator_fallback_roles", [], "narrator fallback roles changed"),
+                (
+                    "narrator_fallback_roles",
+                    ["Other"],
+                    "narrator fallback roles changed",
+                ),
+                ("ready_items", -1, "ready items must be"),
+            ):
+                with self.subTest(field=field, value=value):
+                    atomic_write_json(input_path, {**original, field: value})
+                    with self.assertRaisesRegex(PregenerationQueueError, error):
+                        PregenerationInputStore(jobs).materialize(job, plan)
+            atomic_write_json(input_path, original)
+            self.assertEqual(
+                PregenerationInputStore(jobs).materialize(job, plan), result
+            )
 
         self.assertEqual(result.queue_items, 6)
         self.assertEqual(result.ready_items, 5)

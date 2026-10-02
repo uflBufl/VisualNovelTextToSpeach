@@ -28,6 +28,10 @@ from vntts_artifacts.voice_manifest import (
 )
 
 from vntts.authoring.audio_events import audio_event_plan_for_record
+from vntts.authoring.generation_state import (
+    BulkGenerationError,
+    load_stable_generation_queue,
+)
 from vntts.authoring.publication import (
     AtomicPublicationError,
     rename_directory_no_replace,
@@ -124,7 +128,7 @@ class PregenerationInputStore:
             f"generation-input-{identity[:16]}"
         )
         if destination.is_dir():
-            return self._reused_input(destination, identity)
+            return self._reused_input(destination, identity, effective)
         root = destination.parent
         root.mkdir(parents=True, exist_ok=True)
         try:
@@ -229,9 +233,9 @@ class PregenerationInputStore:
                     rename_directory_no_replace(staging, destination)
                 except AtomicPublicationError:
                     if destination.is_dir():
-                        return _load_existing(destination, identity)
+                        return _load_existing(destination, identity, effective)
                     raise
-                result = _load_existing(destination, identity)
+                result = _load_existing(destination, identity, effective)
                 _record_input_phase(
                     "publish",
                     phase_started,
@@ -282,9 +286,11 @@ class PregenerationInputStore:
         return story, registry
 
     @staticmethod
-    def _reused_input(destination: Path, identity: str) -> PregenerationInput:
+    def _reused_input(
+        destination: Path, identity: str, effective: EffectiveVoiceRoutes
+    ) -> PregenerationInput:
         phase_started, cpu_started = perf_counter(), process_time()
-        result = _load_existing(destination, identity)
+        result = _load_existing(destination, identity, effective)
         _record_input_phase("reuse", phase_started, cpu_started, cache_state="disk")
         return result
 
@@ -590,7 +596,9 @@ def _write_reference_wav(path: Path, payload: bytes, character: str) -> None:
     probe_pcm16_mono_wav(path)
 
 
-def _load_existing(directory: Path, identity: str) -> PregenerationInput:
+def _load_existing(
+    directory: Path, identity: str, effective: EffectiveVoiceRoutes
+) -> PregenerationInput:
     try:
         document = read_versioned_json(
             directory / "input.json",
@@ -604,18 +612,23 @@ def _load_existing(directory: Path, identity: str) -> PregenerationInput:
             "voice_manifest": directory / "voice-manifest.json",
             "queue": directory / "queue.jsonl",
         }
+        queue, queue_sha256 = load_stable_generation_queue(paths["queue"])
         for name, path in paths.items():
-            if sha256_file(path) != document.get(f"{name}_sha256"):
+            digest = queue_sha256 if name == "queue" else sha256_file(path)
+            if digest != document.get(f"{name}_sha256"):
                 raise ValueError(f"{name.replace('_', ' ')} changed")
         roles = document.get("narrator_fallback_roles")
         if not isinstance(roles, list) or not all(
             isinstance(value, str) and value.strip() for value in roles
         ):
             raise ValueError("narrator fallback roles are invalid")
+        if set(roles) != set(effective["narrator_roles"]):
+            raise ValueError("narrator fallback roles changed")
         event_routes = {}
-        for name in (
-            "audio_event_projection_queue_ids",
-            "audio_event_omission_queue_ids",
+        for name, expected in zip(
+            ("audio_event_projection_queue_ids", "audio_event_omission_queue_ids"),
+            _audio_event_routes(queue),
+            strict=True,
         ):
             values = document.get(name)
             if (
@@ -624,11 +637,19 @@ def _load_existing(directory: Path, identity: str) -> PregenerationInput:
                 or len(values) != len(set(values))
             ):
                 raise ValueError(f"{name.replace('_', ' ')} are invalid")
+            if set(values) != set(expected):
+                raise ValueError(f"{name.replace('_', ' ')} changed")
             event_routes[name] = tuple(values)
-        if set(event_routes["audio_event_projection_queue_ids"]).intersection(
-            event_routes["audio_event_omission_queue_ids"]
-        ):
-            raise ValueError("audio event routes overlap")
+        queue_items = _nonnegative_int(document.get("queue_items"), "queue items")
+        ready_items = _nonnegative_int(document.get("ready_items"), "ready items")
+        expected_ready = _runnable_generation_items(
+            queue,
+            effective,
+            projection_ids=event_routes["audio_event_projection_queue_ids"],
+            omission_ids=event_routes["audio_event_omission_queue_ids"],
+        )
+        if (queue_items, ready_items) != (len(queue.items), expected_ready):
+            raise ValueError("queue item counts changed")
         semantic_sha256 = document.get("source_audio_semantic_evidence_sha256")
         semantic_path = None
         if semantic_sha256 is not None:
@@ -642,8 +663,8 @@ def _load_existing(directory: Path, identity: str) -> PregenerationInput:
             voice_manifest=paths["voice_manifest"],
             queue=paths["queue"],
             queue_sha256=_required_text(document.get("queue_sha256"), "queue SHA-256"),
-            queue_items=_nonnegative_int(document.get("queue_items"), "queue items"),
-            ready_items=_nonnegative_int(document.get("ready_items"), "ready items"),
+            queue_items=queue_items,
+            ready_items=ready_items,
             narrator_fallback_roles=tuple(roles),
             story_index_sha256=_required_text(
                 document.get("story_index_sha256"), "story index SHA-256"
@@ -666,7 +687,7 @@ def _load_existing(directory: Path, identity: str) -> PregenerationInput:
             ],
             source_audio_semantic_evidence=semantic_path,
         )
-    except (OSError, TypeError, ValueError) as error:
+    except (BulkGenerationError, OSError, TypeError, ValueError) as error:
         raise PregenerationQueueError(
             f"Saved offline generation inputs are invalid: {error}"
         ) from error
