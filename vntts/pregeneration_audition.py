@@ -635,20 +635,20 @@ def _validate_request(
         candidate.source_id: candidate
         for candidate in (*group.candidates, *group.candidate_inventory)
     }
-    candidates = tuple(
-        candidate
-        for source_id, candidate in candidates_by_source.items()
-        if source_id == candidate_source_id
+    candidate = (
+        candidates_by_source.get(candidate_source_id)
+        if isinstance(candidate_source_id, str)
+        else None
     )
     if (
-        not candidates
+        candidate is None
         and group.narrator_candidate is not None
         and group.narrator_candidate.source_id == candidate_source_id
     ):
-        candidates = (*candidates, group.narrator_candidate)
-    if len(candidates) != 1:
+        candidate = group.narrator_candidate
+    if candidate is None:
         raise VoiceAuditionError("Voice audition candidate is not uniquely available")
-    return candidates[0]
+    return candidate
 
 
 def _preview_text(group: VoiceGroup, text: str | None) -> str:

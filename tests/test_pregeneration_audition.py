@@ -19,6 +19,7 @@ from vntts.pregeneration_audition import (
     VoiceAuditionError,
     VoiceAuditionIncomplete,
     VoiceAuditionPreviewService,
+    _validate_request,
 )
 from vntts.pregeneration_setup import PregenerationJobStore, inspect_story_index
 from vntts.pregeneration_voices import VoiceCandidate, VoicePlanStore
@@ -127,6 +128,30 @@ def ambiguous_fixture(root):
 
 
 class VoiceAuditionPreviewServiceTest(unittest.TestCase):
+    def test_request_prefers_inventory_and_retains_narrator_fallback(self):
+        with TemporaryDirectory() as directory:
+            plan, group, _manifest = ambiguous_fixture(Path(directory))
+            candidate = group.candidates[0]
+            inventoried = replace(candidate, recommendation="Reviewed inventory")
+            narrator = VoiceCandidate("preset:alba", "alba", "alba", ())
+            group = replace(
+                group,
+                candidates=(candidate, candidate),
+                candidate_inventory=(inventoried,),
+                narrator_candidate=narrator,
+            )
+            plan = replace(plan, groups=(group,))
+            self.assertIs(
+                _validate_request(plan, group, candidate.source_id), inventoried
+            )
+            self.assertIs(_validate_request(plan, group, narrator.source_id), narrator)
+            for source_id in ("unavailable", [], None):
+                with self.subTest(source_id=source_id):
+                    with self.assertRaisesRegex(
+                        VoiceAuditionError, "not uniquely available"
+                    ):
+                        _validate_request(plan, group, source_id)
+
     def test_rejects_changed_audio_between_preview_validation_phases(self):
         for cached in (False, True):
             with self.subTest(cached=cached), TemporaryDirectory() as directory:
