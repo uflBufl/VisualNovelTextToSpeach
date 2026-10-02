@@ -864,17 +864,8 @@ class GeneratedAudioFallbackBackend:
                     line.line_id,
                     line.text_sha256,
                     line.source_audio_id,
-                    (
-                        source_audio_wait
-                        if source_audio_completeness == "full"
-                        else None
-                    ),
-                    (
-                        "story-index+conservative-postroll"
-                        if source_audio_completion is not None
-                        and source_audio_completeness == "full"
-                        else None
-                    ),
+                    source_audio_wait,
+                    "story-index+conservative-postroll",
                 ),
                 trace,
             )
