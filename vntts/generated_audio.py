@@ -1238,9 +1238,7 @@ class AudioRoutePlaybackOwner:
             return self._play_generated_route(route, playback_guard)
         if isinstance(route, PendingGeneratedAudioRoute):
             return self._play_pending_generated_route(route, playback_guard)
-        if isinstance(route, LiveFallbackRoute):
-            return self._play_live_route(route, playback_guard)
-        if isinstance(route, LiveTTSRoute):
+        if isinstance(route, (LiveFallbackRoute, LiveTTSRoute)):
             return self._play_live_route(route, playback_guard)
         if isinstance(route, AudioEventOmissionRoute):
             status = (
@@ -1499,7 +1497,7 @@ class AudioRoutePlaybackOwner:
         route: GeneratedAudioRoute | LiveFallbackRoute | LiveTTSRoute,
         playback_guard: PlaybackGuard,
     ) -> bool:
-        seconds = float(getattr(route, "source_audio_lead_seconds", 0.0) or 0.0)
+        seconds = route.source_audio_lead_seconds
         if seconds <= 0:
             return playback_guard is None or bool(playback_guard())
         if not self._activate("game", clear=self.source_audio_completion_stop):
