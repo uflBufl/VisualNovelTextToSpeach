@@ -151,17 +151,13 @@ def run_release_smoke_test(
                 [CharacterVoice(expected_speaker, "release-smoke-test")]
             )
 
+        selected_recognize: _Recognizer = (
+            recognize_dialog_image_result if recognize is None else recognize
+        )
+
         def recognize_frame(frame: Image.Image) -> _Recognition:
-            if recognize is not None:
-                return recognize(
-                    frame,
-                    voice_registry,
-                    minimum_confidence=minimum_confidence,
-                )
-            return recognize_dialog_image_result(
-                frame,
-                voice_registry,
-                minimum_confidence=minimum_confidence,
+            return selected_recognize(
+                frame, voice_registry, minimum_confidence=minimum_confidence
             )
 
         result = recognize_frame(image)
