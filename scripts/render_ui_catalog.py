@@ -1311,8 +1311,8 @@ def _render_stories(
                     RuntimeError("The speech engine stopped before producing audio."),
                 )
         elif state == "save-failure":
-            candidate, choice, _narrator = panel._current_entry()
-            panel._displayed = ((candidate, None, choice),)
+            _candidate, choice, _narrator = panel._current_entry()
+            panel._accepted_choice = choice
             panel.a_use.setEnabled(True)
             panel.use_a()
             panel._decision_finished(None, OSError("Application data is read-only."))

@@ -46,7 +46,6 @@ class _PreviewAudio(Protocol):
 
 
 CandidateEntry: TypeAlias = tuple[VoiceCandidate, str, bool]
-DisplayedEntry: TypeAlias = tuple[VoiceCandidate, _PreviewAudio | None, str]
 PreviewKey: TypeAlias = tuple[str, str | None]
 PendingDecision: TypeAlias = tuple[VoiceGroup, str]
 
@@ -136,7 +135,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._candidate_entries: tuple[CandidateEntry, ...] = ()
         self._previews: dict[PreviewKey, _PreviewAudio] = {}
         self._failed_candidate_source_ids: set[str] = set()
-        self._displayed: tuple[DisplayedEntry, ...] = ()
+        self._accepted_choice: str | None = None
         self._sample_text: str | None = None
         self._pending_decisions: list[PendingDecision] = []
         self._save_succeeded = False
@@ -332,12 +331,12 @@ class VoiceAuditionPanel(QGroupBox):
         candidate, _choice, _narrator = self._current_entry()
         preview = self._previews.get(self._preview_key(candidate))
         if preview is not None:
-            self._displayed = ((candidate, preview, self._current_entry()[1]),)
+            self._accepted_choice = self._current_entry()[1]
             self._set_decision_actions(True)
             self._play_preview(preview)
             return
         self._stop_player()
-        self._displayed = ()
+        self._accepted_choice = None
         self._set_decision_actions(False)
         self.status.setText("Preparing this generated preview...")
         self.preview_runner.start(
@@ -349,10 +348,8 @@ class VoiceAuditionPanel(QGroupBox):
         )
 
     def use_a(self) -> None:
-        if not self._displayed:
-            return
-        _candidate, _preview, choice = self._displayed[0]
-        self._record_choice(choice)
+        if self._accepted_choice is not None:
+            self._record_choice(self._accepted_choice)
 
     def choose_for_me(self) -> None:
         if self.preview_runner.active or self.decision_runner.active:
@@ -395,19 +392,13 @@ class VoiceAuditionPanel(QGroupBox):
     def _automatic_source_id(self, group: VoiceGroup) -> str | None:
         for candidate in group.candidates:
             if candidate.source_id not in self._failed_candidate_source_ids:
-                source_id = candidate.source_id
-                if isinstance(source_id, str):
-                    return source_id
+                return candidate.source_id
         narrator = group.narrator_candidate
         if (
             narrator is not None
             and narrator.source_id not in self._failed_candidate_source_ids
         ):
-            return (
-                default_voice_choice_id
-                if isinstance(default_voice_choice_id, str)
-                else None
-            )
+            return default_voice_choice_id
         return None
 
     def cancel(self) -> None:
@@ -441,7 +432,7 @@ class VoiceAuditionPanel(QGroupBox):
     def _show_group(self) -> None:
         self._candidate_offset = 0
         self._previews = {}
-        self._displayed = ()
+        self._accepted_choice = None
         self.reference_details_toggle.setChecked(False)
         group = self.current_group()
         candidates = (
@@ -574,7 +565,7 @@ class VoiceAuditionPanel(QGroupBox):
 
     def _show_current_candidate(self) -> None:
         self._stop_player()
-        self._displayed = ()
+        self._accepted_choice = None
         candidate, _choice, narrator = self._current_entry()
         self.a_box.setTitle(
             "Original reference for narrator" if narrator else "Original game reference"
@@ -632,7 +623,7 @@ class VoiceAuditionPanel(QGroupBox):
         self.auto_button.setText("Choose for me")
         self.auto_button.setEnabled(True)
         if preview is not None:
-            self._displayed = ((candidate, preview, self._current_entry()[1]),)
+            self._accepted_choice = self._current_entry()[1]
             self.status.setText("Replay the preview or use this verified voice.")
         else:
             self.status.setText(
@@ -642,7 +633,7 @@ class VoiceAuditionPanel(QGroupBox):
             )
 
     def _preview_finished(
-        self, preview: _PreviewAudio, error: Exception | None
+        self, preview: _PreviewAudio | None, error: Exception | None
     ) -> None:
         if self._shutdown_requested:
             if not self.active:
@@ -685,16 +676,17 @@ class VoiceAuditionPanel(QGroupBox):
                 )
             )
             return
+        assert preview is not None
         self._failed_candidate_source_ids.discard(candidate.source_id)
         self._previews[self._preview_key(candidate)] = preview
-        self._displayed = ((candidate, preview, choice),)
+        self._accepted_choice = choice
         self._set_decision_actions(True)
         self.a_play.setText("Play generated preview")
         self.status.setText(
             "Playing the generated preview. Use this voice only if the sample is suitable."
         )
         if not self._play_preview(preview):
-            self._displayed = ()
+            self._accepted_choice = None
             self.a_use.setEnabled(False)
 
     def _play_preview(self, preview: _PreviewAudio) -> bool:
@@ -735,7 +727,7 @@ class VoiceAuditionPanel(QGroupBox):
             reference_sha256=reference_sha256,
         )
         self._stop_player()
-        self._displayed = ()
+        self._accepted_choice = None
         self.a_use.setEnabled(False)
         try:
             reference = self.preview_service.reference_audio(
@@ -766,7 +758,7 @@ class VoiceAuditionPanel(QGroupBox):
         if player.play_bytes(payload, source=str(reference)) is None:
             return
         self._set_playing_source("original")
-        self._displayed = ((candidate, None, self._current_entry()[1]),)
+        self._accepted_choice = self._current_entry()[1]
         self.a_use.setEnabled(True)
 
     def _record_choice(self, source_id: str, status_message: str | None = None) -> None:
@@ -833,7 +825,7 @@ class VoiceAuditionPanel(QGroupBox):
         enabled = bool(enabled) and not self._cancel_requested
         candidate = self._current_entry()[0] if self._candidate_entries else None
         self.a_play.setEnabled(enabled and self.a_box.isVisible())
-        self.a_use.setEnabled(enabled and bool(self._displayed))
+        self.a_use.setEnabled(enabled and self._accepted_choice is not None)
         self.a_original.setEnabled(
             enabled
             and self.a_box.isVisible()
