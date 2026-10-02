@@ -427,6 +427,7 @@ class GeneratedAudioTest(unittest.TestCase):
                 "source_character": "Recorded Ada",
                 "speaker": "recorded-ada",
                 "reference_sha256s": ["b" * 64],
+                "fixture_extension": {"source": "preserved"},
                 **{
                     key: entry[key]
                     for key in (
@@ -439,6 +440,12 @@ class GeneratedAudioTest(unittest.TestCase):
                 },
             }
             entry["vntts.recorded_voice"] = identity
+            decoded = recorded_voice_identity(entry)
+            self.assertEqual(decoded, identity)
+            self.assertIsNot(decoded, identity)
+            self.assertIsNot(
+                decoded["reference_sha256s"], identity["reference_sha256s"]
+            )
             manifest.write_text(json.dumps(document))
             prepared = GeneratedAudioLibrary.load_optional(manifest).find(
                 "game:1", text_sha256("Hello.")
@@ -459,8 +466,15 @@ class GeneratedAudioTest(unittest.TestCase):
                 with self.subTest(field=field):
                     changed = {**entry, field: "c" * 64}
                     self.assertIsNone(recorded_voice_identity(changed))
-            entry["vntts.recorded_voice"] = {**identity, "reference_sha256s": ["bad"]}
-            self.assertIsNone(recorded_voice_identity(entry))
+            for invalid in (
+                {"schema_version": True},
+                {"source_character": None},
+                {"speaker": 17},
+                {"reference_sha256s": ["bad"]},
+            ):
+                with self.subTest(invalid=invalid):
+                    entry["vntts.recorded_voice"] = {**identity, **invalid}
+                    self.assertIsNone(recorded_voice_identity(entry))
 
     def create_library(self, root, *, text="Hello."):
         audio = root / "audio" / "line.wav"

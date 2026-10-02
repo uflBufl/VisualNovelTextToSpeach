@@ -11,7 +11,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Event, Lock, RLock
 from time import monotonic
-from typing import Protocol, TypeAlias, TypedDict, TypeGuard
+from typing import TYPE_CHECKING, Protocol, TypeAlias, TypedDict, TypeGuard, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -48,6 +48,9 @@ from vntts.speech_backend_contract import SpeechBackend
 from vntts.speech_backend_runtime import validate_speed, validate_volume
 from vntts.voices import is_unattributed_speaker, synthesis_character
 
+if TYPE_CHECKING:
+    from vntts.authoring.generation_manifest import RecordedVoice
+
 LIVE_FALLBACK_REASONS = frozenset(
     {
         "offline_fallback_exhausted",
@@ -70,7 +73,7 @@ class PreparedGeneratedAudio:
     provider: str | None = None
     model: str | None = None
     voice_character: str | None = None
-    recorded_voice: dict[str, object] | None = None
+    recorded_voice: RecordedVoice | None = None
 
 
 @dataclass(frozen=True)
@@ -277,7 +280,7 @@ def _has_result_resolver(resolver: _LineResolver) -> TypeGuard[_ResultLineResolv
 
 def recorded_voice_identity(
     entry: GeneratedAudioEntryLike,
-) -> dict[str, object] | None:
+) -> RecordedVoice | None:
     """Read historical identity only when it is bound to this recording and route."""
     document = getattr(entry, "document", entry)
     if not isinstance(document, dict):
@@ -311,7 +314,7 @@ def recorded_voice_identity(
         not is_lowercase_sha256(value) for value in references
     ):
         return None
-    return {**identity, "reference_sha256s": list(references)}
+    return cast("RecordedVoice", {**identity, "reference_sha256s": list(references)})
 
 
 def _validate_generated_audio_paths(index: GeneratedAudioSource) -> None:
