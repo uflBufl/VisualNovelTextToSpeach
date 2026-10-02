@@ -142,7 +142,7 @@ class ConfigurationApplyMixin:
         def _save_settings_candidate(self, candidate: AppSettings) -> Path: ...
 
     def _refresh_preparation_settings(self) -> None:
-        preparation = getattr(self, "pregeneration_dialog", None)
+        preparation = self.pregeneration_dialog
         if preparation is not None and not preparation.has_pending_work():
             preparation.apply_narrator_settings(self.settings)
 
@@ -174,11 +174,8 @@ class ConfigurationApplyMixin:
         self._configuration_restart = False
 
     def _configuration_runner_active_changed(self, active: bool) -> None:
-        action = getattr(self, "cancel_configuration_action", None)
-        if action is None:
-            return
-        action.setVisible(bool(active))
-        action.setEnabled(bool(active) and not self._shutting_down)
+        self.cancel_configuration_action.setVisible(active)
+        self.cancel_configuration_action.setEnabled(active and not self._shutting_down)
 
     def _start_configuration_apply(
         self,
