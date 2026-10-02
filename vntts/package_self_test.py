@@ -259,51 +259,38 @@ def probe_bundled_pocket_render(
         }
 
 
+def _append_probe_check[Result](
+    checks: ReportChecks,
+    name: str,
+    probe: Callable[[], Result],
+    message: Callable[[Result], str] = str,
+    *,
+    include_details: bool = False,
+    include_traceback: bool = False,
+) -> None:
+    check: ReportDocument = {"name": name}
+    try:
+        result = probe()
+        check.update(status="ok", message=message(result))
+        if include_details:
+            check["details"] = result
+    except Exception as error:
+        check.update(status="error", message=str(error))
+        if include_traceback:
+            check["traceback"] = traceback.format_exc()
+    checks.append(check)
+
+
 def _append_import_checks(
     checks: ReportChecks, import_module: Callable[[str], ModuleType]
 ) -> None:
     for module_name in required_modules:
-        try:
-            import_module(module_name)
-        except Exception as error:
-            checks.append(
-                {
-                    "name": f"Import {module_name}",
-                    "status": "error",
-                    "message": str(error),
-                    "traceback": traceback.format_exc(),
-                }
-            )
-        else:
-            checks.append(
-                {
-                    "name": f"Import {module_name}",
-                    "status": "ok",
-                    "message": "available",
-                }
-            )
-
-
-def _append_tesseract_check(
-    checks: ReportChecks, tesseract_probe: Callable[[], object]
-) -> None:
-    try:
-        version = str(tesseract_probe())
-    except Exception as error:
-        checks.append(
-            {
-                "name": "Tesseract OCR",
-                "status": "error",
-                "message": str(error),
-            }
-        )
-    else:
-        checks.append(
-            {
-                "name": "Tesseract OCR",
-                "status": "ok",
-                "message": version,
-            }
+        _append_probe_check(
+            checks,
+            f"Import {module_name}",
+            lambda: import_module(module_name),
+            lambda _module: "available",
+            include_traceback=True,
         )
 
 
@@ -346,98 +333,8 @@ def _append_bundled_dependency_checks(
             }
         )
     else:
-        try:
-            espeak_version = espeak_probe(bundled_espeak[0])
-        except Exception as error:
-            checks.append(
-                {
-                    "name": "Bundled eSpeak-NG",
-                    "status": "error",
-                    "message": str(error),
-                }
-            )
-        else:
-            checks.append(
-                {
-                    "name": "Bundled eSpeak-NG",
-                    "status": "ok",
-                    "message": espeak_version,
-                }
-            )
-
-
-def _append_game_decoder_check(
-    checks: ReportChecks, game_decoder_probe: Callable[[], object]
-) -> None:
-    try:
-        decoder_report = game_decoder_probe()
-    except Exception as error:
-        checks.append(
-            {
-                "name": "Bundled game-audio decoder",
-                "status": "error",
-                "message": str(error),
-            }
-        )
-    else:
-        checks.append(
-            {
-                "name": "Bundled game-audio decoder",
-                "status": "ok",
-                "message": str(decoder_report),
-            }
-        )
-
-
-def _append_pocket_runtime_check(
-    checks: ReportChecks, speech_runtime_probe: Callable[[], ReportDocument]
-) -> None:
-    try:
-        runtime_report = speech_runtime_probe()
-        message = _runtime_report_message(runtime_report)
-    except Exception as error:
-        checks.append(
-            {
-                "name": "Bundled Pocket TTS runtime",
-                "status": "error",
-                "message": str(error),
-            }
-        )
-    else:
-        checks.append(
-            {
-                "name": "Bundled Pocket TTS runtime",
-                "status": "ok",
-                "message": message,
-                "details": runtime_report,
-            }
-        )
-
-
-def _append_pocket_render_check(
-    checks: ReportChecks, speech_render_probe: Callable[[], ReportDocument]
-) -> None:
-    try:
-        render_report = speech_render_probe()
-    except Exception as error:
-        checks.append(
-            {
-                "name": "Bundled Pocket TTS clean-cache render",
-                "status": "error",
-                "message": str(error),
-            }
-        )
-    else:
-        checks.append(
-            {
-                "name": "Bundled Pocket TTS clean-cache render",
-                "status": "ok",
-                "message": (
-                    f"{render_report['samples']} samples at "
-                    f"{render_report['sample_rate']} Hz"
-                ),
-                "details": render_report,
-            }
+        _append_probe_check(
+            checks, "Bundled eSpeak-NG", lambda: espeak_probe(bundled_espeak[0])
         )
 
 
@@ -468,7 +365,7 @@ def run_package_self_test(
     bundled_espeak = find_bundled_espeak()
     checks: ReportChecks = []
     _append_import_checks(checks, import_module)
-    _append_tesseract_check(checks, tesseract_probe)
+    _append_probe_check(checks, "Tesseract OCR", tesseract_probe)
     frozen = bool(getattr(sys, "frozen", False))
     if frozen:
         _append_bundled_dependency_checks(
@@ -477,9 +374,21 @@ def run_package_self_test(
             bundled_espeak,
             espeak_probe,
         )
-        _append_game_decoder_check(checks, game_decoder_probe)
-        _append_pocket_runtime_check(checks, speech_runtime_probe)
-        _append_pocket_render_check(checks, speech_render_probe)
+        _append_probe_check(checks, "Bundled game-audio decoder", game_decoder_probe)
+        _append_probe_check(
+            checks,
+            "Bundled Pocket TTS runtime",
+            speech_runtime_probe,
+            _runtime_report_message,
+            include_details=True,
+        )
+        _append_probe_check(
+            checks,
+            "Bundled Pocket TTS clean-cache render",
+            speech_render_probe,
+            lambda report: f"{report['samples']} samples at {report['sample_rate']} Hz",
+            include_details=True,
+        )
 
     successful = all(check["status"] == "ok" for check in checks)
     report = {

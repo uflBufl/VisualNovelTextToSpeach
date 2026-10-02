@@ -368,6 +368,101 @@ class RuntimePathsTest(unittest.TestCase):
         )
         self.assertTrue(all(item["sha256"] for item in report["artifacts"]))
 
+    def test_invalid_probe_details_do_not_abort_package_report(self):
+        for failed_check in (
+            "Bundled Pocket TTS runtime",
+            "Bundled Pocket TTS clean-cache render",
+        ):
+            with self.subTest(check=failed_check), TemporaryDirectory() as directory:
+                root = Path(directory)
+                report_path = root / "report.json"
+                with (
+                    patch.object(sys, "frozen", True, create=True),
+                    patch(
+                        "vntts.package_self_test.configure_bundled_dependencies",
+                        return_value=root / "tesseract",
+                    ),
+                    patch(
+                        "vntts.package_self_test.find_bundled_espeak",
+                        return_value=(root / "espeak", root / "voices"),
+                    ),
+                ):
+                    result = run_package_self_test(
+                        report_path,
+                        import_module=Mock(),
+                        tesseract_probe=Mock(return_value="5.5.0"),
+                        espeak_probe=Mock(return_value="1.52.0"),
+                        game_decoder_probe=Mock(return_value="available"),
+                        speech_runtime_probe=Mock(
+                            return_value=(
+                                {}
+                                if failed_check == "Bundled Pocket TTS runtime"
+                                else self._speech_runtime_report()
+                            )
+                        ),
+                        speech_render_probe=Mock(
+                            return_value=(
+                                {}
+                                if failed_check
+                                == "Bundled Pocket TTS clean-cache render"
+                                else self._speech_render_report()
+                            )
+                        ),
+                    )
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                self.assertFalse(result.successful)
+                self.assertFalse(report["success"])
+                failed = [
+                    check for check in report["checks"] if check["status"] == "error"
+                ]
+                self.assertEqual([check["name"] for check in failed], [failed_check])
+                self.assertNotIn("details", failed[0])
+                self.assertTrue(failed[0]["message"])
+                self.assertEqual(
+                    report["checks"][-1]["name"],
+                    "Bundled Pocket TTS clean-cache render",
+                )
+
+    def test_failed_probes_preserve_all_errors_in_package_report(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            report_path = root / "report.json"
+            failed_probe = Mock(side_effect=RuntimeError("probe failed"))
+            with (
+                patch.object(sys, "frozen", True, create=True),
+                patch(
+                    "vntts.package_self_test.configure_bundled_dependencies",
+                    return_value=root / "tesseract",
+                ),
+                patch(
+                    "vntts.package_self_test.find_bundled_espeak",
+                    return_value=(root / "espeak", root / "voices"),
+                ),
+            ):
+                result = run_package_self_test(
+                    report_path,
+                    import_module=failed_probe,
+                    tesseract_probe=failed_probe,
+                    espeak_probe=failed_probe,
+                    game_decoder_probe=failed_probe,
+                    speech_runtime_probe=failed_probe,
+                    speech_render_probe=failed_probe,
+                )
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        self.assertFalse(result.successful)
+        errors = [check for check in report["checks"] if check["status"] == "error"]
+        self.assertEqual(len(errors), 15)
+        self.assertTrue(all(check["message"] == "probe failed" for check in errors))
+        self.assertTrue(
+            all(
+                ("traceback" in check) == check["name"].startswith("Import ")
+                for check in errors
+            )
+        )
+        self.assertEqual(
+            report["checks"][-1]["name"], "Bundled Pocket TTS clean-cache render"
+        )
+
     def test_package_self_test_writes_machine_readable_report(self):
         with TemporaryDirectory() as temporary_directory:
             report_path = Path(temporary_directory) / "report.json"
