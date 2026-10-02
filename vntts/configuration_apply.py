@@ -206,22 +206,11 @@ class ConfigurationApplyMixin:
         self._configuration_restart = restart
         self.set_status(progress_status)
         self.configuration_runner.start(
-            self._apply_configuration,
-            settings,
+            self.session_owner.configure,
             generation,
+            settings,
             self._configuration_cancellation,
-            restart,
-        )
-
-    def _apply_configuration(
-        self,
-        settings: AppSettings,
-        generation: int,
-        cancellation: Event,
-        restart: bool = False,
-    ) -> tuple[bool, bool]:
-        return self.session_owner.configure(
-            generation, settings, cancellation, restart=restart
+            restart=restart,
         )
 
     def cancel_configuration_apply(self) -> None:

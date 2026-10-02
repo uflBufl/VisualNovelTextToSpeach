@@ -33,7 +33,6 @@ from tests.test_pregeneration_voices import (  # noqa: E402
 from tests.test_voice_default_impact import voice_impact_fixture  # noqa: E402
 from vntts.app import TrayApplication  # noqa: E402
 from vntts.authoring.pcm_playback import PersistentPcmPlayer  # noqa: E402
-from vntts.configuration_apply import ConfigurationApplyMixin  # noqa: E402
 from vntts.game_content_importer import Reverse1999GameImporter  # noqa: E402
 from vntts.game_narrator import (  # noqa: E402
     bind_voice_library_selection,
@@ -1967,9 +1966,7 @@ class GameNarratorTest(unittest.TestCase):
         event = Event()
         generation = shell.session_owner.begin(event)
         self.assertEqual(
-            ConfigurationApplyMixin._apply_configuration(
-                shell, candidate, generation, event, True
-            ),
+            shell.session_owner.configure(generation, candidate, event, restart=True),
             (True, True),
         )
         self.assertEqual(
@@ -1979,9 +1976,7 @@ class GameNarratorTest(unittest.TestCase):
         shell.controller.reset_mock()
         event.set()
         self.assertEqual(
-            ConfigurationApplyMixin._apply_configuration(
-                shell, candidate, generation, event, True
-            ),
+            shell.session_owner.configure(generation, candidate, event, restart=True),
             (False, False),
         )
         shell.controller.start.assert_not_called()
