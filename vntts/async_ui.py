@@ -17,14 +17,12 @@ class _Task(QRunnable):
     def __init__(
         self,
         serial: int,
-        function: Callable[..., object],
-        arguments: tuple[object, ...],
+        function: Callable[[], object],
         signals: _TaskSignals,
     ) -> None:
         super().__init__()
         self.serial = serial
         self.function = function
-        self.arguments = arguments
         self.signals = signals
 
     def run(self) -> None:
@@ -32,7 +30,7 @@ class _Task(QRunnable):
         result: object = None
         failure: Exception | None = None
         try:
-            result = self.function(*self.arguments)
+            result = self.function()
         except Exception as error:
             failure = error
         record_background_operation(
@@ -82,12 +80,11 @@ class LatestTaskRunner(QObject):
         *arguments: object,
         **keyword_arguments: object,
     ) -> int:
+        task_function = partial(function, *arguments, **keyword_arguments)
         self._serial += 1
         serial = self._serial
         self._set_active(True)
-        if keyword_arguments:
-            function = partial(function, **keyword_arguments)
-        self.thread_pool.start(_Task(serial, function, arguments, self._signals))
+        self.thread_pool.start(_Task(serial, task_function, self._signals))
         return serial
 
     def cancel(self) -> bool:

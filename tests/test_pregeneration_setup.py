@@ -2895,7 +2895,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.stories.item(0).setCheckState(0, Qt.CheckState.Checked)
             dialog._save_selection()
 
-        self.assertTrue(pool.tasks[-1].arguments[2])
+        self.assertTrue(pool.tasks[-1].function.args[2])
 
     def test_semantic_successor_replaces_job_only_after_voice_plan_succeeds(self):
         with TemporaryDirectory() as temporary_directory:

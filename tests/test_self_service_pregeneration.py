@@ -446,12 +446,12 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                     lambda result, error: received.append((result, error))
                 )
 
-                def capture(*, value):
+                def capture(value, *, suffix):
                     if failure is not None:
                         raise failure
-                    return value
+                    return value + suffix
 
-                runner.start(capture, value="Captured")
+                runner.start(capture, "Capt", suffix="ured")
                 with (
                     patch("vntts.async_ui.perf_counter", side_effect=(1.0, 1.25)),
                     patch("vntts.async_ui.record_background_operation") as timing,
