@@ -109,6 +109,19 @@ def send_windows_key(keycode: int, *, user32: WindowsInput | None = None) -> boo
     return True
 
 
+def _send_key_pair(press: Callable[[], object], release: Callable[[], object]) -> None:
+    try:
+        press()
+    except BaseException as error:
+        try:
+            release()
+        except Exception as release_error:
+            error.add_note(f"Auto-advance key release failed: {release_error}")
+        raise
+    else:
+        release()
+
+
 class DialogueAdvancer:
     """Send one conservative dialogue-advance key press."""
 
@@ -138,8 +151,8 @@ class DialogueAdvancer:
         if self.platform == "win32":
             return self.windows_sender(windows_virtual_keys[self.key])
         controller = self.controller_factory()
-        controller.press(advance_keys[self.key])
-        controller.release(advance_keys[self.key])
+        key = advance_keys[self.key]
+        _send_key_pair(lambda: controller.press(key), lambda: controller.release(key))
         return True
 
     def _advance_macos(self) -> bool:
@@ -167,6 +180,8 @@ class DialogueAdvancer:
         )
         if any(event is None for event in events):
             raise RuntimeError("macOS could not create an auto-advance key event")
-        for event in events:
-            quartz.CGEventPost(quartz.kCGHIDEventTap, event)
+        _send_key_pair(
+            lambda: quartz.CGEventPost(quartz.kCGHIDEventTap, events[0]),
+            lambda: quartz.CGEventPost(quartz.kCGHIDEventTap, events[1]),
+        )
         return True

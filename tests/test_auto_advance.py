@@ -48,6 +48,59 @@ class DialogueAdvancerTest(unittest.TestCase):
         sender.assert_called_once_with(0x27)
         controller_factory.assert_not_called()
 
+    def test_interrupted_key_press_still_releases_and_keeps_original_error(self):
+        for platform in ("linux", "darwin"):
+            for error_type in (RuntimeError, KeyboardInterrupt):
+                for release_fails in (False, True):
+                    with self.subTest(
+                        platform=platform, error=error_type, release=release_fails
+                    ):
+                        error = error_type("press failed")
+                        release_error = (
+                            ValueError("release failed") if release_fails else None
+                        )
+                        controller = Mock()
+                        controller.press.side_effect = error
+                        controller.release.side_effect = release_error
+                        quartz = Mock(kCGHIDEventTap=0)
+                        quartz.CGEventCreateKeyboardEvent.side_effect = ("down", "up")
+                        quartz.CGEventPost.side_effect = (error, release_error)
+                        advancer = DialogueAdvancer(
+                            "enter",
+                            platform=platform,
+                            controller_factory=lambda: controller,
+                            quartz_module=quartz,
+                        )
+
+                        with self.assertRaises(error_type) as raised:
+                            advancer.advance()
+
+                        self.assertIs(raised.exception, error)
+                        if platform == "linux":
+                            controller.release.assert_called_once_with(
+                                keyboard.Key.enter
+                            )
+                        else:
+                            self.assertEqual(
+                                quartz.CGEventPost.call_args_list,
+                                [call(0, "down"), call(0, "up")],
+                            )
+                        if release_fails:
+                            self.assertIn("release failed", error.__notes__[0])
+
+    def test_successful_key_press_reports_release_failure(self):
+        controller = Mock()
+        controller.release.side_effect = RuntimeError("release failed")
+        advancer = DialogueAdvancer(
+            "enter", platform="linux", controller_factory=lambda: controller
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "release failed"):
+            advancer.advance()
+
+        controller.press.assert_called_once_with(keyboard.Key.enter)
+        controller.release.assert_called_once_with(keyboard.Key.enter)
+
     def test_windows_partial_send_releases_key_before_reporting_failure(self):
         user32 = Mock()
         user32.SendInput.side_effect = (1, 1)
