@@ -544,6 +544,8 @@ class VoiceLibrary:
             with self._write_transaction():
                 self.validate()
                 shutil.copytree(self.root, target.root)
+                if self.path.name != target.path.name:
+                    (target.root / self.path.name).replace(target.path)
         return target
 
     def _load(self) -> _VoiceLibraryDocument:

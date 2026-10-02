@@ -263,6 +263,29 @@ class VoiceLibraryTest(unittest.TestCase):
             self.assertEqual(probe.writer_errors, [])
             copied.validate()
 
+    def test_copy_to_preserves_a_custom_index_path(self) -> None:
+        for source_name, destination in (
+            ("custom.json", "copy"),
+            ("voice-library.json", "copy/renamed.json"),
+            ("custom.json", "copy/other.json"),
+        ):
+            with self.subTest(source=source_name, destination=destination):
+                with TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    reference = root / "reference.wav"
+                    write_wav(reference, b"\x01\x00")
+                    source = VoiceLibrary(root / "source" / source_name)
+                    source.discover("Role", reference, bind_if_missing=True)
+                    copied = source.copy_to(root / destination)
+                    self.assertEqual(copied.binding("Role"), source.binding("Role"))
+                    self.assertEqual(
+                        tuple(item.sha256 for item in copied.alternatives("Role")),
+                        tuple(item.sha256 for item in source.alternatives("Role")),
+                    )
+                    self.assertTrue(source.path.is_file())
+                    self.assertTrue(copied.path.is_file())
+                    copied.validate()
+
     def test_rollback_restores_only_unchanged_roles(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory) / "library"
