@@ -230,30 +230,34 @@ class ChapterVoicePreloader:
         else:
             source_audio_by_line_id = {}
 
-        def source_audio(line: object) -> SourceAudioExtension:
-            return source_audio_by_line_id.get(
-                _line_text(line, "line_id"),
-                ("unknown", None, None, "unknown", False),
-            )
+        def rows() -> Iterable[ChapterDialogue]:
+            for line in lines:
+                (
+                    source_audio_status,
+                    source_audio_id,
+                    source_audio_duration_seconds,
+                    source_audio_completeness,
+                    source_audio_authoritative,
+                ) = source_audio_by_line_id.get(
+                    _line_text(line, "line_id"),
+                    ("unknown", None, None, "unknown", False),
+                )
+                yield ChapterDialogue(
+                    _line_optional_text(line, "line_id"),
+                    _line_text(line, "chapter"),
+                    _line_integer(line, "sequence"),
+                    _line_text(line, "speaker"),
+                    _line_text(line, "text"),
+                    _line_optional_text(line, "text_sha256"),
+                    _line_text(line, "source_audio_status", source_audio_status),
+                    _line_optional_text(line, "source_audio_id", source_audio_id),
+                    source_audio_duration_seconds,
+                    source_audio_completeness,
+                    story_titles.get(_line_text(line, "collection_id")),
+                    source_audio_authoritative,
+                )
 
-        rows = (
-            ChapterDialogue(
-                _line_optional_text(line, "line_id"),
-                _line_text(line, "chapter"),
-                _line_integer(line, "sequence"),
-                _line_text(line, "speaker"),
-                _line_text(line, "text"),
-                _line_optional_text(line, "text_sha256"),
-                _line_text(line, "source_audio_status", source_audio(line)[0]),
-                _line_optional_text(line, "source_audio_id", source_audio(line)[1]),
-                source_audio(line)[2],
-                source_audio(line)[3],
-                story_titles.get(_line_text(line, "collection_id")),
-                source_audio(line)[4],
-            )
-            for line in lines
-        )
-        return cls(rows, lookahead_rows=lookahead_rows)
+        return cls(rows(), lookahead_rows=lookahead_rows)
 
     def resolve_exact(self, character: object, text: object) -> ChapterDialogue | None:
         """Resolve an OCR line without fuzzy text substitution."""
