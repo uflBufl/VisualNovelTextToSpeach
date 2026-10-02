@@ -38,6 +38,7 @@ from vntts.authoring.speech_quality import (
     SpeechSilenceValidationError,
     inspect_generated_speech,
 )
+from vntts.document_identity import canonical_document_sha256
 from vntts.pregeneration_voices import VoiceCandidate, VoiceGroup, VoicePlan
 from vntts.reference_quality import analyze_reference
 from vntts.speech_backend_runtime import shutdown_speech_backend
@@ -739,13 +740,7 @@ def _preview_identity(
 
         if moss_cpp_requested(plan.synthesis_model):
             document["native_generation_contract"] = NATIVE_GENERATION_CONTRACT
-    payload = json.dumps(
-        document,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+    return canonical_document_sha256(document)
 
 
 def _native_moss_preview(plan: VoicePlan) -> bool:
