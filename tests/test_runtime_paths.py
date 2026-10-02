@@ -292,18 +292,19 @@ class RuntimePathsTest(unittest.TestCase):
                     )
                 },
             }
-            report["modules"]["torch"] = "/developer/.venv/torch/__init__.py"
-            runner = Mock(return_value=Mock(stdout=json.dumps(report)))
-
-            with (
-                patch(
-                    "vntts.package_self_test.resolve_speech_runtime_paths",
-                    return_value=(runtime, interpreter, site),
-                ),
-                self.assertRaisesRegex(RuntimeError, "module:torch"),
-            ):
-                probe_bundled_pocket_runtime(bundle_root, runner)
-            self.assertIn("-B", runner.call_args.args[0])
+            for origin in ("/developer/.venv/torch/__init__.py", None, "", 42):
+                with self.subTest(origin=origin):
+                    report["modules"]["torch"] = origin
+                    runner = Mock(return_value=Mock(stdout=json.dumps(report)))
+                    with (
+                        patch(
+                            "vntts.package_self_test.resolve_speech_runtime_paths",
+                            return_value=(runtime, interpreter, site),
+                        ),
+                        self.assertRaisesRegex(RuntimeError, "module:torch"),
+                    ):
+                        probe_bundled_pocket_runtime(bundle_root, runner)
+                    self.assertIn("-B", runner.call_args.args[0])
 
     def test_pocket_render_probe_records_only_pinned_public_assets(self):
         with TemporaryDirectory() as temporary_directory:

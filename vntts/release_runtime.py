@@ -194,6 +194,43 @@ def runtime_probe_script() -> str:
     return _probe_script()
 
 
+def validate_runtime_provenance(
+    report: Mapping[str, object],
+    allowed_root: Path,
+    *,
+    probe_modules: tuple[str, ...] = PROBE_MODULES,
+    description: str = "Runtime probe",
+) -> None:
+    modules = report.get("modules")
+    if not isinstance(modules, Mapping):
+        raise RuntimeError(f"{description} is missing module origins")
+    origins = {
+        "interpreter": report.get("executable"),
+        "prefix": report.get("prefix"),
+        "base_prefix": report.get("base_prefix"),
+        **{f"module:{name}": modules.get(name) for name in probe_modules},
+        **{f"module:{name}": origin for name, origin in modules.items()},
+    }
+    missing = sorted(
+        name
+        for name, origin in origins.items()
+        if not isinstance(origin, str) or not origin
+    )
+    allowed_root = allowed_root.resolve()
+    escaped = {
+        name: origin
+        for name, origin in origins.items()
+        if isinstance(origin, str)
+        and origin
+        and not Path(origin).resolve().is_relative_to(allowed_root)
+    }
+    if missing or escaped:
+        raise RuntimeError(
+            f"{description} provenance failed: "
+            + json.dumps({"missing": missing, "escaped": escaped}, sort_keys=True)
+        )
+
+
 def _probe_relocated_runtime(
     speech_runtimes: Path,
     *,
@@ -219,39 +256,12 @@ def _probe_relocated_runtime(
         if not isinstance(parsed, dict):
             raise RuntimeError("Runtime probe returned a non-object JSON value")
         report: dict[str, object] = parsed
-        executable = report.get("executable")
-        prefix = report.get("prefix")
-        base_prefix = report.get("base_prefix")
-        modules = report.get("modules")
-        if not (
-            isinstance(executable, str)
-            and isinstance(prefix, str)
-            and isinstance(base_prefix, str)
-        ):
-            raise RuntimeError("Runtime probe returned invalid path data")
-        if not isinstance(modules, dict):
-            raise RuntimeError("Runtime probe returned invalid module data")
-        allowed_root = relocated.resolve()
-        origins = {
-            "interpreter": Path(executable),
-            "prefix": Path(prefix),
-            "base_prefix": Path(base_prefix),
-            **{
-                f"module:{name}": Path(origin)
-                for name, origin in modules.items()
-                if isinstance(name, str) and isinstance(origin, str) and origin
-            },
-        }
-        escaped = {
-            name: str(path)
-            for name, path in origins.items()
-            if not path.resolve().is_relative_to(allowed_root)
-        }
-        if escaped:
-            raise RuntimeError(
-                f"Relocated {backend} runtime escaped its staging root: "
-                + json.dumps(escaped, sort_keys=True)
-            )
+        validate_runtime_provenance(
+            report,
+            relocated,
+            probe_modules=probe_modules,
+            description=f"Relocated {backend} runtime",
+        )
         return report
 
 

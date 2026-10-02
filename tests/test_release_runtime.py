@@ -8,6 +8,8 @@ from unittest.mock import Mock, patch
 
 from tests.symlink_support import symlink_or_skip
 from vntts.release_runtime import (
+    PROBE_MODULES,
+    QWEN_PROBE_MODULES,
     _find_managed_interpreter,
     _probe_relocated_runtime,
     _promote_windows_runtime,
@@ -446,6 +448,53 @@ class ReleaseRuntimeTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Expected one site-packages"):
                 _runtime_site(runtime, "darwin")
 
+    def test_relocation_requires_complete_valid_runtime_origins(self):
+        cases = (
+            ("missing modules", "modules", None),
+            ("empty modules", "modules", {}),
+            ("empty executable", "executable", ""),
+            ("invalid prefix", "prefix", []),
+            ("empty base prefix", "base_prefix", ""),
+            ("missing torch origin", "torch", None),
+            ("empty torch origin", "torch", ""),
+            ("invalid torch origin", "torch", 42),
+        )
+        with TemporaryDirectory() as directory:
+            speech_runtimes = Path(directory) / "speech-runtimes"
+            speech_runtimes.mkdir()
+            for backend, modules in (
+                ("pocket-tts", PROBE_MODULES),
+                ("qwen-tts", QWEN_PROBE_MODULES),
+            ):
+                for label, field, value in cases:
+                    with self.subTest(backend=backend, case=label):
+
+                        def runner(command, **_options):
+                            runtime = Path(command[0]).parents[1]
+                            report = {
+                                "executable": command[0],
+                                "prefix": str(runtime),
+                                "base_prefix": str(runtime),
+                                "modules": {
+                                    name: str(runtime / "site" / name / "__init__.py")
+                                    for name in modules
+                                },
+                            }
+                            if field == "torch":
+                                report["modules"][field] = value
+                            else:
+                                report[field] = value
+                            return SimpleNamespace(stdout=json.dumps(report))
+
+                        with self.assertRaisesRegex(RuntimeError, "origins|provenance"):
+                            _probe_relocated_runtime(
+                                speech_runtimes,
+                                platform_name="darwin",
+                                run=runner,
+                                backend=backend,
+                                probe_modules=modules,
+                            )
+
     def test_relocation_probe_rejects_dependency_outside_bundle(self):
         with TemporaryDirectory() as directory:
             speech_runtimes = Path(directory) / "speech-runtimes"
@@ -462,7 +511,9 @@ class ReleaseRuntimeTest(unittest.TestCase):
             runner = Mock()
             runner.return_value.stdout = json.dumps(report)
 
-            with self.assertRaisesRegex(RuntimeError, "escaped its staging root"):
+            with self.assertRaisesRegex(
+                RuntimeError, "provenance failed.*module:numpy"
+            ):
                 _probe_relocated_runtime(
                     speech_runtimes,
                     platform_name="darwin",

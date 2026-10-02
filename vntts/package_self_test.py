@@ -20,7 +20,7 @@ from vntts.game_audio_decoder import (
     probe_game_decoder,
 )
 from vntts.onboarding import probe_tesseract
-from vntts.release_runtime import PROBE_MODULES, runtime_probe_script
+from vntts.release_runtime import runtime_probe_script, validate_runtime_provenance
 from vntts.runtime_paths import (
     configure_bundled_dependencies,
     find_bundled_espeak,
@@ -114,29 +114,9 @@ def probe_bundled_pocket_runtime(
         timeout=120,
     )
     report = _json_object(completed.stdout, "Bundled Pocket runtime report")
-    modules = report.get("modules")
-    if not isinstance(modules, Mapping):
-        raise RuntimeError("Bundled Pocket runtime report is missing module origins")
-    origins = {
-        "interpreter": _optional_text(report.get("executable")),
-        "prefix": _optional_text(report.get("prefix")),
-        "base_prefix": _optional_text(report.get("base_prefix")),
-        **{
-            f"module:{name}": _optional_text(modules.get(name))
-            for name in PROBE_MODULES
-        },
-    }
-    missing = sorted(name for name, origin in origins.items() if not origin)
-    escaped = {
-        name: origin
-        for name, origin in origins.items()
-        if origin and not Path(origin).resolve().is_relative_to(allowed_root)
-    }
-    if missing or escaped:
-        raise RuntimeError(
-            "Bundled Pocket runtime provenance failed: "
-            + json.dumps({"missing": missing, "escaped": escaped}, sort_keys=True)
-        )
+    validate_runtime_provenance(
+        report, allowed_root, description="Bundled Pocket runtime"
+    )
     if not Path(runtime_site).resolve().is_relative_to(runtime_root):
         raise RuntimeError("Pocket runtime site-packages path is inconsistent")
     return report
