@@ -120,6 +120,13 @@ def _promote_windows_runtime(
     return _runtime_interpreter(runtime_root, "win32")
 
 
+def _remove_runtime_entrypoint(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
 def _prune_runtime_entrypoints(
     managed_root: Path,
     managed_interpreter: Path,
@@ -131,29 +138,20 @@ def _prune_runtime_entrypoints(
             continue
         for candidate in root.iterdir():
             if candidate.name.startswith("."):
-                if candidate.is_dir() and not candidate.is_symlink():
-                    shutil.rmtree(candidate)
-                else:
-                    candidate.unlink()
+                _remove_runtime_entrypoint(candidate)
     runtime_interpreter = _runtime_interpreter(runtime_root, platform_name)
     scripts = runtime_root / ("Scripts" if platform_name == "win32" else "bin")
     if scripts.is_dir():
         for candidate in scripts.iterdir():
             if platform_name == "win32" or candidate != runtime_interpreter:
-                if candidate.is_dir() and not candidate.is_symlink():
-                    shutil.rmtree(candidate)
-                else:
-                    candidate.unlink()
+                _remove_runtime_entrypoint(candidate)
     if platform_name == "win32":
         if scripts.is_dir():
             scripts.rmdir()
         return
     for candidate in managed_interpreter.parent.iterdir():
         if candidate != managed_interpreter:
-            if candidate.is_dir() and not candidate.is_symlink():
-                shutil.rmtree(candidate)
-            else:
-                candidate.unlink()
+            _remove_runtime_entrypoint(candidate)
     for root in (managed_root, runtime_root):
         for candidate in root.rglob("*"):
             if candidate.is_file() and not candidate.is_symlink():

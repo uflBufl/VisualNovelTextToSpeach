@@ -395,6 +395,12 @@ class ReleaseRuntimeTest(unittest.TestCase):
             executable_data.parent.mkdir(parents=True)
             executable_data.write_text("data", encoding="utf-8")
             executable_data.chmod(0o755)
+            outside = root / "outside"
+            outside.mkdir()
+            sentinel = outside / "keep.txt"
+            sentinel.write_text("keep", encoding="utf-8")
+            discarded_link = runtime / "bin" / "discarded-link"
+            symlink_or_skip(discarded_link, outside, target_is_directory=True)
 
             _prune_runtime_entrypoints(
                 managed_root,
@@ -409,6 +415,8 @@ class ReleaseRuntimeTest(unittest.TestCase):
             self.assertFalse(managed_lock.exists())
             self.assertFalse(managed_temp.exists())
             self.assertFalse(runtime_lock.exists())
+            self.assertFalse(discarded_link.is_symlink())
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep")
             if os.name != "nt":
                 self.assertTrue(managed_interpreter.stat().st_mode & 0o111)
                 self.assertFalse(executable_data.stat().st_mode & 0o111)
