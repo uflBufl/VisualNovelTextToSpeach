@@ -33,10 +33,9 @@ def auto_advance_control_state(
 
 def guard_auto_advance_settings(settings: AppSettings) -> AppSettings:
     """Clear impossible auto-advance state at settings publication boundaries."""
-    _allowed, enabled, _reason = auto_advance_control_state(
+    enabled = settings.auto_advance_enabled and auto_advance_allowed(
         settings.capture_mode,
         settings.live_sequence_mode,
-        settings.auto_advance_enabled,
     )
     if enabled == settings.auto_advance_enabled:
         return settings

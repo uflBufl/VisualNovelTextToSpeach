@@ -4,6 +4,11 @@ from unittest.mock import Mock, call
 from pynput import keyboard
 
 from vntts.auto_advance import DialogueAdvancer, send_windows_key
+from vntts.auto_advance_policy import (
+    auto_advance_control_state,
+    guard_auto_advance_settings,
+)
+from vntts.settings import AppSettings
 
 
 class FakeKeyboardController:
@@ -167,6 +172,39 @@ class DialogueAdvancerTest(unittest.TestCase):
 
         with self.assertRaisesRegex(PermissionError, "Accessibility"):
             advancer.advance()
+
+
+class AutoAdvancePolicyTest(unittest.TestCase):
+    def test_publication_matches_effective_controls_without_mutating_preference(self):
+        for capture in ("window", "screen"):
+            for sequence in ("off", "shadow", "audio-auto", "audio-manual"):
+                for enabled in (False, True):
+                    with self.subTest(
+                        capture=capture, sequence=sequence, enabled=enabled
+                    ):
+                        settings = AppSettings(
+                            capture_mode=capture,
+                            live_sequence_mode=sequence,
+                            auto_advance_enabled=enabled,
+                        )
+                        expected = (
+                            enabled
+                            and capture == "window"
+                            and sequence != "audio-manual"
+                        )
+
+                        guarded = guard_auto_advance_settings(settings)
+
+                        self.assertEqual(
+                            guarded, settings.updated(auto_advance_enabled=expected)
+                        )
+                        self.assertEqual(
+                            auto_advance_control_state(capture, sequence, enabled)[1],
+                            expected,
+                        )
+                        if expected == enabled:
+                            self.assertIs(guarded, settings)
+                        self.assertEqual(settings.auto_advance_enabled, enabled)
 
 
 if __name__ == "__main__":
