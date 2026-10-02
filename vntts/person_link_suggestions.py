@@ -38,7 +38,10 @@ def suggest_person_links(
         normalized = normalize_character_name(role)
         if not normalized or is_narrator(role):
             continue
-        evidence = roles.setdefault(normalized, _RoleEvidence(role))
+        evidence = roles.get(normalized)
+        if evidence is None:
+            evidence = _RoleEvidence(role)
+            roles[normalized] = evidence
         evidence.remember_role(role)
         evidence.add(record)
 

@@ -1,7 +1,9 @@
 import unittest
+from unittest.mock import patch
 
 from vntts_artifacts.story_index import StoryIndexRecord
 
+import vntts.person_link_suggestions as person_links
 from vntts.person_link_suggestions import suggest_person_links
 
 
@@ -46,7 +48,14 @@ def matched_roles(left: str, right: str) -> list[StoryIndexRecord]:
 
 class PersonLinkSuggestionsTests(unittest.TestCase):
     def test_suggests_aderyn_and_rhiannon_with_concrete_evidence(self):
-        suggestions = suggest_person_links(matched_roles("Aderyn", "Rhiannon"))
+        with patch.object(
+            person_links, "_RoleEvidence", wraps=person_links._RoleEvidence
+        ) as create:
+            suggestions = suggest_person_links(
+                iter(matched_roles("Aderyn", "Rhiannon") * 20)
+            )
+
+        self.assertEqual(create.call_count, 2)
 
         self.assertEqual(len(suggestions), 1)
         self.assertEqual(

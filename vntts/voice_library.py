@@ -74,7 +74,11 @@ _VoiceGroup = TypeVar("_VoiceGroup", bound=_VoiceGroupDocument)
 
 def _thread_lock(path: Path) -> RLock:
     with _THREAD_LOCKS_GUARD:
-        return _THREAD_LOCKS.setdefault(path, RLock())
+        lock = _THREAD_LOCKS.get(path)
+        if lock is None:
+            lock = RLock()
+            _THREAD_LOCKS[path] = lock
+        return lock
 
 
 class VoiceLibraryError(ValueError):

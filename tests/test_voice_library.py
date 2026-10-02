@@ -9,6 +9,7 @@ from threading import Event, Thread
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import vntts.voice_library as voice_library
 from vntts.voice_library import VoiceLibrary, VoiceLibraryError, VoiceSelection
 
 
@@ -21,6 +22,16 @@ def write_wav(path: Path, frames: bytes) -> None:
 
 
 class VoiceLibraryTest(unittest.TestCase):
+    def test_thread_lock_creates_one_shared_lock_per_path(self) -> None:
+        with (
+            patch.object(voice_library, "_THREAD_LOCKS", {}),
+            patch.object(voice_library, "RLock", wraps=voice_library.RLock) as create,
+        ):
+            first = voice_library._thread_lock(Path("first"))
+            self.assertIs(voice_library._thread_lock(Path("first")), first)
+            self.assertIsNot(voice_library._thread_lock(Path("second")), first)
+            self.assertEqual(create.call_count, 2)
+
     def test_truncated_wav_uses_library_error_for_input_and_blob(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
