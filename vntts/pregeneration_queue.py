@@ -557,8 +557,7 @@ def _runnable_generation_items(
     projection_ids: Sequence[str],
     omission_ids: Sequence[str],
 ) -> int:
-    routes = effective["routes"]
-    fallback_roles = set(effective["narrator_roles"])
+    roles = set(effective["routes"]) | set(effective["narrator_roles"])
     projection_id_set = set(projection_ids)
     omission_id_set = set(omission_ids)
     return sum(
@@ -570,11 +569,7 @@ def _runnable_generation_items(
             item.queue_id in projection_id_set
             or not isinstance(audio_event_plan_for_record(item), dict)
         )
-        and (
-            synthesis_character_for_line(item.speaker, item.voice_character) in routes
-            or synthesis_character_for_line(item.speaker, item.voice_character)
-            in fallback_roles
-        )
+        and synthesis_character_for_line(item.speaker, item.voice_character) in roles
     )
 
 
