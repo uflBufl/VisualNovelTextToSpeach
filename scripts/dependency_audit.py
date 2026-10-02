@@ -108,6 +108,7 @@ def query_osv(commits: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
 
 def main() -> None:
     resolved_projects = projects()
+    package_failures: list[str] = []
     for project in resolved_projects:
         label = project_label(project)
         command = [
@@ -121,17 +122,25 @@ def main() -> None:
         ]
         for advisory in IGNORES.get(label, ()):
             command.extend(("--ignore", advisory))
-        subprocess.run(command, cwd=ROOT, check=True)
+        try:
+            subprocess.run(command, cwd=ROOT, check=True)
+        except subprocess.CalledProcessError as error:
+            package_failures.append(f"{label} (exit status {error.returncode})")
 
     commits = locked_git_commits(
         tuple(project / "uv.lock" for project in resolved_projects)
     )
+    findings: list[str] = []
+    if package_failures:
+        findings.append("Package audit failures: " + ", ".join(package_failures))
     if vulnerabilities := query_osv(commits):
         details = ", ".join(
             f"{commit}: {', '.join(advisories)}"
             for commit, advisories in vulnerabilities.items()
         )
-        raise SystemExit(f"Vulnerable Git dependencies: {details}")
+        findings.append(f"Vulnerable Git dependencies: {details}")
+    if findings:
+        raise SystemExit("Dependency audit failed:\n- " + "\n- ".join(findings))
     print(f"Audited {len(resolved_projects)} locks and {len(commits)} Git revisions")
 
 

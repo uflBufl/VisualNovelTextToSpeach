@@ -1,5 +1,20 @@
 # TODO
 
+## Qualify remaining model dependency risks
+
+- [ ] Trace whether root Coqui/XTTS, Chatterbox, MOSS SoundEffect and MOSS Delay
+      actually reach Transformers `load_custom_generate` with remote custom
+      generation. Their locks match GHSA-x9r9-c232-4q39/PYSEC-2026-4174;
+      the October 2 advisory lists no patched release. Distinguish that path
+      from deliberately trusted AutoModel loading and local-only ASR. Record
+      exact loader/model evidence; do not introduce an unproven ignore.
+- [ ] Once an upstream fix or compatible replacement is available, qualify it
+      within each model stack before changing its lock. Root Coqui 0.27.5
+      requires Transformers <5; retain loaded-module provenance and model
+      generation/voice checks. Qwen's remaining Accelerate, setuptools, Torch
+      and Transformers findings belong to the existing Qwen qualification
+      task below, including this newly reported custom-generation advisory.
+
 ## Validate OpenMOSS progress on Windows
 
 - [ ] The September 29 22:48 support bundle still records `[WinError 5] Access is
