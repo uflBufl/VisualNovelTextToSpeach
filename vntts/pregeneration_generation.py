@@ -423,7 +423,6 @@ class OfflineGenerationWorker:
                     break
                 except subprocess.TimeoutExpired:
                     if cancel_event is not None and cancel_event.is_set():
-                        terminate_process(process)
                         raise OfflineGenerationCancelled(
                             "Offline speech generation was cancelled"
                         ) from None

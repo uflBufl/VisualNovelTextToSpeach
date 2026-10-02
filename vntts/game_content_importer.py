@@ -1064,6 +1064,7 @@ class Reverse1999GameImporter:
             raise GameContentImportError(
                 f"Unable to start the Reverse: 1999 importer: {error}"
             ) from error
+        cancelled = False
         try:
             while True:
                 if (
@@ -1071,13 +1072,7 @@ class Reverse1999GameImporter:
                     and cancel_event.is_set()
                     and process.poll() is None
                 ):
-                    terminate_process(process)
-                    self._record(
-                        "process-exit",
-                        outcome="cancelled",
-                        cancelled=True,
-                        elapsed_ms=round((time.monotonic() - started) * 1000),
-                    )
+                    cancelled = True
                     raise GameContentImportCancelled("Game import was cancelled")
                 try:
                     stdout, stderr = process.communicate(timeout=0.1)
@@ -1087,6 +1082,13 @@ class Reverse1999GameImporter:
         finally:
             if process.poll() is None:
                 terminate_process(process)
+            if cancelled:
+                self._record(
+                    "process-exit",
+                    outcome="cancelled",
+                    cancelled=True,
+                    elapsed_ms=round((time.monotonic() - started) * 1000),
+                )
         self._record(
             "process-exit",
             exit_code=process.returncode,

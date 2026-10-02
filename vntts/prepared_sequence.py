@@ -200,7 +200,6 @@ def _run(
                 and cancellation.is_set()
                 and process.poll() is None
             ):
-                terminate_process(process)
                 raise PreparedSequenceCancelled("Sequence preparation cancelled")
             try:
                 stdout, stderr = process.communicate(timeout=0.1)
