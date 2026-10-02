@@ -209,6 +209,48 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
         )
         self.assertEqual(plan.live_fallback_queue_ids, ("d",))
 
+    def test_unknown_actions_and_providerless_failures_remain_deferred(self):
+        with TemporaryDirectory() as directory:
+            generation_input, result, voice_plan = inputs(Path(directory))
+            document = {
+                "state_sha256": "1" * 64,
+                "queue_sha256": "2" * 64,
+                "failure_count": 3,
+                "records": [
+                    {
+                        "queue_id": "a",
+                        "action": "reference_comparison",
+                        "provider": None,
+                    },
+                    {
+                        "queue_id": "b",
+                        "action": "future_action",
+                        "provider": "moss-tts",
+                    },
+                    {"queue_id": "c", "action": "safe_resume", "provider": None},
+                ],
+            }
+            with patch(
+                "vntts.pregeneration_recovery.generation_failure_repair_plan",
+                return_value=document,
+            ):
+                plan = plan_automatic_recovery(generation_input, voice_plan, result)
+        self.assertEqual(
+            plan.automatic_batches, (OfflineRecoveryBatch("safe_resume", ("c",)),)
+        )
+        self.assertEqual(
+            plan.deferred_action_counts,
+            (("future_action", 1), ("reference_comparison", 1)),
+        )
+        self.assertEqual(
+            plan.deferred_batches,
+            (
+                OfflineRecoveryBatch("future_action", ("b",)),
+                OfflineRecoveryBatch("reference_comparison", ("a",)),
+            ),
+        )
+        self.assertEqual(plan.live_fallback_queue_ids, ())
+
     def test_pocket_runs_safe_repairs_before_deferring_real_failures(self):
         with TemporaryDirectory() as temporary_directory:
             generation_input, result, voice_plan = inputs(Path(temporary_directory))

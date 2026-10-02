@@ -182,15 +182,14 @@ def plan_automatic_recovery(
             and action in AUTOMATIC_RECOVERY_LIVE_FALLBACK_ACTIONS
         ):
             grouped[action].append(queue_id)
-        elif (
-            provider is not None and action in AUTOMATIC_RECOVERY_LIVE_FALLBACK_ACTIONS
-        ):
-            deferred[action] += 1
-            deferred_queue_ids.setdefault(action, []).append(queue_id)
-            live_fallback_queue_ids.append(queue_id)
         else:
             deferred[action] += 1
             deferred_queue_ids.setdefault(action, []).append(queue_id)
+            if (
+                provider is not None
+                and action in AUTOMATIC_RECOVERY_LIVE_FALLBACK_ACTIONS
+            ):
+                live_fallback_queue_ids.append(queue_id)
     failure_count = document.get("failure_count")
     if (
         not isinstance(failure_count, int)
