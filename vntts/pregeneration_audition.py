@@ -13,7 +13,6 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from time import monotonic
-from types import EllipsisType
 from typing import Protocol, TypeAlias
 
 import numpy as np
@@ -303,7 +302,7 @@ class VoiceAuditionPreviewService:
             )
         _validate_preview_result(result, plan, telemetry.seed)
         telemetry.stage = "quality"
-        self._publish_preview(
+        audio_sha256 = self._publish_preview(
             plan,
             candidate,
             preview_text,
@@ -323,6 +322,7 @@ class VoiceAuditionPreviewService:
             preview_text,
             reused=False,
             seed=telemetry.seed,
+            expected_audio_sha256=audio_sha256,
         )
         telemetry.outcome, telemetry.reason = "success", "accepted"
         return preview
@@ -438,7 +438,7 @@ class VoiceAuditionPreviewService:
         cancellation: _Cancellation,
         telemetry: _PreviewTelemetry,
         notify: ProgressReporter,
-    ) -> None:
+    ) -> str:
         samples = _mono_pcm(result.pcm)
         sample_rate = int(result.sample_rate)
         if not len(samples) or sample_rate < 1:
@@ -464,15 +464,15 @@ class VoiceAuditionPreviewService:
             _raise_if_cancelled(cancellation)
             telemetry.stage = "publish"
             try:
-                _write_preview_manifest(
-                    target, identity, telemetry.seed, sha256_file(staging)
-                )
+                audio_sha256 = sha256_file(staging)
+                _write_preview_manifest(target, identity, telemetry.seed, audio_sha256)
                 os.replace(staging, target)
             except Exception:
                 target.unlink(missing_ok=True)
                 _preview_manifest_path(target).unlink(missing_ok=True)
                 raise
             telemetry.cache_source = result.diagnostics.cache_source
+            return audio_sha256
         finally:
             staging.unlink(missing_ok=True)
 
@@ -584,10 +584,17 @@ def _cached_preview_for_request(
     notify: ProgressReporter,
 ) -> tuple[VoiceAuditionPreview, int | None]:
     notify("Checking the saved preview...")
-    seed = _cached_preview_seed(target, identity, plan)
+    seed, audio_sha256 = _cached_preview_metadata(target, identity, plan)
     return (
         _cached_preview(
-            target, identity, plan, group, candidate, preview_text, seed=seed
+            target,
+            identity,
+            plan,
+            group,
+            candidate,
+            preview_text,
+            seed=seed,
+            expected_audio_sha256=audio_sha256,
         ),
         seed,
     )
@@ -781,11 +788,13 @@ def _write_preview_manifest(
         )
 
 
-def _cached_preview_seed(target: Path, identity: str, plan: VoicePlan) -> int | None:
+def _cached_preview_metadata(
+    target: Path, identity: str, plan: VoicePlan
+) -> tuple[int | None, str | None]:
     manifest = _preview_manifest_path(target)
     if not manifest.exists():
         # Existing successful previews predate the sidecar and were all seed zero.
-        return None if plan.synthesis_backend == "pocket-tts" else 0
+        return (None if plan.synthesis_backend == "pocket-tts" else 0), None
     if manifest.is_symlink():
         raise VoiceAuditionError(
             "Cached voice preview manifest must not be a symbolic link"
@@ -815,7 +824,7 @@ def _cached_preview_seed(target: Path, identity: str, plan: VoicePlan) -> int | 
         raise VoiceAuditionError(
             "Cached voice preview manifest does not match its input"
         )
-    return seed
+    return seed, audio_sha256
 
 
 def _preflight_candidate_references(
@@ -903,13 +912,16 @@ def _cached_preview(
     text: str,
     *,
     reused: bool = True,
-    seed: int | None | EllipsisType = Ellipsis,
+    seed: int | None,
+    expected_audio_sha256: str | None = None,
 ) -> VoiceAuditionPreview:
     if target.is_symlink():
         raise VoiceAuditionError("Cached voice preview must not be a symbolic link")
     try:
         info = _inspect_preview(target, text)
         audio_sha256 = sha256_file(target)
+        if expected_audio_sha256 is not None and audio_sha256 != expected_audio_sha256:
+            raise VoiceAuditionError("Voice preview changed while it was validated")
     except (OSError, ValueError, VoiceAuditionError) as error:
         raise VoiceAuditionError(f"Cached voice preview is invalid: {error}") from error
     if reused and plan.synthesis_backend == "moss-tts":
@@ -926,8 +938,6 @@ def _cached_preview(
                 gen_s=None,
                 decode_s=None,
             )
-    if seed is Ellipsis:
-        seed = _cached_preview_seed(target, identity, plan)
     return VoiceAuditionPreview(
         identity=identity,
         group_id=group.group_id,

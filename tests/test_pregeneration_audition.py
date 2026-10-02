@@ -127,6 +127,56 @@ def ambiguous_fixture(root):
 
 
 class VoiceAuditionPreviewServiceTest(unittest.TestCase):
+    def test_rejects_changed_audio_between_preview_validation_phases(self):
+        for cached in (False, True):
+            with self.subTest(cached=cached), TemporaryDirectory() as directory:
+                root = Path(directory)
+                plan, group, _manifest = ambiguous_fixture(root)
+                backend = FakeBackend("moss-tts")
+                service = VoiceAuditionPreviewService(
+                    root / "auditions",
+                    backend_factory=lambda *_args, **_kwargs: backend,
+                )
+                self.addCleanup(service.close)
+                if cached:
+                    service.generate(plan, group, group.candidates[0].source_id)
+                import vntts.pregeneration_audition as audition
+
+                original_inspect = audition._inspect_preview
+
+                def replace_before_inspection(path, text):
+                    if not path.name.startswith("."):
+                        path.write_bytes(clean_wav_bytes(amplitude=0.2, seconds=0.2))
+                    return original_inspect(path, text)
+
+                with patch.object(
+                    audition, "_inspect_preview", side_effect=replace_before_inspection
+                ):
+                    with self.assertRaisesRegex(VoiceAuditionError, "changed while"):
+                        service.generate(plan, group, group.candidates[0].source_id)
+                self.assertEqual(len(backend.requests), 1)
+                self.assertEqual(len(tuple(service.root.glob("*.wav"))), 1)
+
+    def test_reuses_legacy_preview_without_a_manifest(self):
+        for backend_name, expected_seed in (("moss-tts", 0), ("pocket-tts", None)):
+            with self.subTest(backend=backend_name), TemporaryDirectory() as directory:
+                root = Path(directory)
+                plan, group, _manifest = ambiguous_fixture(root)
+                plan = replace(plan, synthesis_backend=backend_name)
+                backend = FakeBackend(backend_name)
+                service = VoiceAuditionPreviewService(
+                    root / "auditions",
+                    backend_factory=lambda *_args, **_kwargs: backend,
+                )
+                self.addCleanup(service.close)
+                preview = service.generate(plan, group, group.candidates[0].source_id)
+                preview.path.with_suffix(".json").unlink()
+                cached = service.generate(plan, group, group.candidates[0].source_id)
+                self.assertTrue(cached.reused)
+                self.assertEqual(cached.seed, expected_seed)
+                self.assertEqual(cached.audio_sha256, preview.audio_sha256)
+                self.assertEqual(len(backend.requests), 1)
+
     def test_xtts_preview_uses_the_planned_language(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
