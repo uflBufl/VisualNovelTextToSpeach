@@ -54,18 +54,18 @@ class TrialRating(TypedDict):
 
 
 class StoredTrialRating(TrialRating, total=False):
-    acceptability: Literal["neither"]
-    reviewed_at: str
+    acceptability: Literal["neither"] | None
+    reviewed_at: object
 
 
 class _ValidatedListeningTrial(TypedDict):
     trial_id: str
     queue_id: str
-    line_id: str | None
-    text_sha256: str | None
-    text: str | None
+    line_id: NotRequired[str | None]
+    text_sha256: NotRequired[str | None]
+    text: NotRequired[str | None]
     audio: TrialAudio
-    rating: StoredTrialRating | None
+    rating: NotRequired[StoredTrialRating | None]
     audio_sha256: NotRequired[TrialAudio]
 
 
@@ -586,7 +586,7 @@ def _validate_listening_trial_ids(
 def _validate_listening_progress(
     session: Mapping[str, object], trials: Sequence[_ValidatedListeningTrial]
 ) -> None:
-    completed = sum(trial["rating"] is not None for trial in trials)
+    completed = sum(trial.get("rating") is not None for trial in trials)
     if (
         type(session.get("completed_count")) is not int
         or session["completed_count"] != completed
@@ -626,14 +626,10 @@ def _validate_current_trial_identity(trial: _ValidatedListeningTrial) -> None:
 
 def _validate_listening_trial_rating(trial: _ValidatedListeningTrial) -> None:
     rating = trial.get("rating")
-    if rating is not None and (
-        not isinstance(rating, dict)
-        or rating.get("preference") not in {"a", "b", "tie"}
-        or rating.get("acceptability") not in {None, "neither"}
-        or (
-            rating.get("acceptability") == "neither"
-            and rating.get("preference") != "tie"
-        )
+    if (
+        rating is not None
+        and rating.get("acceptability") == "neither"
+        and rating["preference"] != "tie"
     ):
         raise ModelListeningError(
             f"Listening trial rating is invalid: {trial['trial_id']}"
@@ -802,7 +798,7 @@ def next_pending_trial(session: Mapping[str, object]) -> ListeningTrial | None:
     if trials is None:
         raise ModelListeningError("Listening session trial count is invalid")
     for trial in trials:
-        if _is_listening_trial(trial) and trial["rating"] is None:
+        if _is_listening_trial(trial) and trial.get("rating") is None:
             return _public_trial(trial)
     return None
 
@@ -812,7 +808,8 @@ def listening_progress(session: Mapping[str, object]) -> tuple[int, int]:
     if trials is None:
         raise ModelListeningError("Listening session trial count is invalid")
     return sum(
-        _is_listening_trial(trial) and trial["rating"] is not None for trial in trials
+        _is_listening_trial(trial) and trial.get("rating") is not None
+        for trial in trials
     ), len(trials)
 
 
@@ -824,7 +821,12 @@ def record_trial_preference(
     overwrite: bool = False,
     report_path: PathInput | None = None,
 ) -> ListeningSession:
-    if preference not in {"a", "b", "tie", "neither"}:
+    if not isinstance(preference, str) or preference not in {
+        "a",
+        "b",
+        "tie",
+        "neither",
+    }:
         raise ModelListeningError("Preference must be a, b, tie, or neither")
     session_path = Path(session_path).expanduser().resolve()
     guard_path = session_path.with_name(f".{session_path.name}.guard")
@@ -1172,7 +1174,12 @@ def _model_report_sample_text(
             f"Model report sample {index} text_sha256 does not match exact text"
         )
     outcome = sample.get("outcome", "complete")
-    if outcome not in {"complete", "limited", "cancelled", "error"}:
+    if not isinstance(outcome, str) or outcome not in {
+        "complete",
+        "limited",
+        "cancelled",
+        "error",
+    }:
         raise ModelListeningError(f"Model report sample {index} outcome is invalid")
     if outcome != "complete":
         return None
@@ -1337,7 +1344,8 @@ def _load_schema(
 ) -> dict[str, object]:
     value = _load_json(path, description)
     if (
-        value.get("schema") not in schemas
+        not isinstance(value.get("schema"), str)
+        or value.get("schema") not in schemas
         or type(value.get("schema_version")) is not int
         or value["schema_version"] != SCHEMA_VERSION
     ):
@@ -1367,19 +1375,21 @@ def _is_trial_audio(value: object) -> TypeGuard[TrialAudio]:
 
 
 def _is_trial_rating(value: object) -> TypeGuard[StoredTrialRating]:
-    return _is_json_object(value) and value.get("preference") in {"a", "b", "tie"}
+    return (
+        _is_json_object(value)
+        and isinstance(value.get("preference"), str)
+        and value.get("preference") in {"a", "b", "tie"}
+        and value.get("acceptability") in (None, "neither")
+    )
 
 
 def _is_listening_trial(value: object) -> TypeGuard[_ValidatedListeningTrial]:
     if not _is_json_object(value):
         return False
     return (
-        (
-            isinstance(value.get("trial_id"), str)
-            and isinstance(value.get("queue_id"), str)
-            and value.get("line_id") is None
-            or isinstance(value.get("line_id"), str)
-        )
+        isinstance(value.get("trial_id"), str)
+        and isinstance(value.get("queue_id"), str)
+        and (value.get("line_id") is None or isinstance(value.get("line_id"), str))
         and (value.get("text") is None or isinstance(value.get("text"), str))
         and (
             value.get("text_sha256") is None
@@ -1395,6 +1405,7 @@ def _is_listening_session(
     value: Mapping[str, object],
 ) -> TypeGuard[_ValidatedListeningSession]:
     trials = _object_list(value.get("trials"))
+    dimensions = value.get("dimensions")
     return (
         isinstance(value.get("schema"), str)
         and type(value.get("schema_version")) is int
@@ -1409,9 +1420,9 @@ def _is_listening_session(
         and all(_is_listening_trial(trial) for trial in trials)
         and (
             "dimensions" not in value
-            or all(
-                isinstance(item, str)
-                for item in _object_list(value["dimensions"]) or []
+            or (
+                isinstance(dimensions, list)
+                and all(isinstance(item, str) for item in dimensions)
             )
         )
     )

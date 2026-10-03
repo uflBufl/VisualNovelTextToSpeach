@@ -172,6 +172,94 @@ def write_model_reports(root, *, item_count=2):
 
 
 class AuthoringListeningTest(unittest.TestCase):
+    def test_loader_rejects_malformed_trial_identity_and_enum_fields(self):
+        mutations = (
+            ("trial_id", Ellipsis),
+            ("queue_id", Ellipsis),
+            ("trial_id", None),
+            ("trial_id", []),
+            ("trial_id", {}),
+            ("trial_id", 1),
+            ("queue_id", None),
+            ("queue_id", []),
+            ("rating", {"preference": []}),
+            ("rating", {"preference": "tie", "acceptability": {}}),
+        )
+        for legacy in (False, True):
+            for field, value in mutations:
+                with (
+                    self.subTest(legacy=legacy, field=field, value=value),
+                    TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    path = (
+                        (write_listening_fixture(root) / "session.json")
+                        if legacy
+                        else create_listening_session_from_reports(
+                            write_model_reports(root, item_count=1), root / "session"
+                        )
+                    )
+                    session = json.loads(path.read_text())
+                    trial = session["trials"][0]
+                    trial["line_id"] = "line-0"
+                    if value is Ellipsis:
+                        trial.pop(field, None)
+                    else:
+                        trial[field] = value
+                    if field == "rating":
+                        session["completed_count"] = sum(
+                            item.get("rating") is not None for item in session["trials"]
+                        )
+                    path.write_text(json.dumps(session), encoding="utf-8")
+                    before = path.read_bytes()
+                    with self.assertRaises(ModelListeningError):
+                        load_listening_session(path)
+                    self.assertEqual(path.read_bytes(), before)
+
+    def test_unrated_legacy_trial_can_omit_rating_and_text(self):
+        with TemporaryDirectory() as directory:
+            path = write_listening_fixture(Path(directory)) / "session.json"
+            document = json.loads(path.read_text())
+            for trial in document["trials"]:
+                for field in ("rating", "line_id", "text", "text_sha256"):
+                    trial.pop(field, None)
+            document["completed_count"] = 0
+            path.write_text(json.dumps(document), encoding="utf-8")
+            before = path.read_bytes()
+            loaded = load_listening_session(path)
+            self.assertEqual(listening_progress(loaded), (0, len(document["trials"])))
+            self.assertIsNotNone(next_pending_trial(loaded))
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_current_session_rejects_non_list_dimensions(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = create_listening_session_from_reports(
+                write_model_reports(root, item_count=1), root / "session"
+            )
+            document = json.loads(path.read_text())
+            document["dimensions"] = {"invalid": "container"}
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaises(ModelListeningError):
+                load_listening_session(path)
+
+    def test_malformed_report_schema_and_outcome_are_domain_errors(self):
+        for field in ("schema", "outcome"):
+            for value in ([], {}):
+                with (
+                    self.subTest(field=field, value=value),
+                    TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    reports = write_model_reports(root, item_count=1)
+                    document = json.loads(reports[0].read_text())
+                    target = document["samples"][0] if field == "outcome" else document
+                    target[field] = value
+                    reports[0].write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaises(ModelListeningError):
+                        create_listening_session_from_reports(reports, root / "session")
+                    self.assertFalse((root / "session").exists())
+
     def test_creates_deterministic_blind_trials_without_public_model_names(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

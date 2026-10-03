@@ -271,10 +271,12 @@ def _validate_session_trial(
 
 def _validate_trial_rating(trial: JsonObject, trial_id: str) -> None:
     rating = trial.get("rating")
-    if rating is not None and (
-        not isinstance(rating, dict)
-        or rating.get("preference") not in {"a", "b", "tie"}
-    ):
+    if rating is None:
+        return
+    if not isinstance(rating, dict):
+        raise ListeningImportError(f"Listening trial {trial_id!r} rating is invalid")
+    preference = _text_field(rating, "preference")
+    if preference not in {"a", "b", "tie"}:
         raise ListeningImportError(f"Listening trial {trial_id!r} rating is invalid")
 
 
@@ -449,7 +451,7 @@ def _validate_assignment_header(
 ) -> str:
     if not _is_json_object(assignment) or set(assignment) != {"trial_id", "a", "b"}:
         raise ListeningImportError("Blind-listening assignment is invalid")
-    trial_id = assignment["trial_id"]
+    trial_id = _text_field(assignment, "trial_id")
     if trial_id not in expected_ids:
         raise ListeningImportError(
             f"Blind assignment references unknown trial {trial_id!r}"

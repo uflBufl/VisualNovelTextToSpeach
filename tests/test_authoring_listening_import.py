@@ -155,6 +155,52 @@ def write_listening_fixture(root):
 
 
 class ListeningImportTest(unittest.TestCase):
+    def test_rejects_unhashable_assignment_ids_and_rating_preferences(self):
+        mutations = (
+            ("assignment", "trial_id", []),
+            ("rating", "preference", {}),
+        )
+        for kind, field, value in mutations:
+            with (
+                self.subTest(kind=kind, field=field),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                source = write_listening_fixture(root)
+                session_path = source / "session.json"
+                key_path = source / ".blind-key.json"
+                session = json.loads(session_path.read_text(encoding="utf-8"))
+                key = json.loads(key_path.read_text(encoding="utf-8"))
+                if kind == "assignment":
+                    key["assignments"][0][field] = value
+                else:
+                    session["trials"][0]["rating"][field] = value
+                key_path.write_text(json.dumps(key, sort_keys=True), encoding="utf-8")
+                session["blind_key_sha256"] = sha256_file(key_path)
+                session_path.write_text(
+                    json.dumps(session, sort_keys=True), encoding="utf-8"
+                )
+                source_hashes = {
+                    path.relative_to(source).as_posix(): sha256_file(path)
+                    for path in source.rglob("*")
+                    if path.is_file()
+                }
+
+                with self.assertRaises(ListeningImportError):
+                    inspect_listening_session(source)
+                with self.assertRaises(ListeningImportError):
+                    import_listening_session(source, root / "app-data")
+
+                self.assertFalse((root / "app-data").exists())
+                self.assertEqual(
+                    source_hashes,
+                    {
+                        path.relative_to(source).as_posix(): sha256_file(path)
+                        for path in source.rglob("*")
+                        if path.is_file()
+                    },
+                )
+
     def test_rejects_non_integer_schema_versions_and_session_counts(self):
         mutations = (
             ("session.json", "schema_version", True),
