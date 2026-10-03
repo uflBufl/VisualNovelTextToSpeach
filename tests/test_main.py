@@ -3948,6 +3948,9 @@ class MainTest(unittest.TestCase):
         )
         controller.live_reader = Mock(is_running=False)
         controller.voice_router = Mock()
+        controller.last_diagnostic = DiagnosticSnapshot(
+            None, confidence=97.237, corrections=("Corrected OCR text",)
+        )
 
         with patch(
             "vntts.controller_components.read_live_snapshot",
@@ -3962,6 +3965,12 @@ class MainTest(unittest.TestCase):
         self.assertEqual(controller.history.snapshot(), [])
         controller.voice_router.speak.assert_not_called()
         read_snapshot.assert_called_once()
+        self.assertEqual(
+            controller.live_scope_identification_diagnostics["ocr_confidence"], 97.24
+        )
+        self.assertEqual(
+            controller.live_scope_identification_diagnostics["correction_count"], 1
+        )
 
     def test_controller_identifies_complete_plan_line_with_small_ocr_drift(self):
         canonical = (

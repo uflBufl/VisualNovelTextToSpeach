@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping
 from concurrent.futures import Executor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
@@ -14,10 +14,10 @@ from typing import TYPE_CHECKING, Callable, Protocol, TypeGuard, runtime_checkab
 from uuid import uuid4
 
 if TYPE_CHECKING:
-    from vntts.controller import AppController
+    from vntts.controller import AppController, _ExecutorFuture
 
 from vntts.auto_advance_policy import auto_advance_control_state
-from vntts.chapter_voice_preload import ChapterVoicePreloader
+from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.dialog import is_empty, speak_dialog
 from vntts.dialog_capture import (
     DiagnosticSnapshot,
@@ -33,7 +33,7 @@ from vntts.dialog_capture import (
     get_screenshot_directory,
 )
 from vntts.generated_audio import GeneratedAudioFallbackBackend
-from vntts.live import IncrementalDialogTracker
+from vntts.live import IncrementalDialogTracker, LivePipelineMetrics
 from vntts.live_snapshot import read_live_snapshot
 from vntts.live_speech import play_typed_text
 from vntts.playback import PlaybackOutcome, PreparedPlayback
@@ -442,7 +442,7 @@ class RuntimeLifecycleComponent:
                 controller.status_handler(f"Speech model and {warmed} voices ready")
         return True
 
-    def _construct_live_runtime(self) -> object:
+    def _construct_live_runtime(self) -> Path:
         controller = self.controller
         executor_specs = (
             ("capture_executor", "dialog-capture"),
@@ -459,9 +459,12 @@ class RuntimeLifecycleComponent:
                     thread_name_prefix=thread_name_prefix,
                 ),
             )
-        backend_capabilities = getattr(controller.speech_backend, "capabilities", None)
-        can_prepare_during_playback = bool(
-            getattr(backend_capabilities, "concurrent_prepare_and_play", True)
+        backend = controller.speech_backend
+        backend_capabilities = backend.capabilities if backend is not None else None
+        can_prepare_during_playback = (
+            backend_capabilities.concurrent_prepare_and_play
+            if backend_capabilities is not None
+            else True
         )
         max_speech_jobs = 2 if can_prepare_during_playback else 1
         controller.live_speech_backpressure = controller.speech_backpressure_factory(
@@ -506,12 +509,10 @@ class RuntimeLifecycleComponent:
                 session_id=session_id,
             ),
             max_speech_jobs=max_speech_jobs,
-            interrupt_on_dialog_replacement=bool(
-                getattr(
-                    backend_capabilities,
-                    "interrupt_on_dialog_replacement",
-                    False,
-                )
+            interrupt_on_dialog_replacement=(
+                backend_capabilities.interrupt_on_dialog_replacement
+                if backend_capabilities is not None
+                else False
             ),
             first_pcm_on_prepare=False,
             **controller._get_live_configuration(),
@@ -522,7 +523,7 @@ class RuntimeLifecycleComponent:
 
     def apply_settings(
         self, settings: AppSettings, *, cancellation: _Cancellation | None = None
-    ) -> object:
+    ) -> bool | None:
         self.settings_apply_guard.begin(cancellation)
         try:
             return self._apply_settings(
@@ -537,7 +538,7 @@ class RuntimeLifecycleComponent:
         settings: AppSettings,
         *,
         commit: Callable[[], bool],
-    ) -> object:
+    ) -> bool | None:
         controller = self.controller
         if controller.tts is not None or controller.speech_backend is not None:
             settings = preserve_loaded_runtime_settings(controller.settings, settings)
@@ -792,8 +793,10 @@ class LiveSessionComponent:
                 else 0
             ),
             "speaker_canonicalized": observed_character != character,
-            "ocr_confidence": round(float(getattr(latest, "confidence", 0.0)), 2),
-            "correction_count": len(getattr(latest, "corrections", ()) or ()),
+            "ocr_confidence": round(latest.confidence, 2)
+            if latest is not None
+            else 0.0,
+            "correction_count": len(latest.corrections) if latest is not None else 0,
         }
         if line is None:
             controller.live_scope_identification_failure = "story-line-no-match"
@@ -1020,7 +1023,7 @@ class VoiceAssignmentComponent:
         )
         return str(voice_binding_source_id(binding)) if binding is not None else None
 
-    def preview_choice(self, source_id: str, text: str) -> object:
+    def preview_choice(self, source_id: str, text: str) -> _ExecutorFuture:
         controller = self.controller
         if not controller.is_ready:
             raise RuntimeError("The speech engine is not ready")
@@ -1194,7 +1197,7 @@ class VoiceAssignmentComponent:
             and not controller.settings.live_speaker_corpus
         ):
             return ()
-        scope: Sequence[object] | None = (
+        scope: tuple[ChapterDialogue | str, ...] | None = (
             controller.chapter_voice_preloader.live_voice_preflight_rows()
         )
         if not controller.chapter_voice_preloader.dialogue:
@@ -1207,8 +1210,8 @@ class VoiceAssignmentComponent:
         unresolved = []
         seen: set[str] = set()
         for line in scope:
-            character = str(getattr(line, "speaker", line) or "").strip()
-            text = getattr(line, "text", None)
+            character = (line if isinstance(line, str) else line.speaker).strip()
+            text = None if isinstance(line, str) else line.text
             key = normalize_character_name(character)
             if key in seen or not controller._speaker_requires_voice_decision(
                 character,
@@ -1236,7 +1239,7 @@ class VoiceAssignmentComponent:
         controller.next_live_narrator_fallback_names = approved
         return tuple(approved.values())
 
-    def preview(self, character: str, text: str) -> object:
+    def preview(self, character: str, text: str) -> _ExecutorFuture:
         controller = self.controller
         if not controller.is_ready:
             raise RuntimeError("The speech engine is not ready")
@@ -1254,7 +1257,7 @@ class VoiceAssignmentComponent:
             text.strip(),
         )
 
-    def replay(self, character: str, text: str) -> object:
+    def replay(self, character: str, text: str) -> _ExecutorFuture:
         return self.preview(character, text)
 
 
@@ -1270,7 +1273,7 @@ class DiagnosticsComponent:
         with self.controller.diagnostic_lock:
             return self.controller.last_diagnostic
 
-    def pipeline_metrics(self) -> object:
+    def pipeline_metrics(self) -> LivePipelineMetrics | None:
         reader = self.controller.live_reader
         return None if reader is None else reader.get_pipeline_metrics()
 

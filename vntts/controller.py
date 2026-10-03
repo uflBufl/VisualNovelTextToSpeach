@@ -648,7 +648,7 @@ class AppController:
 
     def apply_settings(
         self, settings: AppSettings, *, cancellation: _Cancellation | None = None
-    ) -> object:
+    ) -> bool | None:
         return self.runtime_lifecycle.apply_settings(
             settings, cancellation=cancellation
         )
@@ -702,7 +702,7 @@ class AppController:
     def voice_assignment_for(self, character: str) -> str | None:
         return self.voice_assignments.assignment_for(character)
 
-    def preview_voice_choice(self, source_id: str, text: str) -> object:
+    def preview_voice_choice(self, source_id: str, text: str) -> _ExecutorFuture:
         return self.voice_assignments.preview_choice(source_id, text)
 
     def stop_voice_preview(self) -> bool:
@@ -754,10 +754,10 @@ class AppController:
     ) -> tuple[str, ...]:
         return self.voice_assignments.approve_narrator_fallbacks(characters)
 
-    def preview_voice(self, character: str, text: str) -> object:
+    def preview_voice(self, character: str, text: str) -> _ExecutorFuture:
         return self.voice_assignments.preview(character, text)
 
-    def replay_dialog(self, character: str, text: str) -> object:
+    def replay_dialog(self, character: str, text: str) -> _ExecutorFuture:
         return self.voice_assignments.replay(character, text)
 
     def get_capture_geometry(self) -> WindowGeometry | None:
@@ -766,7 +766,7 @@ class AppController:
     def get_latest_diagnostic(self) -> DiagnosticSnapshot | None:
         return self.diagnostics.latest()
 
-    def get_live_pipeline_metrics(self) -> object:
+    def get_live_pipeline_metrics(self) -> LivePipelineMetrics | None:
         return self.diagnostics.pipeline_metrics()
 
     def inspect_current_dialog(
