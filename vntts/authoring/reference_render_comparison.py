@@ -1210,10 +1210,11 @@ def _validate_comparison_arm(
 def _validate_comparison_render(
     root: Path, arm_id: str, render: object
 ) -> tuple[str, bool]:
-    if not isinstance(render, dict) or render.get("outcome") not in {
-        "complete",
-        "error",
-    }:
+    if (
+        not isinstance(render, dict)
+        or not isinstance(render.get("outcome"), str)
+        or render["outcome"] not in {"complete", "error"}
+    ):
         raise ReferenceRenderComparisonError(
             "Reference render comparison outcome is invalid"
         )

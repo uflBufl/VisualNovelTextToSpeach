@@ -643,10 +643,15 @@ class FailureReferenceAuditTest(unittest.TestCase):
                 ("failure_count", 0.0),
                 ("complete_pair_queue_ids", []),
                 ("queue_ids", ["another-queue-id"]),
+                ("outcome", []),
+                ("outcome", {}),
+                ("outcome", None),
             ):
                 with self.subTest(field=field, value=value):
                     forged = json.loads(json.dumps(original_comparison))
-                    if field in {"complete_count", "failure_count"}:
+                    if field == "outcome":
+                        forged["arms"][0]["renders"][0][field] = value
+                    elif field in {"complete_count", "failure_count"}:
                         forged["arms"][0][field] = value
                     else:
                         forged[field] = value
