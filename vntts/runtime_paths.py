@@ -144,6 +144,7 @@ def find_bundled_espeak(
     bundle_root = get_bundle_root() if bundle_root is None else Path(bundle_root)
     if bundle_root is None:
         return None
+    bundle_root = bundle_root.absolute()
     allowed_root = bundle_root.resolve()
     espeak_root = bundle_root / "espeak-ng"
     executables = [
@@ -166,6 +167,7 @@ def configure_bundled_dependencies(bundle_root: PathInput | None = None) -> Path
     bundle_root = get_bundle_root() if bundle_root is None else Path(bundle_root)
     if bundle_root is None:
         return None
+    bundle_root = bundle_root.absolute()
     allowed_root = bundle_root.resolve()
 
     bundled_espeak = find_bundled_espeak(bundle_root)

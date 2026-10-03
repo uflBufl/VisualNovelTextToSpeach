@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import unittest
+from contextlib import chdir
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -116,6 +117,38 @@ class RuntimePathsTest(unittest.TestCase):
                     os.environ["TESSDATA_PREFIX"],
                     str(language_data.parent.resolve()),
                 )
+
+    def test_relative_bundle_configuration_retains_absolute_dependency_paths(self):
+        with TemporaryDirectory() as directory, chdir(directory):
+            bundle = Path("package")
+            executable = bundle / "espeak-ng" / "bin" / "espeak-ng"
+            data = bundle / "espeak-ng" / "share" / "espeak-ng-data"
+            tesseract = bundle / "tesseract" / "tesseract"
+            tessdata = bundle / "tesseract" / "tessdata"
+            executable.parent.mkdir(parents=True)
+            data.mkdir(parents=True)
+            tessdata.mkdir(parents=True)
+            executable.write_bytes(b"exe")
+            tesseract.write_bytes(b"exe")
+            (tessdata / "eng.traineddata").write_bytes(b"language")
+
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch.object(
+                    pytesseract.pytesseract, "tesseract_cmd", "system-tesseract"
+                ),
+            ):
+                configured = configure_bundled_dependencies(bundle)
+                self.assertEqual(configured, tesseract.resolve())
+                self.assertEqual(
+                    find_bundled_espeak(bundle), (executable.resolve(), data.resolve())
+                )
+                self.assertEqual(
+                    pytesseract.pytesseract.tesseract_cmd, str(tesseract.resolve())
+                )
+                self.assertEqual(os.environ["PATH"], str(executable.parent.resolve()))
+                self.assertEqual(os.environ["ESPEAK_DATA_PATH"], str(data.resolve()))
+                self.assertEqual(os.environ["TESSDATA_PREFIX"], str(tessdata.resolve()))
 
     def test_incomplete_bundle_does_not_override_system_tesseract(self):
         with TemporaryDirectory() as temporary_directory:
