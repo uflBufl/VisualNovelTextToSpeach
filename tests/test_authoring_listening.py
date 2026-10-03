@@ -644,6 +644,101 @@ class AuthoringListeningTest(unittest.TestCase):
         self.assertEqual(report["models"][0]["preference"]["wins"], 2)
         self.assertEqual(report["pairwise"][0]["trials"], 2)
 
+    def test_aggregate_accepts_matching_captured_session_and_key(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            session_path = create_listening_session_from_reports(
+                write_model_reports(root, item_count=1), root / "session", seed=5
+            )
+            session = load_listening_session(session_path)
+            key = json.loads(
+                session_path.with_name(".blind-key.json").read_text(encoding="utf-8")
+            )
+            captured = aggregate_listening_report(session_path)
+            report = aggregate_listening_report(
+                session_path,
+                session_path.with_name("captured-report.json"),
+                expected_session=session,
+                expected_key=key,
+            )
+
+        captured.pop("generated_at")
+        report.pop("generated_at")
+        self.assertEqual(report, captured)
+
+    def test_aggregate_rejects_mismatched_captured_documents_without_overwrite(self):
+        for mismatch in ("session", "key"):
+            with self.subTest(mismatch=mismatch), TemporaryDirectory() as directory:
+                root = Path(directory)
+                session_path = create_listening_session_from_reports(
+                    write_model_reports(root, item_count=1), root / "session", seed=5
+                )
+                session = load_listening_session(session_path)
+                key = json.loads(
+                    session_path.with_name(".blind-key.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                expected_session = json.loads(json.dumps(session))
+                expected_key = json.loads(json.dumps(key))
+                if mismatch == "session":
+                    expected_session["completed_count"] += 1
+                else:
+                    expected_key["assignments"][0]["a"]["model_id"] += "-changed"
+                output = session_path.with_name("report.json")
+                output.write_text("preserve this report", encoding="utf-8")
+
+                with self.assertRaisesRegex(
+                    ModelListeningError,
+                    f"Listening {mismatch} changed before report aggregation",
+                ):
+                    aggregate_listening_report(
+                        session_path,
+                        output,
+                        expected_session=expected_session,
+                        expected_key=expected_key,
+                    )
+
+                self.assertEqual(
+                    output.read_text(encoding="utf-8"), "preserve this report"
+                )
+
+    def test_aggregate_uses_exact_json_number_semantics_for_captured_documents(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            session_path = create_listening_session_from_reports(
+                write_model_reports(root, item_count=1), root / "session", seed=5
+            )
+            session = load_listening_session(session_path)
+            key = json.loads(
+                session_path.with_name(".blind-key.json").read_text(encoding="utf-8")
+            )
+            expected_session = json.loads(json.dumps(session))
+            expected_session["completed_count"] = bool(
+                expected_session["completed_count"]
+            )
+            expected_key = json.loads(json.dumps(key))
+            expected_key["schema_version"] = float(expected_key["schema_version"])
+
+            self.assertEqual(expected_session, session)
+            self.assertEqual(expected_key, key)
+            for expected_session_value, expected_key_value, label in (
+                (expected_session, key, "session"),
+                (session, expected_key, "key"),
+            ):
+                with (
+                    self.subTest(label=label),
+                    self.assertRaisesRegex(
+                        ModelListeningError,
+                        f"Listening {label} changed before report aggregation",
+                    ),
+                ):
+                    aggregate_listening_report(
+                        session_path,
+                        expected_session=expected_session_value,
+                        expected_key=expected_key_value,
+                    )
+
     def test_neither_acceptable_is_not_counted_as_a_tie_or_win(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

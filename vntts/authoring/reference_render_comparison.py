@@ -13,6 +13,7 @@ from typing import TypeAlias, TypedDict
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 
+from vntts.authoring.authority import AuthoringAuthorityError, capture_authority_file
 from vntts.authoring.failure_reference_audit import (
     FailureReferenceAudit,
     FailureReferenceAuditError,
@@ -20,6 +21,9 @@ from vntts.authoring.failure_reference_audit import (
     load_failure_reference_decisions,
     prepare_failure_reference_audio,
     record_failure_reference_decision,
+)
+from vntts.authoring.failure_reference_audit import (
+    _validate_audit_documents as _validate_reference_audit_documents,
 )
 from vntts.authoring.failure_reference_preview import (
     FailureReferencePreviewCancelled,
@@ -103,6 +107,8 @@ class _PreferenceAuditGroups:
     source_groups: dict[str, JsonDocument]
     source_private_groups: dict[str, JsonDocument]
     fresh_private_groups: dict[str, JsonDocument]
+    authority_documents: tuple[tuple[Path, JsonDocument], ...]
+    audio_snapshots: dict[Path, str]
 
 
 @dataclass(frozen=True)
@@ -110,6 +116,7 @@ class _PreferenceListeningSelection:
     trial: JsonDocument
     selected_side: str
     render: _SelectedComparisonRender
+    authority_documents: dict[Path, JsonDocument]
 
 
 @dataclass(frozen=True)
@@ -719,12 +726,7 @@ def import_reference_render_preference(
     selection = _preference_listening_selection(context, queue_id)
     source = _source_reference(selection.render, groups)
     candidate_id = _fresh_candidate_id(groups, source, queue_id, selection)
-    snapshots = _reference_selection_snapshots(
-        context.comparison_root,
-        context.session_path,
-        context.session_path.with_name("report.json"),
-        context.source_audit_path,
-    )
+    snapshots = _reference_selection_snapshots(context, groups, selection)
     authority = _selection_authority(context, selection, source, snapshots, queue_id)
     return _save_reference_selection(
         context, groups, selection, source, candidate_id, authority, snapshots, queue_id
@@ -781,12 +783,51 @@ def _preference_audit_groups(
 ) -> _PreferenceAuditGroups:
     fresh_document, fresh_key = _load_audit_documents(context.audit_root)
     source_document, source_key = _load_audit_documents(context.source_audit_root)
+    _assert_audit_document_identity(
+        fresh_document, fresh_key, context.fresh_audit.audit_id
+    )
+    _assert_audit_document_identity(
+        source_document, source_key, context.source_audit.audit_id
+    )
     return _PreferenceAuditGroups(
         _one_group_for_queue(fresh_document, queue_id, "fresh audit"),
         _groups_by_id(source_document),
         _groups_by_id(source_key),
         _groups_by_id(fresh_key),
+        (
+            (context.audit_root / "audit.json", fresh_document),
+            (context.audit_root / ".blind-key.json", fresh_key),
+            (context.source_audit_path, source_document),
+            (context.source_audit_root / ".blind-key.json", source_key),
+        ),
+        {
+            **_audit_audio_snapshots(context.audit_root, fresh_document),
+            **_audit_audio_snapshots(context.source_audit_root, source_document),
+        },
     )
+
+
+def _audit_audio_snapshots(root: Path, document: JsonDocument) -> dict[Path, str]:
+    return {
+        _contained_file(root, candidate.get("audio")): _required_sha256(
+            candidate.get("sha256"), "audit candidate hash"
+        )
+        for group in _documents(document.get("groups"), "audit groups")
+        for candidate in _documents(group.get("candidates"), "audit candidates")
+    }
+
+
+def _assert_audit_document_identity(
+    document: JsonDocument, key: JsonDocument, expected_id: str
+) -> None:
+    try:
+        audit_id, _groups, _private_groups = _validate_reference_audit_documents(
+            document, key
+        )
+    except FailureReferenceAuditError as error:
+        raise ReferenceRenderComparisonError(str(error)) from error
+    if audit_id != expected_id:
+        raise ReferenceRenderComparisonError("Reference render audit authority changed")
 
 
 def _groups_by_id(document: JsonDocument) -> dict[str, JsonDocument]:
@@ -799,12 +840,14 @@ def _groups_by_id(document: JsonDocument) -> dict[str, JsonDocument]:
 def _preference_listening_selection(
     context: _PreferenceContext, queue_id: str
 ) -> _PreferenceListeningSelection:
-    trial, assignment, selected_side, selected_arm_id = _selected_listening_trial(
-        context.comparison_root,
-        context.comparison,
-        context.session_path,
-        context.session,
-        queue_id,
+    trial, assignment, selected_side, selected_arm_id, authority_documents = (
+        _selected_listening_trial(
+            context.comparison_root,
+            context.comparison,
+            context.session_path,
+            context.session,
+            queue_id,
+        )
     )
     selected_arm = next(
         (
@@ -869,6 +912,7 @@ def _preference_listening_selection(
             ),
             _required_text(selected_render.get("candidate_id"), "candidate ID"),
         ),
+        authority_documents,
     )
 
 
@@ -1007,9 +1051,12 @@ def _save_reference_selection(
     queue_id: str,
 ) -> ReferenceRenderSelection:
     group_id = _required_text(groups.fresh_group.get("group_id"), "audit group ID")
-    current = _document(
-        load_failure_reference_decisions(context.audit_root), "reference decisions"
-    )
+    try:
+        current = _document(
+            load_failure_reference_decisions(context.audit_root), "reference decisions"
+        )
+    except FailureReferenceAuditError as error:
+        raise ReferenceRenderComparisonError(str(error)) from error
     existing = next(
         (
             value
@@ -1018,6 +1065,7 @@ def _save_reference_selection(
         ),
         None,
     )
+    _assert_reference_selection_snapshots(snapshots)
     if existing is not None:
         if (
             existing.get("decision") != candidate_id
@@ -1029,7 +1077,6 @@ def _save_reference_selection(
         decisions = current
         created = False
     else:
-        _assert_reference_selection_snapshots(snapshots)
         try:
             decisions = record_failure_reference_decision(
                 context.audit_root,
@@ -1237,7 +1284,7 @@ def _selected_listening_trial(
     session_path: Path,
     session: ListeningSession,
     queue_id: str,
-) -> tuple[JsonDocument, JsonDocument, str, str]:
+) -> tuple[JsonDocument, JsonDocument, str, str, dict[Path, JsonDocument]]:
     session_document = _document(session, "listening session")
     trial, selected_side = _selected_completed_trial(session_document, queue_id)
     key, report = _load_listening_authority(session_path)
@@ -1245,7 +1292,7 @@ def _selected_listening_trial(
     arms_by_id, selected_arm_ids = _listening_arms(comparison, key)
     _validate_listening_sources(comparison_root, arms_by_id, selected_arm_ids, key)
     _validate_listening_arm_samples(arms_by_id, selected_arm_ids, queue_id)
-    _validate_listening_report(session_path, report)
+    _validate_listening_report(session_path, session, key, report)
     selected = assignment.get(selected_side)
     if not isinstance(selected, dict):
         raise ReferenceRenderComparisonError(
@@ -1256,6 +1303,10 @@ def _selected_listening_trial(
         assignment,
         selected_side,
         _safe_id(selected.get("model_id"), "selected arm ID"),
+        {
+            session_path.with_name(".blind-key.json"): key,
+            session_path.with_name("report.json"): report,
+        },
     )
 
 
@@ -1384,9 +1435,16 @@ def _validate_listening_arm_samples(
         raise ReferenceRenderComparisonError("Reference render listening arms changed")
 
 
-def _validate_listening_report(session_path: Path, report: JsonDocument) -> None:
+def _validate_listening_report(
+    session_path: Path,
+    session: ListeningSession,
+    key: JsonDocument,
+    report: JsonDocument,
+) -> None:
     try:
-        expected_report = aggregate_listening_report(session_path)
+        expected_report = aggregate_listening_report(
+            session_path, expected_session=session, expected_key=key
+        )
     except ModelListeningError as error:
         raise ReferenceRenderComparisonError(str(error)) from error
     comparable_fields = set(expected_report) - {"generated_at"}
@@ -1427,34 +1485,74 @@ def _one_group_for_queue(
 
 
 def _reference_selection_snapshots(
-    comparison_root: Path,
-    session_path: Path,
-    report_path: Path,
-    source_audit_path: Path,
+    context: _PreferenceContext,
+    groups: _PreferenceAuditGroups,
+    selection: _PreferenceListeningSelection,
 ) -> dict[Path, str]:
-    paths = (
-        comparison_root / "comparison.json",
-        session_path,
-        session_path.with_name(".blind-key.json"),
-        report_path,
-        source_audit_path,
+    documents = (
+        *groups.authority_documents,
+        *selection.authority_documents.items(),
+        (context.comparison_root / "comparison.json", context.comparison),
+        (context.session_path, dict(context.session)),
     )
-    snapshots = {}
-    for path in paths:
-        if path.is_symlink() or not path.is_file():
+    snapshots = {
+        **groups.audio_snapshots,
+        **_comparison_artifact_snapshots(context.comparison_root, context.comparison),
+    }
+    snapshots[context.source_audit_path] = _required_sha256(
+        context.comparison.get("audit_sha256"), "source audit hash"
+    )
+    for path, document in documents:
+        try:
+            captured = capture_authority_file(path, "reference selection authority")
+            captured_document = captured.json_document("reference selection authority")
+        except AuthoringAuthorityError as error:
+            raise ReferenceRenderComparisonError(str(error)) from error
+        if (
+            path in snapshots and captured.sha256 != snapshots[path]
+        ) or canonical_document_sha256(captured_document) != canonical_document_sha256(
+            document
+        ):
             raise ReferenceRenderComparisonError(
-                "Reference selection authority is missing or unsafe"
+                "Reference selection authority changed after validation"
             )
-        snapshots[path] = sha256_file(path)
+        snapshots[path] = captured.sha256
+    return snapshots
+
+
+def _comparison_artifact_snapshots(
+    root: Path, document: JsonDocument
+) -> dict[Path, str]:
+    snapshots = {
+        _contained_file(root, control.get("audio")): _required_sha256(
+            control.get("sha256"), "control hash"
+        )
+        for control in _documents(document.get("controls"), "comparison controls")
+    }
+    for arm in _documents(document.get("arms"), "comparison arms"):
+        snapshots[_contained_file(root, arm.get("report"))] = _required_sha256(
+            arm.get("report_sha256"), "report hash"
+        )
+        arm_root = root / "arms" / _safe_id(arm.get("arm_id"), "arm ID")
+        for render in _documents(arm.get("renders"), "comparison renders"):
+            if render.get("outcome") == "complete":
+                snapshots[_contained_file(arm_root, render.get("audio"))] = (
+                    _required_sha256(render.get("audio_sha256"), "rendered audio hash")
+                )
     return snapshots
 
 
 def _assert_reference_selection_snapshots(snapshots: Mapping[Path, str]) -> None:
     for path, digest in snapshots.items():
-        if path.is_symlink() or not path.is_file() or sha256_file(path) != digest:
+        try:
+            if path.is_symlink() or not path.is_file() or sha256_file(path) != digest:
+                raise ReferenceRenderComparisonError(
+                    "Reference selection authority changed before decision save"
+                )
+        except OSError as error:
             raise ReferenceRenderComparisonError(
-                "Reference selection authority changed before decision save"
-            )
+                f"Unable to recheck reference selection authority: {error}"
+            ) from error
 
 
 def _assert_plan_and_audit_unchanged(plan: ReferenceRenderPlan) -> None:

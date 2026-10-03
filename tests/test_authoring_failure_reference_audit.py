@@ -5,10 +5,12 @@ import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import numpy as np
 
 from tests.test_authoring_workbench import create_test_workspace
+from vntts.authoring import reference_render_comparison
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_reference_audit import (
     FailureReferenceAuditError,
@@ -877,6 +879,42 @@ class FailureReferenceAuditTest(unittest.TestCase):
                     arm_ids=("complete-1", "incomplete"),
                 )
 
+    def assert_reference_import_rejects_replacements(
+        self, audit_root, comparison_root, session, queue_id, replacements
+    ):
+        original_source_reference = reference_render_comparison._source_reference
+        expected_decisions = load_failure_reference_decisions(audit_root)["decisions"]
+        for path, replace_payload in replacements:
+            with self.subTest(path=path, has_decision=bool(expected_decisions)):
+                original = path.read_bytes()
+
+                def replace_after_selection(render, groups):
+                    selected = original_source_reference(render, groups)
+                    path.write_bytes(replace_payload(original))
+                    return selected
+
+                try:
+                    with patch.object(
+                        reference_render_comparison,
+                        "_source_reference",
+                        side_effect=replace_after_selection,
+                    ):
+                        with self.assertRaisesRegex(
+                            ReferenceRenderComparisonError, "changed"
+                        ):
+                            import_reference_render_preference(
+                                audit_root,
+                                comparison_root,
+                                session,
+                                queue_id,
+                            )
+                finally:
+                    path.write_bytes(original)
+                self.assertEqual(
+                    load_failure_reference_decisions(audit_root)["decisions"],
+                    expected_decisions,
+                )
+
     def test_imports_exact_blind_preference_into_fresh_audit(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -986,11 +1024,103 @@ class FailureReferenceAuditTest(unittest.TestCase):
                     finally:
                         path.write_bytes(original)
 
+            comparison_document = json.loads(
+                (comparison.directory / "comparison.json").read_text()
+            )
+            arm = next(
+                value
+                for value in comparison_document["arms"]
+                if value["arm_id"] == selected_arm
+            )
+            render = next(value for value in arm["renders"] if value["id"] == queue_id)
+            audio = comparison.directory / "arms" / selected_arm / render["audio"]
+            control = comparison.directory / comparison_document["controls"][0]["audio"]
+
+            def changed_json(payload):
+                return json.dumps({**json.loads(payload), "changed": True}).encode()
+
+            def changed_preference(payload):
+                document = json.loads(payload)
+                document["trials"][0]["rating"]["preference"] = "b"
+                return json.dumps(document).encode()
+
+            def changed_version(payload):
+                return json.dumps(
+                    {**json.loads(payload), "schema_version": True}
+                ).encode()
+
+            replacements = (
+                (session, changed_preference),
+                (session, changed_version),
+                (comparison.directory / "comparison.json", changed_json),
+                (session.with_name(".blind-key.json"), changed_json),
+                (session.with_name("report.json"), changed_json),
+                (source_audit_root / "audit.json", lambda payload: payload + b"\n"),
+                (source_audit_root / ".blind-key.json", changed_json),
+                (fresh_key_path, changed_json),
+                (audio, lambda payload: payload + b"changed"),
+                (comparison.directory / arm["report"], lambda payload: payload + b"\n"),
+                (control, lambda payload: payload + b"changed"),
+                (
+                    source_audit_root / source_group["candidates"][0]["audio"],
+                    lambda payload: payload + b"changed",
+                ),
+                (
+                    fresh_audit_root
+                    / fresh_document["groups"][0]["candidates"][0]["audio"],
+                    lambda payload: payload + b"changed",
+                ),
+            )
+
+            self.assert_reference_import_rejects_replacements(
+                fresh_audit_root, comparison.directory, session, queue_id, replacements
+            )
+
+            original_session = session.read_bytes()
+            report_path = session.with_name("report.json")
+            original_report = report_path.read_bytes()
+            changed_session = changed_preference(original_session)
+            session.write_bytes(changed_session)
+            reference_render_comparison.aggregate_listening_report(session, report_path)
+            session.write_bytes(original_session)
+            original_validate_report = (
+                reference_render_comparison._validate_listening_report
+            )
+
+            def replace_session_during_report_validation(*args, **kwargs):
+                session.write_bytes(changed_session)
+                try:
+                    return original_validate_report(*args, **kwargs)
+                finally:
+                    session.write_bytes(original_session)
+
+            try:
+                with patch.object(
+                    reference_render_comparison,
+                    "_validate_listening_report",
+                    side_effect=replace_session_during_report_validation,
+                ):
+                    with self.assertRaisesRegex(
+                        ReferenceRenderComparisonError, "changed"
+                    ):
+                        import_reference_render_preference(
+                            fresh_audit_root, comparison.directory, session, queue_id
+                        )
+            finally:
+                session.write_bytes(original_session)
+                report_path.write_bytes(original_report)
+            self.assertEqual(
+                load_failure_reference_decisions(fresh_audit_root)["decisions"], []
+            )
+
             imported = import_reference_render_preference(
                 fresh_audit_root,
                 comparison.directory,
                 session,
                 queue_id,
+            )
+            self.assert_reference_import_rejects_replacements(
+                fresh_audit_root, comparison.directory, session, queue_id, replacements
             )
             repeated = import_reference_render_preference(
                 fresh_audit_root,

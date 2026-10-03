@@ -29,7 +29,7 @@ from vntts.authoring.publication import (
     staged_directory,
 )
 from vntts.authoring.workspace_foundation import load_json_object
-from vntts.document_identity import is_lowercase_sha256
+from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 from vntts.settings import get_local_data_directory
 
 SESSION_SCHEMA = "vntts.model-listening-session"
@@ -916,13 +916,28 @@ def record_trial_preference(
 
 
 def aggregate_listening_report(
-    session_path: PathInput, output_path: PathInput | None = None
+    session_path: PathInput,
+    output_path: PathInput | None = None,
+    *,
+    expected_session: Mapping[str, object] | None = None,
+    expected_key: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
+    """Aggregate current preferences, optionally bound to captured input documents."""
     session_path = Path(session_path).expanduser().resolve()
     session = load_listening_session(session_path)
     if not _is_listening_session(session):
         raise ModelListeningError("Listening session is invalid")
     key = _load_blind_key(session_path, session)
+    for label, actual, expected in (
+        ("session", session, expected_session),
+        ("key", key, expected_key),
+    ):
+        if expected is not None and canonical_document_sha256(
+            actual
+        ) != canonical_document_sha256(expected):
+            raise ModelListeningError(
+                f"Listening {label} changed before report aggregation"
+            )
     fields = _report_fields(session, key)
     report = {
         "schema": (
