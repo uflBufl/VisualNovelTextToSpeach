@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import threading
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol, TypeAlias, TypedDict
+from typing import TypeAlias, TypedDict
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
@@ -27,6 +26,10 @@ from vntts.authoring.failure_reference_preview import (
     FailureReferencePreviewError,
     FailureReferencePreviewIncomplete,
     FailureReferencePreviewService,
+    _PreviewBackendFactory,
+)
+from vntts.authoring.failure_reference_preview import (
+    _PreviewBackend as _PreviewBackend,
 )
 from vntts.authoring.listening import (
     ListeningSession,
@@ -41,32 +44,12 @@ from vntts.authoring.publication import (
     staged_directory,
 )
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
-from vntts.synthesis import SynthesisChunkStream, SynthesisRequest
-from vntts.voices import CharacterVoiceRegistry
 
 REFERENCE_RENDER_INPUT_SCHEMA = "vntts.authoring-reference-render-input"
 REFERENCE_RENDER_INPUT_VERSION = 1
 REFERENCE_RENDER_SCHEMA = "vntts.authoring-reference-render-comparison"
 REFERENCE_RENDER_VERSION = 1
 JsonDocument: TypeAlias = dict[str, object]
-
-
-class _PreviewBackend(Protocol):
-    registry: CharacterVoiceRegistry
-
-    def render(self, request: SynthesisRequest) -> SynthesisChunkStream: ...
-
-
-class _PreviewBackendFactory(Protocol):
-    def __call__(
-        self,
-        name: str,
-        registry: CharacterVoiceRegistry,
-        cache_root: Path,
-        *,
-        model_name: str | None = None,
-        startup_cancellation: threading.Event | None = None,
-    ) -> _PreviewBackend: ...
 
 
 class ReferenceRenderComparisonError(RuntimeError):
