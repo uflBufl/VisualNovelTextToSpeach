@@ -974,6 +974,8 @@ def _validated_rebase_ledger(
         raise AuthoringWorkbenchError("Workspace config rebase ledger is malformed")
     rebase = _object(rebase_value, "Workspace config rebase ledger")
     version = rebase.get("schema_version")
+    if type(version) is not int:
+        raise AuthoringWorkbenchError("Workspace config rebase ledger is malformed")
     required = _rebase_ledger_fields(version)
     if (
         set(rebase) != required
@@ -985,11 +987,11 @@ def _validated_rebase_ledger(
         rebase, version
     )
     return _ValidatedRebaseLedger(
-        rebase, int(version), source_queue_sha256, target_queue_sha256
+        rebase, version, source_queue_sha256, target_queue_sha256
     )
 
 
-def _rebase_ledger_fields(version: object) -> set[str]:
+def _rebase_ledger_fields(version: int) -> set[str]:
     fields = {
         "schema",
         "schema_version",
@@ -1009,7 +1011,7 @@ def _rebase_ledger_fields(version: object) -> set[str]:
 
 
 def _validate_rebase_ledger_digests(
-    rebase: Mapping[str, object], version: object
+    rebase: Mapping[str, object], version: int
 ) -> tuple[str, str]:
     fields = [
         "source_workspace_sha256",

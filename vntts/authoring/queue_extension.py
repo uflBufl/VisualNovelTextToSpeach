@@ -129,6 +129,7 @@ def validate_additive_generation_queue(
         not isinstance(ledger, dict)
         or set(ledger) != required
         or ledger.get("schema") != SCHEMA
+        or type(ledger.get("schema_version")) is not int
         or ledger.get("schema_version") != SCHEMA_VERSION
     ):
         raise QueueExtensionError("Generation queue extension ledger is malformed")
@@ -159,9 +160,12 @@ def validate_additive_generation_queue(
         if canonical_document_sha256(observed[queue_id]) != digest:
             raise QueueExtensionError("Generation queue added item changed")
     base_ids = set(observed) - set(added_by_id)
-    if ledger.get("added_item_count") != len(added_by_id) or ledger.get(
-        "base_item_count"
-    ) != len(base_ids):
+    if (
+        type(ledger.get("added_item_count")) is not int
+        or ledger.get("added_item_count") != len(added_by_id)
+        or type(ledger.get("base_item_count")) is not int
+        or ledger.get("base_item_count") != len(base_ids)
+    ):
         raise QueueExtensionError("Generation queue extension counts changed")
     if base_queue is not None:
         base_path = Path(base_queue).expanduser().resolve()

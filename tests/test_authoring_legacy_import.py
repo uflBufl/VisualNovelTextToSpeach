@@ -278,6 +278,31 @@ class LegacyAuthoringImportTest(unittest.TestCase):
         self.assertEqual(second.manifest["schema_version"], 1)
         self.assertNotIn("created_at", second.manifest["legacy_job"])
 
+    def test_malformed_existing_import_versions_are_skipped_or_rejected(self):
+        for version in (True, 1.0, [], {}):
+            with self.subTest(version=version), TemporaryDirectory() as directory:
+                root = Path(directory)
+                fixture = write_legacy_fixture(root)
+                unrelated = root / "app-data" / "unrelated"
+                unrelated.mkdir(parents=True)
+                (unrelated / "import.json").write_text(
+                    json.dumps({"schema": IMPORT_SCHEMA, "schema_version": version}),
+                    encoding="utf-8",
+                )
+
+                imported = import_legacy_job(
+                    fixture["job_directory"], root / "app-data"
+                )
+                manifest_path = imported.destination / "import.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest["schema_version"] = version
+                manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+                with self.assertRaisesRegex(
+                    LegacyAuthoringImportError, "unsupported manifest"
+                ):
+                    import_legacy_job(fixture["job_directory"], root / "app-data")
+
     def test_reimport_rejects_forged_manifest_inventory_and_identity(self):
         for mutation in ("artifacts", "identity", "summary"):
             with self.subTest(mutation=mutation), TemporaryDirectory() as directory:

@@ -126,12 +126,15 @@ def _validate_binding_header(
     document: dict[str, object],
 ) -> tuple[str, str, str, int]:
     schema_version = document.get("schema_version")
-    if document.get(
-        "schema"
-    ) != FAILURE_REFERENCE_BINDING_SCHEMA or schema_version not in {
-        _LEGACY_FAILURE_REFERENCE_BINDING_VERSION,
-        FAILURE_REFERENCE_BINDING_VERSION,
-    }:
+    if (
+        document.get("schema") != FAILURE_REFERENCE_BINDING_SCHEMA
+        or type(schema_version) is not int
+        or schema_version
+        not in {
+            _LEGACY_FAILURE_REFERENCE_BINDING_VERSION,
+            FAILURE_REFERENCE_BINDING_VERSION,
+        }
+    ):
         raise FailureReferenceBindingError("Unsupported reference binding schema")
     identity = {
         key: value

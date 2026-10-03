@@ -1166,9 +1166,11 @@ def _validate_import_root_collisions(destination_root: Path, plan: _ImportPlan) 
     proposed = {item["queue_id"]: item for item in _import_identities(plan)}
     for manifest_path in destination_root.glob("*/import.json"):
         manifest = _load_json(manifest_path, "existing authoring import")
+        schema_version = manifest.get("schema_version")
         if (
             manifest.get("schema") != IMPORT_SCHEMA
-            or manifest.get("schema_version") not in SUPPORTED_IMPORT_SCHEMA_VERSIONS
+            or type(schema_version) is not int
+            or schema_version not in SUPPORTED_IMPORT_SCHEMA_VERSIONS
         ):
             continue
         identities = manifest.get("identities")
@@ -1200,9 +1202,11 @@ def _validate_existing_import(
 ) -> LegacyImportResult:
     manifest_path = destination / "import.json"
     manifest = _load_json(manifest_path, "existing authoring import")
+    schema_version = manifest.get("schema_version")
     if (
         manifest.get("schema") != IMPORT_SCHEMA
-        or manifest.get("schema_version") not in SUPPORTED_IMPORT_SCHEMA_VERSIONS
+        or type(schema_version) is not int
+        or schema_version not in SUPPORTED_IMPORT_SCHEMA_VERSIONS
     ):
         raise LegacyAuthoringImportError(
             f"Import destination already exists with an unsupported manifest: {destination}"

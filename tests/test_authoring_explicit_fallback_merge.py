@@ -1,3 +1,4 @@
+import copy
 import json
 import unittest
 from pathlib import Path
@@ -191,6 +192,48 @@ class ExplicitFallbackMergeTests(unittest.TestCase):
 
         self.assertTrue(compatible)
         self.assertFalse(incompatible)
+
+    def test_merge_schema_version_requires_exact_integer(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, source, queue_id = self._fixture(root)
+            created = merge_explicit_live_fallbacks(
+                base, source, (queue_id,), root / "workspaces"
+            )
+            workspace = json.loads(
+                (created.directory / "workspace.json").read_text(encoding="utf-8")
+            )
+            merge = workspace["explicit_fallback_merge"]
+            saved = json.loads(
+                (created.directory / "generated-audio/generation-state.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            for version in (1, 2):
+                state = copy.deepcopy(saved)
+                compatible = dict(merge, schema_version=version)
+                if version == 2:
+                    compatible["base_queue_sha256"] = compatible.pop("queue_sha256")
+                    compatible["source_queue_sha256"] = compatible["base_queue_sha256"]
+                    state["items"][queue_id].pop("explicit_fallback_merge")
+                workspace["explicit_fallback_merge"] = compatible
+                fallback_merge_module.validate_explicit_fallback_merge_workspace(
+                    created.directory, workspace, state=state
+                )
+                for malformed_version in (True, float(version), [], {}):
+                    workspace["explicit_fallback_merge"] = dict(
+                        compatible, schema_version=malformed_version
+                    )
+                    with (
+                        self.subTest(version=malformed_version),
+                        self.assertRaisesRegex(
+                            AuthoringWorkbenchError,
+                            "Workspace explicit fallback merge provenance is malformed",
+                        ),
+                    ):
+                        fallback_merge_module.validate_explicit_fallback_merge_workspace(
+                            created.directory, workspace, state=state
+                        )
 
 
 if __name__ == "__main__":

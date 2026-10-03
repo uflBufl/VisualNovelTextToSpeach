@@ -105,6 +105,29 @@ class FailureReferenceBindingTest(unittest.TestCase):
             self.assertEqual(selected["cases"][0]["queue_id"], queue_id)
             self.assertEqual(selected["group_id"], group["group_id"])
 
+    def test_binding_schema_version_requires_exact_integer(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit, _workspace, _queue_id, _group, _candidate, _decisions = (
+                self.create_decided_audit(root)
+            )
+            output = root / "binding"
+            publish_failure_reference_binding(audit, output)
+            binding_path = output / "binding.json"
+            document = json.loads(binding_path.read_text())
+            for version in (True, 1.0, [], {}):
+                malformed = dict(document)
+                malformed["schema_version"] = version
+                binding_path.write_text(json.dumps(malformed), encoding="utf-8")
+                with (
+                    self.subTest(version=version),
+                    self.assertRaisesRegex(
+                        FailureReferenceBindingError,
+                        "Unsupported reference binding schema",
+                    ),
+                ):
+                    load_failure_reference_binding_document(output)
+
     def test_incomplete_and_neither_decisions_fail_closed(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

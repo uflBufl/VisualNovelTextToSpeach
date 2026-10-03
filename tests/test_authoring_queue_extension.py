@@ -10,6 +10,7 @@ from vntts_artifacts.voice_generation_queue import (
     write_voice_generation_queue,
 )
 
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.queue_extension import (
     FIELD,
     QueueExtensionError,
@@ -36,6 +37,39 @@ def item(sequence, text=None):
 
 
 class QueueExtensionTest(unittest.TestCase):
+    def test_ledger_versions_and_counts_require_real_integers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            metadata = {"game": "Reverse: 1999", "language": "en"}
+            base = write_voice_generation_queue(
+                root / "base.jsonl", metadata, [item(1)]
+            )
+            extension = write_voice_generation_queue(
+                root / "extension.jsonl", metadata, [item(2)]
+            )
+            output = publish_additive_generation_queue(
+                base, extension, root / "combined.jsonl"
+            )
+            queue, ledger = validate_additive_generation_queue(output, base_queue=base)
+            for field in ("schema_version", "base_item_count", "added_item_count"):
+                for invalid in (True, 1.0, [], {}, None, "1"):
+                    with self.subTest(field=field, invalid=invalid):
+                        altered = {**ledger, field: invalid}
+                        altered["extension_id"] = canonical_document_sha256(
+                            {
+                                key: value
+                                for key, value in altered.items()
+                                if key != "extension_id"
+                            }
+                        )
+                        write_voice_generation_queue(
+                            output,
+                            {**queue.metadata, FIELD: altered},
+                            [entry.document for entry in queue.items],
+                        )
+                        with self.assertRaises(QueueExtensionError):
+                            validate_additive_generation_queue(output, base_queue=base)
+
     def test_publishes_strict_ordered_superset_with_bound_sources(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

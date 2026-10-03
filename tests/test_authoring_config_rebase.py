@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import json
 import unittest
@@ -86,6 +87,42 @@ def _prepare(
 
 
 class AuthoringConfigRebaseTest(unittest.TestCase):
+    def test_ledger_requires_integer_version_and_retains_legacy_versions(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, source, target = _prepare(root)
+            output = rebase_workspace_config(source, target, root / "rebased").directory
+            _directory, current, _digest = load_workspace_authority(output)
+            saved = load_generation_state(
+                output / "generated-audio/generation-state.json", output / "queue.jsonl"
+            )
+            for version in (1, 2, 3, 4):
+                workspace = copy.deepcopy(current)
+                state = copy.deepcopy(saved)
+                ledger = workspace["config_rebase"]
+                ledger["schema_version"] = version
+                if version < 4:
+                    ledger["queue_sha256"] = ledger.pop("target_queue_sha256")
+                    ledger.pop("source_queue_sha256")
+                for record in ledger["items"]:
+                    if version < 3:
+                        record.pop("successor_state")
+                    if version < 2:
+                        record.pop("target_route_status")
+                    state["items"][record["queue_id"]]["config_rebase"] = {
+                        key: value for key, value in record.items() if key != "queue_id"
+                    }
+                with self.subTest(version=version):
+                    validate_config_rebase_workspace(output, workspace, state)
+                for invalid in (True, float(version), [], {}, None, "1"):
+                    with self.subTest(version=version, invalid=invalid):
+                        ledger["schema_version"] = invalid
+                        with self.assertRaisesRegex(
+                            AuthoringWorkbenchError,
+                            "Workspace config rebase ledger is malformed",
+                        ):
+                            validate_config_rebase_workspace(output, workspace, state)
+
     def test_rebases_terminal_base_items_onto_strict_additive_queue(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

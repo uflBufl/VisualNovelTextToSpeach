@@ -228,6 +228,8 @@ class FailureRepairPolicy:
             "inline_pause_queue_ids",
             "inline_pause_ms",
         }
+        if type(version) is not int:
+            raise FailureRepairPolicyError("Failure-repair policy is malformed")
         if (
             (
                 version == LEGACY_FAILURE_REPAIR_POLICY_VERSION

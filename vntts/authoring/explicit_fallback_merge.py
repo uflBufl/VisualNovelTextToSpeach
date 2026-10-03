@@ -527,7 +527,7 @@ def _validated_explicit_fallback_merge(value: object) -> tuple[JsonDocument, int
     if (
         set(merge) != fields
         or merge.get("schema") != SCHEMA
-        or not isinstance(version, int)
+        or type(version) is not int
         or version not in {1, 2}
     ):
         raise AuthoringWorkbenchError(

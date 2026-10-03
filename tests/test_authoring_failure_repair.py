@@ -77,6 +77,14 @@ class AuthoringFailureRepairTest(unittest.TestCase):
             FailureRepairPolicy.from_document(legacy).bounded_seed_retry_queue_ids,
             (),
         )
+        for version in (True, 1.0, [], {}):
+            malformed_version = dict(legacy)
+            malformed_version["schema_version"] = version
+            with (
+                self.subTest(version=version),
+                self.assertRaisesRegex(FailureRepairPolicyError, "malformed"),
+            ):
+                FailureRepairPolicy.from_document(malformed_version)
 
     def test_inline_pause_prompt_is_exact_and_bounded(self):
         prompt, count = inline_sentence_pause_prompt(
