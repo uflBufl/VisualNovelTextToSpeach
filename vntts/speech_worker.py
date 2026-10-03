@@ -619,27 +619,28 @@ def _voice_from_document(value: VoiceDocument) -> CharacterVoice:
     references = tuple(
         Path(item).expanduser().resolve() for item in value["references"]
     )
+    reference_root = value["reference_root"]
     return CharacterVoice(
         character=value["character"],
         speaker=value["speaker"],
-        aliases=tuple(value.get("aliases", ())),
+        aliases=tuple(value["aliases"]),
         references=references,
-        reference_transcript=value.get("reference_transcript"),
+        reference_transcript=value["reference_transcript"],
         reference_root=(
             None
-            if value.get("reference_root") is None
-            else Path(str(value["reference_root"])).expanduser().resolve()
+            if reference_root is None
+            else Path(reference_root).expanduser().resolve()
         ),
     )
 
 
 def _registry_from_document(document: RegistryDocument) -> CharacterVoiceRegistry:
     registry = CharacterVoiceRegistry(
-        [_voice_from_document(value) for value in document.get("voices", ())]
+        [_voice_from_document(value) for value in document["voices"]]
     )
     registry.assignments = {
         character: None if value is None else _voice_from_document(value)
-        for character, value in document.get("assignments", {}).items()
+        for character, value in document["assignments"].items()
     }
     return registry
 
