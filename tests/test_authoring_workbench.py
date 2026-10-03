@@ -930,6 +930,34 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 forged_directory.rename(carried.directory)
                 workspace_path.write_text(json.dumps(original), encoding="utf-8")
 
+    def test_resume_rejects_non_integer_legacy_import_versions(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, _source = create_carry_source_workspace(root)
+            import_path = imported / "import.json"
+            original = json.loads(import_path.read_text(encoding="utf-8"))
+            target_manifest = write_carry_target_manifest(root)
+            for version in (True, 1.0, [], {}, None, "1"):
+                malformed = {**original, "schema_version": version}
+                import_path.write_text(json.dumps(malformed), encoding="utf-8")
+                with (
+                    self.subTest(version=version),
+                    self.assertRaisesRegex(
+                        AuthoringWorkbenchError,
+                        "Only validated VNTTS legacy imports can resume",
+                    ),
+                ):
+                    create_resume_workspace(
+                        imported,
+                        root / "resume-workspaces",
+                        story_index=fixture["job"]["story_index"],
+                        voice_manifest=target_manifest,
+                        backend="moss-tts",
+                        model="model with spaces",
+                        generation_profile="stable",
+                        narrator_character="Rhiannon",
+                    )
+
     def test_direct_extension_state_uses_one_snapshot(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

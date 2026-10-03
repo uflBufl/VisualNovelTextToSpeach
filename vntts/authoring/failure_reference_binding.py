@@ -460,14 +460,19 @@ def _load_audit_snapshots(directory: Path) -> _AuditSnapshots:
     audit = documents["audit"]
     key = documents["key"]
     decisions = documents["decisions"]
+    audit_version = audit.get("schema_version")
+    key_version = key.get("schema_version")
+    decisions_version = decisions.get("schema_version")
     if (
         audit.get("schema") != _AUDIT_SCHEMA
-        or audit.get("schema_version") != _AUDIT_VERSION
+        or type(audit_version) is not int
+        or audit_version != _AUDIT_VERSION
         or key.get("schema") != _AUDIT_KEY_SCHEMA
-        or key.get("schema_version") != _AUDIT_VERSION
+        or type(key_version) is not int
+        or key_version != _AUDIT_VERSION
         or decisions.get("schema") != _DECISIONS_SCHEMA
-        or decisions.get("schema_version")
-        not in {*_LEGACY_DECISIONS_VERSIONS, _DECISIONS_VERSION}
+        or type(decisions_version) is not int
+        or decisions_version not in {*_LEGACY_DECISIONS_VERSIONS, _DECISIONS_VERSION}
     ):
         raise FailureReferenceBindingError("Unsupported reference audit schema")
     audit_id = _sha256(audit.get("audit_id"), "Reference audit ID")

@@ -280,10 +280,11 @@ def _load_resume_source(import_directory: str | Path) -> _ResumeSource:
     manifest, import_sha256, import_payload = _load_json_snapshot(
         import_path, "legacy import"
     )
+    schema_version = manifest.get("schema_version")
     if (
         manifest.get("schema") != legacy_import.IMPORT_SCHEMA
-        or manifest.get("schema_version")
-        not in legacy_import.SUPPORTED_IMPORT_SCHEMA_VERSIONS
+        or type(schema_version) is not int
+        or schema_version not in legacy_import.SUPPORTED_IMPORT_SCHEMA_VERSIONS
     ):
         raise AuthoringWorkbenchError("Only validated VNTTS legacy imports can resume")
     _validate_import_history(manifest)

@@ -11,6 +11,7 @@ from tests.test_authoring_bulk_generation import SyntheticRenderer
 from tests.test_authoring_failure_reference_audit import (
     create_failed_reference_workspace,
 )
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.cohort_review import (
     apply_cohort_review_decision,
@@ -115,6 +116,29 @@ class FailureReferenceBindingTest(unittest.TestCase):
             publish_failure_reference_binding(audit, output)
             binding_path = output / "binding.json"
             document = json.loads(binding_path.read_text())
+            legacy = {
+                **document,
+                "schema_version": 1,
+                "groups": [
+                    {
+                        field: value
+                        for field, value in group.items()
+                        if field != "selection_authority"
+                    }
+                    for group in document["groups"]
+                ],
+            }
+            legacy["binding_id"] = canonical_document_sha256(
+                {
+                    field: value
+                    for field, value in legacy.items()
+                    if field not in {"binding_id", "published_at"}
+                }
+            )
+            binding_path.write_text(json.dumps(legacy), encoding="utf-8")
+            self.assertEqual(
+                load_failure_reference_binding_document(output)["schema_version"], 1
+            )
             for version in (True, 1.0, [], {}):
                 malformed = dict(document)
                 malformed["schema_version"] = version
@@ -127,6 +151,52 @@ class FailureReferenceBindingTest(unittest.TestCase):
                     ),
                 ):
                     load_failure_reference_binding_document(output)
+
+    def test_binding_loaders_reject_non_object_root_documents(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            binding_path = root / "binding.json"
+            for value in ([], None, True, 1, "text"):
+                payload = json.dumps(value)
+                binding_path.write_text(payload, encoding="utf-8")
+                with self.subTest(value=value):
+                    for loader in (
+                        load_failure_reference_binding,
+                        load_failure_reference_binding_document,
+                    ):
+                        with self.assertRaisesRegex(
+                            FailureReferenceBindingError,
+                            "Reference binding document must be an object",
+                        ):
+                            loader(root)
+                self.assertEqual(binding_path.read_text(encoding="utf-8"), payload)
+
+    def test_publisher_rejects_malformed_audit_schema_versions(self):
+        for filename, field, current in (
+            ("audit.json", "schema_version", 2),
+            (".blind-key.json", "schema_version", 2),
+            ("decisions.json", "schema_version", 4),
+        ):
+            for version in (float(current), [], {}):
+                with (
+                    self.subTest(filename=filename, version=version),
+                    TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    audit, *_ = self.create_decided_audit(root)
+                    path = audit / filename
+                    document = json.loads(path.read_text())
+                    document[field] = version
+                    path.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        FailureReferenceBindingError,
+                        (
+                            "Reference audit decisions are malformed"
+                            if filename == "decisions.json"
+                            else "Unsupported reference audit schema"
+                        ),
+                    ):
+                        publish_failure_reference_binding(audit, root / "binding")
 
     def test_incomplete_and_neither_decisions_fail_closed(self):
         with TemporaryDirectory() as directory:

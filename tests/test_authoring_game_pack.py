@@ -943,6 +943,62 @@ class AuthoringGamePackTest(unittest.TestCase):
         self.assertEqual(loaded.evidence, decision["evidence"])
         self.assertEqual(result.live_fallback_count, 1)
 
+    def test_exhausted_hypothesis_requires_integer_evidence_state_version(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, evidence, queue_id = self.prepare_exhausted_hypothesis_fixture(
+                root
+            )
+            before = fixture["state"].read_bytes()
+            state_path = evidence / "generated-audio/generation-state.json"
+            original = json.loads(state_path.read_text(encoding="utf-8"))
+            for version in (True, float(original["schema_version"]), [], {}, None, "1"):
+                state_path.write_text(
+                    json.dumps({**original, "schema_version": version}),
+                    encoding="utf-8",
+                )
+                with (
+                    self.subTest(version=version),
+                    self.assertRaisesRegex(
+                        BulkGenerationError, "evidence generation state is malformed"
+                    ),
+                ):
+                    authorize_live_fallback(
+                        fixture["state"],
+                        fixture["queue"],
+                        queue_id,
+                        reason="generation_hypotheses_exhausted",
+                        model="pocket-tts",
+                        evidence_workspaces=(evidence,),
+                    )
+                self.assertEqual(fixture["state"].read_bytes(), before)
+
+            state_path.write_text(json.dumps(original), encoding="utf-8")
+            for workspace_path in (
+                fixture["state"].parent.parent / "workspace.json",
+                evidence / "workspace.json",
+            ):
+                saved_workspace = json.loads(workspace_path.read_bytes())
+                for version in (True, 1.0, [], {}, None, "1"):
+                    workspace_path.write_text(
+                        json.dumps({**saved_workspace, "schema_version": version}),
+                        encoding="utf-8",
+                    )
+                    with self.subTest(workspace=workspace_path, version=version):
+                        with self.assertRaisesRegex(
+                            BulkGenerationError, "workspace authority is malformed"
+                        ):
+                            authorize_live_fallback(
+                                fixture["state"],
+                                fixture["queue"],
+                                queue_id,
+                                reason="generation_hypotheses_exhausted",
+                                model="pocket-tts",
+                                evidence_workspaces=(evidence,),
+                            )
+                        self.assertEqual(fixture["state"].read_bytes(), before)
+                workspace_path.write_text(json.dumps(saved_workspace), encoding="utf-8")
+
     def test_exhausted_hypothesis_fallback_rejects_stale_repair_source(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

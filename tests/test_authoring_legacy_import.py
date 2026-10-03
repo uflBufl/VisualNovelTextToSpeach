@@ -303,6 +303,33 @@ class LegacyAuthoringImportTest(unittest.TestCase):
                 ):
                     import_legacy_job(fixture["job_directory"], root / "app-data")
 
+    def test_job_and_state_schema_versions_require_exact_integer(self):
+        for artifact in ("job", "state"):
+            for version in (True, 1.0, [], {}, None, "1"):
+                with (
+                    self.subTest(artifact=artifact, version=version),
+                    TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    fixture = write_legacy_fixture(root)
+                    path = (
+                        fixture["job_directory"] / "job.json"
+                        if artifact == "job"
+                        else fixture["state"]
+                    )
+                    document = json.loads(path.read_text(encoding="utf-8"))
+                    document["schema_version"] = version
+                    path.write_text(json.dumps(document), encoding="utf-8")
+                    original = path.read_bytes()
+
+                    with self.assertRaisesRegex(
+                        LegacyAuthoringImportError, "Unsupported"
+                    ):
+                        import_legacy_job(fixture["job_directory"], root / "app-data")
+
+                    self.assertEqual(path.read_bytes(), original)
+                    self.assertFalse((root / "app-data").exists())
+
     def test_reimport_rejects_forged_manifest_inventory_and_identity(self):
         for mutation in ("artifacts", "identity", "summary"):
             with self.subTest(mutation=mutation), TemporaryDirectory() as directory:

@@ -419,6 +419,7 @@ def _build_import_plan(job_directory: str | Path) -> _ImportPlan:
     job, job_sha256 = _load_json_snapshot(job_path, "pregeneration job")
     if (
         job.get("schema") != LEGACY_JOB_SCHEMA
+        or type(job.get("schema_version")) is not int
         or job.get("schema_version") != LEGACY_JOB_SCHEMA_VERSION
     ):
         raise LegacyAuthoringImportError(
@@ -787,6 +788,7 @@ def _validate_state(
 ) -> tuple[StateItems, GeneratedFiles]:
     if (
         state.get("schema") != LEGACY_STATE_SCHEMA
+        or type(state.get("schema_version")) is not int
         or state.get("schema_version") != LEGACY_STATE_SCHEMA_VERSION
     ):
         raise LegacyAuthoringImportError(

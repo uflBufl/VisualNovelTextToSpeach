@@ -671,11 +671,15 @@ def _read_failure_reference_audit(
     if not private_file_is_restricted(key_path):
         raise FailureReferenceAuditError("Reference audit blind key mode must be 0600")
     try:
-        document = json.loads(audit_path.read_text(encoding="utf-8"))
-        key = json.loads(key_path.read_text(encoding="utf-8"))
+        document: object = json.loads(audit_path.read_text(encoding="utf-8"))
+        key: object = json.loads(key_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise FailureReferenceAuditError(str(error)) from error
-    return resolved, document, key
+    return (
+        resolved,
+        _document(document, "Reference audit document is malformed"),
+        _document(key, "Reference audit blind key is malformed"),
+    )
 
 
 def _validate_audit_documents(
@@ -847,19 +851,24 @@ def _validate_audit_source_authority(
                 f"Reference audit source authority changed: {field}"
             )
     try:
-        state = json.loads(
+        raw_state: object = json.loads(
             (workspace / "generated-audio/generation-state.json").read_text()
         )
     except (OSError, json.JSONDecodeError) as error:
         raise FailureReferenceAuditError(str(error)) from error
+    state = _document(raw_state, "Reference audit source state is malformed")
+    items = _document(state.get("items"), "Reference audit source items are malformed")
     for group in _documents(groups, "Reference audit group is malformed"):
         for case in _documents(group["cases"], "Reference audit group is malformed"):
-            result = state.get("items", {}).get(case["queue_id"])
+            queue_id = _text(
+                case.get("queue_id"), "Reference audit case queue ID is malformed"
+            )
+            result = items.get(queue_id)
             if not isinstance(result, dict) or canonical_document_sha256(
                 result
             ) != case.get("failure_sha256"):
                 raise FailureReferenceAuditError(
-                    f"Reference audit failure authority changed: {case['queue_id']}"
+                    f"Reference audit failure authority changed: {queue_id}"
                 )
 
 
@@ -887,9 +896,13 @@ def load_failure_reference_decisions(directory: str | Path) -> JsonDocument:
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise FailureReferenceAuditError(str(error)) from error
+    if not isinstance(document, dict):
+        raise FailureReferenceAuditError("Reference audit decisions are malformed")
+    schema_version = document.get("schema_version")
     if (
         document.get("schema") != FAILURE_REFERENCE_DECISIONS_SCHEMA
-        or document.get("schema_version")
+        or type(schema_version) is not int
+        or schema_version
         not in {
             *_LEGACY_FAILURE_REFERENCE_DECISIONS_VERSIONS,
             FAILURE_REFERENCE_DECISIONS_VERSION,
@@ -1152,7 +1165,11 @@ def _selection_authority_shape(
         "queue_id",
         "text_sha256",
     }
-    if not isinstance(value, dict) or value.get("schema_version") != 1:
+    if (
+        not isinstance(value, dict)
+        or type(value.get("schema_version")) is not int
+        or value.get("schema_version") != 1
+    ):
         raise FailureReferenceAuditError(
             "Reference audit selection authority is malformed"
         )

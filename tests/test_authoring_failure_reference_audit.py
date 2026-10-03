@@ -19,6 +19,7 @@ from vntts.authoring.failure_reference_audit import (
     record_failure_reference_decision,
 )
 from vntts.authoring.failure_reference_binding import (
+    FailureReferenceBindingError,
     load_failure_reference_binding_document,
     publish_failure_reference_binding,
 )
@@ -242,6 +243,13 @@ class FailureReferenceAuditTest(unittest.TestCase):
                     "schema_version", float(key["schema_version"])
                 ),
             )
+            for queue_id in ([], {}, None):
+                with self.subTest(queue_id=queue_id):
+                    assert_rejected(
+                        lambda audit: audit["groups"][0]["cases"][0].__setitem__(
+                            "queue_id", queue_id
+                        )
+                    )
             assert_rejected(lambda audit: audit.__setitem__("case_count", True))
             assert_rejected(lambda audit: audit.__setitem__("group_count", True))
             assert_rejected(
@@ -252,6 +260,36 @@ class FailureReferenceAuditTest(unittest.TestCase):
                     "candidate_count", float(audit["groups"][0]["candidate_count"])
                 )
             )
+
+    def test_audit_rejects_non_object_inventory_and_source_documents(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _queue_id = self.create_failed_workspace(root)
+            output = root / "audit"
+            publish_failure_reference_audit(workspace, output)
+            state_path = workspace / "generated-audio/generation-state.json"
+            for path in (output / "audit.json", output / ".blind-key.json", state_path):
+                original = path.read_bytes()
+                for value in ([], None, True, 1, "text"):
+                    path.write_text(json.dumps(value))
+                    with (
+                        self.subTest(path=path.name, value=value),
+                        self.assertRaisesRegex(
+                            FailureReferenceAuditError, "is malformed"
+                        ),
+                    ):
+                        load_failure_reference_audit(output)
+                path.write_bytes(original)
+            original = json.loads(state_path.read_bytes())
+            for items in ([], None, True, 1, "text"):
+                state_path.write_text(json.dumps({**original, "items": items}))
+                with (
+                    self.subTest(items=items),
+                    self.assertRaisesRegex(
+                        FailureReferenceAuditError, "source items are malformed"
+                    ),
+                ):
+                    load_failure_reference_audit(output)
 
     def test_explicit_audit_scope_accepts_only_current_failed_queue_ids(self):
         with TemporaryDirectory() as directory:
@@ -370,6 +408,46 @@ class FailureReferenceAuditTest(unittest.TestCase):
                 FailureReferenceAuditError, "decision identity changed"
             ):
                 load_failure_reference_decisions(output)
+
+    def test_decision_schema_version_requires_exact_integer(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _queue_id = self.create_failed_workspace(root)
+            output = root / "audit"
+            publish_failure_reference_audit(workspace, output, seed=7)
+            record_failure_reference_decision(
+                output,
+                json.loads((output / "audit.json").read_text())["groups"][0][
+                    "group_id"
+                ],
+                "neither_acceptable",
+            )
+            decisions_path = output / "decisions.json"
+            original = json.loads(decisions_path.read_text())
+            for version in (True, float(original["schema_version"]), [], {}, None, "4"):
+                malformed = {**original, "schema_version": version}
+                malformed["decision_set_id"] = _canonical_sha256(
+                    {
+                        name: value
+                        for name, value in malformed.items()
+                        if name != "decision_set_id"
+                    }
+                )
+                decisions_path.write_text(json.dumps(malformed))
+                with (
+                    self.subTest(version=version),
+                    self.assertRaisesRegex(FailureReferenceAuditError, "malformed"),
+                ):
+                    load_failure_reference_decisions(output)
+            for value in ([], None, True, 1, "text"):
+                decisions_path.write_text(json.dumps(value))
+                with (
+                    self.subTest(root=value),
+                    self.assertRaisesRegex(
+                        FailureReferenceAuditError, "decisions are malformed"
+                    ),
+                ):
+                    load_failure_reference_decisions(output)
 
     def test_unrelated_state_review_does_not_invalidate_exact_failure_cases(self):
         with TemporaryDirectory() as directory:
@@ -879,6 +957,49 @@ class FailureReferenceAuditTest(unittest.TestCase):
                 selected_assignment["audio_sha256"],
             )
             self.assertEqual(binding["groups"][0]["selection_authority"], authority)
+            binding_path = binding_root / "binding.json"
+            original_binding = binding_path.read_bytes()
+            for version in (True, 1.0, [], {}):
+                malformed = json.loads(original_binding)
+                malformed["groups"][0]["selection_authority"]["schema_version"] = (
+                    version
+                )
+                malformed["binding_id"] = _canonical_sha256(
+                    {
+                        name: value
+                        for name, value in malformed.items()
+                        if name not in {"binding_id", "published_at"}
+                    }
+                )
+                binding_path.write_text(json.dumps(malformed, sort_keys=True))
+                with (
+                    self.subTest(binding_selection_version=version),
+                    self.assertRaisesRegex(
+                        FailureReferenceBindingError,
+                        "Reference binding selection authority is malformed",
+                    ),
+                ):
+                    load_failure_reference_binding_document(binding_root)
+                binding_path.write_bytes(original_binding)
+            decisions_path = fresh_audit_root / "decisions.json"
+            original_decisions = decisions_path.read_bytes()
+            for version in (True, 1.0, [], {}):
+                malformed = json.loads(original_decisions)
+                malformed["decisions"][0]["selection_authority"]["schema_version"] = (
+                    version
+                )
+                malformed.pop("decision_set_id")
+                malformed["decision_set_id"] = _canonical_sha256(malformed)
+                decisions_path.write_text(json.dumps(malformed, sort_keys=True))
+                with (
+                    self.subTest(selection_authority_version=version),
+                    self.assertRaisesRegex(
+                        FailureReferenceAuditError,
+                        "selection authority is malformed",
+                    ),
+                ):
+                    load_failure_reference_decisions(fresh_audit_root)
+                decisions_path.write_bytes(original_decisions)
             legacy_v3 = json.loads((fresh_audit_root / "decisions.json").read_text())
             legacy_v3["schema_version"] = 3
             legacy_v3.pop("decision_set_id")

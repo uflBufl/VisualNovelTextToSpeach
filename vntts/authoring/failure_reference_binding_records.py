@@ -117,9 +117,14 @@ def _load_binding_document(directory: str | Path) -> tuple[Path, dict[str, objec
     if path.is_symlink():
         raise FailureReferenceBindingError("Reference binding must not be a symlink")
     try:
-        return resolved, json.loads(path.read_text(encoding="utf-8"))
+        document: object = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise FailureReferenceBindingError(str(error)) from error
+    if not isinstance(document, dict):
+        raise FailureReferenceBindingError(
+            "Reference binding document must be an object"
+        )
+    return resolved, document
 
 
 def _validate_binding_header(
@@ -310,6 +315,7 @@ def _validate_selection_authority(
     }
     if (
         not isinstance(value, dict)
+        or type(value.get("schema_version")) is not int
         or value.get("schema_version") != 1
         or value.get("selected_reference_sha256") != selected_reference_sha256
     ):

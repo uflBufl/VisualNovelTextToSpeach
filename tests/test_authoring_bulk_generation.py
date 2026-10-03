@@ -2560,7 +2560,21 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             failed = load_generation_state(result.state, queue)["items"][
                 item["queue_id"]
             ]
-            tampered = json.loads(result.state.read_text(encoding="utf-8"))
+            original = result.state.read_bytes()
+            for version in (True, 2.0, [], {}, None, "2"):
+                malformed = json.loads(original)
+                malformed["items"][item["queue_id"]]["failure"]["pause_diagnosis"][
+                    "analysis_version"
+                ] = version
+                result.state.write_text(json.dumps(malformed), encoding="utf-8")
+                with (
+                    self.subTest(analysis_version=version),
+                    self.assertRaisesRegex(
+                        BulkGenerationError, "pause diagnosis is invalid"
+                    ),
+                ):
+                    load_generation_state(result.state, queue)
+            tampered = json.loads(original)
             tampered["items"][item["queue_id"]]["failure"]["pause_diagnosis"][
                 "attempt_binding"
             ]["seed"] = 999

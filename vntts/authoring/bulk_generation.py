@@ -4464,7 +4464,8 @@ def _live_fallback_workspace_hypothesis(
             "Live fallback evidence generation state is malformed"
         )
     if (
-        (source_state.get("schema"), source_state.get("schema_version"))
+        type(source_state.get("schema_version")) is not int
+        or (source_state.get("schema"), source_state.get("schema_version"))
         not in {
             (STATE_SCHEMA, STATE_VERSION),
             (LEGACY_STATE_SCHEMA, LEGACY_STATE_VERSION),
@@ -4627,6 +4628,7 @@ def _live_fallback_workspace_import(workspace: object, label: str) -> tuple[str,
     if (
         not isinstance(workspace, dict)
         or workspace.get("schema") != "vntts.authoring-workspace"
+        or type(workspace.get("schema_version")) is not int
         or workspace.get("schema_version") != 1
         or not isinstance(workspace.get("workspace_id"), str)
         or not workspace["workspace_id"].startswith("resume-")

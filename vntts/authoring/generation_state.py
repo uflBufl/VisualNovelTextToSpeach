@@ -533,6 +533,7 @@ def _validate_pause_diagnosis(
         not isinstance(diagnosis, dict)
         or set(diagnosis) != expected_fields
         or not _has_exact_schema_version(diagnosis, PAUSE_DIAGNOSIS_VERSION)
+        or type(diagnosis.get("analysis_version")) is not int
         or diagnosis.get("analysis_version")
         not in {
             LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION,
