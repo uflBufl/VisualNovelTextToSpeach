@@ -79,6 +79,18 @@ class AuthoringCohortReviewTest(unittest.TestCase):
         self.assertTrue(cohort["items"][0]["sampled"])
         self.assertEqual(first.plan_id, first.document["plan_id"])
 
+    def test_plan_selection_accepts_iterables_and_preserves_exact_identity(self):
+        with TemporaryDirectory() as directory:
+            workspace, _state, queue_id = self.create_pending_workspace(Path(directory))
+            expected = build_cohort_review_plan(workspace, queue_ids=[queue_id])
+            for selected in ((queue_id,), {queue_id}, iter([queue_id])):
+                self.assertEqual(
+                    build_cohort_review_plan(workspace, queue_ids=selected), expected
+                )
+            for selected in (queue_id, b"queue", iter([]), iter([queue_id, queue_id])):
+                with self.assertRaises(CohortReviewError):
+                    build_cohort_review_plan(workspace, queue_ids=selected)
+
     def test_decision_enums_raise_domain_errors_in_builders_and_loaders(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
