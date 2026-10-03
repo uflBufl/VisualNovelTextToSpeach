@@ -209,6 +209,15 @@ class FailureReferenceAuditError(RuntimeError):
     """Reference audit authority is unsafe or has changed."""
 
 
+def _audit_document_sha256(document: object) -> str:
+    try:
+        return canonical_document_sha256(document)
+    except (TypeError, ValueError) as error:
+        raise FailureReferenceAuditError(
+            f"Reference audit document cannot be canonically hashed: {error}"
+        ) from error
+
+
 @dataclass(frozen=True)
 class FailureReferenceAudit:
     directory: Path
@@ -410,7 +419,7 @@ def _add_audit_case(
         "references": list(entry.references),
         "synthesis_provenance_sha256": result.get("synthesis_provenance_sha256"),
     }
-    group_id = canonical_document_sha256(identity)
+    group_id = _audit_document_sha256(identity)
     group = grouped.get(group_id)
     if group is None:
         group = _GeneratedGroup(group_id=group_id, identity=identity, cases=[])
@@ -422,7 +431,7 @@ def _add_audit_case(
             "text": item.text,
             "text_sha256": item.text_sha256,
             "speaker": item.speaker,
-            "failure_sha256": canonical_document_sha256(result),
+            "failure_sha256": _audit_document_sha256(result),
             "failure": normalized_failure_record(result, text=item.text),
         }
     )
@@ -575,7 +584,7 @@ def _write_staged_audit(
     staged: _StagedAuditGroups,
 ) -> str:
     body = _audit_document(source, selected, staged)
-    audit_id = canonical_document_sha256(body)
+    audit_id = _audit_document_sha256(body)
     document = {**body, "audit_id": audit_id}
     key = {
         "schema": FAILURE_REFERENCE_AUDIT_KEY_SCHEMA,
@@ -615,7 +624,7 @@ def _audit_document(
         "case_count": len(selected),
         "group_count": len(staged.public_groups),
         "blinded_trial_count": staged.blinded_trial_count,
-        "blind_key_groups_sha256": canonical_document_sha256(staged.private_groups),
+        "blind_key_groups_sha256": _audit_document_sha256(staged.private_groups),
         "groups": staged.public_groups,
         "authority": (
             "A candidate decision audits exact reference bytes only. It does not "
@@ -697,7 +706,7 @@ def _validate_audit_documents(
     claimed = document.get("audit_id")
     if (
         claimed
-        != canonical_document_sha256(
+        != _audit_document_sha256(
             {name: value for name, value in document.items() if name != "audit_id"}
         )
         or key.get("audit_id") != claimed
@@ -707,7 +716,7 @@ def _validate_audit_documents(
     if not isinstance(groups, list) or document.get("group_count") != len(groups):
         raise FailureReferenceAuditError("Reference audit groups are malformed")
     private_groups = key.get("groups")
-    if not isinstance(private_groups, list) or canonical_document_sha256(
+    if not isinstance(private_groups, list) or _audit_document_sha256(
         private_groups
     ) != document.get("blind_key_groups_sha256"):
         raise FailureReferenceAuditError("Reference audit blind key changed")
@@ -864,7 +873,7 @@ def _validate_audit_source_authority(
                 case.get("queue_id"), "Reference audit case queue ID is malformed"
             )
             result = items.get(queue_id)
-            if not isinstance(result, dict) or canonical_document_sha256(
+            if not isinstance(result, dict) or _audit_document_sha256(
                 result
             ) != case.get("failure_sha256"):
                 raise FailureReferenceAuditError(
@@ -923,7 +932,7 @@ def load_failure_reference_decisions(directory: str | Path) -> JsonDocument:
             "Reference audit decision timestamp must include a timezone"
         )
     claimed = document.get("decision_set_id")
-    actual = canonical_document_sha256(
+    actual = _audit_document_sha256(
         {name: value for name, value in document.items() if name != "decision_set_id"}
     )
     if claimed != actual:
@@ -994,7 +1003,7 @@ def record_failure_reference_decision(
         "decisions": [decisions[key] for key in sorted(decisions)],
         "updated_at": updated_at,
     }
-    document = {**body, "decision_set_id": canonical_document_sha256(body)}
+    document = {**body, "decision_set_id": _audit_document_sha256(body)}
     _validate_decision_inventory(
         audit.directory,
         _documents(document["decisions"], "Reference audit decision is malformed"),

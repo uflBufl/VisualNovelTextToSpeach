@@ -237,6 +237,16 @@ class RenderHypothesisReviewTest(unittest.TestCase):
                         review_root,
                         queue_id,
                     )
+                    self.assert_import_rejects_captured_key_replacement(
+                        audit_path,
+                        label,
+                        fresh_audit,
+                        comparison.directory,
+                        review_root,
+                        queue_id,
+                        value=float("nan"),
+                        message="canonically",
+                    )
             self.assert_import_rejects_audio_replacements(
                 source_audit, fresh_audit, comparison.directory, review_root, queue_id
             )
@@ -286,14 +296,21 @@ class RenderHypothesisReviewTest(unittest.TestCase):
             self.assertFalse(json.loads(stdout.getvalue())["created"])
 
     def assert_import_rejects_captured_key_replacement(
-        self, audit_path, label, fresh_audit, comparison_root, review_root, queue_id
+        self,
+        audit_path,
+        label,
+        fresh_audit,
+        comparison_root,
+        review_root,
+        queue_id,
+        *,
+        value="references/changed.wav",
+        message="blind key",
     ):
         key_path = audit_path / ".blind-key.json"
         original_key = key_path.read_bytes()
         changed_key = json.loads(original_key)
-        changed_key["groups"][0]["candidates"][0]["source_reference"] = (
-            "references/changed.wav"
-        )
+        changed_key["groups"][0]["candidates"][0]["source_reference"] = value
         changed_key_bytes = json.dumps(changed_key).encode()
         original_capture = render_hypothesis_review.capture_authority_file
         original_load_audit = render_hypothesis_review.load_failure_reference_audit
@@ -329,7 +346,7 @@ class RenderHypothesisReviewTest(unittest.TestCase):
                     side_effect=restore_changed_key_after_validation,
                 ),
             ):
-                with self.assertRaisesRegex(RenderHypothesisReviewError, "blind key"):
+                with self.assertRaisesRegex(RenderHypothesisReviewError, message):
                     import_accepted_render_hypothesis(
                         fresh_audit, comparison_root, review_root, queue_id
                     )

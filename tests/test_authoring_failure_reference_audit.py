@@ -293,6 +293,47 @@ class FailureReferenceAuditTest(unittest.TestCase):
                 ):
                     load_failure_reference_audit(output)
 
+    def test_non_finite_documents_raise_audit_errors(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, queue_id = self.create_failed_workspace(root)
+            output = root / "audit"
+            publish_failure_reference_audit(workspace, output, seed=0)
+            audit = json.loads((output / "audit.json").read_text())
+            record_failure_reference_decision(
+                output, audit["groups"][0]["group_id"], "neither_acceptable"
+            )
+            sources = (
+                (output / "audit.json", load_failure_reference_audit, lambda doc: doc),
+                (
+                    output / ".blind-key.json",
+                    load_failure_reference_audit,
+                    lambda doc: doc["groups"][0],
+                ),
+                (
+                    output / "decisions.json",
+                    load_failure_reference_decisions,
+                    lambda doc: doc,
+                ),
+                (
+                    workspace / "generated-audio/generation-state.json",
+                    load_failure_reference_audit,
+                    lambda doc: doc["items"][queue_id],
+                ),
+            )
+            for path, loader, target in sources:
+                original = path.read_bytes()
+                for number in (float("nan"), float("inf"), float("-inf")):
+                    with self.subTest(document=path.name, number=number):
+                        document = json.loads(original)
+                        target(document)["unexpected_number"] = number
+                        try:
+                            path.write_text(json.dumps(document))
+                            with self.assertRaises(FailureReferenceAuditError):
+                                loader(output)
+                        finally:
+                            path.write_bytes(original)
+
     def test_explicit_audit_scope_accepts_only_current_failed_queue_ids(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
