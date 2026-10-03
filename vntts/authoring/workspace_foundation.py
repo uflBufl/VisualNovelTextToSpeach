@@ -36,7 +36,7 @@ def load_json_object(
     """Load one JSON object from a filesystem path."""
     try:
         value = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise error_type(f"Unable to read {description} {path}: {error}") from error
     if not isinstance(value, dict):
         raise error_type(f"{object_label or description.title()} must be a JSON object")

@@ -43,6 +43,7 @@ from vntts.authoring.publication import (
     rename_directory_no_replace,
     staged_directory,
 )
+from vntts.authoring.workspace_foundation import load_json_object
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 
 REFERENCE_RENDER_INPUT_SCHEMA = "vntts.authoring-reference-render-input"
@@ -189,7 +190,7 @@ def _read_reference_render_plan(
     try:
         payload = source.read_bytes()
         document = json.loads(payload)
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ReferenceRenderComparisonError(
             f"Unable to read reference render plan: {error}"
         ) from error
@@ -1066,10 +1067,9 @@ def _load_comparison_document(root: Path) -> JsonDocument:
 
 def _read_comparison_document(root: Path) -> JsonDocument:
     path = _contained_file(root, "comparison.json")
-    try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise ReferenceRenderComparisonError(str(error)) from error
+    document = load_json_object(
+        path, "reference render comparison", error_type=ReferenceRenderComparisonError
+    )
     if (
         not isinstance(document, dict)
         or document.get("schema") != REFERENCE_RENDER_SCHEMA
@@ -1292,16 +1292,14 @@ def _selected_completed_trial(
 def _load_listening_authority(session_path: Path) -> tuple[JsonDocument, JsonDocument]:
     key_path = session_path.with_name(".blind-key.json")
     report_path = session_path.with_name("report.json")
-    try:
-        key = _document(
-            json.loads(key_path.read_text(encoding="utf-8")), "listening key"
-        )
-        report = _document(
-            json.loads(report_path.read_text(encoding="utf-8")), "listening report"
-        )
-    except (OSError, json.JSONDecodeError) as error:
-        raise ReferenceRenderComparisonError(str(error)) from error
-    return key, report
+    return (
+        load_json_object(
+            key_path, "listening key", error_type=ReferenceRenderComparisonError
+        ),
+        load_json_object(
+            report_path, "listening report", error_type=ReferenceRenderComparisonError
+        ),
+    )
 
 
 def _listening_assignment(key: JsonDocument, trial: JsonDocument) -> JsonDocument:
@@ -1399,12 +1397,14 @@ def _validate_listening_report(session_path: Path, report: JsonDocument) -> None
 
 
 def _load_audit_documents(directory: Path) -> tuple[JsonDocument, JsonDocument]:
-    try:
-        document = json.loads((directory / "audit.json").read_text(encoding="utf-8"))
-        key = json.loads((directory / ".blind-key.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise ReferenceRenderComparisonError(str(error)) from error
-    return _document(document, "audit document"), _document(key, "audit key")
+    return (
+        _read_audit_document(directory),
+        load_json_object(
+            directory / ".blind-key.json",
+            "audit key",
+            error_type=ReferenceRenderComparisonError,
+        ),
+    )
 
 
 def _one_group_for_queue(
@@ -1473,13 +1473,11 @@ def _assert_plan_and_audit_unchanged(plan: ReferenceRenderPlan) -> None:
 
 
 def _read_audit_document(directory: str | Path) -> JsonDocument:
-    try:
-        return _document(
-            json.loads((Path(directory) / "audit.json").read_text(encoding="utf-8")),
-            "audit document",
-        )
-    except (OSError, json.JSONDecodeError) as error:
-        raise ReferenceRenderComparisonError(str(error)) from error
+    return load_json_object(
+        Path(directory) / "audit.json",
+        "audit document",
+        error_type=ReferenceRenderComparisonError,
+    )
 
 
 def _planned_directory(root: Path, value: object) -> Path:

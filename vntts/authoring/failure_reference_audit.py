@@ -673,7 +673,7 @@ def _read_failure_reference_audit(
     try:
         document: object = json.loads(audit_path.read_text(encoding="utf-8"))
         key: object = json.loads(key_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise FailureReferenceAuditError(str(error)) from error
     return (
         resolved,
@@ -854,7 +854,7 @@ def _validate_audit_source_authority(
         raw_state: object = json.loads(
             (workspace / "generated-audio/generation-state.json").read_text()
         )
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise FailureReferenceAuditError(str(error)) from error
     state = _document(raw_state, "Reference audit source state is malformed")
     items = _document(state.get("items"), "Reference audit source items are malformed")
@@ -894,7 +894,7 @@ def load_failure_reference_decisions(directory: str | Path) -> JsonDocument:
         }
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise FailureReferenceAuditError(str(error)) from error
     if not isinstance(document, dict):
         raise FailureReferenceAuditError("Reference audit decisions are malformed")

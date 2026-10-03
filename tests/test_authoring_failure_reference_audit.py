@@ -584,6 +584,49 @@ class FailureReferenceAuditTest(unittest.TestCase):
             self.assertEqual(state_path.read_bytes(), state_before)
             self.assertFalse((output / "decisions.json").exists())
 
+    def test_render_and_audit_inputs_wrap_undecodable_json(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan = root / "plan.json"
+            comparison = root / "comparison"
+            comparison.mkdir()
+            for path, loader, argument in (
+                (plan, load_reference_render_plan, plan),
+                (
+                    comparison / "comparison.json",
+                    load_reference_render_comparison_document,
+                    comparison,
+                ),
+            ):
+                with self.subTest(path=path):
+                    path.write_bytes(b"\xff")
+                    with self.assertRaises(ReferenceRenderComparisonError):
+                        loader(argument)
+
+            workspace, _queue_id = self.create_failed_workspace(root)
+            audit = root / "audit"
+            publish_failure_reference_audit(workspace, audit)
+            for path, loader in (
+                (audit / "audit.json", load_failure_reference_audit),
+                (audit / ".blind-key.json", load_failure_reference_audit),
+                (
+                    workspace / "generated-audio/generation-state.json",
+                    load_failure_reference_audit,
+                ),
+                (audit / "decisions.json", load_failure_reference_decisions),
+            ):
+                with self.subTest(path=path):
+                    original = path.read_bytes() if path.exists() else None
+                    try:
+                        path.write_bytes(b"\xff")
+                        with self.assertRaises(FailureReferenceAuditError):
+                            loader(audit)
+                    finally:
+                        if original is None:
+                            path.unlink()
+                        else:
+                            path.write_bytes(original)
+
     def test_publishes_render_only_alternative_reference_comparison(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -620,6 +663,15 @@ class FailureReferenceAuditTest(unittest.TestCase):
                     }
                 ),
                 encoding="utf-8",
+            )
+            original_plan = plan_path.read_bytes()
+            unicode_plan = plan_path.with_name("plan-utf16.json")
+            unicode_payload = original_plan.decode("utf-8").encode("utf-16")
+            unicode_plan.write_bytes(unicode_payload)
+            decoded_plan = load_reference_render_plan(unicode_plan)
+            self.assertEqual(decoded_plan.queue_ids, (queue_id,))
+            self.assertEqual(
+                decoded_plan.sha256, hashlib.sha256(unicode_payload).hexdigest()
             )
             state_path = workspace / "generated-audio/generation-state.json"
             state_before = state_path.read_bytes()
@@ -915,6 +967,24 @@ class FailureReferenceAuditTest(unittest.TestCase):
                 json.dumps(fresh_document, sort_keys=True)
             )
             fresh_key_path.write_text(json.dumps(fresh_key, sort_keys=True))
+
+            for path in (
+                session.with_name(".blind-key.json"),
+                session.with_name("report.json"),
+            ):
+                with self.subTest(undecodable=path):
+                    original = path.read_bytes()
+                    try:
+                        path.write_bytes(b"\xff")
+                        with self.assertRaises(ReferenceRenderComparisonError):
+                            import_reference_render_preference(
+                                fresh_audit_root,
+                                comparison.directory,
+                                session,
+                                queue_id,
+                            )
+                    finally:
+                        path.write_bytes(original)
 
             imported = import_reference_render_preference(
                 fresh_audit_root,

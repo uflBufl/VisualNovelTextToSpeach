@@ -92,6 +92,25 @@ class AuthoringWorkspaceFoundationTest(unittest.TestCase):
                     object_label="Generation state",
                 )
 
+    def test_json_decode_failures_use_the_supplied_error_type(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "document.json"
+            cases = (
+                (b"\xff", "Unable to read document"),
+                (b"{", "Unable to read document"),
+                (b"[]", "Document must be a JSON object"),
+            )
+            for payload, message in cases:
+                with self.subTest(payload=payload):
+                    path.write_bytes(payload)
+                    with self.assertRaisesRegex(FoundationError, f"^{message}"):
+                        load_json_object(
+                            path,
+                            "document",
+                            error_type=FoundationError,
+                            object_label="Document",
+                        )
+
     def test_generation_wav_copy_is_checksum_and_collision_bound(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
