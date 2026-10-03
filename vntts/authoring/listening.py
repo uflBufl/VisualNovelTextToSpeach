@@ -730,12 +730,9 @@ def _validate_blind_assignments(
     assignments: Sequence[BlindAssignment],
     model_ids: Sequence[str],
 ) -> None:
+    trial_by_id = {trial["trial_id"]: trial for trial in session["trials"]}
     for assignment in assignments:
-        trial = next(
-            item
-            for item in session["trials"]
-            if item["trial_id"] == assignment["trial_id"]
-        )
+        trial = trial_by_id[assignment["trial_id"]]
         sides = _validate_blind_assignment_sides(
             key_path, session, trial, assignment, model_ids
         )

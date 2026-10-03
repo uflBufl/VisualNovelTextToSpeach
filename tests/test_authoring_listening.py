@@ -13,6 +13,7 @@ import numpy as np
 from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 
+import vntts.authoring.listening as listening_module
 from tests.test_authoring_listening_import import write_listening_fixture
 from vntts.authoring.listening import (
     REPORT_SCHEMA,
@@ -311,6 +312,36 @@ class AuthoringListeningTest(unittest.TestCase):
                         expected,
                     )
                 self.assertNotIn("provider-", session.read_text())
+
+    def test_blind_assignment_matching_grows_linearly(self):
+        class CountedId(str):
+            comparisons = 0
+            __hash__ = str.__hash__
+
+            def __eq__(self, other):
+                type(self).comparisons += 1
+                return super().__eq__(other)
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = create_listening_session_from_reports(
+                write_model_reports(root, item_count=16), root / "session"
+            )
+            expected = load_listening_session(path)
+            read_json = listening_module._load_json
+
+            def count_ids(path, description):
+                value = read_json(path, description)
+                if description == "listening session":
+                    for trial in value["trials"]:
+                        trial["trial_id"] = CountedId(trial["trial_id"])
+                return value
+
+            with patch.object(listening_module, "_load_json", side_effect=count_ids):
+                actual = load_listening_session(path)
+            comparisons = CountedId.comparisons
+            self.assertEqual(actual, expected)
+            self.assertLessEqual(comparisons, 4 * len(expected["trials"]))
 
     def test_creates_deterministic_blind_trials_without_public_model_names(self):
         with TemporaryDirectory() as directory:
