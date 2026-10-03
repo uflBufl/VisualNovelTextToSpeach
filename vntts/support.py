@@ -1963,7 +1963,7 @@ def _sanitize_game_import_value(key: str, value: object) -> object:
             return None
         try:
             number = float(value)
-        except TypeError, ValueError:
+        except TypeError, ValueError, OverflowError:
             return None
         if not math.isfinite(number):
             return None

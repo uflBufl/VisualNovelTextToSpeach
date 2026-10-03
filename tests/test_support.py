@@ -851,6 +851,39 @@ class PerformanceLogTest(unittest.TestCase):
 
 
 class GameImportLogTest(unittest.TestCase):
+    def test_overflowing_numeric_fields_preserve_events_and_later_records(self):
+        for value in (10**400, -(10**400)):
+            with self.subTest(value=value), TemporaryDirectory() as directory:
+                path = Path(directory) / "game-import.log"
+                path.write_text(
+                    json.dumps(
+                        {
+                            "level": "game-import",
+                            "stage": "folder-result",
+                            "characters": value,
+                        }
+                    )
+                    + "\n"
+                    + json.dumps(
+                        {"level": "game-import", "stage": "complete", "characters": 12}
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                log = GameImportLog(path=path)
+                restored = log.snapshot()
+                self.assertEqual(
+                    [event["stage"] for event in restored],
+                    ["folder-result", "complete"],
+                )
+                self.assertNotIn("characters", restored[0])
+                self.assertEqual(restored[1]["characters"], 12)
+
+                log.record("folder-result", characters=value)
+                recorded = log.snapshot()[-1]
+                self.assertEqual(recorded["stage"], "folder-result")
+                self.assertNotIn("characters", recorded)
+
     def test_bounded_redacted_log_survives_restart(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "game-import.log"
