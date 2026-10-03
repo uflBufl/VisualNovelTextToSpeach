@@ -16,7 +16,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Literal, NotRequired, Protocol, TypedDict, TypeGuard
+from typing import BinaryIO, Literal, NotRequired, Protocol, TypedDict, TypeGuard
 
 from vntts_artifacts.atomic_io import atomic_output_path, atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
@@ -1255,11 +1255,7 @@ def _probe_supported_wav(path: PathInput) -> None:
             if len(chunk) != 8:
                 raise ValueError("truncated WAV chunk")
             chunk_id, chunk_size = struct.unpack("<4sI", chunk)
-            payload = stream.read(chunk_size)
-            if len(payload) != chunk_size:
-                raise ValueError("truncated WAV payload")
-            if chunk_size % 2:
-                stream.read(1)
+            payload = _read_wav_chunk_prefix(stream, chunk_size)
             if chunk_id == b"fmt " and chunk_size >= 16:
                 format_fields = struct.unpack("<HHIIHH", payload[:16])
             elif chunk_id == b"data":
@@ -1279,6 +1275,22 @@ def _probe_supported_wav(path: PathInput) -> None:
             }
         ):
             raise ValueError("unsupported WAV encoding")
+
+
+def _read_wav_chunk_prefix(stream: BinaryIO, chunk_size: int) -> bytes:
+    """Read the format prefix and verify the physical end of a declared chunk."""
+    prefix_size = min(chunk_size, 16)
+    payload = stream.read(prefix_size)
+    if len(payload) != prefix_size:
+        raise ValueError("truncated WAV payload")
+    remaining = chunk_size - prefix_size
+    if remaining:
+        stream.seek(remaining - 1, os.SEEK_CUR)
+        if len(stream.read(1)) != 1:
+            raise ValueError("truncated WAV payload")
+    if chunk_size % 2 and len(stream.read(1)) != 1:
+        raise ValueError("truncated WAV padding")
+    return payload
 
 
 def _legacy_import_audio_hashes(root: PathInput) -> dict[str, str]:

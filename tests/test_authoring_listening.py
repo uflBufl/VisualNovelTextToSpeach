@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import struct
 import time
 import unittest
 import wave
@@ -342,6 +343,89 @@ class AuthoringListeningTest(unittest.TestCase):
             comparisons = CountedId.comparisons
             self.assertEqual(actual, expected)
             self.assertLessEqual(comparisons, 4 * len(expected["trials"]))
+
+    def test_public_creation_and_loading_reject_truncated_wav_payloads(self):
+        for loading, missing_padding in (
+            (False, False),
+            (True, False),
+            (False, True),
+            (True, True),
+        ):
+            with (
+                self.subTest(loading=loading, missing_padding=missing_padding),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                reports = write_model_reports(root, item_count=1)
+                if loading:
+                    session_path = create_listening_session_from_reports(
+                        reports, root / "session"
+                    )
+                    session = json.loads(session_path.read_text())
+                    audio = session_path.parent / session["trials"][0]["audio"]["a"]
+                else:
+                    document = json.loads(reports[0].read_text())
+                    audio = Path(document["samples"][0]["audio"])
+                payload = audio.read_bytes()
+                if missing_padding:
+                    payload += b"JUNK" + struct.pack("<I", 17) + b"x" * 17
+                    payload = (
+                        payload[:4] + struct.pack("<I", len(payload) - 8) + payload[8:]
+                    )
+                else:
+                    payload = payload[:-100]
+                audio.write_bytes(payload)
+                if not loading:
+                    document["samples"][0]["audio_sha256"] = sha256_file(audio)
+                    reports[0].write_text(json.dumps(document), encoding="utf-8")
+                with self.assertRaisesRegex(ModelListeningError, "not a supported WAV"):
+                    if loading:
+                        load_listening_session(session_path)
+                    else:
+                        create_listening_session_from_reports(reports, root / "session")
+                if not loading:
+                    self.assertFalse((root / "session").exists())
+
+    def test_public_creation_and_loading_use_bounded_wav_probe_reads(self):
+        class ProbeStream:
+            def __init__(self, stream):
+                self.stream = stream
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return self.stream.__exit__(*args)
+
+            def read(self, size):
+                if size > 16:
+                    raise AssertionError("WAV envelope probe read the full audio chunk")
+                return self.stream.read(size)
+
+            def seek(self, *args):
+                return self.stream.seek(*args)
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reports = write_model_reports(root, item_count=1)
+            probe = listening_module._probe_supported_wav
+            open_path = Path.open
+
+            def bounded_probe(path):
+                with patch.object(
+                    Path,
+                    "open",
+                    lambda path, *args, **kwargs: ProbeStream(
+                        open_path(path, *args, **kwargs)
+                    ),
+                ):
+                    return probe(path)
+
+            with patch.object(
+                listening_module, "_probe_supported_wav", side_effect=bounded_probe
+            ):
+                path = create_listening_session_from_reports(reports, root / "session")
+                self.assertEqual(len(load_listening_session(path)["trials"]), 1)
 
     def test_creates_deterministic_blind_trials_without_public_model_names(self):
         with TemporaryDirectory() as directory:
