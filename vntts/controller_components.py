@@ -594,22 +594,22 @@ class RuntimeLifecycleComponent:
     def _apply_runtime_audio_settings(self) -> None:
         controller = self.controller
         tts = controller.tts
-        set_tts_volume = getattr(tts, "set_volume", None)
-        set_tts_speed = getattr(tts, "set_speed", None)
-        if callable(set_tts_volume):
-            set_tts_volume(controller.settings.output_volume_percent / 100)
-        if callable(set_tts_speed):
-            set_tts_speed(controller.settings.speech_rate_percent / 100)
         backend = controller.speech_backend
-        if backend is None:
-            return
-        set_volume = getattr(backend, "set_volume", None)
-        set_speed = getattr(backend, "set_speed", None)
+        volume = controller.settings.output_volume_percent / 100
+        speed = controller.settings.speech_rate_percent / 100
+        if isinstance(backend, GeneratedAudioFallbackBackend):
+            backend.set_volume(volume, delegate=False)
+            backend.set_speed(speed, delegate=False)
+            backend = backend.live_backend
+        audio_owners = (tts,) if backend is tts else (tts, backend)
+        for owner in audio_owners:
+            set_volume = getattr(owner, "set_volume", None)
+            set_speed = getattr(owner, "set_speed", None)
+            if callable(set_volume):
+                set_volume(volume)
+            if callable(set_speed):
+                set_speed(speed)
         set_generation_profile = getattr(backend, "set_generation_profile", None)
-        if callable(set_volume):
-            set_volume(controller.settings.output_volume_percent / 100)
-        if callable(set_speed):
-            set_speed(controller.settings.speech_rate_percent / 100)
         if callable(set_generation_profile):
             set_generation_profile(controller.settings.tts_profile)
 

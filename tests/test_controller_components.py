@@ -10,8 +10,10 @@ from vntts.controller_components import (
     RuntimeLifecycleComponent,
     VoiceAssignmentComponent,
 )
+from vntts.generated_audio import GeneratedAudioFallbackBackend
 from vntts.settings import AppSettings
-from vntts.voices import CharacterVoice, CharacterVoiceRegistry
+from vntts.speech_backend import XTTSVoiceRouterBackend
+from vntts.voices import CharacterVoice, CharacterVoiceRegistry, CharacterVoiceRouter
 
 
 class ControllerComponentsTest(unittest.TestCase):
@@ -397,3 +399,51 @@ class RuntimeLifecycleTest(unittest.TestCase):
                     None if voice is None or not voice.references else Path("ada.wav"),
                 )
                 controller.shutdown()
+
+    def test_audio_settings_update_each_owner_once(self):
+        for route in (
+            "tts-only",
+            "live",
+            "generated-live",
+            "xtts",
+            "generated-xtts",
+            "distinct",
+        ):
+            with self.subTest(route=route):
+                controller = AppController(
+                    AppSettings(
+                        output_volume_percent=35,
+                        speech_rate_percent=125,
+                        tts_profile="fast",
+                    )
+                )
+                tts = Mock()
+                if route == "tts-only":
+                    backend = None
+                elif route.endswith("live"):
+                    backend = tts
+                elif route.endswith("xtts"):
+                    backend = XTTSVoiceRouterBackend(CharacterVoiceRouter(tts))
+                else:
+                    backend = Mock()
+                controller.tts = tts
+                controller.speech_backend = backend
+                if route.startswith("generated"):
+                    controller.speech_backend = GeneratedAudioFallbackBackend(
+                        backend,
+                        None,
+                        controller.chapter_voice_preloader,
+                        audio_source_policy="prefer-game-audio",
+                    )
+                controller.runtime_lifecycle._apply_runtime_audio_settings()
+                if route.endswith("live"):
+                    tts.set_generation_profile.assert_called_once_with("fast")
+                tts.set_volume.assert_called_once_with(0.35)
+                tts.set_speed.assert_called_once_with(1.25)
+                if route == "distinct":
+                    backend.set_volume.assert_called_once_with(0.35)
+                    backend.set_speed.assert_called_once_with(1.25)
+                    backend.set_generation_profile.assert_called_once_with("fast")
+                if route.startswith("generated"):
+                    self.assertEqual(controller.speech_backend.volume, 0.35)
+                    self.assertEqual(controller.speech_backend.speed, 1.25)
