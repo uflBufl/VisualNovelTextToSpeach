@@ -947,15 +947,6 @@ def validate_config_rebase_workspace(
     state: JsonObject | None = None,
 ) -> None:
     """Validate self-contained config-rebase authority and exact item projection."""
-    _validate_config_rebase_workspace(directory, workspace, state)
-    return
-
-
-def _validate_config_rebase_workspace(
-    directory: str | Path,
-    workspace: Mapping[str, object],
-    state: JsonObject | None,
-) -> None:
     ledger = _validated_rebase_ledger(workspace)
     if ledger is None:
         return
