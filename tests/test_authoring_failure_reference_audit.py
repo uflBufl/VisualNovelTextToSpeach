@@ -293,6 +293,33 @@ class FailureReferenceAuditTest(unittest.TestCase):
                 ):
                     load_failure_reference_audit(output)
 
+    def test_audit_rejects_invalid_workspace_paths(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _queue_id = self.create_failed_workspace(root)
+            output = root / "audit"
+            publish_failure_reference_audit(workspace, output)
+            audit_path, key_path = output / "audit.json", output / ".blind-key.json"
+            original_audit = json.loads(audit_path.read_bytes())
+            original_key = json.loads(key_path.read_bytes())
+            for value in (None, True, 1, [], {}, "\x00"):
+                with self.subTest(workspace=value):
+                    document = {**original_audit, "workspace": value}
+                    document["audit_id"] = _canonical_sha256(
+                        {
+                            name: item
+                            for name, item in document.items()
+                            if name != "audit_id"
+                        }
+                    )
+                    key = {**original_key, "audit_id": document["audit_id"]}
+                    audit_path.write_text(json.dumps(document))
+                    key_path.write_text(json.dumps(key))
+                    with self.assertRaisesRegex(
+                        FailureReferenceAuditError, "workspace path"
+                    ):
+                        load_failure_reference_audit(output)
+
     def test_non_finite_documents_raise_audit_errors(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -884,8 +884,13 @@ def _validate_audit_source_authority(
 def _audit_workspace_path(document: JsonDocument) -> Path:
     workspace = document.get("workspace", "")
     if not isinstance(workspace, str):
-        raise TypeError("Reference audit workspace path must be text")
-    return Path(workspace).expanduser().resolve()
+        raise FailureReferenceAuditError("Reference audit workspace path must be text")
+    try:
+        return Path(workspace).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError) as error:
+        raise FailureReferenceAuditError(
+            f"Reference audit workspace path is invalid: {error}"
+        ) from error
 
 
 def load_failure_reference_decisions(directory: str | Path) -> JsonDocument:
