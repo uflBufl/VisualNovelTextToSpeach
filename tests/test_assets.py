@@ -460,6 +460,35 @@ class ModelAssetManagerTest(unittest.TestCase):
             with self.assertRaisesRegex(ModelIntegrityError, "size changed"):
                 manager.validate(asset.name, asset=asset)
 
+    def test_repair_download_replaces_same_size_corrupted_model(self):
+        asset = self.create_asset()
+        for head_available in (True, False):
+            with (
+                self.subTest(head_available=head_available),
+                TemporaryDirectory() as directory,
+            ):
+                original = MemoryOpener(
+                    {
+                        asset.urls[0]: b"model-weights",
+                        asset.urls[1]: b"publisher-hash\n",
+                    }
+                )
+
+                def opener(request, timeout):
+                    if request.get_method() == "HEAD" and not head_available:
+                        raise OSError("HEAD unsupported")
+                    return original(request, timeout)
+
+                manager = ModelAssetManager(directory, opener=opener)
+                path = manager.download(asset.name, asset=asset)
+                model = path / "model.pth"
+                model.write_bytes(b"x" * len(b"model-weights"))
+                with self.assertRaisesRegex(ModelIntegrityError, "checksum failed"):
+                    manager.validate(asset.name, asset=asset)
+                manager.download(asset.name, asset=asset)
+                self.assertEqual(model.read_bytes(), b"model-weights")
+                self.assertTrue(manager.is_ready_with_asset(asset.name, asset))
+
     def test_malformed_checksum_metadata_is_repaired(self):
         asset = self.create_asset()
         opener = MemoryOpener(

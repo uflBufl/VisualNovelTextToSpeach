@@ -237,6 +237,7 @@ class ModelAssetManager:
                 progress(100, "Model is already downloaded and verified")
                 return model_path
 
+            reuse_unverified_files = not (model_path / asset_manifest_name).exists()
             lengths: dict[str, int | None] = {}
             for url in asset.urls:
                 self._check_cancelled(cancel_event)
@@ -252,8 +253,13 @@ class ModelAssetManager:
                 output = model_path / filename
                 self._check_model_file(output, filename)
                 expected_length = lengths[url]
-                if output.is_file() and (
-                    expected_length is None or output.stat().st_size == expected_length
+                if (
+                    reuse_unverified_files
+                    and output.is_file()
+                    and (
+                        expected_length is None
+                        or output.stat().st_size == expected_length
+                    )
                 ):
                     downloaded_bytes += output.stat().st_size
                     continue
