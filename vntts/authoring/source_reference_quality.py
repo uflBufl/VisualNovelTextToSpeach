@@ -143,6 +143,7 @@ def _load_quality_review_evaluation(
     digest = hashlib.sha256(payload).hexdigest()
     if (
         document.get("schema") != REFERENCE_EVALUATION_SCHEMA
+        or type(document.get("schema_version")) is not int
         or document.get("schema_version") != REFERENCE_EVALUATION_VERSION
     ):
         raise SourceReferenceQualityError(

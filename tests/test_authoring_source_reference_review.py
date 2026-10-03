@@ -733,6 +733,18 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
                             generation.state,
                             root / "invalid-reports",
                         )
+                    invalid_quality = root / f"invalid-quality-{type(version).__name__}"
+                    with self.assertRaisesRegex(
+                        SourceReferenceQualityError, "evaluation schema"
+                    ):
+                        publish_source_reference_quality_review(
+                            plan.directory,
+                            evaluation.directory,
+                            generation.state,
+                            invalid_quality,
+                        )
+                    self.assertFalse((root / "invalid-reports").exists())
+                    self.assertFalse(invalid_quality.exists())
             session_path = create_listening_session_from_reports(
                 sorted(reports.directory.glob("*.json")), root / "session", seed=9
             )
