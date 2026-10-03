@@ -646,6 +646,12 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
                 if len(summary) > 84:
                     summary = summary[:81].rstrip() + "..."
                 item.setText(f"{index + 1}. {heard} - {summary}")
+        if self._decision_active:
+            self._set_actions_enabled(
+                False,
+                "Saving the exact variant-local decision; playback remains available.",
+            )
+            return
         generated_tokens = {
             sample["queue_id"] for sample in self.current["generated_samples"]
         }
@@ -808,10 +814,7 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
             self.status.setText("Decision cancelled; review evidence is unchanged.")
             return
         self._decision_active = True
-        self._set_actions_enabled(
-            False,
-            "Saving the exact variant-local decision; playback remains available.",
-        )
+        self._update_decision_enabled()
         self.status.setText(
             "Saving the exact reference decision... Playback remains available."
         )

@@ -516,20 +516,31 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             elapsed = time.monotonic() - before
             self.wait_for(lambda: started.is_set() and bool(heartbeat))
 
-            self.assertLess(elapsed, 0.1)
-            self.assertTrue(dialog._decision_active)
-            self.assertFalse(dialog.accept_button.isEnabled())
-            self.assertTrue(dialog.play_reference.isEnabled())
-            self.assertIn("Saving the exact", dialog.status.text())
-            close_event = QCloseEvent()
-            dialog.closeEvent(close_event)
-            self.assertFalse(close_event.isAccepted())
-            dialog.reject()
-            self.assertTrue(dialog._close_pending)
-            self.assertIn("Close is deferred", dialog.status.text())
+            try:
+                self.assertLess(elapsed, 0.1)
+                self.assertTrue(dialog._decision_active)
+                self.assertFalse(dialog.accept_button.isEnabled())
+                self.assertTrue(dialog.play_reference.isEnabled())
+                self.assertIn("Saving the exact", dialog.status.text())
+                self.finish_audio(dialog, "reference")
+                for button in (
+                    dialog.accept_button,
+                    dialog.reject_reference,
+                    dialog.needs_sample,
+                ):
+                    self.assertFalse(button.isEnabled())
+                    self.assertIn("Unavailable", button.accessibleDescription())
+                    self.assertIn("Saving the exact", button.accessibleDescription())
+                close_event = QCloseEvent()
+                dialog.closeEvent(close_event)
+                self.assertFalse(close_event.isAccepted())
+                dialog.reject()
+                self.assertTrue(dialog._close_pending)
+                self.assertIn("Close is deferred", dialog.status.text())
 
-            release.set()
-            self.wait_for(lambda: not dialog._decision_active)
+            finally:
+                release.set()
+                self.wait_for(lambda: not dialog._decision_active)
             result = load_source_reference_quality_review(session)
             self.assertEqual(result["completed_count"], 1)
 
