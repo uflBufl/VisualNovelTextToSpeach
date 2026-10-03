@@ -1,7 +1,7 @@
 import ast
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from vntts.controller import AppController
 from vntts.controller_components import (
@@ -11,6 +11,7 @@ from vntts.controller_components import (
     VoiceAssignmentComponent,
 )
 from vntts.settings import AppSettings
+from vntts.voices import CharacterVoiceRegistry
 
 
 class ControllerComponentsTest(unittest.TestCase):
@@ -306,3 +307,65 @@ class ControllerComponentsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RuntimeLifecycleTest(unittest.TestCase):
+    def test_startup_and_settings_refresh_wire_current_dialog_read_inputs(self):
+        backend = Mock()
+        reader = Mock(is_running=False)
+        scheduler_factory = Mock()
+        with (
+            patch(
+                "vntts.controller.initialize_voice_registry",
+                return_value=CharacterVoiceRegistry(),
+            ),
+            patch("vntts.controller.ThreadPoolExecutor", return_value=Mock()),
+            patch("vntts.controller.LiveDialogReader", return_value=reader),
+            patch("vntts.controller.create_dialog_read_scheduler", scheduler_factory),
+        ):
+            controller = AppController(
+                AppSettings(speech_backend="pocket-tts", warm_up_voices=False),
+                pocket_backend_factory=Mock(return_value=backend),
+                model_asset_manager_factory=Mock(),
+            )
+            self.addCleanup(controller.shutdown)
+            self.assertTrue(controller.start())
+            self.assertEqual(scheduler_factory.call_count, 1)
+            initial_corrections = controller.correction_dictionary
+            self.assertTrue(
+                controller.apply_settings(
+                    controller.settings.updated(
+                        screenshot_directory="new-screenshots",
+                        ocr_language="rus",
+                        ocr_minimum_confidence=80,
+                    )
+                )
+            )
+
+        self.assertEqual(scheduler_factory.call_count, 2)
+        initial, refreshed = scheduler_factory.call_args_list
+        self.assertEqual(initial.args[:2], refreshed.args[:2])
+        self.assertEqual(refreshed.args[2], Path("new-screenshots"))
+        expected = {
+            "live_reader": reader,
+            "error_handler": controller.error_handler,
+            "capture_target": controller.capture_target,
+            "speech_handler": controller._enqueue_dialog,
+            "minimum_confidence": 80,
+            "uncertain_frame_recorder": controller.uncertain_frame_recorder,
+            "diagnostic_handler": controller._publish_diagnostic,
+            "voice_resolver": controller._resolve_voice_label,
+            "ocr_language": "rus",
+            "correction_dictionary": controller.correction_dictionary,
+            "region_provider": controller._capture_region,
+        }
+        self.assertEqual(refreshed.kwargs, expected)
+        self.assertEqual(
+            initial.kwargs,
+            {
+                **expected,
+                "minimum_confidence": 60,
+                "ocr_language": "eng",
+                "correction_dictionary": initial_corrections,
+            },
+        )

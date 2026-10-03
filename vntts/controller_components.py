@@ -522,26 +522,7 @@ class RuntimeLifecycleComponent:
             **controller._get_live_configuration(),
         )
         controller.live_reader = live_reader
-        capture_executor = controller.capture_executor
-        voice_router = controller.voice_router
-        if capture_executor is None or voice_router is None:
-            return screenshot_directory
-        controller.schedule_dialog_read = controller.dialog_read_scheduler_factory(
-            capture_executor,
-            voice_router,
-            screenshot_directory,
-            live_reader=controller.live_reader,
-            error_handler=controller.error_handler,
-            capture_target=controller.capture_target,
-            speech_handler=controller._enqueue_dialog,
-            minimum_confidence=controller.settings.ocr_minimum_confidence,
-            uncertain_frame_recorder=controller.uncertain_frame_recorder,
-            diagnostic_handler=controller._publish_diagnostic,
-            voice_resolver=controller._resolve_voice_label,
-            ocr_language=controller.settings.ocr_language,
-            correction_dictionary=controller.correction_dictionary,
-            region_provider=controller._capture_region,
-        )
+        self._configure_dialog_read(screenshot_directory)
         return screenshot_directory
 
     def apply_settings(
@@ -653,6 +634,10 @@ class RuntimeLifecycleComponent:
         reader.auto_advance_delay_seconds = (
             controller.settings.auto_advance_delay_ms / 1000
         )
+        return self._configure_dialog_read(screenshot_directory)
+
+    def _configure_dialog_read(self, screenshot_directory: Path) -> bool | None:
+        controller = self.controller
         capture_executor = controller.capture_executor
         voice_router = controller.voice_router
         if capture_executor is None or voice_router is None:
@@ -661,7 +646,7 @@ class RuntimeLifecycleComponent:
             capture_executor,
             voice_router,
             screenshot_directory,
-            live_reader=reader,
+            live_reader=controller.live_reader,
             error_handler=controller.error_handler,
             capture_target=controller.capture_target,
             speech_handler=controller._enqueue_dialog,
