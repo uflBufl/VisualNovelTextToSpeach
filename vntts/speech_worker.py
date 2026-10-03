@@ -333,32 +333,30 @@ def _result_document_value(value: object) -> SynthesisResultDocument:
     first_chunk_ms = timing.get("first_chunk_ms")
     seed = diagnostics.get("seed")
     if (
-        not isinstance(document.get("sample_rate"), int)
-        or not isinstance(document.get("completion"), str)
-        or max_tokens is not None
+        max_tokens is not None
         and (not isinstance(max_tokens, int) or isinstance(max_tokens, bool))
         or max_audio_seconds is not None
         and not isinstance(max_audio_seconds, float)
         or first_chunk_ms is not None
         and not isinstance(first_chunk_ms, float)
         or not isinstance(timing.get("total_ms"), float)
-        or not isinstance(diagnostics.get("backend"), str)
-        or not isinstance(diagnostics.get("cache_source"), str)
-        or not isinstance(diagnostics.get("generation_profile"), str)
         or seed is not None
         and (not isinstance(seed, int) or isinstance(seed, bool))
-        or not isinstance(diagnostics.get("chunk_count"), int)
-        or not isinstance(diagnostics.get("sample_count"), int)
     ):
         raise TTSConfigurationError("Speech worker render result is malformed")
-    sample_rate = _required_integer(document, "sample_rate")
-    completion = _required_text(document, "completion")
-    total_ms = _required_float(timing, "total_ms")
-    backend = _required_text(diagnostics, "backend")
-    cache_source = _required_text(diagnostics, "cache_source")
-    generation_profile = _required_text(diagnostics, "generation_profile")
-    chunk_count = _required_integer(diagnostics, "chunk_count")
-    sample_count = _required_integer(diagnostics, "sample_count")
+    try:
+        sample_rate = _required_integer(document, "sample_rate")
+        completion = _required_text(document, "completion")
+        total_ms = _required_float(timing, "total_ms")
+        backend = _required_text(diagnostics, "backend")
+        cache_source = _required_text(diagnostics, "cache_source")
+        generation_profile = _required_text(diagnostics, "generation_profile")
+        chunk_count = _required_integer(diagnostics, "chunk_count")
+        sample_count = _required_integer(diagnostics, "sample_count")
+    except KeyError as error:
+        raise TTSConfigurationError(
+            "Speech worker render result is malformed"
+        ) from error
     return {
         "sample_rate": sample_rate,
         "completion": completion,

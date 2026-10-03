@@ -180,6 +180,19 @@ class SpeechWorkerTest(unittest.TestCase):
                         _result_document_value(document)
                     document[group][field] = original
 
+    def test_result_decoder_rejects_missing_or_malformed_required_fields(self):
+        backend = FakeWorkerBackend(CharacterVoiceRegistry())
+        document = _result_document(
+            backend.render(SynthesisRequest("Narrator", "A line.")).collect()
+        )
+        del document["completion"]
+        with self.assertRaises(TTSConfigurationError):
+            _result_document_value(document)
+        document["completion"] = SynthesisCompletion.COMPLETE.value
+        document["diagnostics"]["chunk_count"] = "one"
+        with self.assertRaises(TTSConfigurationError):
+            _result_document_value(document)
+
     def test_worker_frames_ignore_previous_process_and_report_current_exit(self):
         backend = object.__new__(IsolatedSpeechBackend)
         backend.name = "pocket-tts"
