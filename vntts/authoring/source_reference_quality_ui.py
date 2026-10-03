@@ -616,6 +616,9 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         self.needs_sample.setEnabled(enabled)
         if reason is not None:
             self.evidence_progress.setText(reason)
+        self._update_decision_accessibility()
+
+    def _update_decision_accessibility(self) -> None:
         for button, action in (
             (self.accept_button, "accept this exact reference"),
             (self.reject_reference, "reject this exact reference"),
@@ -661,16 +664,7 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
             "Reject and Need another require the original; Accept requires all "
             "published generated samples too."
         )
-        for button, action in (
-            (self.accept_button, "accept this exact reference"),
-            (self.reject_reference, "reject this exact reference"),
-            (self.needs_sample, "request another sample"),
-        ):
-            button.setAccessibleDescription(
-                f"Ready to {action}"
-                if button.isEnabled()
-                else f"Unavailable: {self.evidence_progress.text()}"
-            )
+        self._update_decision_accessibility()
 
     def _play_reference(self) -> None:
         if self.current is not None:
