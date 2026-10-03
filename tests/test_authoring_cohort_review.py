@@ -79,6 +79,42 @@ class AuthoringCohortReviewTest(unittest.TestCase):
         self.assertTrue(cohort["items"][0]["sampled"])
         self.assertEqual(first.plan_id, first.document["plan_id"])
 
+    def test_all_decision_versions_preserve_terminal_and_expand_statuses(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state, queue_id = self.create_pending_workspace(root)
+            plan = build_cohort_review_plan(workspace)
+            cohort_id = plan.document["cohorts"][0]["cohort_id"]
+            output = root / "versioned-decision.json"
+            for name in ("accepted", "rejected", "expand"):
+                decision = build_cohort_review_decision(
+                    plan,
+                    cohort_id,
+                    name,
+                    reviewed_queue_ids=[queue_id],
+                    next_clean_samples_per_bucket=2 if name == "expand" else None,
+                )
+                for version in (1, 2, 3, 4):
+                    with self.subTest(decision=name, version=version):
+                        document = deepcopy(decision.document)
+                        document["schema_version"] = version
+                        if version < 3:
+                            document.pop("item_review_statuses")
+                        if version == 1:
+                            for assessment in document["sample_assessments"]:
+                                assessment.pop("defect_reasons")
+                        document["decision_id"] = _canonical_sha256(
+                            {
+                                key: item
+                                for key, item in document.items()
+                                if key != "decision_id"
+                            }
+                        )
+                        output.write_text(json.dumps(document))
+                        self.assertEqual(
+                            load_cohort_review_decision(output).document, document
+                        )
+
     def test_legacy_policy_v1_plan_remains_readable(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
