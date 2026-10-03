@@ -28,6 +28,15 @@ from vntts.voices import (
 EngineT = TypeVar("EngineT")
 
 
+class TTSConfiguration(TypedDict, total=False):
+    model_name: str
+    speaker: str
+    language: str
+    speaker_wav: str
+    volume: float
+    synthesis_options: dict[str, object]
+
+
 class LiveTrackerOptions(TypedDict):
     stability_frames: int
     idle_flush_seconds: float
@@ -196,22 +205,33 @@ def _tts_profile_or_default(name: str) -> dict[str, object]:
         return get_tts_profile(default_tts_profile)
 
 
-def get_tts_configuration(settings: AppSettings | None = None) -> dict[str, object]:
+def get_tts_configuration(settings: AppSettings | None = None) -> TTSConfiguration:
     if settings is not None:
         if settings.speech_backend == "coqui-xtts" and not (
             settings.tts_model and settings.tts_model.strip()
         ):
             raise ValueError("Coqui XTTS requires a configured model")
-        configuration: dict[str, object] = {
-            name: value
-            for name, value in {
-                "model_name": settings.tts_model,
-                "speaker": settings.tts_speaker,
-                "language": settings.tts_language,
-                "speaker_wav": settings.tts_speaker_wav,
-            }.items()
-            if value
+        fields = {
+            "model_name": settings.tts_model,
+            "speaker": settings.tts_speaker,
+            "language": settings.tts_language,
+            "speaker_wav": settings.tts_speaker_wav,
         }
+    else:
+        fields = {
+            argument: os.environ.get(environment_variable)
+            for argument, environment_variable in tts_environment_variables.items()
+        }
+    configuration: TTSConfiguration = {}
+    if value := fields["model_name"]:
+        configuration["model_name"] = value
+    if value := fields["speaker"]:
+        configuration["speaker"] = value
+    if value := fields["language"]:
+        configuration["language"] = value
+    if value := fields["speaker_wav"]:
+        configuration["speaker_wav"] = value
+    if settings is not None:
         configuration["volume"] = settings.output_volume_percent / 100
         synthesis_options = (
             _tts_profile_or_default(settings.tts_profile)
@@ -220,15 +240,7 @@ def get_tts_configuration(settings: AppSettings | None = None) -> dict[str, obje
         )
         synthesis_options["speed"] = settings.speech_rate_percent / 100
         configuration["synthesis_options"] = synthesis_options
-        return configuration
-
-    configuration = {
-        argument: value
-        for argument, environment_variable in tts_environment_variables.items()
-        if (value := os.environ.get(environment_variable))
-    }
-    environment_profile = os.environ.get("VNTTS_TTS_PROFILE")
-    if environment_profile:
+    elif environment_profile := os.environ.get("VNTTS_TTS_PROFILE"):
         profile_name = environment_profile.strip().casefold()
         configuration["synthesis_options"] = _tts_profile_or_default(profile_name)
     return configuration
