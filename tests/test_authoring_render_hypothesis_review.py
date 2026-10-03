@@ -5,6 +5,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import numpy as np
 from vntts_artifacts.atomic_io import atomic_write_json
@@ -16,6 +17,7 @@ from tests.test_authoring_failure_reference_audit import (
     _PreviewBackendFactory,
     create_failed_reference_workspace,
 )
+from vntts.authoring import render_hypothesis_review
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_reference_audit import (
     load_failure_reference_decisions,
@@ -225,6 +227,9 @@ class RenderHypothesisReviewTest(unittest.TestCase):
             imported = import_accepted_render_hypothesis(
                 fresh_audit, comparison.directory, review_root, queue_id
             )
+            self.assert_import_rejects_review_replacement(
+                fresh_audit, comparison.directory, review_root, queue_id
+            )
             repeated = import_accepted_render_hypothesis(
                 fresh_audit, comparison.directory, review_root, queue_id
             )
@@ -257,6 +262,33 @@ class RenderHypothesisReviewTest(unittest.TestCase):
                 )
             self.assertEqual(code, 0)
             self.assertFalse(json.loads(stdout.getvalue())["created"])
+
+    def assert_import_rejects_review_replacement(
+        self, fresh_audit, comparison_root, review_root, queue_id
+    ):
+        original_load_decisions = (
+            render_hypothesis_review.load_failure_reference_decisions
+        )
+        review_path = review_root / "review.json"
+        original_review = review_path.read_bytes()
+
+        def replace_review_after_decisions(*args, **kwargs):
+            decisions = original_load_decisions(*args, **kwargs)
+            review_path.write_bytes(original_review + b"\n")
+            return decisions
+
+        try:
+            with patch.object(
+                render_hypothesis_review,
+                "load_failure_reference_decisions",
+                side_effect=replace_review_after_decisions,
+            ):
+                with self.assertRaisesRegex(RenderHypothesisReviewError, "changed"):
+                    import_accepted_render_hypothesis(
+                        fresh_audit, comparison_root, review_root, queue_id
+                    )
+        finally:
+            review_path.write_bytes(original_review)
 
     def test_publish_load_and_decide_are_self_contained(self):
         with TemporaryDirectory() as directory:

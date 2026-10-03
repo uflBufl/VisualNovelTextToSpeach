@@ -40,14 +40,9 @@ from vntts.authoring.render_hypothesis_records import (
     RENDER_HYPOTHESIS_DECISIONS,
     RENDER_HYPOTHESIS_REVIEW_SCHEMA,
     RENDER_HYPOTHESIS_REVIEW_VERSION,
+    RenderHypothesisRecord,
     RenderHypothesisRecordError,
     load_render_hypothesis_record,
-)
-from vntts.authoring.render_hypothesis_records import (
-    _validate_decision as _validate_record_decision,
-)
-from vntts.authoring.render_hypothesis_records import (
-    _validate_review as _validate_record_review,
 )
 from vntts.path_safety import contained_regular_file
 
@@ -140,16 +135,12 @@ class _ImportContext:
 
 @dataclass(frozen=True)
 class _ImportDocuments:
-    snapshots: _ReviewSnapshots
     fresh_audit: AuthoritySnapshot
     fresh_key: AuthoritySnapshot
     comparison: AuthoritySnapshot
-    review: AuthoritySnapshot
-    decision: AuthoritySnapshot
     fresh_document: JsonObject
     fresh_key_document: JsonObject
-    review_document: JsonObject
-    decision_document: JsonObject
+    record: RenderHypothesisRecord
 
 
 @dataclass(frozen=True)
@@ -163,8 +154,8 @@ class _SourceAudit:
 
 @dataclass(frozen=True)
 class _Selection:
-    fresh_group: JsonObject
-    fresh_candidate: JsonObject
+    group_id: str
+    candidate_id: str
     authority: JsonObject
 
 
@@ -380,33 +371,38 @@ def _stage_review(
 def _assert_publish_snapshots(
     comparison_snapshot: AuthoritySnapshot, snapshots: _ReviewSnapshots
 ) -> None:
-    for snapshot, label in (
-        (comparison_snapshot, "reference render comparison"),
-        (snapshots.report, "reference render arm report"),
-        (snapshots.reference, "reference control"),
-        (snapshots.result, "render result"),
-    ):
-        assert_authority_snapshot(snapshot, label)
+    try:
+        for snapshot, label in (
+            (comparison_snapshot, "reference render comparison"),
+            (snapshots.report, "reference render arm report"),
+            (snapshots.reference, "reference control"),
+            (snapshots.result, "render result"),
+        ):
+            assert_authority_snapshot(snapshot, label)
+    except AuthoringAuthorityError as error:
+        raise RenderHypothesisReviewError(str(error)) from error
+
+
+def _assert_record_snapshots(record: RenderHypothesisRecord) -> None:
+    for snapshot in record.snapshots:
+        assert_authority_snapshot(snapshot, f"render hypothesis {snapshot.path.name}")
+
+
+def _load_review_record(directory: str | Path) -> RenderHypothesisRecord:
+    try:
+        record = load_render_hypothesis_record(directory)
+        _assert_record_snapshots(record)
+    except (RenderHypothesisRecordError, AuthoringAuthorityError) as error:
+        raise RenderHypothesisReviewError(str(error)) from error
+    return record
 
 
 def load_render_hypothesis_review(directory: str | Path) -> RenderHypothesisReview:
     """Load and verify one self-contained render hypothesis review."""
-    try:
-        record = load_render_hypothesis_record(directory)
-    except RenderHypothesisRecordError as error:
-        raise RenderHypothesisReviewError(str(error)) from error
-    if record.decision_snapshot is not None:
-        assert_authority_snapshot(
-            record.decision_snapshot, "render hypothesis decision"
-        )
-    for snapshot, label in (
-        (record.review_snapshot, "render hypothesis review"),
-        (record.comparison_snapshot, "copied reference render comparison"),
-        (record.report_snapshot, "copied reference render report"),
-        (record.reference_snapshot, "copied reference audio"),
-        (record.result_snapshot, "copied render result"),
-    ):
-        assert_authority_snapshot(snapshot, label)
+    return _review_from_record(_load_review_record(directory))
+
+
+def _review_from_record(record: RenderHypothesisRecord) -> RenderHypothesisReview:
     return RenderHypothesisReview(
         directory=record.directory,
         review_id=_required_text(record.review["review_id"], "review ID"),
@@ -435,85 +431,35 @@ def record_render_hypothesis_decision(
         raise RenderHypothesisReviewError(
             "Render hypothesis decision must be accept_hypothesis or need_different"
         )
-    review = load_render_hypothesis_review(directory)
-    decision_path = review.directory / "decision.json"
-    if decision_path.exists() or decision_path.is_symlink():
-        current = load_render_hypothesis_review(review.directory)
-        if current.decision == decision:
-            return current
+    record = _load_review_record(directory)
+    review = _review_from_record(record)
+    if review.decision is not None:
+        if review.decision == decision:
+            return review
         raise RenderHypothesisReviewError(
-            f"Render hypothesis review is already decided: {current.decision}"
+            f"Render hypothesis review is already decided: {review.decision}"
         )
+    decision_path = review.directory / "decision.json"
+    decision_document = {
+        "schema": RENDER_HYPOTHESIS_DECISION_SCHEMA,
+        "schema_version": RENDER_HYPOTHESIS_DECISION_VERSION,
+        "review_id": review.review_id,
+        "review_sha256": record.review_snapshot.sha256,
+        "reference_sha256": record.reference_snapshot.sha256,
+        "result_sha256": record.result_snapshot.sha256,
+        "decision": decision,
+        "reviewed_at": datetime.now(timezone.utc).isoformat(),
+    }
     try:
-        review_snapshot = capture_authority_file(
-            review.directory / "review.json",
-            "render hypothesis review",
-            root=review.directory,
-        )
-        document = review_snapshot.json_document("render hypothesis review")
-        comparison_snapshot = capture_authority_file(
-            _contained_file(
-                review.directory, document.get("comparison"), "copied comparison"
-            ),
-            "copied reference render comparison",
-            root=review.directory,
-        )
-        report_snapshot = capture_authority_file(
-            _contained_file(
-                review.directory, document.get("arm_report"), "copied report"
-            ),
-            "copied reference render report",
-            root=review.directory,
-        )
-        reference_snapshot = capture_authority_file(
-            _contained_file(
-                review.directory, document.get("reference"), "copied reference"
-            ),
-            "copied reference audio",
-            root=review.directory,
-        )
-        result_snapshot = capture_authority_file(
-            _contained_file(review.directory, document.get("result"), "copied result"),
-            "copied render result",
-            root=review.directory,
-        )
-        _validate_review_document(
-            document,
-            comparison_snapshot,
-            report_snapshot,
-            reference_snapshot,
-            result_snapshot,
-        )
-        if document.get("review_id") != review.review_id:
-            raise RenderHypothesisReviewError(
-                "Render hypothesis review authority changed"
-            )
-        decision_document = {
-            "schema": RENDER_HYPOTHESIS_DECISION_SCHEMA,
-            "schema_version": RENDER_HYPOTHESIS_DECISION_VERSION,
-            "review_id": review.review_id,
-            "review_sha256": review_snapshot.sha256,
-            "reference_sha256": reference_snapshot.sha256,
-            "result_sha256": result_snapshot.sha256,
-            "decision": decision,
-            "reviewed_at": datetime.now(timezone.utc).isoformat(),
-        }
-        assert_authority_snapshot(review_snapshot, "render hypothesis review")
-        assert_authority_snapshot(
-            comparison_snapshot, "copied reference render comparison"
-        )
-        assert_authority_snapshot(report_snapshot, "copied reference render report")
-        assert_authority_snapshot(reference_snapshot, "copied reference audio")
-        assert_authority_snapshot(result_snapshot, "copied render result")
+        _assert_record_snapshots(record)
         write_json_document_no_replace(
             decision_path, decision_document, "render hypothesis decision"
         )
     except AuthoringAuthorityError as error:
-        if (
-            decision_path.exists()
-            and load_render_hypothesis_review(review.directory).decision == decision
-        ):
-            return load_render_hypothesis_review(review.directory)
+        if decision_path.exists():
+            current = load_render_hypothesis_review(review.directory)
+            if current.decision == decision:
+                return current
         raise RenderHypothesisReviewError(str(error)) from error
     return load_render_hypothesis_review(review.directory)
 
@@ -536,13 +482,8 @@ def import_accepted_render_hypothesis(
         context, documents, source, selected_render, selected_queue_id
     )
     current = _load_import_decisions(context, documents, source)
-    existing = _existing_import_selection(
-        context, selection, current, selected_queue_id
-    )
-    if existing is not None:
-        return existing
-    return _record_import_selection(
-        context, documents, source, selection, selected_queue_id
+    return _save_import_selection(
+        context, documents, source, selection, current, selected_queue_id
     )
 
 
@@ -589,73 +530,10 @@ def _capture_import_documents(context: _ImportContext) -> _ImportDocuments:
             "reference render comparison",
             root=context.comparison_directory,
         )
-        review = capture_authority_file(
-            context.review_directory / "review.json",
-            "render hypothesis review",
-            root=context.review_directory,
-        )
-        decision = capture_authority_file(
-            context.review_directory / "decision.json",
-            "render hypothesis decision",
-            root=context.review_directory,
-        )
+        record = _load_review_record(context.review_directory)
         fresh_document = fresh_audit.json_document("fresh failure audit")
         fresh_key_document = fresh_key.json_document("fresh failure audit key")
-        review_document = review.json_document("render hypothesis review")
-        decision_document = decision.json_document("render hypothesis decision")
-        review_comparison = capture_authority_file(
-            _contained_file(
-                context.review_directory,
-                review_document.get("comparison"),
-                "copied reference render comparison",
-            ),
-            "copied reference render comparison",
-            root=context.review_directory,
-        )
-        review_report = capture_authority_file(
-            _contained_file(
-                context.review_directory,
-                review_document.get("arm_report"),
-                "copied reference render report",
-            ),
-            "copied reference render report",
-            root=context.review_directory,
-        )
-        review_reference = capture_authority_file(
-            _contained_file(
-                context.review_directory,
-                review_document.get("reference"),
-                "copied reference audio",
-            ),
-            "copied reference audio",
-            root=context.review_directory,
-        )
-        review_result = capture_authority_file(
-            _contained_file(
-                context.review_directory,
-                review_document.get("result"),
-                "copied render result",
-            ),
-            "copied render result",
-            root=context.review_directory,
-        )
-        snapshots = _ReviewSnapshots(
-            review_comparison, review_report, review_reference, review_result
-        )
-        _validate_review_document(
-            review_document,
-            snapshots.comparison,
-            snapshots.report,
-            snapshots.reference,
-            snapshots.result,
-        )
-        _validate_decision_document(
-            decision_document,
-            review_document,
-            review.sha256,
-        )
         exact_fresh = load_failure_reference_audit(context.audit_directory)
-        exact_review = load_render_hypothesis_review(context.review_directory)
         exact_comparison = load_reference_render_comparison_document(
             context.comparison_directory
         )
@@ -668,30 +546,20 @@ def _capture_import_documents(context: _ImportContext) -> _ImportDocuments:
     if (
         context.fresh.audit_id != exact_fresh.audit_id
         or context.fresh.audit_id != fresh_document.get("audit_id")
-        or context.review.review_id != exact_review.review_id
-        or context.review.review_id != review_document.get("review_id")
-        or decision_document.get("decision") != "accept_hypothesis"
-        or decision_document.get("review_id") != context.review.review_id
+        or context.review.review_id != record.review.get("review_id")
+        or record.decision is None
+        or record.decision.get("decision") != "accept_hypothesis"
+        or record.decision.get("review_id") != context.review.review_id
         or context.comparison != exact_comparison
         or context.comparison != comparison.json_document("reference render comparison")
-        or context.comparison.get("comparison_id")
-        != review_document.get("comparison_id")
-        or comparison.sha256 != review_document.get("comparison_sha256")
+        or context.comparison.get("comparison_id") != record.review.get("comparison_id")
+        or comparison.sha256 != record.review.get("comparison_sha256")
     ):
         raise RenderHypothesisReviewError(
             "Accepted render hypothesis authority changed"
         )
     return _ImportDocuments(
-        snapshots,
-        fresh_audit,
-        fresh_key,
-        comparison,
-        review,
-        decision,
-        fresh_document,
-        fresh_key_document,
-        review_document,
-        decision_document,
+        fresh_audit, fresh_key, comparison, fresh_document, fresh_key_document, record
     )
 
 
@@ -719,7 +587,7 @@ def _selected_import_render(
         or selected_render.get("audio_sha256") != context.review.result_sha256
         or selected_render.get("reference_sha256") != context.review.reference_sha256
         or selected_render.get("text_sha256")
-        != documents.review_document.get("text_sha256")
+        != documents.record.review.get("text_sha256")
     ):
         raise RenderHypothesisReviewError(
             "Accepted render no longer matches its comparison"
@@ -836,18 +704,21 @@ def _import_selection(
         raise RenderHypothesisReviewError(
             "Accepted render text identity changed in the fresh audit"
         )
+    decision_snapshot = documents.record.decision_snapshot
+    if decision_snapshot is None:
+        raise RenderHypothesisReviewError("Accepted render decision is absent")
     authority = {
         "schema": "vntts.authoring-render-hypothesis-selection",
         "schema_version": 1,
         "review_id": context.review.review_id,
-        "review_sha256": documents.review.sha256,
-        "decision_sha256": documents.decision.sha256,
+        "review_sha256": documents.record.review_snapshot.sha256,
+        "decision_sha256": decision_snapshot.sha256,
         "comparison_id": context.comparison["comparison_id"],
-        "comparison_sha256": documents.snapshots.comparison.sha256,
+        "comparison_sha256": documents.record.comparison_snapshot.sha256,
         "source_audit_id": source.audit.audit_id,
         "source_audit_sha256": source.audit_snapshot.sha256,
         "selected_arm_id": context.review.arm_id,
-        "selected_arm_report_sha256": documents.review_document["arm_report_sha256"],
+        "selected_arm_report_sha256": documents.record.review["arm_report_sha256"],
         "selected_render_sha256": context.review.result_sha256,
         "source_candidate_group_id": source_group_id,
         "source_candidate_id": source_candidate_id,
@@ -856,7 +727,11 @@ def _import_selection(
         "queue_id": queue_id,
         "text_sha256": selected_render["text_sha256"],
     }
-    return _Selection(fresh_group, fresh_candidate, authority)
+    return _Selection(
+        _required_text(fresh_group["group_id"], "fresh group ID"),
+        _required_text(fresh_candidate["candidate_id"], "fresh candidate ID"),
+        authority,
+    )
 
 
 def _load_import_decisions(
@@ -871,118 +746,65 @@ def _load_import_decisions(
         raise RenderHypothesisReviewError(str(error)) from error
 
 
-def _existing_import_selection(
-    context: _ImportContext,
-    selection: _Selection,
-    current: JsonObject,
-    queue_id: str,
-) -> RenderHypothesisSelection | None:
-    existing = next(
-        (
-            value
-            for value in _documents(current.get("decisions"))
-            if value.get("group_id") == selection.fresh_group["group_id"]
-        ),
-        None,
-    )
-    if existing is None:
-        return None
-    if (
-        existing.get("decision") != selection.fresh_candidate["candidate_id"]
-        or existing.get("selection_authority") != selection.authority
-    ):
-        raise RenderHypothesisReviewError(
-            "Fresh reference audit already has a different decision"
-        )
-    return RenderHypothesisSelection(
-        context.audit_directory,
-        context.fresh.audit_id,
-        _required_text(selection.fresh_group["group_id"], "fresh group ID"),
-        _required_text(selection.fresh_candidate["candidate_id"], "fresh candidate ID"),
-        queue_id,
-        context.review.review_id,
-        context.review.reference_sha256,
-        _required_text(current["decision_set_id"], "decision set ID"),
-        False,
-    )
-
-
-def _record_import_selection(
+def _save_import_selection(
     context: _ImportContext,
     documents: _ImportDocuments,
     source: _SourceAudit,
     selection: _Selection,
+    current: JsonObject,
     queue_id: str,
 ) -> RenderHypothesisSelection:
+    existing = next(
+        (
+            value
+            for value in _documents(current.get("decisions"))
+            if value.get("group_id") == selection.group_id
+        ),
+        None,
+    )
     try:
         _assert_import_snapshots(documents, source)
-        decisions = record_failure_reference_decision(
-            context.audit_directory,
-            _required_text(selection.fresh_group["group_id"], "fresh group ID"),
-            _required_text(
-                selection.fresh_candidate["candidate_id"], "fresh candidate ID"
-            ),
-            selection_authority=selection.authority,
-        )
+        if existing is not None:
+            if (
+                existing.get("decision") != selection.candidate_id
+                or existing.get("selection_authority") != selection.authority
+            ):
+                raise RenderHypothesisReviewError(
+                    "Fresh reference audit already has a different decision"
+                )
+            decisions = current
+        else:
+            decisions = record_failure_reference_decision(
+                context.audit_directory,
+                selection.group_id,
+                selection.candidate_id,
+                selection_authority=selection.authority,
+            )
     except (AuthoringAuthorityError, FailureReferenceAuditError) as error:
         raise RenderHypothesisReviewError(str(error)) from error
     return RenderHypothesisSelection(
         context.audit_directory,
         context.fresh.audit_id,
-        _required_text(selection.fresh_group["group_id"], "fresh group ID"),
-        _required_text(selection.fresh_candidate["candidate_id"], "fresh candidate ID"),
+        selection.group_id,
+        selection.candidate_id,
         queue_id,
         context.review.review_id,
         context.review.reference_sha256,
         _required_text(decisions["decision_set_id"], "decision set ID"),
-        True,
+        existing is None,
     )
 
 
 def _assert_import_snapshots(documents: _ImportDocuments, source: _SourceAudit) -> None:
+    _assert_record_snapshots(documents.record)
     for snapshot, label in (
         (documents.fresh_audit, "fresh audit"),
         (documents.fresh_key, "fresh key"),
         (documents.comparison, "comparison"),
-        (documents.review, "review"),
-        (documents.decision, "decision"),
-        (documents.snapshots.comparison, "review comparison"),
-        (documents.snapshots.report, "review arm report"),
-        (documents.snapshots.reference, "review reference"),
-        (documents.snapshots.result, "review result"),
         (source.audit_snapshot, "source audit"),
         (source.key_snapshot, "source key"),
     ):
         assert_authority_snapshot(snapshot, label)
-
-
-def _validate_review_document(
-    review: JsonObject,
-    comparison_snapshot: AuthoritySnapshot,
-    report_snapshot: AuthoritySnapshot,
-    reference_snapshot: AuthoritySnapshot,
-    result_snapshot: AuthoritySnapshot,
-) -> None:
-    try:
-        _validate_record_review(
-            review,
-            comparison_snapshot,
-            report_snapshot,
-            reference_snapshot,
-            result_snapshot,
-        )
-    except RenderHypothesisRecordError as error:
-        raise RenderHypothesisReviewError(str(error)) from error
-
-
-def _validate_decision_document(
-    decision: JsonObject, review: JsonObject, review_sha256: str
-) -> JsonObject:
-    try:
-        _validate_record_decision(decision, review, review_sha256)
-    except RenderHypothesisRecordError as error:
-        raise RenderHypothesisReviewError(str(error)) from error
-    return decision
 
 
 def _contained_file(root: Path, value: object, label: str) -> Path:
