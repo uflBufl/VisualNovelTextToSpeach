@@ -111,8 +111,12 @@ def _validate_sample(item: object, index: int) -> SoundEffectSample:
         raise SoundEffectBenchmarkError(
             f"Sound-effect sample {sample_id} duration is invalid"
         )
-    seconds = round(float(seconds), 1)
     if not 0 < seconds <= 30:
+        raise SoundEffectBenchmarkError(
+            f"Sound-effect sample {sample_id} duration is invalid"
+        )
+    seconds = round(float(seconds), 1)
+    if seconds <= 0:
         raise SoundEffectBenchmarkError(
             f"Sound-effect sample {sample_id} duration is invalid"
         )

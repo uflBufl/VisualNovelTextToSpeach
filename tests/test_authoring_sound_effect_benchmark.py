@@ -310,6 +310,95 @@ class SoundEffectBenchmarkTest(unittest.TestCase):
                     with self.assertRaisesRegex(SoundEffectBenchmarkError, message):
                         load_sound_effect_corpus(path)
 
+    def test_rejects_nonfinite_and_unrounded_duration_over_maximum(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "corpus.json"
+            for seconds in (
+                30.04,
+                30.049,
+                float("nan"),
+                float("inf"),
+                float("-inf"),
+                10**400,
+            ):
+                with self.subTest(seconds=seconds):
+                    write_corpus(
+                        path,
+                        samples=[
+                            {
+                                "id": "gasp",
+                                "kind": "human-gasp",
+                                "prompt": "One isolated gasp, no speech.",
+                                "seconds": seconds,
+                            }
+                        ],
+                    )
+                    with self.assertRaisesRegex(
+                        SoundEffectBenchmarkError, "duration is invalid"
+                    ):
+                        load_sound_effect_corpus(path)
+
+    def test_retains_valid_duration_rounding(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "corpus.json"
+            write_corpus(
+                path,
+                samples=[
+                    {
+                        "id": "rounded",
+                        "kind": "event",
+                        "prompt": "A short sound.",
+                        "seconds": 1.56,
+                    },
+                    {
+                        "id": "maximum",
+                        "kind": "event",
+                        "prompt": "A maximum duration sound.",
+                        "seconds": 30,
+                    },
+                ],
+            )
+
+            corpus = load_sound_effect_corpus(path)
+
+        self.assertEqual(
+            [sample["seconds"] for sample in corpus["samples"]], [1.6, 30.0]
+        )
+
+    def test_invalid_duration_fails_before_cuda_or_pipeline(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = root / "corpus.json"
+            write_corpus(
+                corpus,
+                samples=[
+                    {
+                        "id": "too-long",
+                        "kind": "event",
+                        "prompt": "An invalid sound.",
+                        "seconds": 30.04,
+                    }
+                ],
+            )
+
+            def fail_pipeline_load(*args, **kwargs):
+                raise AssertionError("pipeline must not load")
+
+            with (
+                patch(
+                    "vntts.authoring.sound_effect_benchmark.inspect_cuda",
+                    side_effect=AssertionError("CUDA inspection must not run"),
+                ),
+                self.assertRaisesRegex(
+                    SoundEffectBenchmarkError, "duration is invalid"
+                ),
+            ):
+                benchmark_sound_effects(
+                    corpus,
+                    root / "output",
+                    pipeline_factory=fail_pipeline_load,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
