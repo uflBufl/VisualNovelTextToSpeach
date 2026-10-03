@@ -586,14 +586,17 @@ class VoicePackManager:
                         copied.append(output)
                         shutil.copy2(reference, output)
                         copied_references.append(f"references/{output.name}")
-                    entries.append(
-                        {
-                            "character": voice.character,
-                            "speaker": voice.speaker,
-                            "aliases": list(voice.aliases),
-                            "references": copied_references,
-                        }
-                    )
+                    entry: dict[str, object] = {
+                        "character": voice.character,
+                        "speaker": voice.speaker,
+                        "aliases": list(voice.aliases),
+                        "references": copied_references,
+                    }
+                    if voice.source_character:
+                        entry["vntts.source_character"] = voice.source_character
+                    if voice.reference_transcript:
+                        entry["vntts.reference_transcript"] = voice.reference_transcript
+                    entries.append(entry)
             except Exception:
                 for output in copied:
                     output.unlink(missing_ok=True)

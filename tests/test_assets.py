@@ -785,6 +785,8 @@ class VoicePackManagerTest(unittest.TestCase):
                             {
                                 "character": "X",
                                 "speaker": "x-v2",
+                                "vntts.source_character": "Original X",
+                                "vntts.reference_transcript": "The exact reference line.",
                                 "reference": reference.name,
                             }
                         ]
@@ -800,6 +802,11 @@ class VoicePackManagerTest(unittest.TestCase):
             self.assertTrue(reference.is_file())
             self.assertTrue(imported_voice.reference.is_file())
             self.assertNotEqual(imported_voice.reference, reference)
+            self.assertEqual(imported_voice.source_character, "Original X")
+            self.assertEqual(
+                imported_voice.reference_transcript, "The exact reference line."
+            )
+            self.assertEqual(manager.validate(imported), imported)
 
     def test_import_manifest_rejects_unsupported_reference_format(self):
         with TemporaryDirectory() as temporary_directory:
