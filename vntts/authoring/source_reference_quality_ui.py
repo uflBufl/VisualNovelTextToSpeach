@@ -13,6 +13,7 @@ from PySide6.QtGui import QCloseEvent, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QDialogButtonBox,
+    QFormLayout,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -170,6 +171,22 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         confirmer: DecisionConfirmer | None = None,
     ) -> None:
         super().__init__(parent)
+        self._initialize_state(session_path, decision_recorder, thread_pool, confirmer)
+        self._build_identity_widgets()
+        playback = self._build_generated_widgets()
+        decisions, buttons = self._build_decision_widgets()
+        self._build_layout(playback, decisions, buttons)
+        self._configure_navigation()
+        self._initialize_player()
+        self._load_next()
+
+    def _initialize_state(
+        self,
+        session_path: str | Path,
+        decision_recorder: DecisionRecorder,
+        thread_pool: QThreadPool | None,
+        confirmer: DecisionConfirmer | None,
+    ) -> None:
         self.session_path = Path(session_path).expanduser().resolve()
         self.session: _QualitySession = _load_review(self.session_path)
         self.decision_recorder = decision_recorder
@@ -190,6 +207,7 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         self._audio_buffer: object | None = None
         self._playing_token: str | None = None
 
+    def _build_identity_widgets(self) -> None:
         self.setWindowTitle("Source-reference quality review")
         self.setMinimumSize(700, 500)
         self.progress = QLabel()
@@ -214,6 +232,7 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         self.play_reference.setShortcut(QKeySequence("Ctrl+O"))
         self.play_reference.clicked.connect(self._play_reference)
 
+    def _build_generated_widgets(self) -> QFormLayout:
         self.generated = QListWidget()
         self.generated.setMaximumHeight(96)
         self.generated.setAccessibleName("Generated samples for this reference")
@@ -245,7 +264,9 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         self.stop.setEnabled(False)
         playback = review_form_layout()
         playback.addRow(self.play_generated, self.stop)
+        return playback
 
+    def _build_decision_widgets(self) -> tuple[QFormLayout, QDialogButtonBox]:
         self.failures = QLabel()
         self.failures.setWordWrap(True)
         self.failures.setAccessibleName("Excluded generation diagnostics")
@@ -295,7 +316,14 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         self.close_button.setAccessibleDescription(
             "Close this review without making another source-reference decision"
         )
+        return decisions, buttons
 
+    def _build_layout(
+        self,
+        playback: QFormLayout,
+        decisions: QFormLayout,
+        buttons: QDialogButtonBox,
+    ) -> None:
         review_content = QWidget()
         review_layout = QVBoxLayout(review_content)
         review_layout.setContentsMargins(0, 0, 0, 0)
@@ -329,6 +357,8 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         layout.addWidget(self.evidence_progress)
         layout.addLayout(decisions)
         layout.addWidget(buttons)
+
+    def _configure_navigation(self) -> None:
         self.setTabOrder(self.play_reference, self.generated)
         self.setTabOrder(self.generated, self.play_generated)
         self.setTabOrder(self.play_generated, self.stop)
@@ -339,12 +369,12 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         self.setTabOrder(self.reject_reference, self.needs_sample)
         self.setTabOrder(self.needs_sample, self.close_button)
 
+    def _initialize_player(self) -> None:
         player = QMediaPlayer(self)
         player.playbackStateChanged.connect(self._playback_state_changed)
         player.mediaStatusChanged.connect(self._media_status_changed)
         player.errorOccurred.connect(self._playback_error)
         self.player: QMediaPlayer = player
-        self._load_next()
 
     def _load_next(self, session: _QualitySession | None = None) -> None:
         self._stop()

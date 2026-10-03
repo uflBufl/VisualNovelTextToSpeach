@@ -1197,12 +1197,6 @@
     },
     {
       "code": "PLR0915",
-      "path": "vntts/authoring/source_reference_quality_ui.py",
-      "scope": "SourceReferenceQualityDialog.__init__",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
       "path": "vntts/authoring/terminal_conflict_review_ui.py",
       "scope": "TerminalConflictReviewDialog.__init__",
       "count": 1
