@@ -23,6 +23,11 @@ from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.authoring.private_files import private_file_is_restricted
+from vntts.authoring.publication import (
+    AtomicPublicationError,
+    rename_directory_no_replace,
+    staged_directory,
+)
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.document_identity import is_lowercase_sha256
 from vntts.settings import get_local_data_directory
@@ -228,7 +233,13 @@ def _source_digest(paths: Iterable[PathInput]) -> tuple[list[SourceRecord], str]
     sources: list[SourceRecord] = []
     for path in paths:
         resolved = Path(path).expanduser().resolve()
-        sources.append({"path": str(resolved), "sha256": sha256_file(resolved)})
+        try:
+            digest = sha256_file(resolved)
+        except OSError as error:
+            raise ModelListeningError(
+                f"Unable to read model report: {resolved}: {error}"
+            ) from error
+        sources.append({"path": str(resolved), "sha256": digest})
     payload = json.dumps(sources, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return sources, hashlib.sha256(payload).hexdigest()
 
@@ -258,6 +269,7 @@ def create_listening_session_from_reports(
     model_metadata: dict[str, ListeningModel] = {}
     audio_by_model: defaultdict[str, dict[str, AudioRecord]] = defaultdict(dict)
     corpus_items: dict[str, CorpusItem] = {}
+    sources, source_sha256 = _source_digest(resolved_paths)
     for report_path in resolved_paths:
         _collect_model_report_samples(
             report_path,
@@ -270,7 +282,6 @@ def create_listening_session_from_reports(
         _validate_selected_samples(
             selected_ids, model_metadata, audio_by_model, corpus_items
         )
-    sources, source_sha256 = _source_digest(resolved_paths)
     return _write_listening_session(
         output_directory,
         list(model_metadata.values()),
@@ -420,13 +431,58 @@ def _write_listening_session(
     seed: int,
 ) -> Path:
     output_directory = Path(output_directory).expanduser().resolve()
-    session_path = output_directory / "session.json"
-    if session_path.exists() or (
-        output_directory.exists() and any(output_directory.iterdir())
+    if output_directory.exists() and (
+        not output_directory.is_dir() or any(output_directory.iterdir())
     ):
         raise ModelListeningError(
             f"Listening session directory is not empty: {output_directory}"
         )
+    output_directory.parent.mkdir(parents=True, exist_ok=True)
+    with staged_directory(
+        output_directory.parent, prefix=f".{output_directory.name}-"
+    ) as staging:
+        _write_listening_session_staged(
+            staging,
+            models,
+            audio_by_model,
+            corpus_items,
+            sources=sources,
+            source_sha256=source_sha256,
+            seed=seed,
+        )
+        for source in sources:
+            try:
+                unchanged = sha256_file(source["path"]) == source["sha256"]
+            except OSError as error:
+                raise ModelListeningError(
+                    f"Unable to verify model report: {source['path']}: {error}"
+                ) from error
+            if not unchanged:
+                raise ModelListeningError(
+                    f"Model report changed while creating listening session: {source['path']}"
+                )
+        try:
+            if output_directory.exists():
+                output_directory.rmdir()
+            rename_directory_no_replace(staging, output_directory)
+        except (AtomicPublicationError, OSError) as error:
+            raise ModelListeningError(
+                f"Unable to publish listening session: {error}"
+            ) from error
+    return output_directory / "session.json"
+
+
+def _write_listening_session_staged(
+    output_directory: Path,
+    models: Sequence[ListeningModel],
+    audio_by_model: dict[str, dict[str, AudioRecord]],
+    corpus_items: Sequence[CorpusItem],
+    *,
+    sources: list[SourceRecord],
+    source_sha256: str,
+    seed: int,
+) -> None:
+    session_path = output_directory / "session.json"
     model_ids = [model["model_id"] for model in models]
     if len(model_ids) != len(set(model_ids)):
         raise ModelListeningError("Model reports contain duplicate model IDs")
@@ -522,7 +578,6 @@ def _write_listening_session(
         "trials": trials,
     }
     atomic_write_json(session_path, session, sort_keys=True)
-    return session_path
 
 
 def load_listening_session(path: PathInput) -> ListeningSession:

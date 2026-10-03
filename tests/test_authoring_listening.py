@@ -7,7 +7,7 @@ import unittest
 import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Event, Lock, Thread
+from threading import Barrier, Event, Lock, Thread
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -343,6 +343,99 @@ class AuthoringListeningTest(unittest.TestCase):
             comparisons = CountedId.comparisons
             self.assertEqual(actual, expected)
             self.assertLessEqual(comparisons, 4 * len(expected["trials"]))
+
+    def test_session_creation_failure_leaves_destination_retryable(self):
+        for existing_empty in (False, True):
+            with (
+                self.subTest(existing_empty=existing_empty),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                reports = write_model_reports(root, item_count=1)
+                destination = root / "session"
+                if existing_empty:
+                    destination.mkdir()
+                verify = listening_module._verify_pcm_audio
+                aliases = []
+
+                def fail_alias(path, digest, label):
+                    verify(path, digest, label)
+                    if label == "blind audio alias":
+                        aliases.append(path)
+                        if len(aliases) == 2:
+                            raise ModelListeningError(
+                                "injected alias validation failure"
+                            )
+
+                with patch.object(
+                    listening_module, "_verify_pcm_audio", side_effect=fail_alias
+                ):
+                    with self.assertRaisesRegex(ModelListeningError, "injected alias"):
+                        create_listening_session_from_reports(reports, destination)
+                self.assertEqual(destination.exists(), existing_empty)
+                if existing_empty:
+                    self.assertEqual(list(destination.iterdir()), [])
+                self.assertEqual(list(root.glob(".session-*")), [])
+                path = create_listening_session_from_reports(reports, destination)
+                self.assertEqual(len(load_listening_session(path)["trials"]), 1)
+
+    def test_session_creation_rejects_changed_report_before_publication(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reports = write_model_reports(root, item_count=1)
+            link = listening_module._link_blind_audio
+
+            def change_report(source, destination):
+                link(source, destination)
+                document = json.loads(reports[0].read_text())
+                document["model"] = "changed model"
+                reports[0].write_text(json.dumps(document), encoding="utf-8")
+
+            with patch.object(
+                listening_module, "_link_blind_audio", side_effect=change_report
+            ):
+                with self.assertRaisesRegex(ModelListeningError, "report changed"):
+                    create_listening_session_from_reports(reports, root / "session")
+            self.assertFalse((root / "session").exists())
+            self.assertEqual(list(root.glob(".session-*")), [])
+
+    def test_concurrent_session_creators_preserve_one_complete_winner(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reports = write_model_reports(root, item_count=1)
+            barrier = Barrier(2)
+            link = listening_module._link_blind_audio
+            results, errors = [], []
+
+            def overlap(source, destination):
+                if destination.name.endswith("-a.wav"):
+                    barrier.wait(timeout=10)
+                link(source, destination)
+
+            def create(seed):
+                try:
+                    results.append(
+                        create_listening_session_from_reports(
+                            reports, root / "session", seed=seed
+                        )
+                    )
+                except Exception as error:
+                    errors.append(error)
+
+            with patch.object(
+                listening_module, "_link_blind_audio", side_effect=overlap
+            ):
+                threads = [Thread(target=create, args=(seed,)) for seed in (1, 2)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(timeout=15)
+                self.assertTrue(all(not thread.is_alive() for thread in threads))
+            self.assertEqual(len(results), 1)
+            self.assertEqual(len(errors), 1)
+            self.assertIsInstance(errors[0], ModelListeningError)
+            self.assertEqual(len(load_listening_session(results[0])["trials"]), 1)
+            self.assertEqual(list(root.glob(".session-*")), [])
 
     def test_public_creation_and_loading_reject_truncated_wav_payloads(self):
         for loading, missing_padding in (
