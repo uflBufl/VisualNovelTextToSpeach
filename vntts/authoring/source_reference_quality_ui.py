@@ -178,7 +178,7 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         self._build_layout(playback, decisions, buttons)
         self._configure_navigation()
         self._initialize_player()
-        self._load_next()
+        self._load_next(self.session)
 
     def _initialize_state(
         self,
