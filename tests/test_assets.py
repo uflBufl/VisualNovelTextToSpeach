@@ -10,6 +10,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 
 import vntts.assets as assets
+import vntts.authoring.advisory_lock as advisory_lock
 from tests.symlink_support import symlink_or_skip
 from vntts.assets import (
     ModelAsset,
@@ -207,6 +208,83 @@ class ModelAssetManagerTest(unittest.TestCase):
                 with self.assertRaisesRegex(ModelIntegrityError, "size"):
                     manager.download(asset.name, asset=asset)
                 self.assertFalse(manager.is_ready_with_asset(asset.name, asset))
+
+    def test_cancelled_download_stops_before_catalog_or_followup_requests(self):
+        asset = self.create_asset()
+        for cancel_before_start in (True, False):
+            with (
+                self.subTest(before_start=cancel_before_start),
+                TemporaryDirectory() as directory,
+            ):
+                cancel = Event()
+                if cancel_before_start:
+                    cancel.set()
+                requests = []
+
+                def opener(request, timeout):
+                    requests.append(request)
+                    cancel.set()
+                    return MemoryResponse(b"", headers={"Content-Length": "100"})
+
+                with patch(
+                    "vntts.assets.load_coqui_model_asset", return_value=asset
+                ) as catalog:
+                    manager = ModelAssetManager(directory, opener=opener)
+                    with self.assertRaises(ModelDownloadCancelled):
+                        manager.download(asset.name, cancel_event=cancel)
+                    self.assertEqual(
+                        catalog.call_count, 0 if cancel_before_start else 1
+                    )
+                self.assertEqual(len(requests), 0 if cancel_before_start else 1)
+                self.assertFalse(
+                    (manager.model_path(asset.name) / "model.pth").exists()
+                )
+
+    def test_download_cancellation_interrupts_wait_for_model_guard(self):
+        asset = ModelAsset("guard-wait", ("https://models.invalid/model.pth",))
+        cancel = Event()
+        attempted = Event()
+        errors = []
+        opener = MemoryOpener({asset.urls[0]: b"model"})
+        original_acquire = advisory_lock._acquire
+
+        def observed_acquire(descriptor, blocking, path):
+            attempted.set()
+            original_acquire(descriptor, blocking, path)
+
+        with TemporaryDirectory() as directory:
+            manager = ModelAssetManager(directory, opener=opener)
+            model_path = manager.model_path(asset.name)
+            guard = model_path.with_name(f".{model_path.name}.download.lock")
+
+            def download():
+                try:
+                    manager.download(asset.name, asset=asset, cancel_event=cancel)
+                except BaseException as error:
+                    errors.append(error)
+
+            with advisory_lock.exclusive_advisory_lock(guard):
+                with patch.object(
+                    advisory_lock, "_acquire", side_effect=observed_acquire
+                ):
+                    worker = Thread(target=download)
+                    worker.start()
+                    try:
+                        self.assertTrue(attempted.wait(2))
+                        cancel.set()
+                        worker.join(2)
+                        canceled_before_release = not worker.is_alive()
+                    finally:
+                        cancel.set()
+            worker.join(2)
+            self.assertFalse(worker.is_alive())
+            self.assertTrue(canceled_before_release)
+            self.assertEqual(len(errors), 1)
+            self.assertIsInstance(errors[0], ModelDownloadCancelled)
+            self.assertEqual(opener.requests, [])
+            self.assertTrue(guard.is_file())
+            manager.download(asset.name, asset=asset)
+            self.assertTrue(manager.is_ready_with_asset(asset.name, asset))
 
     def test_cancelled_download_keeps_partial_file_and_retry_resumes(self):
         asset = self.create_asset()

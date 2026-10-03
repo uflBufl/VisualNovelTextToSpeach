@@ -7,6 +7,27 @@ from vntts.authoring.advisory_lock import exclusive_advisory_lock
 
 
 class AdvisoryLockTest(unittest.TestCase):
+    def test_cancellation_after_acquisition_releases_persistent_guard(self) -> None:
+        with TemporaryDirectory() as directory:
+            guard = Path(directory) / "setup.lock"
+            checks = 0
+
+            def check_cancelled() -> None:
+                nonlocal checks
+                checks += 1
+                if checks == 2:
+                    raise InterruptedError("cancelled after acquisition")
+
+            with self.assertRaises(InterruptedError):
+                with exclusive_advisory_lock(
+                    guard, blocking=True, check_cancelled=check_cancelled
+                ):
+                    self.fail("Cancelled guard must not enter the body")
+            self.assertEqual(checks, 2)
+            self.assertTrue(guard.is_file())
+            with exclusive_advisory_lock(guard):
+                pass
+
     def test_lock_does_not_follow_alias_to_unrelated_file(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)

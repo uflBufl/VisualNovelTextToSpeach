@@ -5,7 +5,8 @@ from __future__ import annotations
 import errno
 import os
 import sys
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -51,7 +52,10 @@ else:
 
 @contextmanager
 def exclusive_advisory_lock(
-    path: str | Path, *, blocking: bool = False
+    path: str | Path,
+    *,
+    blocking: bool = False,
+    check_cancelled: Callable[[], None] | None = None,
 ) -> Iterator[None]:
     """Hold one persistent file guard without deleting its shared inode."""
     path = Path(path)
@@ -62,8 +66,19 @@ def exclusive_advisory_lock(
         path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600
     )
     try:
-        _acquire(descriptor, blocking, path)
+        if blocking and check_cancelled is not None:
+            while True:
+                check_cancelled()
+                try:
+                    _acquire(descriptor, False, path)
+                    break
+                except AdvisoryLockBusyError:
+                    time.sleep(0.1)
+        else:
+            _acquire(descriptor, blocking, path)
         try:
+            if check_cancelled is not None:
+                check_cancelled()
             yield
         finally:
             _release(descriptor)

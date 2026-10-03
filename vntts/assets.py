@@ -217,13 +217,19 @@ class ModelAssetManager:
     ) -> Path:
         progress = progress or (lambda _percent, _message: None)
         cancel_event = cancel_event or Event()
+        self._check_cancelled(cancel_event)
         asset = asset or self.catalog_loader(model_name)
+        self._check_cancelled(cancel_event)
         filenames = _model_filenames(asset)
         self.configure_environment()
         model_path = self.model_path(model_name)
         self._check_model_path(model_path)
         lock_path = model_path.with_name(f".{model_path.name}.download.lock")
-        with exclusive_advisory_lock(lock_path, blocking=True):
+        with exclusive_advisory_lock(
+            lock_path,
+            blocking=True,
+            check_cancelled=lambda: self._check_cancelled(cancel_event),
+        ):
             self._check_model_path(model_path)
             model_path.mkdir(parents=True, exist_ok=True)
 
@@ -231,12 +237,17 @@ class ModelAssetManager:
                 progress(100, "Model is already downloaded and verified")
                 return model_path
 
-            lengths = {url: self._content_length(url) for url in asset.urls}
+            lengths: dict[str, int | None] = {}
+            for url in asset.urls:
+                self._check_cancelled(cancel_event)
+                lengths[url] = self._content_length(url)
+                self._check_cancelled(cancel_event)
             total_bytes = sum(
                 length for length in lengths.values() if length is not None
             )
             downloaded_bytes = 0
             for url in asset.urls:
+                self._check_cancelled(cancel_event)
                 filename = filenames[url]
                 output = model_path / filename
                 self._check_model_file(output, filename)
