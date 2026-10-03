@@ -124,6 +124,47 @@ class AuthoringReconciliationTest(unittest.TestCase):
             )
             bundle = projection.next_bundle
 
+    def test_report_traverses_state_map_once_per_snapshot(self):
+        class CountedItems(dict):
+            traversals = 0
+
+            def items(self):
+                self.traversals += 1
+                return super().items()
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, workspace, _, _, bundles, _, publication = self.create_fixture(root)
+            validate_state = reconciliation_module.validate_generation_state_document
+            for decision in (None, "accepted"):
+                with self.subTest(decision=decision):
+                    if decision is not None:
+                        self.decide_parallel_bundle(
+                            publication, ((workspace.name, decision),)
+                        )
+                    expected = build_authoring_reconciliation(workspace, bundles)
+                    before = _tree_hashes(root)
+                    captured_maps = []
+
+                    def capture_items(*args, **kwargs):
+                        state = validate_state(*args, **kwargs)
+                        items = CountedItems(state["items"])
+                        state["items"] = items
+                        captured_maps.append(items)
+                        return state
+
+                    with patch.object(
+                        reconciliation_module,
+                        "validate_generation_state_document",
+                        side_effect=capture_items,
+                    ):
+                        actual = build_authoring_reconciliation(workspace, bundles)
+
+                    self.assertEqual(actual, expected)
+                    self.assertEqual(before, _tree_hashes(root))
+                    self.assertEqual(len(captured_maps), 1)
+                    self.assertLessEqual(captured_maps[0].traversals, 2)
+
     def test_report_reconciles_bundle_without_mutating_authority(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

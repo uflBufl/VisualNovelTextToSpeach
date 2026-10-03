@@ -104,6 +104,7 @@ class _WorkspaceSnapshot:
     queue_payload: bytes
     queue: VoiceGenerationQueue
     state: StateObject
+    state_items: dict[str, JsonObject]
     state_sha256: str | None
     manifest_sha256: str | None
 
@@ -418,6 +419,7 @@ def _load_workspace_snapshot(
         queue_payload,
         queue,
         state,
+        _state_items(state),
         state_sha256,
         manifest_sha256,
     )
@@ -460,7 +462,7 @@ def _build_workspace_scope(
         for item in reportable
         if is_spoken_queue_item(item) or item.queue_id in projection_ids
     }
-    state_items = _state_items(snapshot.state)
+    state_items = snapshot.state_items
     relevant = {
         queue_id: value
         for queue_id, value in state_items.items()
@@ -595,7 +597,7 @@ def _workspace_item_outcome(
     snapshots: SnapshotHashes,
 ) -> tuple[None, None, str] | tuple[JsonObject, str, None]:
     workspace = snapshot.configuration
-    result = _state_items(snapshot.state).get(item.queue_id)
+    result = snapshot.state_items.get(item.queue_id)
     if isinstance(result, dict):
         status = result.get("status")
         review_status = result.get("review_status")
@@ -682,7 +684,7 @@ def _inspect_workspace_actions(
                 snapshot.configuration,
                 item,
                 terminal,
-                state_item=_state_items(snapshot.state)[item.queue_id],
+                state_item=snapshot.state_items[item.queue_id],
             )
             continue
         assert record is not None
