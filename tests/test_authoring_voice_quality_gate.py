@@ -325,6 +325,164 @@ class AuthoringVoiceQualityGateTest(unittest.TestCase):
             with self.assertRaisesRegex(VoiceQualityGateError, "identity"):
                 load_voice_quality_gate(output)
 
+    def test_gate_rejects_recomputed_malformed_source_evidence(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state, _queue_id, plan, decision = self.create_review(root)
+            gate = build_voice_quality_gate(workspace, plan, decision)
+            document = gate.to_dict()
+            source = document["source_review"]
+            source["reviewed_samples"] = ["malformed"]
+            document["gate_id"] = voice_quality_gate_module.canonical_document_sha256(
+                {key: item for key, item in document.items() if key != "gate_id"}
+            )
+            output = root / "gate.json"
+            output.write_text(json.dumps(document))
+
+            with self.assertRaisesRegex(VoiceQualityGateError, "decision item"):
+                load_voice_quality_gate(output)
+
+    def test_gate_rejects_reviewed_record_with_different_target_identity(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state, _queue_id, plan, decision = self.create_review(root)
+            gate = build_voice_quality_gate(workspace, plan, decision)
+            output = root / "gate.json"
+            for field in ("audio_sha256", "text_sha256", "line_id", "technical_flags"):
+                with self.subTest(field=field):
+                    document = gate.to_dict()
+                    record = document["source_review"]["reviewed_samples"][0]
+                    record[field] = (
+                        ["other flag"] if field == "technical_flags" else "a" * 64
+                    )
+                    document["gate_id"] = (
+                        voice_quality_gate_module.canonical_document_sha256(
+                            {
+                                key: item
+                                for key, item in document.items()
+                                if key != "gate_id"
+                            }
+                        )
+                    )
+                    output.write_text(json.dumps(document))
+                    with self.assertRaisesRegex(
+                        VoiceQualityGateError, "reviewed evidence"
+                    ):
+                        load_voice_quality_gate(output)
+
+    def test_gate_rejects_recomputed_malformed_source_assessment(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state, _queue_id, plan, decision = self.create_review(root)
+            gate = build_voice_quality_gate(workspace, plan, decision)
+            document = gate.to_dict()
+            document["source_review"]["sample_assessments"] = [
+                {"queue_id": "wrong", "assessment": "acceptable"}
+            ]
+            document["gate_id"] = voice_quality_gate_module.canonical_document_sha256(
+                {key: item for key, item in document.items() if key != "gate_id"}
+            )
+            output = root / "gate.json"
+            output.write_text(json.dumps(document))
+
+            with self.assertRaisesRegex(VoiceQualityGateError, "assessments"):
+                load_voice_quality_gate(output)
+
+    def test_gate_rejects_incomplete_source_review_samples(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state, _queue_id, plan, decision = self.create_review(root)
+            gate = build_voice_quality_gate(workspace, plan, decision)
+            document = gate.to_dict()
+            document["source_review"]["reviewed_samples"] = []
+            document["gate_id"] = voice_quality_gate_module.canonical_document_sha256(
+                {key: item for key, item in document.items() if key != "gate_id"}
+            )
+            output = root / "gate.json"
+            output.write_text(json.dumps(document))
+
+            with self.assertRaisesRegex(VoiceQualityGateError, "reviewed evidence"):
+                load_voice_quality_gate(output)
+
+    def test_gate_rejects_unhashable_and_malformed_current_assessments(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state, _queue_id, plan, decision = self.create_review(root)
+            gate = build_voice_quality_gate(workspace, plan, decision)
+            output = root / "gate.json"
+
+            for assessment in (
+                {"queue_id": "wrong", "assessment": []},
+                {
+                    "queue_id": "wrong",
+                    "assessment": "acceptable",
+                    "defect_reasons": ["invalid"],
+                },
+            ):
+                document = gate.to_dict()
+                document["source_review"]["sample_assessments"] = [assessment]
+                document["gate_id"] = (
+                    voice_quality_gate_module.canonical_document_sha256(
+                        {
+                            key: item
+                            for key, item in document.items()
+                            if key != "gate_id"
+                        }
+                    )
+                )
+                output.write_text(json.dumps(document))
+                with self.assertRaises(VoiceQualityGateError):
+                    load_voice_quality_gate(output)
+
+    def test_gate_rejects_unhashable_model_control_kind(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state, _queue_id, plan, decision = self.create_review(root)
+            gate = build_voice_quality_gate(workspace, plan, decision)
+            document = gate.to_dict()
+            document["identity"]["model_control"]["kind"] = []
+            document["gate_id"] = voice_quality_gate_module.canonical_document_sha256(
+                {key: item for key, item in document.items() if key != "gate_id"}
+            )
+            output = root / "gate.json"
+            output.write_text(json.dumps(document))
+
+            with self.assertRaisesRegex(VoiceQualityGateError, "model control"):
+                load_voice_quality_gate(output)
+
+    def test_gate_accepts_legacy_and_empty_source_assessments(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state, _queue_id, plan, decision = self.create_review(root)
+            gate = build_voice_quality_gate(workspace, plan, decision)
+            output = root / "gate.json"
+
+            for assessments in (
+                [
+                    {
+                        "queue_id": item["queue_id"],
+                        "assessment": item["assessment"],
+                    }
+                    for item in gate.document["source_review"]["sample_assessments"]
+                ],
+                [],
+            ):
+                document = gate.to_dict()
+                document["source_review"]["sample_assessments"] = assessments
+                document["gate_id"] = (
+                    voice_quality_gate_module.canonical_document_sha256(
+                        {
+                            key: item
+                            for key, item in document.items()
+                            if key != "gate_id"
+                        }
+                    )
+                )
+                output.write_text(json.dumps(document))
+                self.assertEqual(
+                    load_voice_quality_gate(output).gate_id, document["gate_id"]
+                )
+
     def test_gate_rejects_non_integer_schema_version(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -20,9 +20,13 @@ from vntts.authoring.bulk_generation import BulkGenerationError, sha256_control_
 from vntts.authoring.cohort_review import (
     CohortReviewDecision,
     CohortReviewError,
+    _decision_document_evidence,
     _load_document,
     _validate_decision_against_plan,
+    _validate_document_review_requirements,
+    _validate_reviewed_target_identities,
     _validated_decision_document,
+    _validated_document_assessments,
     _validated_plan_document,
     _write_document_no_replace,
     build_cohort_review_plan,
@@ -553,6 +557,7 @@ def _validate_gate_identity(identity: object) -> None:
     if (
         not isinstance(model_control, dict)
         or set(model_control) != {"kind", "sha256"}
+        or not isinstance(model_control.get("kind"), str)
         or model_control.get("kind") not in {"path", "identifier"}
     ):
         raise VoiceQualityGateError("Voice-quality model control is malformed")
@@ -575,17 +580,28 @@ def _validate_gate_source(source: object) -> None:
         "source_synthesis_provenance_sha256",
     ):
         _required_sha256(source.get(field), field)
-    if not isinstance(source.get("reviewed_samples"), list) or not source.get(
-        "reviewed_samples"
-    ):
-        raise VoiceQualityGateError("Voice-quality source samples are missing")
     assessments = source.get("sample_assessments")
     if not isinstance(assessments, list) or any(
-        not isinstance(value, dict)
-        or value.get("assessment") not in {"heard", "acceptable"}
+        not isinstance(value, dict) or not isinstance(value.get("assessment"), str)
         for value in assessments
     ):
         raise VoiceQualityGateError("Voice-quality source assessments are unsafe")
+    # Version 1 decisions have no defect_reasons (and may have no assessments).
+    # A mixed array fails the shared versioned validator's exact field check.
+    version = 2 if any("defect_reasons" in value for value in assessments) else 1
+    try:
+        evidence = _decision_document_evidence(source)
+        _validate_reviewed_target_identities(
+            source.get("reviewed_samples"), source.get("target_items")
+        )
+        normalized, assessment_ids = _validated_document_assessments(
+            assessments, version
+        )
+        _validate_document_review_requirements(
+            "accepted", evidence, normalized, assessment_ids
+        )
+    except CohortReviewError as error:
+        raise VoiceQualityGateError(str(error)) from error
 
 
 def _plan_document(plan: object) -> _PlanDocument:

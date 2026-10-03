@@ -1014,17 +1014,25 @@ def _validate_decision_against_plan(
     }
     if decision_document["plan_policy"] != expected_policy:
         raise CohortReviewError("Cohort decision policy does not match its plan")
+    _validate_reviewed_target_identities(
+        decision_document.get("reviewed_samples"), expected_targets
+    )
+    return cohort
+
+
+def _validate_reviewed_target_identities(
+    reviewed_samples: object, target_items: object
+) -> None:
     target_by_id = {
         _required_text(value.get("queue_id"), "Queue ID"): value
-        for value in expected_targets
+        for value in _object_list(target_items)
     }
     expected_reviewed = [
-        target_by_id[_required_text(value.get("queue_id"), "Queue ID")]
-        for value in _object_list(decision_document.get("reviewed_samples"))
+        target_by_id.get(_required_text(value.get("queue_id"), "Queue ID"))
+        for value in _object_list(reviewed_samples)
     ]
-    if decision_document["reviewed_samples"] != expected_reviewed:
+    if reviewed_samples != expected_reviewed:
         raise CohortReviewError("Cohort reviewed evidence does not match its plan")
-    return cohort
 
 
 def _validated_plan_document(
