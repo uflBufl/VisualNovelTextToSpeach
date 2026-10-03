@@ -9,7 +9,7 @@ import os
 import platform
 import re
 import sys
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -133,14 +133,24 @@ def select_representative_items(
         else:
             label = str(emotion or "neutral")
         buckets[label].append(document)
-    selected: list[JsonDocument] = []
-    while len(selected) < sample_size and buckets:
-        for label in sorted(tuple(buckets)):
-            if len(selected) >= sample_size:
-                break
-            selected.append(buckets[label].pop(0))
-            if not buckets[label]:
-                del buckets[label]
+    return _round_robin_buckets(buckets, sample_size)
+
+
+def _round_robin_buckets[T](
+    buckets: Mapping[str, Iterable[T]],
+    limit: int,
+    *,
+    sort_key: Callable[[str], str] | None = None,
+) -> list[T]:
+    pending = deque(iter(buckets[key]) for key in sorted(buckets, key=sort_key))
+    selected: list[T] = []
+    while pending and len(selected) < limit:
+        bucket = pending.popleft()
+        try:
+            selected.append(next(bucket))
+        except StopIteration:
+            continue
+        pending.append(bucket)
     return selected
 
 
@@ -580,15 +590,7 @@ def _round_robin_state_items(
         item = queue_by_id[queue_id]
         key = str(item.get("voice_character") or item.get("speaker") or "Narrator")
         buckets[key].append((queue_id, result))
-    selected: list[StateItem] = []
-    while len(selected) < limit and buckets:
-        for key in sorted(tuple(buckets), key=str.casefold):
-            if len(selected) >= limit:
-                break
-            selected.append(buckets[key].pop(0))
-            if not buckets[key]:
-                del buckets[key]
-    return selected
+    return _round_robin_buckets(buckets, limit, sort_key=str.casefold)
 
 
 def load_benchmark_corpus(path: str | Path) -> JsonDocument:
