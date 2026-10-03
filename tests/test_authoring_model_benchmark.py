@@ -1,12 +1,15 @@
 import hashlib
 import json
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import numpy as np
 from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 
+import vntts.authoring.model_benchmark as benchmark_module
 from tests.symlink_support import symlink_or_skip
 from vntts.authoring.model_benchmark import (
     ModelBenchmarkError,
@@ -20,6 +23,7 @@ from vntts.authoring.model_benchmark import (
     load_model_variants,
     select_representative_items,
 )
+from vntts.authoring.publication import rename_directory_no_replace
 from vntts.synthesis import (
     SynthesisChunk,
     SynthesisChunkStream,
@@ -117,6 +121,60 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
             encoding="utf-8",
         )
         return corpus
+
+    def test_model_publications_preserve_destination_created_after_precheck(self):
+        for multiple in (False, True):
+            with self.subTest(multiple=multiple), TemporaryDirectory() as directory:
+                root = Path(directory)
+                output = (root / "output").resolve()
+                corpus = self._write_strict_corpus(root)
+                backend = ShutdownRenderBackend()
+                original_rename = os.rename
+                calls = []
+
+                def publish(source, destination):
+                    destination = Path(destination)
+                    if destination == output:
+                        destination.mkdir()
+                        calls.append(destination.stat().st_ino)
+                    return rename_directory_no_replace(source, destination)
+
+                # Also wrap the old primitive so this gate can reproduce the old race.
+                def old_publish(source, destination, *args, **kwargs):
+                    destination = Path(destination)
+                    if destination == output:
+                        destination.mkdir()
+                        calls.append(destination.stat().st_ino)
+                    return original_rename(source, destination, *args, **kwargs)
+
+                with (
+                    patch.object(
+                        benchmark_module,
+                        "rename_directory_no_replace",
+                        side_effect=publish,
+                    ),
+                    patch("os.rename", side_effect=old_publish),
+                    self.assertRaisesRegex(ModelBenchmarkError, "publish"),
+                ):
+                    if multiple:
+                        benchmark_model_variants(
+                            corpus,
+                            (ModelVariant("fake", "fake"),),
+                            CharacterVoiceRegistry(),
+                            output,
+                            backend_factory=lambda *_args, **_kw: backend,
+                        )
+                    else:
+                        benchmark_renderer(
+                            ModelVariant("fake", "fake"),
+                            backend,
+                            [{"id": "one", "character": "Voice", "text": "Exact."}],
+                            output,
+                        )
+                self.assertEqual(calls, [output.stat().st_ino])
+                self.assertEqual(list(output.iterdir()), [])
+                self.assertEqual(list(root.glob(".output-*")), [])
+                self.assertEqual(backend.shutdown_calls, 1 if multiple else 0)
 
     def test_mixed_render_outcomes_keep_order_groups_and_exact_sample_records(self):
         class MixedBackend(FakeRenderBackend):

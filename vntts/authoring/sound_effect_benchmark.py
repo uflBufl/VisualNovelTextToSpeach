@@ -11,7 +11,6 @@ import wave
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from time import monotonic
 from typing import Protocol, TypedDict
 
@@ -21,6 +20,7 @@ from numpy.typing import NDArray
 from vntts.authoring.publication import (
     AtomicPublicationError,
     rename_directory_no_replace,
+    staged_directory,
 )
 from vntts.cuda_probe import CudaProbeError, inspect_cuda
 
@@ -181,10 +181,9 @@ def benchmark_sound_effects(
         raise SoundEffectBenchmarkError(
             "MOSS-SoundEffect returned an invalid sample rate"
         )
-    with TemporaryDirectory(
-        prefix=f".{output_directory.name}-", dir=output_directory.parent
-    ) as staging:
-        root = Path(staging) / output_directory.name
+    with staged_directory(
+        output_directory.parent, prefix=f".{output_directory.name}-"
+    ) as root:
         audio_directory = root / "audio"
         audio_directory.mkdir(parents=True)
         results: list[dict[str, object]] = []

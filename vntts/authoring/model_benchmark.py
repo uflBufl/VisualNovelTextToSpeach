@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import platform
 import re
 import sys
@@ -27,6 +26,11 @@ from vntts_artifacts.voice_manifest import VoiceManifestError
 
 from vntts.authoring.bulk_generation import (
     load_generation_state,
+)
+from vntts.authoring.publication import (
+    AtomicPublicationError,
+    rename_directory_no_replace,
+    staged_directory,
 )
 from vntts.authoring.speech_quality import measure_generated_speech_bytes
 from vntts.cli import cli_error, cli_messages
@@ -674,10 +678,9 @@ def benchmark_renderer(
             f"Model output already exists; refusing to overwrite: {output_directory}"
         )
     output_directory.parent.mkdir(parents=True, exist_ok=True)
-    with TemporaryDirectory(
-        prefix=f".{output_directory.name}-", dir=output_directory.parent
-    ) as temporary_directory:
-        staging = Path(temporary_directory) / output_directory.name
+    with staged_directory(
+        output_directory.parent, prefix=f".{output_directory.name}-"
+    ) as staging:
         report = _benchmark_renderer_staged(
             variant,
             backend,
@@ -688,14 +691,7 @@ def benchmark_renderer(
             voice_controls_sha256=voice_controls_sha256,
             voice_controls_content_sha256=voice_controls_content_sha256,
         )
-        try:
-            if output_directory.exists():
-                output_directory.rmdir()
-            os.rename(staging, output_directory)
-        except OSError as error:
-            raise ModelBenchmarkError(
-                f"Unable to publish model output {output_directory}: {error}"
-            ) from error
+        _publish_benchmark_staging(staging, output_directory, label="model output")
     return report
 
 
@@ -878,13 +874,11 @@ def benchmark_model_variants(
     output_directory.parent.mkdir(parents=True, exist_ok=True)
     with (
         TemporaryDirectory() as cache,
-        TemporaryDirectory(
-            prefix=f".{output_directory.name}-", dir=output_directory.parent
-        ) as temporary_output,
+        staged_directory(
+            output_directory.parent, prefix=f".{output_directory.name}-"
+        ) as staging_root,
     ):
         cache_root = Path(cache).resolve()
-        staging_root = Path(temporary_output).resolve() / output_directory.name
-        staging_root.mkdir(parents=True)
         aggregate = _write_benchmark_staging(
             corpus,
             samples,
@@ -1142,14 +1136,16 @@ def _render_benchmark_variant(
     return report
 
 
-def _publish_benchmark_staging(staging_root: Path, output_directory: Path) -> None:
+def _publish_benchmark_staging(
+    staging_root: Path, output_directory: Path, *, label: str = "benchmark output"
+) -> None:
     try:
         if output_directory.exists():
             output_directory.rmdir()
-        os.rename(staging_root, output_directory)
-    except OSError as error:
+        rename_directory_no_replace(staging_root, output_directory)
+    except (AtomicPublicationError, OSError) as error:
         raise ModelBenchmarkError(
-            f"Unable to publish benchmark output {output_directory}: {error}"
+            f"Unable to publish {label} {output_directory}: {error}"
         ) from error
 
 
