@@ -239,17 +239,19 @@ def _load_outcome_merge_source(
 def _collect_outcome_merge_item(
     base: _OutcomeMergeBase,
     source: _OutcomeMergeSource,
+    base_items: dict[str, JsonDocument],
+    source_items: dict[str, JsonDocument],
     queue_id: str,
     merged_items: dict[str, tuple[JsonDocument, JsonDocument]],
 ) -> tuple[JsonDocument, JsonDocument, tuple[Path, bytes, Path]] | None:
-    result = _outcome_state_items(source.state).get(queue_id)
+    result = source_items.get(queue_id)
     if result is None or not _terminal_review_outcome(result):
         return None
     if queue_id in merged_items:
         raise AuthoringWorkbenchError(
             f"Outcome merge has conflicting sources for {queue_id!r}"
         )
-    base_result = _outcome_state_items(base.state).get(queue_id)
+    base_result = base_items.get(queue_id)
     if source.selected_records is None:
         repair = result.get("failure_repair")
         if not isinstance(repair, dict) or repair.get("strategy") not in {
@@ -341,10 +343,12 @@ def _collect_outcome_merge_sources(
     reconciliation_selection: _ReconciliationSelection | None,
 ) -> _OutcomeMergeSources:
     collected = _OutcomeMergeSources({}, [], [], {})
+    base_items = _outcome_state_items(base.state)
     for source_value in source_values:
         source = _load_outcome_merge_source(
             source_value, base, reconciliation_selection
         )
+        source_items = _outcome_state_items(source.state)
         source_record = {
             "workspace_id": source.document["workspace_id"],
             "config_fingerprint": _require_sha256(
@@ -355,7 +359,9 @@ def _collect_outcome_merge_sources(
         }
         terminal_count = 0
         for queue_id in source.selected_ids:
-            item = _collect_outcome_merge_item(base, source, queue_id, collected.items)
+            item = _collect_outcome_merge_item(
+                base, source, base_items, source_items, queue_id, collected.items
+            )
             if item is None:
                 continue
             result, ledger, audio = item

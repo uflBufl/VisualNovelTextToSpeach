@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import unittest
 from contextlib import redirect_stdout
+from copy import deepcopy
 from dataclasses import asdict
 from io import StringIO
 from pathlib import Path
@@ -160,10 +161,40 @@ def create_test_workspace(root, *, text=None):
     return fixture, imported, workspace
 
 
-def create_carry_source_workspace(root, *, text=None, queue_voice_override=None):
+def create_carry_source_workspace(
+    root, *, text=None, queue_voice_override=None, item_count=1
+):
     kwargs = {} if text is None else {"text": text}
     fixture = write_legacy_fixture(root / "legacy", **kwargs)
-    queue_item = VoiceGenerationQueue.load(fixture["queue"]).items[0]
+    queue = VoiceGenerationQueue.load(fixture["queue"])
+    if item_count > 1:
+        state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+        template = queue.items[0]
+        records = [template.document]
+        for index in range(1, item_count):
+            record = deepcopy(template.document)
+            record["line_id"] = f"reverse1999:315401:{7 + index}"
+            record["text"] = f"{template.text} Line {index}."
+            record["text_sha256"] = text_sha256(record["text"])
+            record["queue_id"] = expected_voice_generation_queue_id(
+                record["line_id"], record["text_sha256"]
+            )
+            records.append(record)
+            result = deepcopy(state["items"][template.queue_id])
+            original_audio = fixture["state"].parent / result["path"]
+            result.update(
+                line_id=record["line_id"],
+                text_sha256=record["text_sha256"],
+                path=f"audio/rhiannon/line-{index}.wav",
+            )
+            (fixture["state"].parent / result["path"]).write_bytes(
+                original_audio.read_bytes()
+            )
+            state["items"][record["queue_id"]] = result
+        write_voice_generation_queue(fixture["queue"], queue.metadata, records)
+        state["queue_sha256"] = sha256_file(fixture["queue"])
+        fixture["state"].write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+        queue = VoiceGenerationQueue.load(fixture["queue"])
     write_story_index_document(
         fixture["job"]["story_index"],
         {
@@ -196,6 +227,7 @@ def create_carry_source_workspace(root, *, text=None, queue_voice_override=None)
                 "source_kind": "story",
                 "speakable": True,
             }
+            for queue_item in queue.items
         ],
     )
     for name, payload in (
@@ -239,8 +271,9 @@ def create_carry_source_workspace(root, *, text=None, queue_voice_override=None)
     voice_manifest.write_text(json.dumps(voice_document), encoding="utf-8")
     state = json.loads(fixture["state"].read_text(encoding="utf-8"))
     state["active"] = None
-    state["items"][fixture["queue_id"]]["status"] = "generated"
-    state["items"][fixture["queue_id"]]["review_status"] = "pending_review"
+    for result in state["items"].values():
+        result["status"] = "generated"
+        result["review_status"] = "pending_review"
     fixture["state"].write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
     write_generated_audio_manifest(
         fixture["manifest"],
@@ -472,6 +505,146 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                     )
 
             validation.assert_called_once()
+
+    def test_batch_review_state_validation_grows_linearly(self):
+        visits_by_size = {}
+        for item_count in (1, 8):
+            with self.subTest(item_count=item_count), TemporaryDirectory() as directory:
+                root = Path(directory)
+                _, _, source = create_carry_source_workspace(
+                    root, item_count=item_count
+                )
+                queue_path = source.directory / "queue.jsonl"
+                state_path = source.directory / "generated-audio/generation-state.json"
+                queue = VoiceGenerationQueue.load(queue_path)
+                visited = []
+                state_items = bulk_generation_module._state_items
+
+                def count_validation(state):
+                    items = state_items(state)
+                    visited.append(len(items))
+                    return items
+
+                with patch.object(
+                    bulk_generation_module, "_state_items", side_effect=count_validation
+                ):
+                    authorities = bulk_generation_module.generation_review_authorities(
+                        state_path, [item.queue_id for item in queue.items]
+                    )
+                    commits = bulk_generation_module.review_generation_cohort(
+                        state_path,
+                        queue_path,
+                        authorities,
+                        "approved",
+                        provenance={"test": "linear-batch-review"},
+                    )
+                self.assertEqual(len(commits), item_count)
+                self.assertTrue(all(commit.status == "approved" for commit in commits))
+                self.assertEqual(
+                    inspect_workspace(source.directory).approved, item_count
+                )
+                visits_by_size[item_count] = sum(visited)
+        self.assertLessEqual(visits_by_size[8], 8 * visits_by_size[1])
+
+    def test_carry_forward_state_validation_grows_linearly(self):
+        for item_count in (1, 8):
+            with self.subTest(item_count=item_count), TemporaryDirectory() as directory:
+                root = Path(directory)
+                fixture, imported, source = create_carry_source_workspace(
+                    root, item_count=item_count
+                )
+                queue = VoiceGenerationQueue.load(source.directory / "queue.jsonl")
+                for item in queue.items:
+                    review_workspace_item(source.directory, item.queue_id, "approved")
+                source_directory = downgrade_workspace_run_config_to_legacy(
+                    source.directory
+                )
+                source_hash = sha256_file(
+                    source_directory / "generated-audio/generation-state.json"
+                )
+                visited = []
+                validate_items = workspace_creation_module._is_generation_state_items
+
+                def count_validation(value):
+                    if isinstance(value, dict):
+                        visited.append(len(value))
+                    return validate_items(value)
+
+                with patch.object(
+                    workspace_creation_module,
+                    "_is_generation_state_items",
+                    side_effect=count_validation,
+                ):
+                    carried = create_resume_workspace(
+                        imported,
+                        root / "workspaces",
+                        story_index=fixture["job"]["story_index"],
+                        voice_manifest=write_carry_target_manifest(root),
+                        backend="moss-tts",
+                        model="model with spaces",
+                        generation_profile="stable",
+                        narrator_character="Paper Heron",
+                        carry_forward_from=source_directory,
+                        carry_forward_characters=("Rhiannon",),
+                    )
+                state = json.loads(
+                    (
+                        carried.directory / "generated-audio/generation-state.json"
+                    ).read_text()
+                )
+                self.assertEqual(len(state["items"]), item_count)
+                self.assertTrue(
+                    all(
+                        item["status"] == "approved"
+                        and item["carry_forward"]["mode"] == "review-only"
+                        for item in state["items"].values()
+                    )
+                )
+                self.assertLessEqual(sum(visited), 5 * item_count)
+                self.assertEqual(
+                    source_hash,
+                    sha256_file(
+                        source_directory / "generated-audio/generation-state.json"
+                    ),
+                )
+
+    def test_carry_forward_rejects_another_seed_items_wav_path(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, source = create_carry_source_workspace(
+                root, item_count=2
+            )
+            queue = VoiceGenerationQueue.load(source.directory / "queue.jsonl")
+            first, second = queue.items
+            state_path = source.directory / "generated-audio/generation-state.json"
+            state = json.loads(state_path.read_text())
+            first_result = state["items"][first.queue_id]
+            first_result["path"] = state["items"][second.queue_id]["path"]
+            audio = source.directory / "generated-audio" / first_result["path"]
+            first_result.update(
+                self._current_carry_fields(source.directory, first, audio)
+            )
+            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            source_directory = downgrade_workspace_run_config_to_legacy(
+                source.directory
+            )
+            existing = set((root / "workspaces").iterdir())
+            with self.assertRaisesRegex(
+                AuthoringWorkbenchError, f"WAV path collides with {second.queue_id!r}"
+            ):
+                create_resume_workspace(
+                    imported,
+                    root / "workspaces",
+                    story_index=fixture["job"]["story_index"],
+                    voice_manifest=write_carry_target_manifest(root),
+                    backend="moss-tts",
+                    model="model with spaces",
+                    generation_profile="stable",
+                    narrator_character="Paper Heron",
+                    carry_forward_from=source_directory,
+                    carry_forward_characters=("Rhiannon",),
+                )
+            self.assertEqual(existing, set((root / "workspaces").iterdir()))
 
     def test_carry_forward_projection_loads_generation_state_once(self):
         with TemporaryDirectory() as directory:

@@ -604,10 +604,11 @@ def generation_review_authorities(
     if not selected_queue_ids:
         return {}
     state = load_generation_state(state_path)
+    items = _state_items(state)
     state_sha256 = sha256_file(state_path)
     authorities: dict[str, ReviewAuthority] = {}
     for queue_id in selected_queue_ids:
-        item = _state_items(state).get(queue_id)
+        item = items.get(queue_id)
         if item is None or item.get("status") not in {
             "generated",
             "approved",
@@ -736,9 +737,10 @@ def _cohort_review_audio_snapshots(
 ) -> tuple[dict[str, tuple[JsonDocument, bytes]], dict[str, Path]]:
     snapshots: dict[str, tuple[JsonDocument, bytes]] = {}
     paths: dict[str, Path] = {}
+    items = _state_items(state)
     for raw_queue_id, authority in authorities.items():
         queue_id = _generation_text(raw_queue_id, "Cohort review queue ID")
-        item = _review_snapshot_item(state, queue_id, authority)
+        item = _review_snapshot_item(items, queue_id, authority)
         audio = _within(
             state_path.parent,
             _safe_relative(item.get("path"), f"State item {queue_id!r} path"),
@@ -750,9 +752,9 @@ def _cohort_review_audio_snapshots(
 
 
 def _review_snapshot_item(
-    state: JsonDocument, queue_id: str, authority: ReviewAuthority
+    items: StateItems, queue_id: str, authority: ReviewAuthority
 ) -> JsonDocument:
-    item = _state_items(state).get(queue_id)
+    item = items.get(queue_id)
     if item is None or item.get("status") not in {"generated", "approved"}:
         raise BulkGenerationError(f"Generated queue item does not exist: {queue_id}")
     if _canonical_sha256(item) != authority.item_sha256:
@@ -815,7 +817,7 @@ def _load_review_snapshot(
     state_path = Path(state_path).expanduser().resolve()
     queue_path = None if queue_path is None else Path(queue_path).expanduser().resolve()
     state = _load_displayed_review_state(state_path, queue_path, expected_authority)
-    item = _review_snapshot_item(state, queue_id, expected_authority)
+    item = _review_snapshot_item(_state_items(state), queue_id, expected_authority)
     relative = _safe_relative(item.get("path"), f"State item {queue_id!r} path")
     audio = _within(state_path.parent, relative, "Generated WAV")
     audio_bytes = _review_snapshot_audio(audio, queue_id, expected_authority)
@@ -3630,11 +3632,12 @@ def _commit_review_generation_cohort(
                 staged.unlink(missing_ok=True)
         lease.mark_committed()
     committed_state_sha256 = sha256_file(state_path)
+    proposed_items = _state_items(proposed)
     return tuple(
         ReviewCommit(
             queue_id=queue_id,
             status=_generation_text(
-                _state_items(proposed)[queue_id].get("status"), "Review status"
+                proposed_items[queue_id].get("status"), "Review status"
             ),
             review_status=decisions[queue_id],
             updated_at=updated_at,
@@ -3643,7 +3646,7 @@ def _commit_review_generation_cohort(
                     proposed.get("queue_sha256"), "Queue SHA-256"
                 ),
                 state_sha256=committed_state_sha256,
-                item_sha256=_canonical_sha256(_state_items(proposed)[queue_id]),
+                item_sha256=_canonical_sha256(proposed_items[queue_id]),
                 audio_sha256=authority.audio_sha256,
             ),
         )
@@ -3672,11 +3675,12 @@ def _cohort_review_proposed_state(
     provenance: JsonDocument,
 ) -> tuple[JsonDocument, str]:
     proposed, updated_at = copy.deepcopy(state), _now()
+    proposed_items = _state_items(proposed)
     for queue_id, authority in authorities.items():
         decision = decisions[queue_id]
         if decision == "pending_review":
             continue
-        item = _state_items(proposed)[queue_id]
+        item = proposed_items[queue_id]
         item["review_status"] = decision
         item["status"] = "approved" if decision == "approved" else "generated"
         item["updated_at"] = updated_at
@@ -3880,10 +3884,11 @@ def _validate_cohort_approved_wavs(
     decisions: Mapping[str, str],
 ) -> None:
     """Validate only WAVs whose approval is introduced by this transaction."""
+    items = _state_items(state)
     for queue_id, decision in decisions.items():
         if decision != "approved":
             continue
-        item = _state_items(state)[queue_id]
+        item = items[queue_id]
         relative = _safe_relative(item.get("path"), f"State item {queue_id!r} path")
         audio = _within(output_directory, relative, "Generated WAV")
         _validate_success_file(queue_id, item, audio)

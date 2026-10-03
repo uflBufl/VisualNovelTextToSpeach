@@ -649,6 +649,7 @@ def _assert_failure_reference_binding_items(
     queue: VoiceGenerationQueue, state: GenerationState, document: JsonDocument
 ) -> None:
     queue_ids = {item.queue_id for item in queue.items}
+    state_items = _state_items(state)
     selected_ids = set()
     groups = document.get("groups")
     if not isinstance(groups, list):
@@ -665,7 +666,7 @@ def _assert_failure_reference_binding_items(
             queue_id = _required_text(
                 case.get("queue_id"), "Failure-reference queue ID"
             )
-            result = _state_items(state).get(queue_id)
+            result = state_items.get(queue_id)
             if queue_id not in queue_ids or not isinstance(result, dict):
                 raise AuthoringWorkbenchError(
                     f"Failure-reference base item is missing: {queue_id!r}"
@@ -1506,7 +1507,7 @@ class _CarryForwardSource:
     document: WorkspaceDocument
     output: Path
     run_config: JsonDocument
-    state: GenerationState
+    items: GenerationStateItems
     state_path: Path
     state_sha256: str
 
@@ -1691,7 +1692,7 @@ def _load_carry_forward_source(
         source_document,
         source_output,
         source_run_config_normalized,
-        state,
+        _state_items(state),
         source_state_path,
         source_state_sha256,
     )
@@ -1712,7 +1713,7 @@ def _stage_offline_fallback_authorities(
         loaded: tuple[OfflineFallbackAuthority, ...] = (
             load_offline_fallback_authorities(
                 authorities,
-                _state_items(source.state),
+                source.items,
                 selection.offline_queue_ids,
             )
         )
@@ -1817,7 +1818,14 @@ def _carry_forward_reviewed_items(
     source_provenance = None
     snapshots: list[WorkspaceSnapshot] = []
     carried: list[JsonDocument] = []
-    source_items = _state_items(source.state)
+    source_items = source.items
+    target_items = _state_items(target_state)
+    target_seed_items = _state_items(target_seed)
+    target_seed_paths: dict[str, list[str]] = {}
+    for queue_id, seed_result in target_seed_items.items():
+        path = seed_result.get("path")
+        if isinstance(path, str):
+            target_seed_paths.setdefault(path, []).append(queue_id)
     for queue_item in target_queue.items:
         result = source_items.get(queue_item.queue_id)
         if result is None or not _terminal_review_outcome(result):
@@ -1833,8 +1841,9 @@ def _carry_forward_reviewed_items(
             result,
             character,
             source,
-            target_state,
-            target_seed,
+            target_items,
+            target_seed_items,
+            target_seed_paths,
             source_provenance,
             source_registry,
             target_registry,
@@ -1852,8 +1861,9 @@ def _carry_forward_reviewed_item(
     result: JsonDocument,
     character: str,
     source: _CarryForwardSource,
-    target_state: GenerationState,
-    target_seed: GenerationState,
+    target_items: GenerationStateItems,
+    target_seed_items: GenerationStateItems,
+    target_seed_paths: Mapping[str, list[str]],
     source_provenance: str | None,
     source_registry: CharacterVoiceRegistry,
     target_registry: CharacterVoiceRegistry,
@@ -1861,7 +1871,6 @@ def _carry_forward_reviewed_item(
     target_queue_overrides: Mapping[str, str],
 ) -> tuple[JsonDocument, WorkspaceSnapshot, str | None]:
     mode = "review-only"
-    target_seed_items = _state_items(target_seed)
     if not _same_seed_generation(target_seed_items.get(queue_item.queue_id), result):
         mode = "full-outcome"
         if source_provenance is None:
@@ -1887,12 +1896,8 @@ def _carry_forward_reviewed_item(
     relative = _safe_relative(
         result.get("path"), f"Carry-forward item {queue_item.queue_id!r} path"
     )
-    for other_queue_id, other_result in target_seed_items.items():
-        if (
-            other_queue_id != queue_item.queue_id
-            and isinstance(other_result, dict)
-            and other_result.get("path") == relative.as_posix()
-        ):
+    for other_queue_id in target_seed_paths.get(relative.as_posix(), ()):
+        if other_queue_id != queue_item.queue_id:
             raise AuthoringWorkbenchError(
                 f"Carry-forward WAV path collides with {other_queue_id!r}"
             )
@@ -1926,7 +1931,7 @@ def _carry_forward_reviewed_item(
     }
     copied_result = copy.deepcopy(result)
     copied_result["carry_forward"] = carry_record
-    _state_items(target_state)[queue_item.queue_id] = copied_result
+    target_items[queue_item.queue_id] = copied_result
     return carry_record, (source_audio, audio_sha256), source_provenance
 
 
@@ -1985,7 +1990,7 @@ def _validate_failed_carry_forward_source(
         raise AuthoringWorkbenchError(
             f"Failure repair references unknown queue item {queue_id!r}"
         )
-    result = _state_items(source.state).get(queue_id)
+    result = source.items.get(queue_id)
     if result is None or result.get("status") != "failed":
         raise AuthoringWorkbenchError(
             f"Failure repair requires a current failed source outcome for {queue_id!r}"
@@ -2085,6 +2090,7 @@ def _carry_forward_failed_items(
     source_registry: CharacterVoiceRegistry,
 ) -> list[JsonDocument]:
     queue_by_id = {item.queue_id: item for item in target_queue.items}
+    target_items = _state_items(target_state)
     carried = []
     for queue_id in selection.failed_queue_ids:
         (
@@ -2148,7 +2154,7 @@ def _carry_forward_failed_items(
             carry_record["source_parent_carry_forward"] = copy.deepcopy(parent_carry)
         copied_result = copy.deepcopy(result)
         copied_result["carry_forward"] = carry_record
-        _state_items(target_state)[queue_id] = copied_result
+        target_items[queue_id] = copied_result
         carried.append({"queue_id": queue_id, **carry_record})
     return carried
 
