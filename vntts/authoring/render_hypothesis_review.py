@@ -20,6 +20,8 @@ from vntts.authoring.authority import (
 from vntts.authoring.failure_reference_audit import (
     FailureReferenceAudit,
     FailureReferenceAuditError,
+    _validate_audit_candidate_files,
+    _validate_audit_documents,
     load_failure_reference_audit,
     load_failure_reference_decisions,
     record_failure_reference_decision,
@@ -533,6 +535,9 @@ def _capture_import_documents(context: _ImportContext) -> _ImportDocuments:
         record = _load_review_record(context.review_directory)
         fresh_document = fresh_audit.json_document("fresh failure audit")
         fresh_key_document = fresh_key.json_document("fresh failure audit key")
+        _assert_audit_identity(
+            fresh_document, fresh_key_document, context.fresh.audit_id
+        )
         exact_fresh = load_failure_reference_audit(context.audit_directory)
         exact_comparison = load_reference_render_comparison_document(
             context.comparison_directory
@@ -613,8 +618,9 @@ def _capture_source_audit(context: _ImportContext) -> _SourceAudit:
         )
         source_document = audit_snapshot.json_document("source failure audit")
         source_key = key_snapshot.json_document("source failure audit key")
+        _assert_audit_identity(source_document, source_key, source.audit_id)
         exact_source = load_failure_reference_audit(source_audit_directory)
-    except (AuthoringAuthorityError, FailureReferenceAuditError) as error:
+    except (AuthoringAuthorityError, FailureReferenceAuditError, OSError) as error:
         raise RenderHypothesisReviewError(str(error)) from error
     if (
         source.audit_id != exact_source.audit_id
@@ -742,7 +748,7 @@ def _load_import_decisions(
     try:
         _assert_import_snapshots(documents, source)
         return load_failure_reference_decisions(context.audit_directory)
-    except (AuthoringAuthorityError, FailureReferenceAuditError) as error:
+    except (AuthoringAuthorityError, FailureReferenceAuditError, OSError) as error:
         raise RenderHypothesisReviewError(str(error)) from error
 
 
@@ -780,7 +786,7 @@ def _save_import_selection(
                 selection.candidate_id,
                 selection_authority=selection.authority,
             )
-    except (AuthoringAuthorityError, FailureReferenceAuditError) as error:
+    except (AuthoringAuthorityError, FailureReferenceAuditError, OSError) as error:
         raise RenderHypothesisReviewError(str(error)) from error
     return RenderHypothesisSelection(
         context.audit_directory,
@@ -805,6 +811,21 @@ def _assert_import_snapshots(documents: _ImportDocuments, source: _SourceAudit) 
         (source.key_snapshot, "source key"),
     ):
         assert_authority_snapshot(snapshot, label)
+
+    for root, document in (
+        (documents.fresh_audit.path.parent, documents.fresh_document),
+        (source.audit.directory, source.document),
+    ):
+        for group in _documents(document.get("groups")):
+            _validate_audit_candidate_files(root, _documents(group.get("candidates")))
+
+
+def _assert_audit_identity(
+    document: JsonObject, key: JsonObject, expected_id: str
+) -> None:
+    audit_id, _groups, _private_groups = _validate_audit_documents(document, key)
+    if audit_id != expected_id:
+        raise FailureReferenceAuditError("Accepted render audit authority changed")
 
 
 def _contained_file(root: Path, value: object, label: str) -> Path:

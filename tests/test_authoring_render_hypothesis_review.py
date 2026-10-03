@@ -224,11 +224,33 @@ class RenderHypothesisReviewTest(unittest.TestCase):
                     queue_id,
                 )
 
+            for audit_path, label in (
+                (source_audit, "source failure audit key"),
+                (fresh_audit, "fresh failure audit key"),
+            ):
+                with self.subTest(audit=label):
+                    self.assert_import_rejects_captured_key_replacement(
+                        audit_path,
+                        label,
+                        fresh_audit,
+                        comparison.directory,
+                        review_root,
+                        queue_id,
+                    )
+            self.assert_import_rejects_audio_replacements(
+                source_audit, fresh_audit, comparison.directory, review_root, queue_id
+            )
+            self.assertEqual(
+                load_failure_reference_decisions(fresh_audit)["decisions"], []
+            )
             imported = import_accepted_render_hypothesis(
                 fresh_audit, comparison.directory, review_root, queue_id
             )
             self.assert_import_rejects_review_replacement(
                 fresh_audit, comparison.directory, review_root, queue_id
+            )
+            self.assert_import_rejects_audio_replacements(
+                source_audit, fresh_audit, comparison.directory, review_root, queue_id
             )
             repeated = import_accepted_render_hypothesis(
                 fresh_audit, comparison.directory, review_root, queue_id
@@ -262,6 +284,88 @@ class RenderHypothesisReviewTest(unittest.TestCase):
                 )
             self.assertEqual(code, 0)
             self.assertFalse(json.loads(stdout.getvalue())["created"])
+
+    def assert_import_rejects_captured_key_replacement(
+        self, audit_path, label, fresh_audit, comparison_root, review_root, queue_id
+    ):
+        key_path = audit_path / ".blind-key.json"
+        original_key = key_path.read_bytes()
+        changed_key = json.loads(original_key)
+        changed_key["groups"][0]["candidates"][0]["source_reference"] = (
+            "references/changed.wav"
+        )
+        changed_key_bytes = json.dumps(changed_key).encode()
+        original_capture = render_hypothesis_review.capture_authority_file
+        original_load_audit = render_hypothesis_review.load_failure_reference_audit
+        captured = False
+
+        def capture_changed_key(path, current_label, **kwargs):
+            nonlocal captured
+            if current_label != label:
+                return original_capture(path, current_label, **kwargs)
+            key_path.write_bytes(changed_key_bytes)
+            try:
+                return original_capture(path, current_label, **kwargs)
+            finally:
+                key_path.write_bytes(original_key)
+                captured = True
+
+        def restore_changed_key_after_validation(path):
+            audit = original_load_audit(path)
+            if captured and Path(path).resolve() == audit_path.resolve():
+                key_path.write_bytes(changed_key_bytes)
+            return audit
+
+        try:
+            with (
+                patch.object(
+                    render_hypothesis_review,
+                    "capture_authority_file",
+                    side_effect=capture_changed_key,
+                ),
+                patch.object(
+                    render_hypothesis_review,
+                    "load_failure_reference_audit",
+                    side_effect=restore_changed_key_after_validation,
+                ),
+            ):
+                with self.assertRaisesRegex(RenderHypothesisReviewError, "blind key"):
+                    import_accepted_render_hypothesis(
+                        fresh_audit, comparison_root, review_root, queue_id
+                    )
+        finally:
+            key_path.write_bytes(original_key)
+
+    def assert_import_rejects_audio_replacements(
+        self, source_audit, fresh_audit, comparison_root, review_root, queue_id
+    ):
+        for audit_path in (source_audit, fresh_audit):
+            document = json.loads((audit_path / "audit.json").read_text())
+            audio = audit_path / document["groups"][0]["candidates"][0]["audio"]
+            original_audio = audio.read_bytes()
+            for hook in ("_import_selection", "load_failure_reference_decisions"):
+                with self.subTest(audit=audit_path.name, phase=hook):
+                    original = getattr(render_hypothesis_review, hook)
+
+                    def replace_audio_after_read(*args, **kwargs):
+                        result = original(*args, **kwargs)
+                        audio.write_bytes(original_audio + b"changed")
+                        return result
+
+                    try:
+                        with patch.object(
+                            render_hypothesis_review,
+                            hook,
+                            side_effect=replace_audio_after_read,
+                        ):
+                            with self.assertRaisesRegex(
+                                RenderHypothesisReviewError, "changed"
+                            ):
+                                import_accepted_render_hypothesis(
+                                    fresh_audit, comparison_root, review_root, queue_id
+                                )
+                    finally:
+                        audio.write_bytes(original_audio)
 
     def assert_import_rejects_review_replacement(
         self, fresh_audit, comparison_root, review_root, queue_id
