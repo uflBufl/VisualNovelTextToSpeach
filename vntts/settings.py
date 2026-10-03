@@ -95,7 +95,7 @@ class AppSettingsChanges(TypedDict, total=False):
     active_profile_id: str | None
 
 
-def is_live_sequence_audio_mode(value: object) -> bool:
+def is_live_sequence_audio_mode(value: str) -> bool:
     return value in live_sequence_audio_modes
 
 
