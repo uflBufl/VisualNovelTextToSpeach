@@ -104,6 +104,24 @@ class _QualityGateContext:
 
 
 @dataclass(frozen=True)
+class _ActionState:
+    sample: CohortBundleSample | None
+    samples: tuple[CohortBundleSample, ...]
+    key: tuple[str, str] | None
+    heard: set[str]
+    bad: set[str]
+    ready: bool
+    authority_ready: bool
+    all_heard: bool
+    current_clean: int
+    cohort: Mapping[str, object] | None
+    has_more_clean: bool
+    split_unreviewed_count: int
+    split_acceptable_count: int
+    item_count: int
+
+
+@dataclass(frozen=True)
 class _DecisionRequest:
     decision: str
     key: tuple[str, str]
@@ -1878,6 +1896,14 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
         return bool(answer == QMessageBox.StandardButton.Yes)
 
     def _update_actions(self) -> None:
+        state = self._build_action_state()
+        self._update_action_controls(state)
+        self._update_decision_feedback(state)
+        self._sync_defect_controls()
+        self._update_selected_sample_details()
+        self._update_operation_status()
+
+    def _build_action_state(self) -> _ActionState:
         sample = self._selected_sample()
         samples = self._current_samples()
         key = self._current_key()
@@ -1889,29 +1915,7 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
             and not self._decision_active
             and not self._playback_prepare_active
         )
-        self.previous.setEnabled(ready and len(samples) > 1)
-        self.replay.setEnabled(ready and not self._playback_prepare_active)
-        self.replay.setText(
-            "Replay selected sample"
-            if sample is not None and sample.item.queue_id in heard
-            else "Play selected sample"
-        )
-        self.stop.setEnabled(self._playback_target is not None)
-        self.next.setEnabled(ready and len(samples) > 1)
-        self.mark_bad.setEnabled(
-            authority_ready and sample is not None and sample.item.queue_id in heard
-        )
-        self.defect_toggle.setEnabled(
-            authority_ready and sample is not None and sample.item.queue_id in heard
-        )
-        self.mark_bad.setText(
-            "Clear bad mark"
-            if ready and sample is not None and sample.item.queue_id in bad
-            else "Mark bad (reason unclear)"
-        )
         all_heard = bool(samples) and len(heard) == len(samples)
-        self.accept_button.setEnabled(authority_ready and all_heard and not bad)
-        self.reject_button.setEnabled(authority_ready and bool(heard))
         current_clean = 5
         source = None
         if key is not None:
@@ -1956,27 +1960,76 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
                 for item in source_plan_cohort["items"]
             )
         )
-        self.need_another.setEnabled(
-            authority_ready and all_heard and has_more_clean and current_clean < 5
-        )
-        self.leave_undecided.setEnabled(
-            not self._decision_active and not self._observation_active
-        )
         target_ids = (
             {value["queue_id"] for value in source_plan_cohort["items"]}
             if source_plan_cohort is not None
             else set()
         )
         sample_ids = {value.item.queue_id for value in samples}
-        split_unreviewed_count = len(target_ids - sample_ids)
-        split_acceptable_count = len(samples) - len(bad)
+        return _ActionState(
+            sample,
+            samples,
+            key,
+            heard,
+            bad,
+            ready,
+            authority_ready,
+            all_heard,
+            current_clean,
+            cohort,
+            has_more_clean,
+            len(target_ids - sample_ids),
+            len(samples) - len(bad),
+            cohort["item_count"] if cohort is not None else 0,
+        )
+
+    def _update_action_controls(self, state: _ActionState) -> None:
+        sample = state.sample
+        samples = state.samples
+        heard = state.heard
+        bad = state.bad
+        ready = state.ready
+        authority_ready = state.authority_ready
+        all_heard = state.all_heard
+        current_clean = state.current_clean
+        has_more_clean = state.has_more_clean
+        split_unreviewed_count = state.split_unreviewed_count
+        split_acceptable_count = state.split_acceptable_count
+        item_count = state.item_count
+        self.previous.setEnabled(ready and len(samples) > 1)
+        self.replay.setEnabled(ready and not self._playback_prepare_active)
+        self.replay.setText(
+            "Replay selected sample"
+            if sample is not None and sample.item.queue_id in heard
+            else "Play selected sample"
+        )
+        self.stop.setEnabled(self._playback_target is not None)
+        self.next.setEnabled(ready and len(samples) > 1)
+        self.mark_bad.setEnabled(
+            authority_ready and sample is not None and sample.item.queue_id in heard
+        )
+        self.defect_toggle.setEnabled(
+            authority_ready and sample is not None and sample.item.queue_id in heard
+        )
+        self.mark_bad.setText(
+            "Clear bad mark"
+            if ready and sample is not None and sample.item.queue_id in bad
+            else "Mark bad (reason unclear)"
+        )
+        self.accept_button.setEnabled(authority_ready and all_heard and not bad)
+        self.reject_button.setEnabled(authority_ready and bool(heard))
+        self.need_another.setEnabled(
+            authority_ready and all_heard and has_more_clean and current_clean < 5
+        )
+        self.leave_undecided.setEnabled(
+            not self._decision_active and not self._observation_active
+        )
         self.repair_marked.setEnabled(
             authority_ready
             and all_heard
             and bool(bad)
             and (split_acceptable_count > 0 or split_unreviewed_count > 0)
         )
-        item_count = cohort["item_count"] if cohort is not None else 0
         self.repair_marked.setText(
             f"Repair {len(bad)} marked; accept {split_acceptable_count} heard"
             + (
@@ -1997,12 +2050,14 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
             if item_count
             else "Reject cohort"
         )
-        identity = cast(Mapping[str, object], cohort["identity"]) if cohort else {}
+        identity = (
+            cast(Mapping[str, object], state.cohort["identity"]) if state.cohort else {}
+        )
         self.cohort_scope.setText(
             f"Cohort {self.cohort_choice.currentIndex() + 1} of "
             f"{self.cohort_choice.count()} | {identity['voice_character']} | "
             f"{item_count} WAV{'s' if item_count != 1 else ''}"
-            if cohort
+            if state.cohort
             else "No cohort awaiting a decision"
         )
         self.retry_load.setEnabled(
@@ -2011,12 +2066,16 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
         self.retry_load.setVisible(
             self._load_failed and not self._load_active and not self._decision_active
         )
-        if key is not None and samples:
+        if state.key is not None and samples:
             self.cohort_choice.setToolTip(
                 f"Current cohort: {len(heard)}/{len(samples)} heard; "
                 f"{len(bad)} marked bad"
             )
-        remaining = max(0, len(samples) - len(heard))
+
+    def _update_decision_feedback(self, state: _ActionState) -> None:
+        samples = state.samples
+        heard = state.heard
+        bad = state.bad
         if self._decision_active:
             decision_text = (
                 "Decision is saving. Playback and navigation remain available; "
@@ -2036,53 +2095,53 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
             decision_text = "Review complete. All required cohorts are saved."
         elif not samples:
             decision_text = "No reviewable cohort is currently loaded."
-        elif remaining:
-            decision_text = (
-                f"Listen to {remaining} remaining sample{'s' if remaining != 1 else ''} "
-                "to the end. Reject needs one heard sample. Repair needs all heard, "
-                "a bad mark, and another WAV to accept or keep pending. "
-                "More evidence needs all heard and another sample available."
-            )
-        elif bad:
-            if split_acceptable_count or split_unreviewed_count:
+        else:
+            remaining = max(0, len(samples) - len(heard))
+            if remaining:
+                decision_text = (
+                    f"Listen to {remaining} remaining sample{'s' if remaining != 1 else ''} "
+                    "to the end. Reject needs one heard sample. Repair needs all heard, "
+                    "a bad mark, and another WAV to accept or keep pending. "
+                    "More evidence needs all heard and another sample available."
+                )
+            elif bad and (state.split_acceptable_count or state.split_unreviewed_count):
                 decision_text = (
                     f"All {len(samples)} required samples were heard: repair/reject "
                     f"exactly {len(bad)} marked WAVs, approve exactly "
-                    f"{split_acceptable_count} individually heard acceptable WAVs, "
+                    f"{state.split_acceptable_count} individually heard acceptable WAVs, "
                     "and leave "
-                    f"{split_unreviewed_count} unsampled WAVs pending; or deliberately "
-                    f"reject all {item_count}."
+                    f"{state.split_unreviewed_count} unsampled WAVs pending; or deliberately "
+                    f"reject all {state.item_count}."
                 )
-            else:
+            elif bad:
                 decision_text = (
                     f"{len(bad)} heard sample{'s' if len(bad) != 1 else ''} "
                     "marked bad. Mixed repair is unavailable because no heard "
                     "sample can be accepted. "
                     + (
                         "Request more evidence or reject the cohort."
-                        if has_more_clean and current_clean < 5
+                        if state.has_more_clean and state.current_clean < 5
                         else "No additional sample is available; reject the cohort "
                         "or leave undecided."
                     )
                 )
-        else:
-            decision_text = (
-                f"All {len(samples)} required samples heard; none marked bad. "
-                f"Accept will approve exactly {item_count} WAV"
-                f"{'s' if item_count != 1 else ''} in this cohort."
-            )
+            else:
+                decision_text = (
+                    f"All {len(samples)} required samples heard; none marked bad. "
+                    f"Accept will approve exactly {state.item_count} WAV"
+                    f"{'s' if state.item_count != 1 else ''} in this cohort."
+                )
         self.decision_help.setText(decision_text)
         self.replay.setToolTip(
             "Play immutable checksum-verified bytes. Shortcut: Space."
-            if ready
+            if state.ready
             else "Playback is unavailable while checksum authority is refreshing."
         )
         self.mark_bad.setToolTip(
             "Quickly mark this heard sample as other/unclear, or clear all selected reasons."
-            if sample is not None and sample.item.queue_id in heard
+            if state.sample is not None and state.sample.item.queue_id in heard
             else "Listen to the selected sample completely before marking it bad."
         )
-        self._sync_defect_controls()
         self.accept_button.setToolTip(
             "Accept is available after every required sample is heard and none is marked bad."
         )
@@ -2095,18 +2154,16 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
         )
         self.need_another.setToolTip(
             "Hear every current sample before requesting more evidence."
-            if not all_heard
+            if not state.all_heard
             else "The five-sample evidence bound has been reached."
-            if current_clean >= 5
+            if state.current_clean >= 5
             else "No unsampled technically clean evidence remains in this cohort."
-            if not has_more_clean
+            if not state.has_more_clean
             else "Request one more clean checksum-bound sample without changing WAV authority."
         )
         self.leave_undecided.setToolTip(
             "Close with heard and defect observations checkpointed; no WAV is approved or rejected."
         )
-        self._update_selected_sample_details()
-        self._update_operation_status()
 
     def _update_operation_status(self) -> None:
         if self._decision_active:

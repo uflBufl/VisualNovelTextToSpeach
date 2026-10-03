@@ -63,12 +63,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/cohort_bundle_ui.py",
-      "scope": "CohortReviewBundleDialog._update_actions",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/authoring/delivery.py",
       "scope": "annotate_delivery",
       "count": 1
@@ -651,12 +645,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/authoring/cohort_bundle_ui.py",
-      "scope": "CohortReviewBundleDialog._update_actions",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/authoring/failed_control_carry.py",
       "scope": "carry_failed_controls",
       "count": 1
@@ -1127,12 +1115,6 @@
       "code": "PLR0915",
       "path": "vntts/app.py",
       "scope": "TrayApplication.shutdown",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/cohort_bundle_ui.py",
-      "scope": "CohortReviewBundleDialog._update_actions",
       "count": 1
     },
     {
