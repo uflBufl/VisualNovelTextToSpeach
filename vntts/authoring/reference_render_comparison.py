@@ -120,11 +120,6 @@ class _SourceReference:
 
 
 @dataclass(frozen=True)
-class _FreshReference:
-    candidate: JsonDocument
-
-
-@dataclass(frozen=True)
 class ReferenceRenderPlan:
     path: Path
     sha256: str
@@ -722,7 +717,7 @@ def import_reference_render_preference(
     groups = _preference_audit_groups(context, queue_id)
     selection = _preference_listening_selection(context, queue_id)
     source = _source_reference(selection.render, groups)
-    fresh = _fresh_reference(groups, source, queue_id, selection)
+    candidate_id = _fresh_candidate_id(groups, source, queue_id, selection)
     snapshots = _reference_selection_snapshots(
         context.comparison_root,
         context.session_path,
@@ -731,7 +726,7 @@ def import_reference_render_preference(
     )
     authority = _selection_authority(context, selection, source, snapshots, queue_id)
     return _save_reference_selection(
-        context, groups, selection, source, fresh, authority, snapshots, queue_id
+        context, groups, selection, source, candidate_id, authority, snapshots, queue_id
     )
 
 
@@ -913,12 +908,12 @@ def _candidate_by_id(group: JsonDocument, candidate_id: str) -> JsonDocument | N
     )
 
 
-def _fresh_reference(
+def _fresh_candidate_id(
     groups: _PreferenceAuditGroups,
     source: _SourceReference,
     queue_id: str,
     selection: _PreferenceListeningSelection,
-) -> _FreshReference:
+) -> str:
     group = groups.fresh_group
     private_group = groups.fresh_private_groups[
         _required_text(group.get("group_id"), "audit group ID")
@@ -933,9 +928,8 @@ def _fresh_reference(
             "Selected reference is absent or ambiguous in the fresh audit"
         )
     candidate = candidates[0]
-    private_candidate = _candidate_by_id(
-        private_group, _required_text(candidate.get("candidate_id"), "candidate ID")
-    )
+    candidate_id = _required_text(candidate.get("candidate_id"), "candidate ID")
+    private_candidate = _candidate_by_id(private_group, candidate_id)
     if (
         group.get("synthesis_voice_character")
         != source.group.get("synthesis_voice_character")
@@ -964,7 +958,7 @@ def _fresh_reference(
         or trial.get("text_sha256") != render.get("text_sha256")
     ):
         raise ReferenceRenderComparisonError("Selected reference text identity changed")
-    return _FreshReference(candidate)
+    return candidate_id
 
 
 def _selection_authority(
@@ -1006,13 +1000,12 @@ def _save_reference_selection(
     groups: _PreferenceAuditGroups,
     selection: _PreferenceListeningSelection,
     source: _SourceReference,
-    fresh: _FreshReference,
+    candidate_id: str,
     authority: JsonDocument,
     snapshots: Mapping[Path, str],
     queue_id: str,
 ) -> ReferenceRenderSelection:
     group_id = _required_text(groups.fresh_group.get("group_id"), "audit group ID")
-    candidate_id = _required_text(fresh.candidate.get("candidate_id"), "candidate ID")
     current = _document(
         load_failure_reference_decisions(context.audit_root), "reference decisions"
     )
@@ -1026,30 +1019,26 @@ def _save_reference_selection(
     )
     if existing is not None:
         if (
-            existing.get("decision") != fresh.candidate["candidate_id"]
+            existing.get("decision") != candidate_id
             or existing.get("selection_authority") != authority
         ):
             raise ReferenceRenderComparisonError(
                 "Fresh reference audit already has a different decision"
             )
-        return ReferenceRenderSelection(
-            context.audit_root,
-            context.fresh_audit.audit_id,
-            group_id,
-            candidate_id,
-            queue_id,
-            selection.render.arm_id,
-            source.sha256,
-            _required_text(current.get("decision_set_id"), "decision set ID"),
-            False,
-        )
-    _assert_reference_selection_snapshots(snapshots)
-    try:
-        decisions = record_failure_reference_decision(
-            context.audit_root, group_id, candidate_id, selection_authority=authority
-        )
-    except FailureReferenceAuditError as error:
-        raise ReferenceRenderComparisonError(str(error)) from error
+        decisions = current
+        created = False
+    else:
+        _assert_reference_selection_snapshots(snapshots)
+        try:
+            decisions = record_failure_reference_decision(
+                context.audit_root,
+                group_id,
+                candidate_id,
+                selection_authority=authority,
+            )
+        except FailureReferenceAuditError as error:
+            raise ReferenceRenderComparisonError(str(error)) from error
+        created = True
     return ReferenceRenderSelection(
         context.audit_root,
         context.fresh_audit.audit_id,
@@ -1059,7 +1048,7 @@ def _save_reference_selection(
         selection.render.arm_id,
         source.sha256,
         _required_text(decisions.get("decision_set_id"), "decision set ID"),
-        True,
+        created,
     )
 
 
