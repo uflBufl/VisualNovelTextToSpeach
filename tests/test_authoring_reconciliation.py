@@ -165,6 +165,79 @@ class AuthoringReconciliationTest(unittest.TestCase):
                     self.assertEqual(len(captured_maps), 1)
                     self.assertLessEqual(captured_maps[0].traversals, 2)
 
+    def test_public_report_boundaries_require_exact_integer_versions(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, workspace, _, _, bundles, _, _ = self.create_fixture(root)
+            report = build_authoring_reconciliation(workspace, bundles)
+            for index, version in enumerate((True, 1.0, "1", None, [], {})):
+                with self.subTest(version=version):
+                    document = deepcopy(report.document)
+                    document["schema_version"] = version
+                    document["report_id"] = (
+                        reconciliation_module.canonical_document_sha256(
+                            {
+                                key: value
+                                for key, value in document.items()
+                                if key != "report_id"
+                            }
+                        )
+                    )
+                    source = root / f"invalid-report-{index}.json"
+                    source.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        AuthoringReconciliationError,
+                        "Unsupported authoring reconciliation",
+                    ):
+                        load_authoring_reconciliation(source)
+                    output = root / f"output-{index}.json"
+                    with self.assertRaisesRegex(
+                        AuthoringReconciliationError,
+                        "Unsupported authoring reconciliation",
+                    ):
+                        write_authoring_reconciliation(document, output)
+                    self.assertFalse(output.exists())
+
+    def test_public_report_loading_rejects_non_text_enums(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            primary, secondary, _, bundles, publication = self.create_parallel_fixture(
+                root
+            )
+            self.decide_parallel_bundle(publication, ((secondary.name, "accepted"),))
+            report = build_authoring_reconciliation(primary, bundles)
+            terminal_index = next(
+                index
+                for index, action in enumerate(report.document["actions"])
+                if action["action"] == "terminal_merge_required"
+            )
+            for path in (
+                ("workspaces", 0, "runtime_status"),
+                ("workspaces", 0, "report_scope"),
+                ("actions", terminal_index, "action"),
+                ("actions", terminal_index, "terminal_source", "authority"),
+            ):
+                for value in ([], {}):
+                    with self.subTest(path=path, value=value):
+                        document = deepcopy(report.document)
+                        target = document
+                        for key in path[:-1]:
+                            target = target[key]
+                        target[path[-1]] = value
+                        document["report_id"] = (
+                            reconciliation_module.canonical_document_sha256(
+                                {
+                                    key: item
+                                    for key, item in document.items()
+                                    if key != "report_id"
+                                }
+                            )
+                        )
+                        source = root / "malformed-report.json"
+                        source.write_text(json.dumps(document), encoding="utf-8")
+                        with self.assertRaises(AuthoringReconciliationError):
+                            load_authoring_reconciliation(source)
+
     def test_report_reconciles_bundle_without_mutating_authority(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

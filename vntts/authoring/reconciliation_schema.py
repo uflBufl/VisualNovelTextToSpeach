@@ -52,6 +52,7 @@ def validate_authoring_reconciliation_document(report: object) -> dict[str, obje
     document: dict[str, object] = copy.deepcopy(report)
     if (
         document.get("schema") != AUTHORING_RECONCILIATION_SCHEMA
+        or type(document.get("schema_version")) is not int
         or document.get("schema_version") != AUTHORING_RECONCILIATION_VERSION
     ):
         raise AuthoringReconciliationSchemaError("Unsupported authoring reconciliation")
@@ -201,7 +202,11 @@ def _validated_report_workspaces(value: object) -> list[dict[str, object]]:
         _required_sha256(workspace.get("queue_sha256"), "Queue SHA-256")
         _optional_sha256(workspace.get("state_sha256"), "State SHA-256")
         _optional_sha256(workspace.get("manifest_sha256"), "Manifest SHA-256")
-        if workspace.get("runtime_status") not in _RUNTIME_STATUSES:
+        runtime_status = workspace.get("runtime_status")
+        if (
+            not isinstance(runtime_status, str)
+            or runtime_status not in _RUNTIME_STATUSES
+        ):
             raise AuthoringReconciliationSchemaError(
                 "Workspace runtime status is invalid"
             )
@@ -210,7 +215,7 @@ def _validated_report_workspaces(value: object) -> list[dict[str, object]]:
                 "Workspace active flag must be boolean"
             )
         scope = workspace.get("report_scope")
-        if scope not in {
+        if not isinstance(scope, str) or scope not in {
             "complete_primary_workspace",
             "current_bundle_items_only",
             "original_bundle_items_only",
@@ -383,7 +388,7 @@ def _validated_report_actions(
     for value in actions:
         action = _required_object(value, "Reconciliation action")
         kind = action.get("action")
-        if kind not in RECONCILIATION_ACTIONS:
+        if not isinstance(kind, str) or kind not in RECONCILIATION_ACTIONS:
             raise AuthoringReconciliationSchemaError("Reconciliation action is invalid")
         if kind == "human_source_quality_review":
             required = {
@@ -465,7 +470,11 @@ def _validated_report_actions(
                     raise AuthoringReconciliationSchemaError(
                         "Terminal merge source references an unknown workspace"
                     )
-                if source.get("authority") not in TERMINAL_AUTHORITIES:
+                source_authority = source.get("authority")
+                if (
+                    not isinstance(source_authority, str)
+                    or source_authority not in TERMINAL_AUTHORITIES
+                ):
                     raise AuthoringReconciliationSchemaError(
                         "Terminal merge source authority is invalid"
                     )
