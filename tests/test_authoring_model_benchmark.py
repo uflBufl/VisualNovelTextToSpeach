@@ -122,6 +122,89 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
         )
         return corpus
 
+    def test_failure_corpus_supports_manifest_without_selected_variants(self):
+        variants = (
+            None,
+            {},
+            {"selected_variants": None},
+            {"selected_variants": []},
+            [],
+            "bad",
+            {"selected_variants": "bad"},
+            {"selected_variants": {}},
+        )
+        for bindings in variants:
+            with self.subTest(bindings=bindings), TemporaryDirectory() as directory:
+                root = Path(directory)
+                text = "Exact failure line."
+                queue_id = "line:one:" + hashlib.sha256(text.encode()).hexdigest()[:16]
+                queue = root / "queue.jsonl"
+                write_voice_generation_queue(
+                    queue,
+                    {"game": "Fixture", "language": "en"},
+                    [
+                        {
+                            "record_type": "generation_item",
+                            "queue_id": queue_id,
+                            "line_id": "line:one",
+                            "text": text,
+                            "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                            "speaker": "Voice",
+                            "voice_character": "Voice",
+                            "action": "generate",
+                            "state": "pending",
+                        }
+                    ],
+                )
+                state = {
+                    "items": {queue_id: {"status": "failed", "provider": "moss-tts"}}
+                }
+                state_path = root / "state.json"
+                state_path.write_text(json.dumps(state), encoding="utf-8")
+                reference = root / "reference.wav"
+                reference.write_bytes(b"fixture reference")
+                manifest = root / "manifest.json"
+                document = {
+                    "version": 2,
+                    "voices": [
+                        {
+                            "character": "Voice",
+                            "speaker": "voice",
+                            "references": ["reference.wav"],
+                        }
+                    ],
+                }
+                if bindings is not None:
+                    document["vntts.authoring.source_reference_bindings"] = bindings
+                manifest.write_text(json.dumps(document), encoding="utf-8")
+                output = root / "failure-corpus.json"
+
+                def create():
+                    return build_failure_comparison_corpus(
+                        queue,
+                        state_path,
+                        output,
+                        manifest_path=manifest,
+                        state_loader=lambda *_: state,
+                    )
+
+                if not isinstance(bindings, (dict, type(None))) or (
+                    isinstance(bindings, dict)
+                    and bindings.get("selected_variants") is not None
+                    and not isinstance(bindings["selected_variants"], list)
+                ):
+                    with self.assertRaisesRegex(ModelBenchmarkError, "bindings"):
+                        create()
+                    self.assertFalse(output.exists())
+                else:
+                    result = create()
+                    self.assertEqual(result["samples"][0]["character"], "Voice")
+                    self.assertEqual(
+                        result["source_voice_manifest_sha256"],
+                        hashlib.sha256(manifest.read_bytes()).hexdigest(),
+                    )
+                    self.assertEqual(json.loads(output.read_text()), result)
+
     def test_model_publications_preserve_destination_created_after_precheck(self):
         for multiple in (False, True):
             with self.subTest(multiple=multiple), TemporaryDirectory() as directory:

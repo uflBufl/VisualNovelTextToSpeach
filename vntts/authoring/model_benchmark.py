@@ -500,11 +500,15 @@ def _comparison_queue_overrides(
     document: Mapping[str, object], registry: CharacterVoiceRegistry
 ) -> dict[str, str]:
     bindings = document.get("vntts.authoring.source_reference_bindings")
+    if bindings is not None and not isinstance(bindings, dict):
+        raise ModelBenchmarkError(
+            "Comparison voice manifest source reference bindings are invalid"
+        )
     selected_variants = (
-        bindings.get("selected_variants") if isinstance(bindings, dict) else ()
+        bindings.get("selected_variants", []) if isinstance(bindings, dict) else []
     )
     if selected_variants is None:
-        selected_variants = ()
+        selected_variants = []
     if not isinstance(selected_variants, list):
         raise ModelBenchmarkError(
             "Comparison voice manifest source reference bindings are invalid"
