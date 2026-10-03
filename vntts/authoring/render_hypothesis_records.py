@@ -274,7 +274,8 @@ def _validate_decision(
         or decision.get("review_sha256") != review_sha256
         or decision.get("reference_sha256") != review["reference_sha256"]
         or decision.get("result_sha256") != review["result_sha256"]
-        or decision.get("decision") not in RENDER_HYPOTHESIS_DECISIONS
+        or not isinstance(decision.get("decision"), str)
+        or decision["decision"] not in RENDER_HYPOTHESIS_DECISIONS
     ):
         raise RenderHypothesisRecordError(
             "Render hypothesis decision is malformed or stale"

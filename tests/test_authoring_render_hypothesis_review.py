@@ -401,9 +401,15 @@ class RenderHypothesisReviewTest(unittest.TestCase):
             record_render_hypothesis_decision(output, "accept_hypothesis")
             decision_path = output / "decision.json"
             decision = json.loads(decision_path.read_text(encoding="utf-8"))
-            for version in (True, 1.0):
-                decision["schema_version"] = version
-                atomic_write_json(decision_path, decision)
+            for field, value in (
+                ("schema_version", True),
+                ("schema_version", 1.0),
+                ("decision", []),
+                ("decision", {}),
+                ("decision", None),
+            ):
+                malformed = {**decision, field: value}
+                atomic_write_json(decision_path, malformed)
                 with self.assertRaisesRegex(
                     RenderHypothesisRecordError, "decision is malformed"
                 ):
