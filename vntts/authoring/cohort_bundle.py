@@ -138,11 +138,10 @@ class _BundleCohort(TypedDict):
     samples: list[_BundleSample]
 
 
-class _BundleDocument(TypedDict):
+class _BundleBody(TypedDict):
     schema: str
     schema_version: int
     policy: dict[str, str]
-    bundle_id: str
     workspace_count: int
     cohort_count: int
     pending_item_count: int
@@ -151,6 +150,10 @@ class _BundleDocument(TypedDict):
     blocked_source_occurrence_count: int
     sources: list[_SourceDocument]
     cohorts: list[_BundleCohort]
+
+
+class _BundleDocument(_BundleBody):
+    bundle_id: str
 
 
 class _CurrentSourceSnapshot(TypedDict):
@@ -533,7 +536,7 @@ def _assemble_bundle(
             )
         )
 
-    body = {
+    body: _BundleBody = {
         "schema": COHORT_REVIEW_BUNDLE_SCHEMA,
         "schema_version": COHORT_REVIEW_BUNDLE_VERSION,
         "policy": {
@@ -569,40 +572,7 @@ def _assemble_bundle(
         ),
     }
     bundle_id = canonical_document_sha256(body)
-    bundle_document: _BundleDocument = {
-        "schema": COHORT_REVIEW_BUNDLE_SCHEMA,
-        "schema_version": COHORT_REVIEW_BUNDLE_VERSION,
-        "policy": {
-            "attention_rule": "all technical flags",
-            "projection_scope": "source workspace only",
-            "sample_policy": "retained by each exact source plan",
-        },
-        "workspace_count": len(sources),
-        "cohort_count": len(flattened),
-        "pending_item_count": sum(
-            source["plan"]["pending_item_count"] for source in sources
-        ),
-        "sample_item_count": sum(
-            source["plan"]["sample_item_count"] for source in sources
-        ),
-        "blocked_item_count": len(
-            {
-                item["queue_id"]
-                for source in sources
-                for item in source["plan"]["blocked_items"]
-            }
-        ),
-        "blocked_source_occurrence_count": sum(
-            source["plan"]["blocked_item_count"] for source in sources
-        ),
-        "sources": sources,
-        "cohorts": sorted(
-            flattened,
-            key=lambda value: (value["workspace_id"], value["cohort_id"]),
-        ),
-        "bundle_id": bundle_id,
-    }
-    return CohortReviewBundle(bundle_id, bundle_document)
+    return CohortReviewBundle(bundle_id, {**body, "bundle_id": bundle_id})
 
 
 def write_cohort_review_bundle(
@@ -921,13 +891,7 @@ def write_cohort_review_observations(
     """Atomically save exact listening progress, never terminal authority."""
     root = _validated_bundle_document(original)
     active = _validated_bundle_document(current)
-    allowed = {
-        (cohort["workspace_id"], cohort["cohort_id"], sample["queue_id"]): sample[
-            "audio_sha256"
-        ]
-        for cohort in active["cohorts"]
-        for sample in cohort["samples"]
-    }
+    allowed = _bundle_sample_audio_by_key(active)
     heard_keys = {
         (workspace_id, cohort_id, queue_id)
         for (workspace_id, cohort_id), queue_ids in heard.items()
@@ -1001,10 +965,8 @@ def write_cohort_review_progress(
         if isinstance(original, CohortReviewBundle)
         else load_cohort_review_bundle(path)
     )
-    candidate = CohortReviewBundle(
-        _validated_bundle_document(current)["bundle_id"],
-        _validated_bundle_document(current),
-    )
+    candidate_document = _validated_bundle_document(current)
+    candidate = CohortReviewBundle(candidate_document["bundle_id"], candidate_document)
     expected = reconcile_cohort_review_bundle(root)
     if candidate.bundle_id != expected.bundle_id:
         raise CohortReviewError(
@@ -1916,43 +1878,33 @@ def execute_cohort_bundle_decision(
     projection = execute_cohort_review_decision(
         source["workspace"], source_plan, cohort_decision
     )
-    if isinstance(projection, CohortReviewProjection):
-        next_sources: list[tuple[PathLike, _PlanDocument]] = []
-        for value in document["sources"]:
-            if value["workspace_id"] != workspace_id:
-                next_sources.append((value["workspace"], value["plan"]))
-                continue
-            reconciled = _reconcile_cohort_source(value)
-            if reconciled is not None:
-                next_sources.append(reconciled)
-        next_bundle = _assemble_bundle(next_sources)
-        return CohortBundleProjection(
-            bundle_id=current.bundle_id,
-            workspace_id=workspace_id,
-            cohort_id=cohort_id,
-            queue_ids=projection.queue_ids,
-            review_status=projection.review_status,
-            next_bundle=next_bundle,
-        )
-    next_sources = []
+    next_sources: list[tuple[PathLike, _PlanDocument]] = []
     for value in document["sources"]:
         if value["workspace_id"] != workspace_id:
             next_sources.append((value["workspace"], value["plan"]))
-            continue
-        next_sources.append(
-            (
-                value["workspace"],
-                _validated_plan_document(projection.document),
+        elif isinstance(projection, CohortReviewProjection):
+            reconciled = _reconcile_cohort_source(value)
+            if reconciled is not None:
+                next_sources.append(reconciled)
+        else:
+            next_sources.append(
+                (value["workspace"], _validated_plan_document(projection.document))
             )
-        )
-    next_bundle = _assemble_bundle(next_sources)
     return CohortBundleProjection(
         bundle_id=current.bundle_id,
         workspace_id=workspace_id,
         cohort_id=cohort_id,
-        queue_ids=(),
-        review_status=None,
-        next_bundle=next_bundle,
+        queue_ids=(
+            projection.queue_ids
+            if isinstance(projection, CohortReviewProjection)
+            else ()
+        ),
+        review_status=(
+            projection.review_status
+            if isinstance(projection, CohortReviewProjection)
+            else None
+        ),
+        next_bundle=_assemble_bundle(next_sources),
     )
 
 
