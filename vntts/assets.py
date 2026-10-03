@@ -131,9 +131,9 @@ class ModelAssetManager:
                 f"Managed model file must not be an alias: {filename}"
             )
 
-    def is_ready(self, model_name: str) -> bool:
+    def is_ready(self, model_name: str, *, asset: ModelAsset | None = None) -> bool:
         try:
-            self.validate(model_name)
+            self.validate(model_name, asset=asset)
         except AssetError:
             return False
         return True
@@ -260,11 +260,7 @@ class ModelAssetManager:
             return model_path
 
     def is_ready_with_asset(self, model_name: str, asset: ModelAsset) -> bool:
-        try:
-            self.validate(model_name, asset=asset)
-        except AssetError:
-            return False
-        return True
+        return self.is_ready(model_name, asset=asset)
 
     def _download_file(
         self,
