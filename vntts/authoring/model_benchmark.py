@@ -613,6 +613,7 @@ def load_benchmark_corpus(path: str | Path) -> JsonDocument:
         ) from error
     if not isinstance(document, dict) or (
         document.get("schema") != CORPUS_SCHEMA
+        or type(document.get("schema_version")) is not int
         or document.get("schema_version") != SCHEMA_VERSION
     ):
         raise ModelBenchmarkError("Unsupported authoring benchmark corpus schema")
@@ -1249,12 +1250,17 @@ def _model_variant(value: object, index: int) -> ModelVariant:
     _validate_model_terms_backend(backend, terms_accepted, index)
     require_cuda = _model_variant_flag(item, "require_cuda", index)
     _validate_model_cuda_backend(backend, require_cuda, index)
+    profile = item.get("generation_profile")
+    if profile is not None and not isinstance(profile, str):
+        raise ModelBenchmarkError(
+            f"Model variant {index} generation_profile must be text"
+        )
     return ModelVariant(
         model_id=model_id,
         backend=backend,
         model=model,
         model_revision=model_revision,
-        generation_profile=str(item.get("generation_profile") or "stable"),
+        generation_profile=profile or "stable",
         voice=voice,
         terms_accepted=terms_accepted,
         require_cuda=require_cuda,

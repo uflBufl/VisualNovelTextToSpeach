@@ -122,6 +122,56 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
         )
         return corpus
 
+    def test_corpus_versions_are_exact_integers_before_backend_startup(self):
+        for version in (True, 1.0, "1", [], {}):
+            with self.subTest(version=version), TemporaryDirectory() as directory:
+                root = Path(directory)
+                corpus = self._write_strict_corpus(root)
+                document = json.loads(corpus.read_text())
+                document["schema_version"] = version
+                corpus.write_text(json.dumps(document), encoding="utf-8")
+                calls = []
+                with self.assertRaisesRegex(ModelBenchmarkError, "schema"):
+                    load_benchmark_corpus(corpus)
+                with self.assertRaisesRegex(ModelBenchmarkError, "schema"):
+                    benchmark_model_variants(
+                        corpus,
+                        (ModelVariant("fake", "fake"),),
+                        CharacterVoiceRegistry(),
+                        root / "output",
+                        backend_factory=lambda *args, **kwargs: calls.append(args),
+                    )
+                self.assertEqual(calls, [])
+                self.assertFalse((root / "output").exists())
+
+    def test_model_variant_profile_is_text_with_compatible_default(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "models.json"
+            for value in (None, "", "expressive", False, 2, [], {}):
+                with self.subTest(value=value):
+                    path.write_text(
+                        json.dumps(
+                            [
+                                {
+                                    "model_id": "fake",
+                                    "backend": "fake",
+                                    "generation_profile": value,
+                                }
+                            ]
+                        ),
+                        encoding="utf-8",
+                    )
+                    if value is not None and not isinstance(value, str):
+                        with self.assertRaisesRegex(
+                            ModelBenchmarkError, "generation_profile"
+                        ):
+                            load_model_variants(path)
+                    else:
+                        self.assertEqual(
+                            load_model_variants(path)[0].generation_profile,
+                            value or "stable",
+                        )
+
     def test_failure_corpus_supports_manifest_without_selected_variants(self):
         variants = (
             None,
