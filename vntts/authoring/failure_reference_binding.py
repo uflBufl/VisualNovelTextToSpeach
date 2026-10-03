@@ -32,7 +32,11 @@ from vntts.authoring.failure_reference_binding_records import (
     load_failure_reference_binding_document as load_failure_reference_binding_document,
 )
 from vntts.authoring.private_files import private_file_is_restricted
-from vntts.authoring.publication import rename_directory_no_replace, staged_directory
+from vntts.authoring.publication import (
+    AtomicPublicationError,
+    rename_directory_no_replace,
+    staged_directory,
+)
 from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
 
 _AUDIT_SCHEMA = "vntts.authoring-failure-reference-audit"
@@ -253,7 +257,7 @@ def publish_failure_reference_binding(
         return _publish_binding(
             audit_directory, output, snapshots, artifacts, binding_id, document
         )
-    except AuthoringAuthorityError as error:
+    except (AuthoringAuthorityError, AtomicPublicationError, OSError) as error:
         raise FailureReferenceBindingError(str(error)) from error
 
 
@@ -426,6 +430,7 @@ def _publish_binding(
             raise FailureReferenceBindingError(
                 f"Reference binding output conflicts with another identity: {output}"
             )
+        _assert_binding_sources(audit_directory, snapshots, artifacts.references)
         return existing
     output.parent.mkdir(parents=True, exist_ok=True)
     with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
@@ -480,12 +485,9 @@ def _assert_binding_sources(
         raise FailureReferenceBindingError(
             "Reference audit changed before binding publication"
         )
+    _assert_audit_snapshots_unchanged(snapshots)
     for reference in references:
-        source = reference.snapshot.path
-        if not source.is_file() or sha256_file(source) != reference.snapshot.sha256:
-            raise FailureReferenceBindingError(
-                "Selected reference changed before binding publication"
-            )
+        assert_authority_snapshot(reference.snapshot, "selected reference")
 
 
 def _load_audit_snapshots(directory: Path) -> _AuditSnapshots:
