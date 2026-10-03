@@ -430,8 +430,21 @@ class AssetManagerDialog(QDialog):
             selected_path = str(Path(selected).expanduser().resolve())
             selected_digest = sha256_file(selected_path)
         except OSError:
+            self._voice_manifest_edited()
+            self.voice_status.setText(
+                "Voice manifest is unavailable. Restore it or choose another "
+                "manifest, then Verify files."
+            )
+            self.voice_status.setStyleSheet("font-weight: 600;")
             return
         if selected_path != path or selected_digest != digest:
+            if selected_path == path:
+                self._voice_manifest_edited()
+                self.voice_status.setText(
+                    "Voice manifest changed after validation. Verify files again "
+                    "before saving."
+                )
+                self.voice_status.setStyleSheet("font-weight: 600;")
             return
         self._validated_manifest_identity = (path, digest)
         self.voice_progress.setValue(100)

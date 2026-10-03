@@ -618,6 +618,54 @@ class AssetManagerDialogTest(unittest.TestCase):
 
             self.assertEqual(dialog.settings().voice_manifest, str(manifest))
 
+    def test_manifest_stale_after_validation_requires_explicit_reverify(self):
+        scenarios = (
+            ("changed", "changed after validation", False),
+            ("missing", "unavailable", True),
+        )
+        for scenario, expected_status, restore_before_reverify in scenarios:
+            with self.subTest(scenario=scenario), TemporaryDirectory() as directory:
+                manifest = Path(directory) / "manifest.json"
+                manifest.write_text("{}", encoding="utf-8")
+                model_manager = Mock()
+                model_manager.model_path.return_value = Path("managed/model")
+                voice_manager = Mock()
+                voice_manager.validate.return_value = manifest
+                dialog = AssetManagerDialog(
+                    AppSettings(voice_manifest=str(manifest)),
+                    model_manager=model_manager,
+                    voice_manager=voice_manager,
+                )
+
+                dialog._set_manifest_validation_pending(True)
+                result = dialog._validate_manifest_snapshot(str(manifest))
+                dialog._validated_manifest_identity = ("old", "digest")
+                dialog._accept_after_manifest_validation = True
+                if scenario == "changed":
+                    manifest.write_text('{"changed": true}', encoding="utf-8")
+                else:
+                    manifest.unlink()
+
+                dialog._manifest_validation_finished(result, None)
+
+                self.assertIn(expected_status, dialog.voice_status.text())
+                self.assertIn("Verify files", dialog.voice_status.text())
+                self.assertIsNone(dialog._validated_manifest_identity)
+                self.assertFalse(dialog._accept_after_manifest_validation)
+                self.assertTrue(dialog.validate_manifest_button.isEnabled())
+                self.assertTrue(
+                    dialog.buttons.button(
+                        QDialogButtonBox.StandardButton.Save
+                    ).isEnabled()
+                )
+                self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
+
+                if restore_before_reverify:
+                    manifest.write_text("{}", encoding="utf-8")
+                dialog.validate_voice_manifest()
+                self.wait_for(lambda: not dialog.manifest_runner.active)
+                self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
+
 
 if __name__ == "__main__":
     unittest.main()
