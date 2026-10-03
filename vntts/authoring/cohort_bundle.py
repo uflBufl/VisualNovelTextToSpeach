@@ -23,6 +23,7 @@ from vntts.authoring.cohort_review import (
     _load_document,
     _required_sha256,
     _required_text,
+    _sample_cohort_queue_ids,
     _validate_decision_against_plan,
     _write_document_no_replace,
     build_cohort_review_decision,
@@ -1452,25 +1453,10 @@ def _reconciled_plan_document(
     cohorts: list[_PlanCohort] = []
     selected: list[str] = []
     for old in remaining:
-        items: list[_PlanItem] = [{**value, "sampled": False} for value in old["items"]]
-        sampled = {value["queue_id"] for value in items if value["technical_flags"]}
-        for bucket in ("short", "medium", "long"):
-            eligible = [
-                value
-                for value in items
-                if not value["technical_flags"] and value["length_bucket"] == bucket
-            ]
-            eligible.sort(
-                key=lambda value: (
-                    hashlib.sha256(
-                        f"{old['cohort_id']}\0{value['queue_id']}".encode("utf-8")
-                    ).hexdigest(),
-                    value["queue_id"],
-                )
-            )
-            sampled.update(
-                value["queue_id"] for value in eligible[:clean_samples_per_bucket]
-            )
+        items = old["items"]
+        sampled = _sample_cohort_queue_ids(
+            old["cohort_id"], items, clean_samples_per_bucket
+        )
         selected.extend(value["queue_id"] for value in items)
         cohorts.append(
             {

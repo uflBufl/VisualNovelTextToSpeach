@@ -316,28 +316,15 @@ def _planned_cohorts(
         records = sorted(
             items, key=lambda value: _required_text(value.get("queue_id"), "Queue ID")
         )
-        attention = [value for value in records if value["technical_flags"]]
-        clean = [value for value in records if not value["technical_flags"]]
-        sampled = {value["queue_id"] for value in attention}
-        for bucket in ("short", "medium", "long"):
-            eligible = [value for value in clean if value["length_bucket"] == bucket]
-            eligible.sort(
-                key=lambda value: (
-                    hashlib.sha256(
-                        f"{cohort_id}\0{value['queue_id']}".encode("utf-8")
-                    ).hexdigest(),
-                    value["queue_id"],
-                )
-            )
-            sampled.update(
-                value["queue_id"] for value in eligible[:clean_samples_per_bucket]
-            )
+        sampled = _sample_cohort_queue_ids(cohort_id, records, clean_samples_per_bucket)
         planned.append(
             {
                 "cohort_id": cohort_id,
                 "identity": cohort["identity"],
                 "item_count": len(records),
-                "attention_count": len(attention),
+                "attention_count": sum(
+                    bool(value["technical_flags"]) for value in records
+                ),
                 "sample_queue_ids": sorted(sampled),
                 "items": [
                     {**value, "sampled": value["queue_id"] in sampled}
@@ -346,6 +333,33 @@ def _planned_cohorts(
             }
         )
     return planned
+
+
+def _sample_cohort_queue_ids(
+    cohort_id: str,
+    records: Sequence[Mapping[str, object]],
+    clean_samples_per_bucket: int,
+) -> set[str]:
+    """Select technical-attention WAVs and deterministic clean bucket samples."""
+    sampled = {
+        _required_text(value["queue_id"], "Queue ID")
+        for value in records
+        if value["technical_flags"]
+    }
+    for bucket in ("short", "medium", "long"):
+        eligible = [
+            _required_text(value["queue_id"], "Queue ID")
+            for value in records
+            if not value["technical_flags"] and value["length_bucket"] == bucket
+        ]
+        eligible.sort(
+            key=lambda queue_id: (
+                hashlib.sha256(f"{cohort_id}\0{queue_id}".encode("utf-8")).hexdigest(),
+                queue_id,
+            )
+        )
+        sampled.update(eligible[:clean_samples_per_bucket])
+    return sampled
 
 
 def _validate_selected_plan_items(
