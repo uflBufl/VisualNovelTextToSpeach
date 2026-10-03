@@ -714,7 +714,7 @@ class GameImportLog(RuntimeSupportLog):
 
     def _load_previous(self) -> None:
         for entry in _read_bounded_json_lines(self.path, self.maximum_bytes):
-            if not isinstance(entry, dict) or entry.get("level") != "game-import":
+            if entry.get("level") != "game-import":
                 continue
             stage = entry.get("stage")
             if not isinstance(stage, str) or not stage:
@@ -1539,7 +1539,7 @@ def _loaded_pregeneration_failure(value: object) -> SupportDocument:
 
 def collect_active_content_identity(settings: AppSettings) -> SupportDocument:
     """Describe the active prepared content without exporting its local paths."""
-    pack_path = getattr(settings, "game_pack", None)
+    pack_path = settings.game_pack
     if pack_path:
         try:
             path = Path(pack_path).expanduser()
@@ -1547,7 +1547,7 @@ def collect_active_content_identity(settings: AppSettings) -> SupportDocument:
             return _active_pack_identity(str(path), stat.st_mtime_ns, stat.st_size)
         except OSError:
             pass
-    story_path = getattr(settings, "story_index", None)
+    story_path = settings.story_index
     if story_path:
         try:
             path = Path(story_path).expanduser()
