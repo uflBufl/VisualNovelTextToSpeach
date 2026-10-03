@@ -34,6 +34,7 @@ from vntts.synthesis import (
     SynthesisChunkStream,
     SynthesisCompletion,
     SynthesisRequest,
+    SynthesisResult,
 )
 from vntts.tts_benchmark import create_backend
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
@@ -155,6 +156,31 @@ class FailureReferencePreview:
     candidate_group_id: str | None = None
 
 
+@dataclass(frozen=True)
+class _PreviewControls:
+    backend: str
+    model: str
+    generation_profile: str
+
+
+@dataclass(frozen=True)
+class _PreviewKey:
+    audit_id: str
+    group_id: str
+    candidate_group_id: str
+    candidate_id: str
+    candidate_sha256: str
+    text: str
+    controls: _PreviewControls
+
+
+@dataclass(frozen=True)
+class _PreviewPlan:
+    audit: FailureReferenceAudit
+    key: _PreviewKey
+    synthesis_text: str
+
+
 class FailureReferencePreviewService:
     """Own one lazy backend and memory-only preview cache for a dialog lifetime."""
 
@@ -168,8 +194,8 @@ class FailureReferencePreviewService:
         self.backend_factory = backend_factory
         self._root = Path(tempfile.mkdtemp(prefix="vntts-reference-preview-")).resolve()
         self._backend: _PreviewBackend | None = None
-        self._backend_config: tuple[str, str, str] | None = None
-        self._cache: dict[tuple[str, ...], FailureReferencePreview] = {}
+        self._backend_config: _PreviewControls | None = None
+        self._cache: dict[_PreviewKey, FailureReferencePreview] = {}
         self._lock = threading.Lock()
         self._cancel = threading.Event()
         self._closed = False
@@ -190,158 +216,178 @@ class FailureReferencePreviewService:
             if self._closed:
                 raise FailureReferencePreviewError("Preview service is closed")
             self._cancel.clear()
-            audit, document, group = self._load_group(group_id)
-            source_group_id = candidate_group_id or group_id
-            _source_audit, _source_document, source_group = self._load_group(
-                source_group_id
-            )
-            if source_group_id != group_id and _reference_family(
-                source_group
-            ) != _reference_family(group):
-                raise FailureReferencePreviewError(
-                    "Cross-group preview candidates must belong to the same exact "
-                    "source-reference character family"
-                )
-            if text not in {value["text"] for value in group["cases"]}:
-                raise FailureReferencePreviewError(
-                    "Preview text is not an affected line in this reference group"
-                )
-            candidate = next(
-                (
-                    value
-                    for value in source_group["candidates"]
-                    if value["candidate_id"] == candidate_id
-                ),
-                None,
-            )
-            if candidate is None:
-                raise FailureReferencePreviewError(
-                    f"Reference candidate is unknown: {candidate_id}"
-                )
-            _directory, workspace = self._load_workspace(document)
-            run_config = _document(
-                workspace.get("run_config"), "Preview workspace run configuration"
-            )
-            backend_name = _required_text(run_config.get("backend"), "Preview backend")
-            model = _required_text(run_config.get("model"), "Preview model")
-            profile = _required_text(
-                run_config.get("generation_profile"), "Preview generation profile"
-            )
-            synthesis_text = (
-                normalize_short_trailing_ellipsis(text)
-                if backend_name == "moss-tts"
-                else text
-            )
-            key = (
-                audit.audit_id,
-                group_id,
-                source_group_id,
-                candidate_id,
-                candidate["sha256"],
-                text,
-                backend_name,
-                model,
-                profile,
-            )
-            cached = self._cache.get(key)
+            plan = self._preview_plan(group_id, candidate_id, text, candidate_group_id)
+            cached = self._cache.get(plan.key)
             if cached is not None:
                 return cached
-
             source = prepare_failure_reference_audio(
-                audit.directory, source_group_id, candidate_id
+                plan.audit.directory, plan.key.candidate_group_id, candidate_id
             )
-            reference = self._copy_reference(source)
-            synthetic_voice = f"Reference candidate {source.sha256[:16]}"
-            registry = CharacterVoiceRegistry(
-                (
-                    CharacterVoice(
-                        character=synthetic_voice,
-                        speaker=f"reference-preview:{source.sha256}",
-                        references=(reference,),
-                    ),
-                )
-            )
-            backend_config = (backend_name, model, profile)
-            if self._backend is None or self._backend_config != backend_config:
-                shutdown_speech_backend(self._backend)
-                self._backend = None
-                self._backend_config = None
-                self._backend = self.backend_factory(
-                    backend_name,
-                    registry,
-                    self._root / "cache",
-                    model_name=model,
-                    startup_cancellation=self._cancel,
-                )
-                self._backend_config = backend_config
-            else:
-                self._backend.registry = registry
-
-            request = SynthesisRequest(
-                voice=synthetic_voice,
-                text=synthesis_text,
-                seed=0,
-                generation_profile=profile,
-                cancellation=self._cancel,
-                cache_policy=SynthesisCachePolicy.BYPASS,
-            )
-            result = self._backend.render(request).collect()
-            if (
-                self._cancel.is_set()
-                or result.completion is SynthesisCompletion.CANCELLED
-            ):
-                raise FailureReferencePreviewCancelled(
-                    "Preview generation was cancelled"
-                )
-            if result.completion is not SynthesisCompletion.COMPLETE:
-                raise FailureReferencePreviewIncomplete(
-                    "Preview generation did not complete within its typed limits"
-                )
-            diagnostics = result.diagnostics
-            if (
-                diagnostics.backend != backend_name
-                or diagnostics.generation_profile != profile
-                or diagnostics.seed != 0
-            ):
-                raise FailureReferencePreviewError(
-                    "Preview render diagnostics differ from the requested controls"
-                )
-            pcm = generated_mono_pcm(result.pcm)
-            if not len(pcm) or int(result.sample_rate) <= 0:
-                raise FailureReferencePreviewError("Preview render produced no audio")
-            output = self._root / "preview.wav"
-            write_pcm16_wav(output, pcm, int(result.sample_rate))
-            payload = output.read_bytes()
-            output.unlink(missing_ok=True)
-            final_source = prepare_failure_reference_audio(
-                audit.directory, source_group_id, candidate_id
-            )
-            if final_source.sha256 != source.sha256:
-                raise FailureReferencePreviewError(
-                    "Reference candidate changed while its preview was generated"
-                )
-            final_audit = load_failure_reference_audit(audit.directory)
-            if final_audit.audit_id != audit.audit_id:
-                raise FailureReferencePreviewError(
-                    "Reference audit changed while its preview was generated"
-                )
-            preview = FailureReferencePreview(
-                group_id=group_id,
-                candidate_group_id=source_group_id,
-                candidate_id=candidate_id,
-                text=text,
-                synthesis_text=synthesis_text,
-                text_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
-                backend=backend_name,
-                model=model,
-                generation_profile=profile,
-                seed=0,
-                sample_rate=int(result.sample_rate),
-                audio_sha256=hashlib.sha256(payload).hexdigest(),
-                payload=payload,
-            )
-            self._cache[key] = preview
+            preview = self._render_preview(plan, source)
+            self._cache[plan.key] = preview
             return preview
+
+    def _preview_plan(
+        self,
+        group_id: str,
+        candidate_id: str,
+        text: str,
+        candidate_group_id: str | None,
+    ) -> _PreviewPlan:
+        audit, document, group = self._load_group(group_id)
+        source_group_id = candidate_group_id or group_id
+        _source_audit, _source_document, source_group = self._load_group(
+            source_group_id
+        )
+        if source_group_id != group_id and _reference_family(
+            source_group
+        ) != _reference_family(group):
+            raise FailureReferencePreviewError(
+                "Cross-group preview candidates must belong to the same exact "
+                "source-reference character family"
+            )
+        if text not in {value["text"] for value in group["cases"]}:
+            raise FailureReferencePreviewError(
+                "Preview text is not an affected line in this reference group"
+            )
+        candidate = next(
+            (
+                value
+                for value in source_group["candidates"]
+                if value["candidate_id"] == candidate_id
+            ),
+            None,
+        )
+        if candidate is None:
+            raise FailureReferencePreviewError(
+                f"Reference candidate is unknown: {candidate_id}"
+            )
+        _directory, workspace = self._load_workspace(document)
+        run_config = _document(
+            workspace.get("run_config"), "Preview workspace run configuration"
+        )
+        controls = _PreviewControls(
+            backend=_required_text(run_config.get("backend"), "Preview backend"),
+            model=_required_text(run_config.get("model"), "Preview model"),
+            generation_profile=_required_text(
+                run_config.get("generation_profile"), "Preview generation profile"
+            ),
+        )
+        key = _PreviewKey(
+            audit_id=audit.audit_id,
+            group_id=group_id,
+            candidate_group_id=source_group_id,
+            candidate_id=candidate_id,
+            candidate_sha256=candidate["sha256"],
+            text=text,
+            controls=controls,
+        )
+        synthesis_text = (
+            normalize_short_trailing_ellipsis(text)
+            if controls.backend == "moss-tts"
+            else text
+        )
+        return _PreviewPlan(audit, key, synthesis_text)
+
+    def _preview_backend(
+        self, source: FailureReferenceAudio, controls: _PreviewControls, voice: str
+    ) -> _PreviewBackend:
+        reference = self._copy_reference(source)
+        registry = CharacterVoiceRegistry(
+            (
+                CharacterVoice(
+                    character=voice,
+                    speaker=f"reference-preview:{source.sha256}",
+                    references=(reference,),
+                ),
+            )
+        )
+        if self._backend is None or self._backend_config != controls:
+            shutdown_speech_backend(self._backend)
+            self._backend = None
+            self._backend_config = None
+            self._backend = self.backend_factory(
+                controls.backend,
+                registry,
+                self._root / "cache",
+                model_name=controls.model,
+                startup_cancellation=self._cancel,
+            )
+            self._backend_config = controls
+        else:
+            self._backend.registry = registry
+        return self._backend
+
+    def _render_preview(
+        self, plan: _PreviewPlan, source: FailureReferenceAudio
+    ) -> FailureReferencePreview:
+        key = plan.key
+        controls = key.controls
+        request = SynthesisRequest(
+            voice=f"Reference candidate {source.sha256[:16]}",
+            text=plan.synthesis_text,
+            seed=0,
+            generation_profile=controls.generation_profile,
+            cancellation=self._cancel,
+            cache_policy=SynthesisCachePolicy.BYPASS,
+        )
+        backend = self._preview_backend(source, controls, request.voice)
+        result = backend.render(request).collect()
+        payload = self._preview_payload(result, controls)
+        final_source = prepare_failure_reference_audio(
+            plan.audit.directory, key.candidate_group_id, key.candidate_id
+        )
+        if final_source.sha256 != source.sha256:
+            raise FailureReferencePreviewError(
+                "Reference candidate changed while its preview was generated"
+            )
+        final_audit = load_failure_reference_audit(plan.audit.directory)
+        if final_audit.audit_id != plan.audit.audit_id:
+            raise FailureReferencePreviewError(
+                "Reference audit changed while its preview was generated"
+            )
+        return FailureReferencePreview(
+            group_id=key.group_id,
+            candidate_group_id=key.candidate_group_id,
+            candidate_id=key.candidate_id,
+            text=key.text,
+            synthesis_text=plan.synthesis_text,
+            text_sha256=hashlib.sha256(key.text.encode("utf-8")).hexdigest(),
+            backend=controls.backend,
+            model=controls.model,
+            generation_profile=controls.generation_profile,
+            seed=0,
+            sample_rate=int(result.sample_rate),
+            audio_sha256=hashlib.sha256(payload).hexdigest(),
+            payload=payload,
+        )
+
+    def _preview_payload(
+        self, result: SynthesisResult, controls: _PreviewControls
+    ) -> bytes:
+        if self._cancel.is_set() or result.completion is SynthesisCompletion.CANCELLED:
+            raise FailureReferencePreviewCancelled("Preview generation was cancelled")
+        if result.completion is not SynthesisCompletion.COMPLETE:
+            raise FailureReferencePreviewIncomplete(
+                "Preview generation did not complete within its typed limits"
+            )
+        diagnostics = result.diagnostics
+        if (
+            diagnostics.backend != controls.backend
+            or diagnostics.generation_profile != controls.generation_profile
+            or diagnostics.seed != 0
+        ):
+            raise FailureReferencePreviewError(
+                "Preview render diagnostics differ from the requested controls"
+            )
+        pcm = generated_mono_pcm(result.pcm)
+        if not len(pcm) or int(result.sample_rate) <= 0:
+            raise FailureReferencePreviewError("Preview render produced no audio")
+        output = self._root / "preview.wav"
+        write_pcm16_wav(output, pcm, int(result.sample_rate))
+        payload = output.read_bytes()
+        output.unlink(missing_ok=True)
+        return payload
 
     def cancel(self) -> None:
         """Request cancellation of backend startup or the active render."""
