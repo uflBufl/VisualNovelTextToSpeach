@@ -417,12 +417,31 @@ class ModelAssetManagerTest(unittest.TestCase):
             manifest_path = model_path / "vntts-asset.json"
             valid = json.loads(manifest_path.read_text(encoding="utf-8"))
 
-            for payload in ([], {**valid, "version": 2}):
+            for payload in (
+                [],
+                *({**valid, "version": version} for version in (2, True, 1.0, "1")),
+            ):
                 with self.subTest(payload=payload):
                     manifest_path.write_text(json.dumps(payload), encoding="utf-8")
                     with self.assertRaisesRegex(
                         ModelIntegrityError, "malformed|version"
                     ):
+                        manager.validate(asset.name, asset=asset)
+
+    def test_model_checksum_size_is_an_integer_byte_count(self):
+        asset = ModelAsset("one-byte", ("https://models.invalid/model.pth",))
+        with TemporaryDirectory() as directory:
+            manager = ModelAssetManager(
+                directory, opener=MemoryOpener({asset.urls[0]: b"m"})
+            )
+            path = manager.download(asset.name, asset=asset)
+            checksum = path / "vntts-asset.json"
+            document = json.loads(checksum.read_text())
+            for size in (True, 1.0, -1, "1"):
+                with self.subTest(size=size):
+                    document["files"]["model.pth"]["size"] = size
+                    checksum.write_text(json.dumps(document))
+                    with self.assertRaisesRegex(ModelIntegrityError, "size"):
                         manager.validate(asset.name, asset=asset)
 
     def test_model_validation_rejects_aliased_checksum_manifest(self):
@@ -1139,10 +1158,12 @@ class VoicePackManagerTest(unittest.TestCase):
                 manager.validate(manifest_path)
             self.assertFalse(checksum_path.exists())
 
-            checksum["version"] = 2
-            checksum_path.write_text(json.dumps(checksum), encoding="utf-8")
-            with self.assertRaisesRegex(ModelIntegrityError, "version"):
-                manager.validate(manifest_path)
+            for version in (2, True, 1.0, "1"):
+                with self.subTest(version=version):
+                    checksum["version"] = version
+                    checksum_path.write_text(json.dumps(checksum), encoding="utf-8")
+                    with self.assertRaisesRegex(ModelIntegrityError, "version"):
+                        manager.validate(manifest_path)
 
 
 if __name__ == "__main__":

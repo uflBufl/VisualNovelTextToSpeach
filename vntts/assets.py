@@ -173,7 +173,8 @@ class ModelAssetManager:
     ) -> dict[str, object]:
         if not isinstance(manifest, dict):
             raise ModelIntegrityError("Model checksum manifest is malformed")
-        if manifest.get("version") != 1:
+        version = manifest.get("version")
+        if type(version) is not int or version != 1:
             raise ModelIntegrityError("Unsupported model checksum manifest version")
         if manifest.get("model") != model_name:
             raise ModelIntegrityError("Model checksum manifest has the wrong model")
@@ -195,10 +196,13 @@ class ModelAssetManager:
             raise ModelIntegrityError(
                 f"Model checksum metadata is malformed: {filename}"
             )
+        size = metadata.get("size")
+        if type(size) is not int or size < 0:
+            raise ModelIntegrityError(f"Model checksum size is malformed: {filename}")
         self._check_model_file(path, filename)
         if not path.is_file():
             raise ModelIntegrityError(f"Model file is missing: {filename}")
-        if path.stat().st_size != metadata.get("size"):
+        if path.stat().st_size != size:
             raise ModelIntegrityError(f"Model file size changed: {filename}")
         if sha256_file(path) != metadata.get("sha256"):
             raise ModelIntegrityError(f"Model checksum failed: {filename}")
@@ -680,7 +684,8 @@ class VoicePackManager:
         manifest = read_json(checksum_path, {})
         if not isinstance(manifest, dict):
             raise ModelIntegrityError("Voice checksum manifest is malformed")
-        if manifest.get("version") != 1:
+        version = manifest.get("version")
+        if type(version) is not int or version != 1:
             raise ModelIntegrityError("Unsupported voice checksum manifest version")
         if manifest.get("manifest_sha256") != sha256_file(manifest_path):
             raise ModelIntegrityError("Voice manifest checksum failed")
