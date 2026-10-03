@@ -32,6 +32,7 @@ from vntts.authoring.speech_quality import measure_generated_speech_bytes
 from vntts.cli import cli_error, cli_messages
 from vntts.document_identity import canonical_document_sha256
 from vntts.settings import get_local_data_directory
+from vntts.speech_backend_contract import RenderableBackend, is_renderable_backend
 from vntts.speech_backend_runtime import shutdown_speech_backend
 from vntts.synthesis import (
     SynthesisCachePolicy,
@@ -709,8 +710,7 @@ def _benchmark_renderer_staged(
     voice_controls_sha256: str | None,
     voice_controls_content_sha256: str | None,
 ) -> JsonDocument:
-    render = getattr(backend, "render", None)
-    if not callable(render):
+    if not is_renderable_backend(backend):
         raise ModelBenchmarkError(
             f"Model {variant.model_id!r} does not implement the typed render API"
         )
@@ -718,94 +718,12 @@ def _benchmark_renderer_staged(
     reported_output_directory = Path(reported_output_directory).resolve()
     audio_root = output_directory / "audio"
     audio_root.mkdir(parents=True, exist_ok=True)
-    rendered_samples: list[JsonDocument] = []
-    for index, sample in enumerate(samples, start=1):
-        synthesis_voice = variant.voice or _required_text(
-            sample.get("character"), "sample character"
+    rendered_samples = [
+        _render_benchmark_sample(
+            backend, variant, sample, index, audio_root, reported_output_directory, seed
         )
-        text = _required_exact_text(sample.get("text"), "sample text")
-        request_seed = None if variant.backend in UNSEEDED_BACKENDS else seed
-        request = SynthesisRequest(
-            voice=synthesis_voice,
-            text=text,
-            seed=request_seed,
-            generation_profile=variant.generation_profile,
-            cache_policy=SynthesisCachePolicy.BYPASS,
-        )
-        base_record = {
-            **sample,
-            "synthesis_voice": synthesis_voice,
-            "requested_shared_seed": seed,
-            "seed_policy": (
-                "unsupported" if variant.backend in UNSEEDED_BACKENDS else "shared"
-            ),
-        }
-        try:
-            result = render(request).collect()
-        except Exception as error:
-            rendered_samples.append(
-                {
-                    **base_record,
-                    "outcome": "error",
-                    "error_type": type(error).__name__,
-                    "error": str(error),
-                }
-            )
-            continue
-        if (
-            result.diagnostics.seed != request.seed
-            or result.diagnostics.generation_profile != request.generation_profile
-            or result.diagnostics.backend != variant.backend
-        ):
-            raise ModelBenchmarkError(
-                f"Model {variant.model_id!r} returned diagnostics for a different request"
-            )
-        if result.completion is not SynthesisCompletion.COMPLETE:
-            rendered_samples.append(
-                {
-                    **base_record,
-                    "outcome": result.completion.value,
-                    "seed": result.diagnostics.seed,
-                    "generation_profile": result.diagnostics.generation_profile,
-                    "sample_rate": result.sample_rate,
-                    "sample_count": result.diagnostics.sample_count,
-                    "first_pcm_ms": result.timing.first_chunk_ms,
-                    "wall_ms": result.timing.total_ms,
-                    "limits": asdict(result.limits),
-                }
-            )
-            continue
-        safe_id = re.sub(r"[^a-zA-Z0-9._-]+", "-", str(sample["id"])).strip("-")
-        staged_audio_path = write_pcm16_wav(
-            audio_root / f"{index:04d}-{safe_id or 'sample'}.wav",
-            _mono_pcm(result.pcm),
-            result.sample_rate,
-        )
-        info = probe_pcm16_mono_wav(staged_audio_path)
-        speech_quality = measure_generated_speech_bytes(staged_audio_path.read_bytes())
-        reported_audio_path = (
-            reported_output_directory / "audio" / staged_audio_path.name
-        )
-        rendered_samples.append(
-            {
-                **base_record,
-                "outcome": "complete",
-                "audio": str(reported_audio_path),
-                "audio_sha256": sha256_file(staged_audio_path),
-                "sample_rate": info.sample_rate,
-                "sample_count": info.sample_count,
-                "duration_seconds": round(info.duration_seconds, 6),
-                "peak": round(info.peak, 6),
-                "speech_quality": asdict(speech_quality),
-                "first_pcm_ms": result.timing.first_chunk_ms,
-                "wall_ms": result.timing.total_ms,
-                "real_time_factor": round(
-                    result.timing.total_ms / (info.duration_seconds * 1000), 6
-                ),
-                "seed": result.diagnostics.seed,
-                "generation_profile": result.diagnostics.generation_profile,
-            }
-        )
+        for index, sample in enumerate(samples, start=1)
+    ]
     outcomes = {
         value: sum(sample["outcome"] == value for sample in rendered_samples)
         for value in ("complete", "limited", "cancelled", "error")
@@ -853,6 +771,93 @@ def _benchmark_renderer_staged(
     }
     atomic_write_json(output_directory / "report.json", report, sort_keys=True)
     return report
+
+
+def _render_benchmark_sample(
+    renderer: RenderableBackend,
+    variant: ModelVariant,
+    sample: JsonDocument,
+    index: int,
+    audio_root: Path,
+    reported_output_directory: Path,
+    seed: int,
+) -> JsonDocument:
+    synthesis_voice = variant.voice or _required_text(
+        sample.get("character"), "sample character"
+    )
+    text = _required_exact_text(sample.get("text"), "sample text")
+    request_seed = None if variant.backend in UNSEEDED_BACKENDS else seed
+    request = SynthesisRequest(
+        voice=synthesis_voice,
+        text=text,
+        seed=request_seed,
+        generation_profile=variant.generation_profile,
+        cache_policy=SynthesisCachePolicy.BYPASS,
+    )
+    base_record = {
+        **sample,
+        "synthesis_voice": synthesis_voice,
+        "requested_shared_seed": seed,
+        "seed_policy": "unsupported"
+        if variant.backend in UNSEEDED_BACKENDS
+        else "shared",
+    }
+    try:
+        result = renderer.render(request).collect()
+    except Exception as error:
+        return {
+            **base_record,
+            "outcome": "error",
+            "error_type": type(error).__name__,
+            "error": str(error),
+        }
+    if (
+        result.diagnostics.seed != request.seed
+        or result.diagnostics.generation_profile != request.generation_profile
+        or result.diagnostics.backend != variant.backend
+    ):
+        raise ModelBenchmarkError(
+            f"Model {variant.model_id!r} returned diagnostics for a different request"
+        )
+    if result.completion is not SynthesisCompletion.COMPLETE:
+        return {
+            **base_record,
+            "outcome": result.completion.value,
+            "seed": result.diagnostics.seed,
+            "generation_profile": result.diagnostics.generation_profile,
+            "sample_rate": result.sample_rate,
+            "sample_count": result.diagnostics.sample_count,
+            "first_pcm_ms": result.timing.first_chunk_ms,
+            "wall_ms": result.timing.total_ms,
+            "limits": asdict(result.limits),
+        }
+    safe_id = re.sub("[^a-zA-Z0-9._-]+", "-", str(sample["id"])).strip("-")
+    staged_audio_path = write_pcm16_wav(
+        audio_root / f"{index:04d}-{safe_id or 'sample'}.wav",
+        _mono_pcm(result.pcm),
+        result.sample_rate,
+    )
+    info = probe_pcm16_mono_wav(staged_audio_path)
+    speech_quality = measure_generated_speech_bytes(staged_audio_path.read_bytes())
+    reported_audio_path = reported_output_directory / "audio" / staged_audio_path.name
+    return {
+        **base_record,
+        "outcome": "complete",
+        "audio": str(reported_audio_path),
+        "audio_sha256": sha256_file(staged_audio_path),
+        "sample_rate": info.sample_rate,
+        "sample_count": info.sample_count,
+        "duration_seconds": round(info.duration_seconds, 6),
+        "peak": round(info.peak, 6),
+        "speech_quality": asdict(speech_quality),
+        "first_pcm_ms": result.timing.first_chunk_ms,
+        "wall_ms": result.timing.total_ms,
+        "real_time_factor": round(
+            result.timing.total_ms / (info.duration_seconds * 1000), 6
+        ),
+        "seed": result.diagnostics.seed,
+        "generation_profile": result.diagnostics.generation_profile,
+    }
 
 
 def benchmark_model_variants(

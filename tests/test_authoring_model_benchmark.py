@@ -118,6 +118,59 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
         )
         return corpus
 
+    def test_mixed_render_outcomes_keep_order_groups_and_exact_sample_records(self):
+        class MixedBackend(FakeRenderBackend):
+            def render(self, request):
+                if request.text == "error":
+                    self.requests.append(request)
+                    raise RuntimeError("fixture render error")
+                self.completion = {
+                    "complete": SynthesisCompletion.COMPLETE,
+                    "limited": SynthesisCompletion.LIMITED,
+                    "cancelled": SynthesisCompletion.CANCELLED,
+                }[request.text]
+                return super().render(request)
+
+        with TemporaryDirectory() as directory:
+            backend = MixedBackend()
+            samples = [
+                {
+                    "id": str(index),
+                    "character": "Voice",
+                    "text": outcome,
+                    "comparison_group": "first" if index < 2 else "second",
+                }
+                for index, outcome in enumerate(
+                    ("complete", "error", "limited", "cancelled")
+                )
+            ]
+            report = benchmark_renderer(
+                ModelVariant("fake", "fake"), backend, samples, directory, seed=8
+            )
+            self.assertEqual(
+                [sample["outcome"] for sample in report["samples"]],
+                ["complete", "error", "limited", "cancelled"],
+            )
+            self.assertEqual(
+                report["summary"],
+                {"total": 4, "complete": 1, "error": 1, "limited": 1, "cancelled": 1},
+            )
+            self.assertEqual(
+                report["group_summary"]["first"],
+                {"total": 2, "complete": 1, "error": 1, "limited": 0, "cancelled": 0},
+            )
+            self.assertEqual(
+                report["group_summary"]["second"],
+                {"total": 2, "complete": 0, "error": 0, "limited": 1, "cancelled": 1},
+            )
+            self.assertEqual(len(list((Path(directory) / "audio").glob("*.wav"))), 1)
+            for expected, actual in zip(samples, report["samples"], strict=True):
+                self.assertEqual({key: actual[key] for key in expected}, expected)
+            self.assertEqual(
+                json.loads((Path(directory) / "report.json").read_text()), report
+            )
+            self.assertEqual(backend.play_calls, 0)
+
     def test_comparison_manifest_rejects_reference_symlink_outside_root(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

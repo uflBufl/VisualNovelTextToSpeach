@@ -2,9 +2,10 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, TypeGuard
 
 from vntts.playback import PlaybackOutcome, PreparedPlayback
+from vntts.synthesis import SynthesisChunkStream, SynthesisRequest
 
 
 @dataclass(frozen=True)
@@ -29,3 +30,11 @@ class SpeechBackend(Protocol):
     ) -> PlaybackOutcome: ...
 
     def stop(self) -> bool: ...
+
+
+class RenderableBackend(Protocol):
+    def render(self, request: SynthesisRequest) -> SynthesisChunkStream: ...
+
+
+def is_renderable_backend(value: object) -> TypeGuard[RenderableBackend]:
+    return callable(getattr(value, "render", None))

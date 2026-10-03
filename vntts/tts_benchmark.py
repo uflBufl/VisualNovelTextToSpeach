@@ -20,6 +20,7 @@ from vntts.cli import cli_error, cli_messages
 from vntts.services.tts_engine import TTSEngine
 from vntts.settings import get_local_data_directory
 from vntts.speech_backend import XTTSVoiceRouterBackend
+from vntts.speech_backend_contract import RenderableBackend, is_renderable_backend
 from vntts.speech_backend_runtime import shutdown_speech_backend
 from vntts.speech_worker import (
     create_chatterbox_worker_backend,
@@ -30,7 +31,6 @@ from vntts.speech_worker import (
 )
 from vntts.synthesis import (
     SynthesisCachePolicy,
-    SynthesisChunkStream,
     SynthesisCompletion,
     SynthesisRequest,
     SynthesisResult,
@@ -123,11 +123,7 @@ class BenchmarkReport(TypedDict):
     samples: list[BenchmarkSampleReport]
 
 
-class _RenderableBackend(Protocol):
-    def render(self, request: SynthesisRequest) -> SynthesisChunkStream: ...
-
-
-class BenchmarkBackend(_RenderableBackend, Protocol):
+class BenchmarkBackend(RenderableBackend, Protocol):
     registry: CharacterVoiceRegistry
 
 
@@ -135,17 +131,13 @@ class _ClearableCache(Protocol):
     def clear(self) -> None: ...
 
 
-class _PersistentCacheBackend(_RenderableBackend, Protocol):
+class _PersistentCacheBackend(RenderableBackend, Protocol):
     persistent_audio_cache: object
     audio_cache: _ClearableCache
 
 
-def _is_renderable_backend(value: object) -> TypeGuard[_RenderableBackend]:
-    return callable(getattr(value, "render", None))
-
-
-def _require_renderable_backend(value: object, name: str) -> _RenderableBackend:
-    if not _is_renderable_backend(value):
+def _require_renderable_backend(value: object, name: str) -> RenderableBackend:
+    if not is_renderable_backend(value):
         raise RuntimeError(f"Benchmark backend {name!r} has no typed renderer")
     return value
 
@@ -153,7 +145,7 @@ def _require_renderable_backend(value: object, name: str) -> _RenderableBackend:
 def _is_benchmark_backend(value: object) -> TypeGuard[BenchmarkBackend]:
     return isinstance(
         getattr(value, "registry", None), CharacterVoiceRegistry
-    ) and _is_renderable_backend(value)
+    ) and is_renderable_backend(value)
 
 
 def _require_benchmark_backend(value: object, name: str) -> BenchmarkBackend:
@@ -501,7 +493,7 @@ def _validate_render_result(
 
 
 def _benchmark_render(
-    backend: _RenderableBackend,
+    backend: RenderableBackend,
     request: SynthesisRequest,
     stage: str,
     cache_source: str,
