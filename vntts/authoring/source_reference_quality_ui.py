@@ -68,9 +68,9 @@ class _ExcludedSample(TypedDict):
     text_sha256: str
     status: str
     attempts: int
-    failure_kind: NotRequired[str]
-    completion: NotRequired[str]
-    error: NotRequired[str]
+    failure_kind: NotRequired[str | None]
+    completion: NotRequired[str | None]
+    error: NotRequired[str | None]
 
 
 class _PortraitRecord(TypedDict):
