@@ -11,7 +11,7 @@ from vntts.controller_components import (
     VoiceAssignmentComponent,
 )
 from vntts.settings import AppSettings
-from vntts.voices import CharacterVoiceRegistry
+from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 
 class ControllerComponentsTest(unittest.TestCase):
@@ -369,3 +369,31 @@ class RuntimeLifecycleTest(unittest.TestCase):
                 "correction_dictionary": initial_corrections,
             },
         )
+
+    def test_backend_initialization_resolves_narrator_once(self):
+        for voice in (
+            None,
+            CharacterVoice("Narrator", "Ada"),
+            CharacterVoice("Narrator", "Ada", references=(Path("ada.wav"),)),
+        ):
+            with self.subTest(voice=voice):
+                registry = CharacterVoiceRegistry(() if voice is None else (voice,))
+                backend_factory = Mock(return_value=Mock())
+                controller = AppController(
+                    AppSettings(speech_backend="moss-tts"),
+                    moss_backend_factory=backend_factory,
+                    model_asset_manager_factory=Mock(),
+                )
+                controller.voice_registry_initializer = Mock(return_value=registry)
+                with patch.object(
+                    registry, "resolve", wraps=registry.resolve
+                ) as resolve:
+                    self.assertTrue(
+                        controller.runtime_lifecycle._initialize_backend(False)
+                    )
+                resolve.assert_called_once_with("Narrator")
+                self.assertEqual(
+                    backend_factory.call_args.kwargs["narrator_reference"],
+                    None if voice is None or not voice.references else Path("ada.wav"),
+                )
+                controller.shutdown()
