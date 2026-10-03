@@ -510,7 +510,10 @@ print(json.dumps([name for name in blocked if name in sys.modules]))
             "vntts.authoring.workbench",
         }
 
-        self.assertEqual(graph[records], {"vntts.authoring.source_reference_bindings"})
+        self.assertEqual(
+            graph[records],
+            {"vntts.authoring.source_reference_bindings", "vntts.authoring.authority"},
+        )
         for module in modules:
             self.assertFalse(_reachable(graph, records, module))
             for peer in modules - {module}:

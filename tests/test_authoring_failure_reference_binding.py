@@ -160,6 +160,73 @@ class FailureReferenceBindingTest(unittest.TestCase):
                 for path, payload in zip(paths, originals, strict=True):
                     path.write_bytes(payload)
 
+    def test_binding_loaders_normalize_encoding_and_canonical_errors(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit, *_rest = self.create_decided_audit(root)
+            output = root / "binding"
+            publish_failure_reference_binding(audit, output)
+            path = output / "binding.json"
+            original = path.read_bytes()
+            payloads = [b"\xff"]
+            for value in (float("nan"), float("inf"), float("-inf"), "\ud800"):
+                document = json.loads(original)
+                document["authority"] = value
+                payloads.append(json.dumps(document).encode())
+            for payload in payloads:
+                for loader in (
+                    load_failure_reference_binding,
+                    load_failure_reference_binding_document,
+                ):
+                    with self.subTest(payload=payload, loader=loader.__name__):
+                        path.write_bytes(payload)
+                        with self.assertRaises(FailureReferenceBindingError):
+                            loader(output)
+            path.write_bytes(original)
+            self.assertEqual(
+                load_failure_reference_binding_document(output)["binding_id"],
+                json.loads(original)["binding_id"],
+            )
+
+    def test_document_loader_validates_captured_bytes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit, *_rest = self.create_decided_audit(root)
+            output = root / "binding"
+            publish_failure_reference_binding(audit, output)
+            path = output / "binding.json"
+            original = path.read_bytes()
+            altered = {
+                **json.loads(original),
+                "authority": "changed without a new identity",
+            }
+            read_bytes = Path.read_bytes
+            for value in (altered, [], None):
+                changed = json.dumps(value).encode()
+                reads = 0
+
+                def capture_changed_binding(candidate):
+                    nonlocal reads
+                    if candidate.resolve() != path.resolve():
+                        return read_bytes(candidate)
+                    reads += 1
+                    path.write_bytes(changed)
+                    try:
+                        return read_bytes(candidate)
+                    finally:
+                        if reads == 1:
+                            path.write_bytes(original)
+
+                try:
+                    with (
+                        self.subTest(value=value),
+                        patch.object(Path, "read_bytes", capture_changed_binding),
+                    ):
+                        with self.assertRaises(FailureReferenceBindingError):
+                            load_failure_reference_binding_document(output)
+                finally:
+                    path.write_bytes(original)
+
     def test_binding_schema_version_requires_exact_integer(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

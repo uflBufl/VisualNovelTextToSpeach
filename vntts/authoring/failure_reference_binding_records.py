@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,6 +9,12 @@ from pathlib import Path, PurePosixPath
 
 from vntts_artifacts.file_integrity import sha256_file
 
+from vntts.authoring.authority import (
+    AuthoringAuthorityError,
+    AuthoritySnapshot,
+    assert_authority_snapshot,
+    capture_authority_file,
+)
 from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
 from vntts.document_identity import canonical_document_sha256
 from vntts.path_safety import contained_regular_file, safe_relative_path
@@ -46,6 +51,15 @@ class FailureReferenceBindingError(RuntimeError):
     """A selected-reference overlay is incomplete, unsafe or inconsistent."""
 
 
+def _binding_document_sha256(document: object) -> str:
+    try:
+        return canonical_document_sha256(document)
+    except (TypeError, ValueError) as error:
+        raise FailureReferenceBindingError(
+            f"Reference binding document cannot be canonically hashed: {error}"
+        ) from error
+
+
 @dataclass(frozen=True)
 class FailureReferenceBinding:
     directory: Path
@@ -76,7 +90,24 @@ FailureReferenceBinding.__module__ = "vntts.authoring.failure_reference_binding"
 
 def load_failure_reference_binding(directory: str | Path) -> FailureReferenceBinding:
     """Validate one self-contained selected-reference overlay."""
-    directory, document = _load_binding_document(directory)
+    return _load_validated_binding(directory)[0]
+
+
+def _load_validated_binding(
+    directory: str | Path,
+) -> tuple[FailureReferenceBinding, dict[str, object]]:
+    try:
+        resolved, document, snapshot = _load_binding_document(directory)
+        binding = _validate_binding_document(resolved, document)
+        assert_authority_snapshot(snapshot, "reference binding")
+    except AuthoringAuthorityError as error:
+        raise FailureReferenceBindingError(str(error)) from error
+    return binding, document
+
+
+def _validate_binding_document(
+    directory: Path, document: dict[str, object]
+) -> FailureReferenceBinding:
     binding_id, audit_id, decision_set_id, schema_version = _validate_binding_header(
         document
     )
@@ -106,7 +137,9 @@ def load_failure_reference_binding(directory: str | Path) -> FailureReferenceBin
     )
 
 
-def _load_binding_document(directory: str | Path) -> tuple[Path, dict[str, object]]:
+def _load_binding_document(
+    directory: str | Path,
+) -> tuple[Path, dict[str, object], AuthoritySnapshot]:
     argument = Path(directory).expanduser()
     if argument.is_symlink():
         raise FailureReferenceBindingError(
@@ -116,15 +149,8 @@ def _load_binding_document(directory: str | Path) -> tuple[Path, dict[str, objec
     path = resolved / "binding.json"
     if path.is_symlink():
         raise FailureReferenceBindingError("Reference binding must not be a symlink")
-    try:
-        document: object = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise FailureReferenceBindingError(str(error)) from error
-    if not isinstance(document, dict):
-        raise FailureReferenceBindingError(
-            "Reference binding document must be an object"
-        )
-    return resolved, document
+    snapshot = capture_authority_file(path, "reference binding", root=resolved)
+    return resolved, snapshot.json_document("reference binding document"), snapshot
 
 
 def _validate_binding_header(
@@ -147,7 +173,7 @@ def _validate_binding_header(
         if key not in {"binding_id", "published_at"}
     }
     binding_id = _sha256(document.get("binding_id"), "Reference binding ID")
-    if binding_id != canonical_document_sha256(identity):
+    if binding_id != _binding_document_sha256(identity):
         raise FailureReferenceBindingError("Reference binding identity changed")
     _validate_binding_timestamp(document)
     return (
@@ -379,33 +405,7 @@ def _validate_selection_authority(
 
 def load_failure_reference_binding_document(directory: str | Path) -> dict[str, object]:
     """Return a validated binding document for runtime control construction."""
-    argument = Path(directory).expanduser()
-    if argument.is_symlink():
-        raise FailureReferenceBindingError(
-            "Reference binding directory must not be a symlink"
-        )
-    path = argument.resolve() / "binding.json"
-    try:
-        payload = path.read_bytes()
-        document = json.loads(payload.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise FailureReferenceBindingError(str(error)) from error
-    binding = load_failure_reference_binding(argument)
-    if (
-        document.get("binding_id") != binding.binding_id
-        or not path.is_file()
-        or path.read_bytes() != payload
-    ):
-        raise FailureReferenceBindingError(
-            "Reference binding changed while it was loaded"
-        )
-    if not isinstance(document, dict) or not all(
-        isinstance(key, str) for key in document
-    ):
-        raise FailureReferenceBindingError(
-            "Reference binding changed while it was loaded"
-        )
-    return {key: value for key, value in document.items()}
+    return _load_validated_binding(directory)[1]
 
 
 def _contained_regular_file(
