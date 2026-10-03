@@ -324,7 +324,7 @@ class AuthoringCohortBundleTest(unittest.TestCase):
                     "file_sha256": digest,
                 }
             cohort = {
-                "cohort_id": "a" * 64,
+                "cohort_id": cohort_bundle_module._canonical_sha256({"voice": "Hero"}),
                 "identity": {"voice": "Hero"},
                 "item_count": 3,
                 "attention_count": 0,

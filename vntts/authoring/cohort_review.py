@@ -1051,6 +1051,9 @@ def _plan_document_identity(document: JsonObject) -> str:
         != COHORT_REVIEW_PLAN_VERSION
     ):
         raise CohortReviewError("Cohort review plan version is unsupported")
+    _required_text(document.get("workspace_id"), "Workspace ID")
+    for field in ("workspace_config_fingerprint", "queue_sha256", "state_sha256"):
+        _required_sha256(document.get(field), field)
     plan_id = _required_sha256(document.get("plan_id"), "Plan ID")
     actual = canonical_document_sha256(
         {key: value for key, value in document.items() if key != "plan_id"}
@@ -1064,15 +1067,84 @@ def _plan_cohort_ids(document: JsonObject) -> None:
     cohorts = document.get("cohorts")
     if not isinstance(cohorts, list):
         raise CohortReviewError("Cohort review plan cohorts must be a list")
-    cohort_ids = []
+    cohort_ids: set[str] = set()
+    queue_ids: set[str] = set()
+    sample_count = 0
     for cohort in cohorts:
         if not isinstance(cohort, dict):
             raise CohortReviewError("Cohort review plan cohort must be an object")
-        cohort_ids.append(_required_sha256(cohort.get("cohort_id"), "Cohort ID"))
-        _required_integer(cohort.get("item_count"), "Cohort item count")
+        cohort_id = _required_sha256(cohort.get("cohort_id"), "Cohort ID")
+        if cohort_id in cohort_ids:
+            raise CohortReviewError("Cohort review plan cohort IDs must be unique")
+        cohort_ids.add(cohort_id)
+        if cohort_id != canonical_document_sha256(_object(cohort.get("identity"))):
+            raise CohortReviewError("Cohort review identity does not match its ID")
+        item_ids = _validate_plan_cohort_items(cohort)
+        if queue_ids.intersection(item_ids):
+            raise CohortReviewError("Cohort review plan queue IDs must be unique")
+        queue_ids.update(item_ids)
+        sample_count += len(_string_list(cohort.get("sample_queue_ids")))
+    _validate_plan_inventory(document, len(cohorts), queue_ids, sample_count)
+
+
+def _validate_plan_cohort_items(cohort: JsonObject) -> set[str]:
+    items = _object_list(cohort.get("items"))
+    sampled = set(
+        _sample_queue_ids(
+            cohort.get("sample_queue_ids"), "Cohort sample IDs are invalid"
+        )
+    )
+    queue_ids: set[str] = set()
+    attention_count = 0
+    for item in items:
+        record = _decision_item(item)
+        queue_id = _required_text(record["queue_id"], "Queue ID")
+        if queue_id in queue_ids:
+            raise CohortReviewError("Cohort item queue IDs must be unique")
+        queue_ids.add(queue_id)
+        word_count = _required_integer(item.get("word_count"), "Cohort word count")
+        if word_count < 0 or item.get("length_bucket") != _length_bucket(word_count):
+            raise CohortReviewError("Cohort item length bucket is invalid")
+        if item.get("sampled") is not (queue_id in sampled):
+            raise CohortReviewError("Cohort item sample marker is invalid")
+        if record["technical_flags"]:
+            attention_count += 1
+            if queue_id not in sampled:
+                raise CohortReviewError("Cohort sample omits a technical-attention WAV")
+    if not sampled.issubset(queue_ids):
+        raise CohortReviewError("Cohort sample references a missing WAV")
+    if _required_integer(cohort.get("item_count"), "Cohort item count") != len(items):
+        raise CohortReviewError("Cohort item count does not match its records")
+    if (
         _required_integer(cohort.get("attention_count"), "Cohort attention count")
-    if len(set(cohort_ids)) != len(cohort_ids):
-        raise CohortReviewError("Cohort review plan cohort IDs must be unique")
+        != attention_count
+    ):
+        raise CohortReviewError("Cohort attention count does not match its records")
+    return queue_ids
+
+
+def _validate_plan_inventory(
+    document: JsonObject, cohort_count: int, queue_ids: set[str], sample_count: int
+) -> None:
+    blocked = _object_list(document.get("blocked_items"))
+    blocked_ids: set[str] = set()
+    for item in blocked:
+        queue_id = _required_text(item.get("queue_id"), "Blocked queue ID")
+        _required_text(item.get("line_id"), "Blocked line ID")
+        _required_text(item.get("reason"), "Blocked reason")
+        if queue_id in blocked_ids or queue_id in queue_ids:
+            raise CohortReviewError(
+                "Blocked cohort queue IDs must be unique and separate"
+            )
+        blocked_ids.add(queue_id)
+    expected = {
+        "cohort_count": cohort_count,
+        "pending_item_count": len(queue_ids),
+        "sample_item_count": sample_count,
+        "blocked_item_count": len(blocked),
+    }
+    if any(document[field] != count for field, count in expected.items()):
+        raise CohortReviewError("Cohort plan inventory does not match its records")
 
 
 def _plan_policy(document: JsonObject) -> None:
@@ -1086,6 +1158,13 @@ def _plan_policy(document: JsonObject) -> None:
         raise CohortReviewError("Cohort review plan policy version is unsupported")
     if policy.get("attention_rule") != "all technical flags":
         raise CohortReviewError("Cohort review plan attention rule is invalid")
+    buckets = policy.get("length_buckets")
+    if (
+        not isinstance(buckets, dict)
+        or buckets != {"short_max_words": 6, "medium_max_words": 15}
+        or any(type(value) is not int for value in buckets.values())
+    ):
+        raise CohortReviewError("Cohort review plan length buckets are invalid")
     _validate_plan_attention_thresholds(
         policy_version, policy.get("attention_thresholds")
     )
@@ -1094,11 +1173,15 @@ def _plan_policy(document: JsonObject) -> None:
 
 
 def _validate_plan_attention_thresholds(
-    policy_version: object, thresholds: object
+    policy_version: int, thresholds: object
 ) -> None:
-    if policy_version == 1 and thresholds is not None:
-        raise CohortReviewError("Legacy cohort review plan thresholds must be implicit")
-    if policy_version != 1 and thresholds != (
+    if policy_version == 1:
+        if thresholds is not None:
+            raise CohortReviewError(
+                "Legacy cohort review plan thresholds must be implicit"
+            )
+        return
+    expected = (
         {
             "silence_ratio_at_least": 0.3,
             "internal_pause_seconds_at_least": 1.0,
@@ -1106,8 +1189,13 @@ def _validate_plan_attention_thresholds(
         if policy_version == 2
         else {
             "silence_ratio_at_least": REVIEW_NOTABLE_SILENCE_RATIO,
-            "internal_pause_seconds_at_least": (REVIEW_NOTABLE_INTERNAL_PAUSE_SECONDS),
+            "internal_pause_seconds_at_least": REVIEW_NOTABLE_INTERNAL_PAUSE_SECONDS,
         }
+    )
+    if (
+        not isinstance(thresholds, dict)
+        or any(isinstance(value, bool) for value in thresholds.values())
+        or thresholds != expected
     ):
         raise CohortReviewError("Cohort review plan attention thresholds are invalid")
 

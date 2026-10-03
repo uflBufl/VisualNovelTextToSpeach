@@ -91,6 +91,103 @@ class AuthoringCohortReviewTest(unittest.TestCase):
                 with self.assertRaises(CohortReviewError):
                     build_cohort_review_plan(workspace, queue_ids=selected)
 
+    def test_plan_loader_validates_nested_records_and_inventory(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state, queue_id = self.create_pending_workspace(root)
+            plan = build_cohort_review_plan(workspace)
+            output = root / "malformed-plan.json"
+
+            mutations = (
+                lambda d: d["cohorts"][0]["items"][0].__setitem__("queue_id", []),
+                lambda d: d["cohorts"][0]["items"][0].__setitem__(
+                    "audio_sha256", "bad"
+                ),
+                lambda d: d["cohorts"][0]["items"][0].__setitem__(
+                    "technical_flags", [[]]
+                ),
+                lambda d: d["cohorts"][0]["items"][0].__setitem__("word_count", True),
+                lambda d: d["cohorts"][0]["items"][0].__setitem__("word_count", -1),
+                lambda d: d["cohorts"][0]["items"][0].__setitem__(
+                    "length_bucket", "wrong"
+                ),
+                lambda d: d["cohorts"][0]["items"][0].__setitem__("sampled", False),
+                lambda d: d["cohorts"][0].__setitem__("sample_queue_ids", [[]]),
+                lambda d: d["cohorts"][0].__setitem__(
+                    "sample_queue_ids", [queue_id, queue_id]
+                ),
+                lambda d: d["cohorts"][0].__setitem__("sample_queue_ids", ["missing"]),
+                lambda d: d["cohorts"][0]["items"].append(
+                    deepcopy(d["cohorts"][0]["items"][0])
+                ),
+                lambda d: d["cohorts"][0].__setitem__("item_count", 2),
+                lambda d: d["cohorts"][0].__setitem__("attention_count", 1),
+                lambda d: d["cohorts"][0]["identity"].__setitem__(
+                    "provider", "changed"
+                ),
+                lambda d: d.__setitem__("sample_item_count", 2),
+                lambda d: d.__setitem__("pending_item_count", 2),
+                lambda d: d.__setitem__("cohort_count", 2),
+                lambda d: d.__setitem__("blocked_item_count", 1),
+                lambda d: d.__setitem__(
+                    "blocked_items",
+                    [{"queue_id": queue_id, "line_id": "blocked", "reason": "unbound"}],
+                ),
+                lambda d: d["policy"]["length_buckets"].__setitem__(
+                    "short_max_words", 6.0
+                ),
+            )
+            for index, mutate in enumerate(mutations):
+                with self.subTest(mutation=index):
+                    document = deepcopy(plan.document)
+                    mutate(document)
+                    document["plan_id"] = _canonical_sha256(
+                        {
+                            key: value
+                            for key, value in document.items()
+                            if key != "plan_id"
+                        }
+                    )
+                    output.write_text(json.dumps(document))
+                    with self.assertRaises(CohortReviewError):
+                        load_cohort_review_plan(output)
+
+    def test_legacy_plans_do_not_require_optional_pace_reports(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state, _queue_id = self.create_pending_workspace(root)
+            plan = build_cohort_review_plan(workspace)
+            output = root / "legacy-plan.json"
+            for version in (1, 2, 3):
+                with self.subTest(version=version):
+                    document = deepcopy(plan.document)
+                    for item in document["cohorts"][0]["items"]:
+                        for field in (
+                            "words_per_minute",
+                            "pace_baseline_wpm",
+                            "pace_ratio",
+                            "pace_baseline_scope",
+                            "pace_advisories",
+                        ):
+                            item.pop(field, None)
+                    document["policy"]["schema_version"] = version
+                    if version == 1:
+                        document["policy"].pop("attention_thresholds")
+                    elif version == 2:
+                        document["policy"]["attention_thresholds"] = {
+                            "silence_ratio_at_least": 0.3,
+                            "internal_pause_seconds_at_least": 1.0,
+                        }
+                    document["plan_id"] = _canonical_sha256(
+                        {
+                            key: value
+                            for key, value in document.items()
+                            if key != "plan_id"
+                        }
+                    )
+                    output.write_text(json.dumps(document))
+                    self.assertEqual(load_cohort_review_plan(output).document, document)
+
     def test_decision_enums_raise_domain_errors_in_builders_and_loaders(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
