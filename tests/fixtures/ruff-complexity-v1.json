@@ -219,12 +219,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/speech_quality.py",
-      "scope": "analyze_generated_speech_samples",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/authoring/terminal_conflict_workspace.py",
       "scope": "_publish_staged_terminal_conflict_workspace",
       "count": 1
@@ -755,12 +749,6 @@
       "code": "PLR0912",
       "path": "vntts/authoring/robustness_asr.py",
       "scope": "build_speech_robustness_asr_report",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/speech_quality.py",
-      "scope": "analyze_generated_speech_samples",
       "count": 1
     },
     {
