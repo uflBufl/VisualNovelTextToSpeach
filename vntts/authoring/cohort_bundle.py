@@ -83,6 +83,12 @@ class _PlanPolicy(TypedDict):
     selected_queue_ids: NotRequired[list[str]]
 
 
+class _BlockedPlanItem(TypedDict):
+    queue_id: str
+    line_id: str
+    reason: str
+
+
 class _PlanDocument(TypedDict):
     plan_id: str
     workspace_id: str
@@ -96,7 +102,7 @@ class _PlanDocument(TypedDict):
     pending_item_count: int
     sample_item_count: int
     blocked_item_count: int
-    blocked_items: list[_PlanItem]
+    blocked_items: list[_BlockedPlanItem]
     cohorts: list[_PlanCohort]
 
 
@@ -263,6 +269,12 @@ def _is_plan_policy(value: object) -> TypeIs[_PlanPolicy]:
     )
 
 
+def _is_blocked_plan_item(value: object) -> TypeIs[_BlockedPlanItem]:
+    return isinstance(value, dict) and all(
+        isinstance(value.get(field), str) for field in ("queue_id", "line_id", "reason")
+    )
+
+
 def _is_plan_document(value: object) -> TypeIs[_PlanDocument]:
     if not isinstance(value, dict):
         return False
@@ -286,7 +298,7 @@ def _is_plan_document(value: object) -> TypeIs[_PlanDocument]:
         and all(type(value.get(field)) is int for field in counts)
         and _is_plan_policy(value.get("policy"))
         and isinstance(value.get("blocked_items"), list)
-        and all(_is_plan_item(item) for item in value["blocked_items"])
+        and all(_is_blocked_plan_item(item) for item in value["blocked_items"])
         and isinstance(value.get("cohorts"), list)
         and all(_is_plan_cohort(cohort) for cohort in value["cohorts"])
     )
@@ -1287,9 +1299,7 @@ def _reconciled_successors(
     expected_by_id: dict[str, tuple[str, str]] = {}
     clean_samples = 1
     used_terminal = False
-    seen_target_identities: set[tuple[tuple[object, object, object, object], ...]] = (
-        set()
-    )
+    seen_target_identities: set[tuple[tuple[str, str, str, str], ...]] = set()
     while remaining:
         target_identity = _cohort_target_identity(remaining)
         if target_identity in seen_target_identities:
@@ -1445,14 +1455,14 @@ def _assert_current_source_snapshot(current: _CurrentSourceSnapshot) -> None:
 
 def _cohort_target_identity(
     items: Sequence[_PlanItem | _DecisionItem],
-) -> tuple[tuple[object, object, object, object], ...]:
+) -> tuple[tuple[str, str, str, str], ...]:
     return tuple(
         sorted(
             (
-                value.get("queue_id"),
-                value.get("line_id"),
-                value.get("text_sha256"),
-                value.get("audio_sha256"),
+                value["queue_id"],
+                value["line_id"],
+                value["text_sha256"],
+                value["audio_sha256"],
             )
             for value in items
         )

@@ -66,6 +66,56 @@ class AuthoringCohortBundleTest(unittest.TestCase):
             all(sample.item.pace_advisories == () for sample in loaded_samples)
         )
 
+    def test_bundle_retains_blocked_legacy_records_without_audio_fields(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = self.create_sources(root)
+            blocked_workspace, state_path, queue_id = sources[0]
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["items"][queue_id].pop("generation_profile")
+            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            before = state_path.read_bytes()
+
+            bundle = build_cohort_review_bundle([source[0] for source in sources])
+            blocked_plan = next(
+                source["plan"]
+                for source in bundle.document["sources"]
+                if source["workspace"] == str(blocked_workspace.resolve())
+            )
+            blocked_record = blocked_plan["blocked_items"][0]
+            self.assertEqual(set(blocked_record), {"queue_id", "line_id", "reason"})
+            self.assertEqual(blocked_record["queue_id"], queue_id)
+            self.assertIn("Generation profile", blocked_record["reason"])
+            self.assertEqual(bundle.document["blocked_item_count"], 1)
+            self.assertEqual(bundle.document["blocked_source_occurrence_count"], 1)
+            self.assertEqual(bundle.document["pending_item_count"], 1)
+            self.assertEqual(bundle.document["cohort_count"], 1)
+
+            publication = root / "blocked-bundle.json"
+            write_cohort_review_bundle(bundle, publication)
+            self.assertEqual(load_cohort_review_bundle(publication), bundle)
+            current, samples = load_cohort_review_bundle_samples(bundle)
+            self.assertEqual(current, bundle)
+            self.assertEqual(len(samples), 1)
+            self.assertEqual(samples[0].workspace, sources[1][0].resolve())
+            self.assertEqual(state_path.read_bytes(), before)
+
+            second_state_path = sources[1][1]
+            second_state = json.loads(second_state_path.read_text(encoding="utf-8"))
+            second_state["items"][sources[1][2]].pop("generation_profile")
+            second_state_path.write_text(json.dumps(second_state), encoding="utf-8")
+            blocked_only = build_cohort_review_bundle([source[0] for source in sources])
+            self.assertEqual(blocked_only.document["workspace_count"], 2)
+            self.assertEqual(blocked_only.document["cohort_count"], 0)
+            self.assertEqual(blocked_only.document["blocked_item_count"], 1)
+            self.assertEqual(
+                blocked_only.document["blocked_source_occurrence_count"], 2
+            )
+            self.assertEqual(load_cohort_review_bundle_samples(blocked_only)[1], ())
+            empty_publication = root / "blocked-only.json"
+            write_cohort_review_bundle(blocked_only, empty_publication)
+            self.assertEqual(load_cohort_review_bundle(empty_publication), blocked_only)
+
     def test_duplicate_source_and_tampered_inventory_are_rejected(self):
         with TemporaryDirectory() as directory:
             sources = self.create_sources(Path(directory))
