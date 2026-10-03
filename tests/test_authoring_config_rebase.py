@@ -123,6 +123,36 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
                         ):
                             validate_config_rebase_workspace(output, workspace, state)
 
+    def test_rebase_replaces_inherited_target_overlay_in_config_identity(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, source, target = _prepare(root)
+            carried = create_resume_workspace(
+                next((root / "imports").glob("legacy-*")),
+                root / "derived",
+                story_index=fixture["job"]["story_index"],
+                voice_manifest=target / "inputs/voice/manifest.json",
+                backend="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                narrator_character="Rhiannon",
+                carry_forward_from=source,
+                carry_forward_characters=("Rhiannon",),
+            ).directory
+            self.assertIn("carry_forward", load_workspace_authority(carried)[1])
+            output = rebase_workspace_config(
+                source, carried, root / "rebased"
+            ).directory
+            _directory, workspace, _digest = load_workspace_authority(output)
+            state = load_generation_state(
+                output / "generated-audio/generation-state.json", output / "queue.jsonl"
+            )
+            self.assertNotIn("carry_forward", workspace)
+            validate_config_rebase_workspace(output, workspace, state)
+            self.assertFalse(
+                rebase_workspace_config(source, carried, root / "rebased").created
+            )
+
     def test_rebases_terminal_base_items_onto_strict_additive_queue(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

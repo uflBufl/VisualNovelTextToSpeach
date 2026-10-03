@@ -76,6 +76,12 @@ _WORKFLOW_FIELDS = {
     "terminal_conflict_resolution",
     "config_rebase",
 }
+_REMOVED_TARGET_FIELDS = (
+    "carry_forward",
+    "outcome_merge",
+    "terminal_conflict_merge",
+    "failure_reference_binding",
+)
 JsonObject = dict[str, object]
 Route = tuple[str, tuple[str, ...]]
 Snapshots = list[tuple[Path, str]]
@@ -633,6 +639,7 @@ def _rebase_config_fingerprint(
         target,
         selection.target_import_id,
         overlays={
+            **dict.fromkeys(_REMOVED_TARGET_FIELDS),
             "config_rebase": rebase,
             "audio_event_composition": composition,
         },
@@ -859,12 +866,7 @@ def _rebase_workspace_document(
     fingerprint: str,
 ) -> JsonObject:
     workspace = copy.deepcopy(target)
-    for field in (
-        "carry_forward",
-        "outcome_merge",
-        "terminal_conflict_merge",
-        "failure_reference_binding",
-    ):
+    for field in _REMOVED_TARGET_FIELDS:
         workspace.pop(field, None)
     if composition is not None:
         workspace["audio_event_composition"] = copy.deepcopy(composition)
