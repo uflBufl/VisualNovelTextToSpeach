@@ -864,7 +864,11 @@ def _validated_observation_entry(
         entry.get("audio_sha256"), "Cohort observation audio sha256"
     )
     assessment = entry.get("assessment")
-    if key in seen or assessment not in {"heard", "bad"}:
+    if (
+        key in seen
+        or not isinstance(assessment, str)
+        or assessment not in {"heard", "bad"}
+    ):
         raise CohortReviewError("Cohort review observation authority is invalid")
     reasons = entry.get("defect_reasons", [])
     if (

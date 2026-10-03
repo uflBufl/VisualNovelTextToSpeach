@@ -703,6 +703,49 @@ class AuthoringCohortBundleTest(unittest.TestCase):
         self.assertEqual(assessments[0].assessment, "bad")
         self.assertEqual(assessments[0].defect_reasons, ())
 
+    def test_malformed_observation_assessments_raise_domain_errors(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = self.create_sources(root)
+            bundle = build_cohort_review_bundle([value[0] for value in sources])
+            publication = root / "bundle.json"
+            write_cohort_review_bundle(bundle, publication)
+            cohort = bundle.document["cohorts"][0]
+            sample = cohort["samples"][0]
+            path = cohort_bundle_module.cohort_review_observations_path(publication)
+            for version in (1, 2):
+                for assessment in ([], {}, None, True, 1, "unknown"):
+                    with self.subTest(version=version, assessment=assessment):
+                        entry = {
+                            "workspace_id": cohort["workspace_id"],
+                            "cohort_id": cohort["cohort_id"],
+                            "queue_id": sample["queue_id"],
+                            "audio_sha256": sample["audio_sha256"],
+                            "assessment": assessment,
+                        }
+                        if version == 2:
+                            entry["defect_reasons"] = []
+                        body = {
+                            "schema": cohort_bundle_module.COHORT_REVIEW_OBSERVATIONS_SCHEMA,
+                            "schema_version": version,
+                            "root_bundle_id": bundle.bundle_id,
+                            "current_bundle_id": bundle.bundle_id,
+                            "observations": [entry],
+                        }
+                        document = {
+                            **body,
+                            "observations_id": cohort_bundle_module._canonical_sha256(
+                                body
+                            ),
+                        }
+                        path.write_text(json.dumps(document), encoding="utf-8")
+                        with self.assertRaisesRegex(
+                            CohortReviewError, "authority is invalid"
+                        ):
+                            cohort_bundle_module.load_cohort_review_observations(
+                                publication, bundle, bundle
+                            )
+
     def test_successor_restores_only_exact_remaining_observations(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
