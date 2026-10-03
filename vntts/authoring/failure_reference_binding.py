@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import NotRequired, TypeAlias, TypedDict
 
 from vntts_artifacts.file_integrity import sha256_file
 
+from vntts.authoring.authority import (
+    AuthoringAuthorityError,
+    AuthoritySnapshot,
+    assert_authority_snapshot,
+    capture_authority_file,
+)
 from vntts.authoring.failure_reference_binding_records import (
     FAILURE_REFERENCE_BINDING_SCHEMA,
     FAILURE_REFERENCE_BINDING_VERSION,
@@ -101,10 +107,20 @@ class _AuditSnapshots(TypedDict):
     audit: _AuditSnapshot
     key: _KeySnapshot
     decisions: _DecisionSnapshot
-    payloads: dict[str, bytes]
-    audit_sha256: str
-    key_sha256: str
-    decisions_sha256: str
+    files: dict[str, AuthoritySnapshot]
+
+
+@dataclass(frozen=True)
+class _SelectedReference:
+    snapshot: AuthoritySnapshot
+    relative: Path
+
+
+@dataclass(frozen=True)
+class _BindingArtifacts:
+    groups: list[JsonDocument]
+    overrides: dict[str, str]
+    references: tuple[_SelectedReference, ...]
 
 
 def _document(value: object, message: str) -> JsonDocument:
@@ -230,6 +246,18 @@ def publish_failure_reference_binding(
         )
     audit_directory = audit_argument.resolve()
     output = output_argument.resolve()
+    try:
+        snapshots = _validated_audit_snapshots(audit_directory)
+        artifacts = _binding_artifacts(audit_directory, snapshots)
+        binding_id, document = _binding_document(snapshots, artifacts)
+        return _publish_binding(
+            audit_directory, output, snapshots, artifacts, binding_id, document
+        )
+    except AuthoringAuthorityError as error:
+        raise FailureReferenceBindingError(str(error)) from error
+
+
+def _validated_audit_snapshots(audit_directory: Path) -> _AuditSnapshots:
     from vntts.authoring.failure_reference_audit import (
         FailureReferenceAuditError,
         load_failure_reference_audit,
@@ -243,7 +271,6 @@ def publish_failure_reference_binding(
         raise FailureReferenceBindingError(str(error)) from error
     snapshots = _load_audit_snapshots(audit_directory)
     audit = snapshots["audit"]
-    key = snapshots["key"]
     decisions = snapshots["decisions"]
     if validated_audit.audit_id != audit["audit_id"] or validated_decisions.get(
         "decision_set_id"
@@ -251,97 +278,106 @@ def publish_failure_reference_binding(
         raise FailureReferenceBindingError(
             "Reference audit changed while binding inputs were captured"
         )
-    groups = {value["group_id"]: value for value in audit["groups"]}
-    private_groups = {value["group_id"]: value for value in key["groups"]}
-    decision_by_group = {value["group_id"]: value for value in decisions["decisions"]}
-    if set(decision_by_group) != set(groups):
+    return snapshots
+
+
+def _binding_artifacts(
+    directory: Path, snapshots: _AuditSnapshots
+) -> _BindingArtifacts:
+    groups = {value["group_id"]: value for value in snapshots["audit"]["groups"]}
+    private_groups = {value["group_id"]: value for value in snapshots["key"]["groups"]}
+    decisions = {
+        value["group_id"]: value for value in snapshots["decisions"]["decisions"]
+    }
+    if set(decisions) != set(groups):
         raise FailureReferenceBindingError(
             "Reference binding requires one terminal decision for every audit group"
         )
-
     stable_groups: list[JsonDocument] = []
     overrides: dict[str, str] = {}
-    sources: list[tuple[Path, str, Path, bytes]] = []
+    references: list[_SelectedReference] = []
     for group_id in sorted(groups):
         group = groups[group_id]
-        private = private_groups[group_id]
-        decision = decision_by_group[group_id]
-        candidate_id = decision["decision"]
-        if candidate_id == "neither_acceptable":
-            raise FailureReferenceBindingError(
-                f"Reference binding cannot publish a rejected group: {group_id}"
-            )
-        public_candidate = next(
-            value
-            for value in group["candidates"]
-            if value["candidate_id"] == candidate_id
+        stable_group, reference, voice = _selected_binding_group(
+            directory, group, private_groups[group_id], decisions[group_id]
         )
-        private_candidate = next(
-            value
-            for value in private["candidates"]
-            if value["candidate_id"] == candidate_id
-        )
-        source = _contained_regular_file(
-            audit_directory, public_candidate["audio"], "audit candidate"
-        )
-        payload = source.read_bytes()
-        digest = hashlib.sha256(payload).hexdigest()
-        if (
-            digest != public_candidate["sha256"]
-            or digest != private_candidate["source_sha256"]
-            or digest != decision["selected_reference_sha256"]
-        ):
-            raise FailureReferenceBindingError(
-                f"Selected reference authority changed: {group_id}"
-            )
-        suffix = source.suffix.lower() or ".audio"
-        relative = Path("references") / group_id / f"selected{suffix}"
-        synthetic_voice = f"Selected failure reference {group_id[:16]}"
-        cases = []
         for case in group["cases"]:
-            queue_id = _text(case.get("queue_id"), "Reference binding queue ID")
+            queue_id = case["queue_id"]
             if queue_id in overrides:
                 raise FailureReferenceBindingError(
                     f"Reference binding queue ID belongs to multiple groups: {queue_id}"
                 )
-            overrides[queue_id] = synthetic_voice
-            cases.append(
-                {
-                    "queue_id": queue_id,
-                    "failure_sha256": _sha256(
-                        case.get("failure_sha256"), "Reference failure SHA-256"
-                    ),
-                }
-            )
-        if decision["case_queue_ids"] != [value["queue_id"] for value in cases]:
-            raise FailureReferenceBindingError(
-                f"Reference binding case authority changed: {group_id}"
-            )
-        stable_group: JsonDocument = {
-            "group_id": group_id,
-            "synthesis_voice_character": _text(
-                group.get("synthesis_voice_character"),
-                "Audited synthesis voice",
-            ),
-            "control_character": _text(
-                private.get("control_character"), "Audited control character"
-            ),
-            "speaker": _text(private.get("speaker"), "Audited speaker"),
-            "candidate_id": candidate_id,
-            "voice_character": synthetic_voice,
-            "reference": relative.as_posix(),
-            "reference_sha256": digest,
-            "source_reference": _safe_relative(
-                private_candidate.get("source_reference"),
-                "Audited source reference",
-            ).as_posix(),
-            "cases": cases,
-        }
-        if "selection_authority" in decision:
-            stable_group["selection_authority"] = decision["selection_authority"]
+            overrides[queue_id] = voice
         stable_groups.append(stable_group)
-        sources.append((source, digest, relative, payload))
+        references.append(reference)
+    return _BindingArtifacts(stable_groups, overrides, tuple(references))
 
+
+def _selected_binding_group(
+    directory: Path, group: _AuditGroup, private: _PrivateGroup, decision: _Decision
+) -> tuple[JsonDocument, _SelectedReference, str]:
+    group_id = group["group_id"]
+    candidate_id = decision["decision"]
+    if candidate_id == "neither_acceptable":
+        raise FailureReferenceBindingError(
+            f"Reference binding cannot publish a rejected group: {group_id}"
+        )
+    public_candidate = next(
+        value for value in group["candidates"] if value["candidate_id"] == candidate_id
+    )
+    private_candidate = next(
+        value
+        for value in private["candidates"]
+        if value["candidate_id"] == candidate_id
+    )
+    source = _contained_regular_file(
+        directory, public_candidate["audio"], "audit candidate"
+    )
+    snapshot = capture_authority_file(source, "selected reference", root=directory)
+    digest = snapshot.sha256
+    if (
+        digest != public_candidate["sha256"]
+        or digest != private_candidate["source_sha256"]
+        or digest != decision["selected_reference_sha256"]
+    ):
+        raise FailureReferenceBindingError(
+            f"Selected reference authority changed: {group_id}"
+        )
+    suffix = source.suffix.lower() or ".audio"
+    relative = Path("references") / group_id / f"selected{suffix}"
+    cases = [
+        {"queue_id": case["queue_id"], "failure_sha256": case["failure_sha256"]}
+        for case in group["cases"]
+    ]
+    if decision["case_queue_ids"] != [case["queue_id"] for case in group["cases"]]:
+        raise FailureReferenceBindingError(
+            f"Reference binding case authority changed: {group_id}"
+        )
+    voice = f"Selected failure reference {group_id[:16]}"
+    document: JsonDocument = {
+        "group_id": group_id,
+        "synthesis_voice_character": group["synthesis_voice_character"],
+        "control_character": private["control_character"],
+        "speaker": private["speaker"],
+        "candidate_id": candidate_id,
+        "voice_character": voice,
+        "reference": relative.as_posix(),
+        "reference_sha256": digest,
+        "source_reference": _safe_relative(
+            private_candidate["source_reference"], "Audited source reference"
+        ).as_posix(),
+        "cases": cases,
+    }
+    if "selection_authority" in decision:
+        document["selection_authority"] = decision["selection_authority"]
+    return document, _SelectedReference(snapshot, relative), voice
+
+
+def _binding_document(
+    snapshots: _AuditSnapshots, artifacts: _BindingArtifacts
+) -> tuple[str, JsonDocument]:
+    audit = snapshots["audit"]
+    decisions = snapshots["decisions"]
     identity = {
         "schema": FAILURE_REFERENCE_BINDING_SCHEMA,
         "schema_version": FAILURE_REFERENCE_BINDING_VERSION,
@@ -353,13 +389,15 @@ def publish_failure_reference_binding(
             "queue_sha256": audit["queue_sha256"],
             "state_sha256": audit["state_sha256"],
             "voice_manifest_sha256": audit["voice_manifest_sha256"],
-            "audit_sha256": snapshots["audit_sha256"],
-            "blind_key_sha256": snapshots["key_sha256"],
-            "decisions_sha256": snapshots["decisions_sha256"],
+            "audit_sha256": snapshots["files"]["audit"].sha256,
+            "blind_key_sha256": snapshots["files"]["key"].sha256,
+            "decisions_sha256": snapshots["files"]["decisions"].sha256,
         },
-        "groups": stable_groups,
-        "queue_voice_overrides": dict(sorted(overrides.items())),
-        "queue_voice_overrides_sha256": queue_voice_overrides_sha256(overrides),
+        "groups": artifacts.groups,
+        "queue_voice_overrides": dict(sorted(artifacts.overrides.items())),
+        "queue_voice_overrides_sha256": queue_voice_overrides_sha256(
+            artifacts.overrides
+        ),
         "authority": (
             "This overlay selects reference bytes for exact failed queue IDs only. "
             "It does not approve generated audio or rewrite the source voice manifest."
@@ -371,29 +409,31 @@ def publish_failure_reference_binding(
         "binding_id": binding_id,
         "published_at": datetime.now(timezone.utc).isoformat(),
     }
+    return binding_id, document
+
+
+def _publish_binding(
+    audit_directory: Path,
+    output: Path,
+    snapshots: _AuditSnapshots,
+    artifacts: _BindingArtifacts,
+    binding_id: str,
+    document: JsonDocument,
+) -> FailureReferenceBinding:
     if output.exists() or output.is_symlink():
         existing = load_failure_reference_binding(output)
         if existing.binding_id != binding_id:
             raise FailureReferenceBindingError(
                 f"Reference binding output conflicts with another identity: {output}"
             )
-        return FailureReferenceBinding(
-            existing.directory,
-            existing.binding_id,
-            existing.audit_id,
-            existing.decision_set_id,
-            existing.group_count,
-            existing.case_count,
-            False,
-        )
-
+        return existing
     output.parent.mkdir(parents=True, exist_ok=True)
     with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
-        for _source, digest, relative, payload in sources:
-            target = staging / relative
+        for reference in artifacts.references:
+            target = staging / reference.relative
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(payload)
-            if sha256_file(target) != digest:
+            target.write_bytes(reference.snapshot.payload)
+            if sha256_file(target) != reference.snapshot.sha256:
                 raise FailureReferenceBindingError(
                     "Selected reference changed while it was copied"
                 )
@@ -402,34 +442,50 @@ def publish_failure_reference_binding(
             encoding="utf-8",
         )
         load_failure_reference_binding(staging)
-        _assert_audit_snapshots_unchanged(audit_directory, snapshots)
-        try:
-            final_audit = load_failure_reference_audit(audit_directory)
-            final_decisions = load_failure_reference_decisions(audit_directory)
-        except FailureReferenceAuditError as error:
-            raise FailureReferenceBindingError(str(error)) from error
-        if (
-            final_audit.audit_id != audit["audit_id"]
-            or final_decisions.get("decision_set_id") != decisions["decision_set_id"]
-        ):
-            raise FailureReferenceBindingError(
-                "Reference audit changed before binding publication"
-            )
-        for source, digest, _relative, _payload in sources:
-            if not source.is_file() or sha256_file(source) != digest:
-                raise FailureReferenceBindingError(
-                    "Selected reference changed before binding publication"
-                )
+        _assert_binding_sources(audit_directory, snapshots, artifacts.references)
         rename_directory_no_replace(staging, output)
     return FailureReferenceBinding(
         output,
         binding_id,
-        audit["audit_id"],
-        decisions["decision_set_id"],
-        len(stable_groups),
-        len(overrides),
+        snapshots["audit"]["audit_id"],
+        snapshots["decisions"]["decision_set_id"],
+        len(artifacts.groups),
+        len(artifacts.overrides),
         True,
     )
+
+
+def _assert_binding_sources(
+    directory: Path,
+    snapshots: _AuditSnapshots,
+    references: tuple[_SelectedReference, ...],
+) -> None:
+    from vntts.authoring.failure_reference_audit import (
+        FailureReferenceAuditError,
+        load_failure_reference_audit,
+        load_failure_reference_decisions,
+    )
+
+    _assert_audit_snapshots_unchanged(snapshots)
+    try:
+        final_audit = load_failure_reference_audit(directory)
+        final_decisions = load_failure_reference_decisions(directory)
+    except FailureReferenceAuditError as error:
+        raise FailureReferenceBindingError(str(error)) from error
+    if (
+        final_audit.audit_id != snapshots["audit"]["audit_id"]
+        or final_decisions.get("decision_set_id")
+        != snapshots["decisions"]["decision_set_id"]
+    ):
+        raise FailureReferenceBindingError(
+            "Reference audit changed before binding publication"
+        )
+    for reference in references:
+        source = reference.snapshot.path
+        if not source.is_file() or sha256_file(source) != reference.snapshot.sha256:
+            raise FailureReferenceBindingError(
+                "Selected reference changed before binding publication"
+            )
 
 
 def _load_audit_snapshots(directory: Path) -> _AuditSnapshots:
@@ -446,17 +502,16 @@ def _load_audit_snapshots(directory: Path) -> _AuditSnapshots:
         raise FailureReferenceBindingError(
             "Reference audit blind key mode must be 0600"
         )
-    try:
-        payloads = {name: path.read_bytes() for name, path in paths.items()}
-        documents: dict[str, JsonDocument] = {
-            name: _document(
-                json.loads(payload.decode("utf-8")),
-                "Reference audit inventory is malformed",
-            )
-            for name, payload in payloads.items()
-        }
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise FailureReferenceBindingError(str(error)) from error
+    files = {
+        name: capture_authority_file(
+            path, f"reference audit {path.name}", root=directory
+        )
+        for name, path in paths.items()
+    }
+    documents = {
+        name: snapshot.json_document("reference audit inventory")
+        for name, snapshot in files.items()
+    }
     audit = documents["audit"]
     key = documents["key"]
     decisions = documents["decisions"]
@@ -503,31 +558,19 @@ def _load_audit_snapshots(directory: Path) -> _AuditSnapshots:
         private_groups
     ) != audit.get("blind_key_groups_sha256"):
         raise FailureReferenceBindingError("Reference audit inventory changed")
-    group_ids = [value.get("group_id") for value in groups if isinstance(value, dict)]
-    private_ids = [
-        value.get("group_id") for value in private_groups if isinstance(value, dict)
-    ]
-    decision_ids = [
-        value.get("group_id") for value in decision_values if isinstance(value, dict)
-    ]
+    typed_groups = _audit_groups(groups)
+    typed_private_groups = _private_groups(private_groups)
+    typed_decisions = _decisions(decision_values)
+    group_ids = [value["group_id"] for value in typed_groups]
+    private_ids = [value["group_id"] for value in typed_private_groups]
+    decision_ids = [value["group_id"] for value in typed_decisions]
     if (
-        len(group_ids) != len(groups)
-        or len(private_ids) != len(private_groups)
-        or len(decision_ids) != len(decision_values)
-        or len(set(group_ids)) != len(group_ids)
+        len(set(group_ids)) != len(group_ids)
         or set(group_ids) != set(private_ids)
         or len(set(decision_ids)) != len(decision_ids)
         or not set(decision_ids).issubset(group_ids)
     ):
         raise FailureReferenceBindingError("Reference audit group identity changed")
-    for field in (
-        "workspace_sha256",
-        "queue_sha256",
-        "state_sha256",
-        "voice_manifest_sha256",
-    ):
-        _sha256(audit.get(field), f"Reference audit {field}")
-    _text(audit.get("workspace_id"), "Reference audit workspace ID")
     return _AuditSnapshots(
         audit=_AuditSnapshot(
             audit_id=audit_id,
@@ -547,30 +590,17 @@ def _load_audit_snapshots(directory: Path) -> _AuditSnapshots:
                 audit.get("voice_manifest_sha256"),
                 "Reference audit voice_manifest_sha256",
             ),
-            groups=_audit_groups(groups),
+            groups=typed_groups,
         ),
-        key=_KeySnapshot(groups=_private_groups(private_groups)),
+        key=_KeySnapshot(groups=typed_private_groups),
         decisions=_DecisionSnapshot(
             decision_set_id=decision_set_id,
-            decisions=_decisions(decision_values),
+            decisions=typed_decisions,
         ),
-        payloads=payloads,
-        audit_sha256=hashlib.sha256(payloads["audit"]).hexdigest(),
-        key_sha256=hashlib.sha256(payloads["key"]).hexdigest(),
-        decisions_sha256=hashlib.sha256(payloads["decisions"]).hexdigest(),
+        files=files,
     )
 
 
-def _assert_audit_snapshots_unchanged(
-    directory: Path, snapshots: _AuditSnapshots
-) -> None:
-    for name, filename in (
-        ("audit", "audit.json"),
-        ("key", ".blind-key.json"),
-        ("decisions", "decisions.json"),
-    ):
-        path = directory / filename
-        if not path.is_file() or path.read_bytes() != snapshots["payloads"][name]:
-            raise FailureReferenceBindingError(
-                f"Reference audit {filename} changed during binding publication"
-            )
+def _assert_audit_snapshots_unchanged(snapshots: _AuditSnapshots) -> None:
+    for name, snapshot in snapshots["files"].items():
+        assert_authority_snapshot(snapshot, f"reference audit {name}")

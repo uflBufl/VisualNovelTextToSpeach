@@ -11,6 +11,7 @@ from tests.test_authoring_bulk_generation import SyntheticRenderer
 from tests.test_authoring_failure_reference_audit import (
     create_failed_reference_workspace,
 )
+from vntts.authoring import failure_reference_audit as failure_audit_module
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.cohort_review import (
@@ -105,6 +106,59 @@ class FailureReferenceBindingTest(unittest.TestCase):
             )
             self.assertEqual(selected["cases"][0]["queue_id"], queue_id)
             self.assertEqual(selected["group_id"], group["group_id"])
+
+    def test_captured_group_ids_are_validated_before_indexing(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit, *_rest = self.create_decided_audit(root)
+            paths = [
+                audit / name
+                for name in ("audit.json", ".blind-key.json", "decisions.json")
+            ]
+            originals = [path.read_bytes() for path in paths]
+            document, key, decisions = [json.loads(payload) for payload in originals]
+            document["groups"][0]["group_id"] = []
+            key["groups"][0]["group_id"] = []
+            decisions["decisions"][0]["group_id"] = []
+            document["blind_key_groups_sha256"] = canonical_document_sha256(
+                key["groups"]
+            )
+            document["audit_id"] = canonical_document_sha256(
+                {name: value for name, value in document.items() if name != "audit_id"}
+            )
+            key["audit_id"] = decisions["audit_id"] = document["audit_id"]
+            decisions["decision_set_id"] = canonical_document_sha256(
+                {
+                    name: value
+                    for name, value in decisions.items()
+                    if name != "decision_set_id"
+                }
+            )
+            captured = [
+                json.dumps(value).encode() for value in (document, key, decisions)
+            ]
+            load_decisions = failure_audit_module.load_failure_reference_decisions
+
+            def replace_after_initial_validation(*args, **kwargs):
+                result = load_decisions(*args, **kwargs)
+                for path, payload in zip(paths, captured, strict=True):
+                    path.write_bytes(payload)
+                return result
+
+            try:
+                with patch.object(
+                    failure_audit_module,
+                    "load_failure_reference_decisions",
+                    side_effect=replace_after_initial_validation,
+                ):
+                    with self.assertRaisesRegex(
+                        FailureReferenceBindingError, "group ID"
+                    ):
+                        publish_failure_reference_binding(audit, root / "binding")
+                self.assertFalse((root / "binding").exists())
+            finally:
+                for path, payload in zip(paths, originals, strict=True):
+                    path.write_bytes(payload)
 
     def test_binding_schema_version_requires_exact_integer(self):
         with TemporaryDirectory() as directory:

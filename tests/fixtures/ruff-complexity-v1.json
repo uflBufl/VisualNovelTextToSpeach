@@ -81,12 +81,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/failure_reference_binding.py",
-      "scope": "publish_failure_reference_binding",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/authoring/failure_reference_preview.py",
       "scope": "FailureReferencePreviewService.generate",
       "count": 1
@@ -651,12 +645,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/authoring/failure_reference_binding.py",
-      "scope": "publish_failure_reference_binding",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/authoring/failure_reference_preview.py",
       "scope": "FailureReferencePreviewService.generate",
       "count": 1
@@ -1127,12 +1115,6 @@
       "code": "PLR0915",
       "path": "vntts/authoring/failure_reference_audit_ui.py",
       "scope": "FailureReferenceAuditDialog.__init__",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/failure_reference_binding.py",
-      "scope": "publish_failure_reference_binding",
       "count": 1
     },
     {
