@@ -467,7 +467,12 @@ def build_cohort_review_decision(
 
 
 def _validate_build_decision(decision: str) -> None:
-    if decision not in {"accepted", "rejected", "split", "expand"}:
+    if not isinstance(decision, str) or decision not in {
+        "accepted",
+        "rejected",
+        "split",
+        "expand",
+    }:
         raise CohortReviewError(
             "Cohort decision must be accepted, rejected, split, or expand"
         )
@@ -715,6 +720,7 @@ def _validate_bound_workspace_identity(
 ) -> None:
     if (
         workspace.get("schema") != WORKSPACE_SCHEMA
+        or type(workspace.get("schema_version")) is not int
         or workspace.get("schema_version") != WORKSPACE_VERSION
     ):
         raise CohortReviewError("Unsupported authoring workspace")
@@ -1194,7 +1200,7 @@ def _sample_assessment_values(value: object) -> tuple[str, object]:
         raise CohortReviewError(
             "Sample assessment must be text or an assessment/reasons object"
         )
-    if assessment not in {"acceptable", "bad"}:
+    if not isinstance(assessment, str) or assessment not in {"acceptable", "bad"}:
         raise CohortReviewError("Sample assessment must be acceptable or bad")
     return assessment, reasons
 
@@ -1252,7 +1258,12 @@ def _decision_document_header(document: JsonObject) -> tuple[int, str]:
     _required_sha256(document.get("plan_id"), "Plan ID")
     _required_sha256(document.get("cohort_id"), "Cohort ID")
     decision = document.get("decision")
-    if decision not in {"accepted", "rejected", "split", "expand"}:
+    if not isinstance(decision, str) or decision not in {
+        "accepted",
+        "rejected",
+        "split",
+        "expand",
+    }:
         raise CohortReviewError("Cohort review decision is unsupported")
     return version, decision
 
@@ -1321,7 +1332,9 @@ def _validated_document_assessments(
         queue_id = _required_text(
             value.get("queue_id"), "Cohort sample assessment queue ID"
         )
-        if value.get("assessment") not in {"heard", "acceptable", "bad"}:
+        if not isinstance(value.get("assessment"), str) or value.get(
+            "assessment"
+        ) not in {"heard", "acceptable", "bad"}:
             raise CohortReviewError("Cohort sample assessment is unsupported")
         expected_fields = {"queue_id", "assessment"}
         if version >= 2:
@@ -1414,6 +1427,7 @@ def _normalized_document_item_statuses(
         if (
             not isinstance(value, dict)
             or set(value) != {"queue_id", "review_status"}
+            or not isinstance(value.get("review_status"), str)
             or value.get("review_status") not in allowed_statuses
         ):
             raise CohortReviewError("Cohort item review status is invalid")
@@ -1532,7 +1546,10 @@ def _cohort_identity(workspace: JsonObject, result: JsonObject) -> JsonObject:
     if binding is not None:
         if not isinstance(binding, dict):
             raise CohortReviewError("Source-reference binding must be an object")
-        if binding.get("schema_version") != 1:
+        if (
+            type(binding.get("schema_version")) is not int
+            or binding.get("schema_version") != 1
+        ):
             raise CohortReviewError("Source-reference binding version is unsupported")
         _required_text(
             binding.get("source_voice_character"),

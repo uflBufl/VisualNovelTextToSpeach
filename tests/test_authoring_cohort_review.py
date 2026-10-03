@@ -79,6 +79,54 @@ class AuthoringCohortReviewTest(unittest.TestCase):
         self.assertTrue(cohort["items"][0]["sampled"])
         self.assertEqual(first.plan_id, first.document["plan_id"])
 
+    def test_decision_enums_raise_domain_errors_in_builders_and_loaders(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state, queue_id = self.create_pending_workspace(root)
+            plan = build_cohort_review_plan(workspace)
+            cohort_id = plan.document["cohorts"][0]["cohort_id"]
+            accepted = build_cohort_review_decision(
+                plan, cohort_id, "accepted", reviewed_queue_ids=[queue_id]
+            )
+            output = root / "invalid-decision.json"
+            for value in ([], {}, True, 4, None, "unknown"):
+                with self.subTest(value=value):
+                    with self.assertRaises(CohortReviewError):
+                        build_cohort_review_decision(
+                            plan, cohort_id, value, reviewed_queue_ids=[queue_id]
+                        )
+                    with self.assertRaises(CohortReviewError):
+                        build_cohort_review_decision(
+                            plan,
+                            cohort_id,
+                            "accepted",
+                            reviewed_queue_ids=[queue_id],
+                            sample_assessments={
+                                queue_id: {"assessment": value, "defect_reasons": []}
+                            },
+                        )
+                    for mutate in (
+                        lambda d: d.__setitem__("decision", value),
+                        lambda d: d["sample_assessments"][0].__setitem__(
+                            "assessment", value
+                        ),
+                        lambda d: d["item_review_statuses"][0].__setitem__(
+                            "review_status", value
+                        ),
+                    ):
+                        document = deepcopy(accepted.document)
+                        mutate(document)
+                        document["decision_id"] = _canonical_sha256(
+                            {
+                                key: item
+                                for key, item in document.items()
+                                if key != "decision_id"
+                            }
+                        )
+                        output.write_text(json.dumps(document))
+                        with self.assertRaises(CohortReviewError):
+                            load_cohort_review_decision(output)
+
     def test_all_decision_versions_preserve_terminal_and_expand_statuses(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -114,6 +162,30 @@ class AuthoringCohortReviewTest(unittest.TestCase):
                         self.assertEqual(
                             load_cohort_review_decision(output).document, document
                         )
+
+    def test_projection_rejects_noninteger_workspace_version_before_state_write(self):
+        with TemporaryDirectory() as directory:
+            workspace, state, queue_id = self.create_pending_workspace(Path(directory))
+            plan = build_cohort_review_plan(workspace)
+            decision = build_cohort_review_decision(
+                plan,
+                plan.document["cohorts"][0]["cohort_id"],
+                "accepted",
+                reviewed_queue_ids=[queue_id],
+            )
+            workspace_path = workspace / "workspace.json"
+            configuration = json.loads(workspace_path.read_text())
+            before = state.read_bytes()
+            for version in (float(configuration["schema_version"]), True, []):
+                with self.subTest(version=version):
+                    workspace_path.write_text(
+                        json.dumps(dict(configuration, schema_version=version))
+                    )
+                    with self.assertRaisesRegex(
+                        CohortReviewError, "Unsupported authoring workspace"
+                    ):
+                        apply_cohort_review_decision(workspace, plan, decision)
+                    self.assertEqual(state.read_bytes(), before)
 
     def test_legacy_policy_v1_plan_remains_readable(self):
         with TemporaryDirectory() as directory:
