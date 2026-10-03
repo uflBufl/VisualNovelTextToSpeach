@@ -739,6 +739,27 @@ class AuthoringListeningTest(unittest.TestCase):
                         expected_key=expected_key_value,
                     )
 
+    def test_aggregate_rejects_non_finite_captured_documents_with_domain_error(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            session_path = create_listening_session_from_reports(
+                write_model_reports(root, item_count=1), root / "session", seed=5
+            )
+            session = load_listening_session(session_path)
+            key = json.loads(session_path.with_name(".blind-key.json").read_text())
+            for expected in ("session", "key"):
+                with self.subTest(expected=expected):
+                    captured = dict(session if expected == "session" else key)
+                    captured["invalid"] = float("nan")
+                    with self.assertRaisesRegex(ModelListeningError, "not valid JSON"):
+                        aggregate_listening_report(
+                            session_path,
+                            expected_session=captured
+                            if expected == "session"
+                            else session,
+                            expected_key=captured if expected == "key" else key,
+                        )
+
     def test_neither_acceptable_is_not_counted_as_a_tie_or_win(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -700,6 +700,7 @@ class FailureReferenceAuditTest(unittest.TestCase):
                 ("outcome", []),
                 ("outcome", {}),
                 ("outcome", None),
+                ("extra_metadata", float("nan")),
             ):
                 with self.subTest(field=field, value=value):
                     forged = json.loads(json.dumps(original_comparison))
@@ -915,6 +916,40 @@ class FailureReferenceAuditTest(unittest.TestCase):
                     expected_decisions,
                 )
 
+    def assert_reference_import_rejects_malformed_report(
+        self, audit_root, comparison_root, session, queue_id
+    ):
+        report_path = session.with_name("report.json")
+        original = report_path.read_bytes()
+        for field, value, python_equal in (
+            ("schema_version", True, True),
+            ("completed_trials", 1.0, True),
+            ("complete", 1, True),
+            ("completed_trials", float("nan"), False),
+        ):
+            with self.subTest(report_field=field):
+                malformed = json.loads(original)
+                malformed[field] = value
+                self.assertEqual(malformed == json.loads(original), python_equal)
+                try:
+                    report_path.write_text(json.dumps(malformed), encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        ReferenceRenderComparisonError, "stale or changed"
+                    ):
+                        import_reference_render_preference(
+                            audit_root, comparison_root, session, queue_id
+                        )
+                finally:
+                    report_path.write_bytes(original)
+                self.assertEqual(
+                    load_failure_reference_decisions(audit_root)["decisions"], []
+                )
+
+        allowed = json.loads(original)
+        allowed["generated_at"] = "2000-01-01T00:00:00+00:00"
+        allowed["operator_note"] = "Extra metadata remains compatible"
+        report_path.write_text(json.dumps(allowed), encoding="utf-8")
+
     def test_imports_exact_blind_preference_into_fresh_audit(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1024,6 +1059,9 @@ class FailureReferenceAuditTest(unittest.TestCase):
                     finally:
                         path.write_bytes(original)
 
+            self.assert_reference_import_rejects_malformed_report(
+                fresh_audit_root, comparison.directory, session, queue_id
+            )
             comparison_document = json.loads(
                 (comparison.directory / "comparison.json").read_text()
             )

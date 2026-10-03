@@ -932,9 +932,17 @@ def aggregate_listening_report(
         ("session", session, expected_session),
         ("key", key, expected_key),
     ):
-        if expected is not None and canonical_document_sha256(
-            actual
-        ) != canonical_document_sha256(expected):
+        if expected is None:
+            continue
+        try:
+            matches = canonical_document_sha256(actual) == canonical_document_sha256(
+                expected
+            )
+        except (TypeError, ValueError) as error:
+            raise ModelListeningError(
+                f"Listening {label} report input is not valid JSON"
+            ) from error
+        if not matches:
             raise ModelListeningError(
                 f"Listening {label} changed before report aggregation"
             )

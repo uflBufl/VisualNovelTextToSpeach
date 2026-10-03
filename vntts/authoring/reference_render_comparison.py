@@ -1117,15 +1117,19 @@ def _read_comparison_document(root: Path) -> JsonDocument:
     document = load_json_object(
         path, "reference render comparison", error_type=ReferenceRenderComparisonError
     )
-    if (
-        not isinstance(document, dict)
-        or document.get("schema") != REFERENCE_RENDER_SCHEMA
-        or type(document.get("schema_version")) is not int
-        or document.get("schema_version") != REFERENCE_RENDER_VERSION
-        or document.get("comparison_id")
-        != canonical_document_sha256(
+    try:
+        expected_id = canonical_document_sha256(
             {key: value for key, value in document.items() if key != "comparison_id"}
         )
+    except (TypeError, ValueError) as error:
+        raise ReferenceRenderComparisonError(
+            "Reference render comparison identity is invalid"
+        ) from error
+    if (
+        document.get("schema") != REFERENCE_RENDER_SCHEMA
+        or type(document.get("schema_version")) is not int
+        or document.get("schema_version") != REFERENCE_RENDER_VERSION
+        or document.get("comparison_id") != expected_id
     ):
         raise ReferenceRenderComparisonError(
             "Reference render comparison identity is invalid"
@@ -1448,10 +1452,16 @@ def _validate_listening_report(
     except ModelListeningError as error:
         raise ReferenceRenderComparisonError(str(error)) from error
     comparable_fields = set(expected_report) - {"generated_at"}
-    if any(report.get(field) != expected_report[field] for field in comparable_fields):
-        raise ReferenceRenderComparisonError(
-            "Reference render listening report is stale or changed"
-        )
+    actual = {field: report.get(field) for field in comparable_fields}
+    expected = {field: expected_report[field] for field in comparable_fields}
+    try:
+        if canonical_document_sha256(actual) == canonical_document_sha256(expected):
+            return
+    except TypeError, ValueError:
+        pass
+    raise ReferenceRenderComparisonError(
+        "Reference render listening report is stale or changed"
+    )
 
 
 def _load_audit_documents(directory: Path) -> tuple[JsonDocument, JsonDocument]:
@@ -1506,13 +1516,13 @@ def _reference_selection_snapshots(
         try:
             captured = capture_authority_file(path, "reference selection authority")
             captured_document = captured.json_document("reference selection authority")
-        except AuthoringAuthorityError as error:
+            captured_id = canonical_document_sha256(captured_document)
+            expected_id = canonical_document_sha256(document)
+        except (AuthoringAuthorityError, TypeError, ValueError) as error:
             raise ReferenceRenderComparisonError(str(error)) from error
         if (
             path in snapshots and captured.sha256 != snapshots[path]
-        ) or canonical_document_sha256(captured_document) != canonical_document_sha256(
-            document
-        ):
+        ) or captured_id != expected_id:
             raise ReferenceRenderComparisonError(
                 "Reference selection authority changed after validation"
             )
