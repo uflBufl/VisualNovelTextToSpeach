@@ -103,6 +103,16 @@ class _QualityGateContext:
     cohort_count: int
 
 
+@dataclass(frozen=True)
+class _DecisionRequest:
+    decision: str
+    key: tuple[str, str]
+    reviewed: list[str]
+    assessments: Mapping[str, object]
+    next_clean_samples_per_bucket: int | None
+    scope_text: str
+
+
 SampleLoaderResult: TypeAlias = tuple[
     CohortReviewBundle, tuple[CohortBundleSample, ...]
 ]
@@ -1614,12 +1624,18 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
         self._update_actions()
 
     def apply_decision(self, decision: str) -> None:
-        if self._decision_active:
+        request = self._prepare_decision(decision)
+        if request is None:
             return
+        self._start_decision(request)
+
+    def _prepare_decision(self, decision: str) -> _DecisionRequest | None:
+        if self._decision_active:
+            return None
         key = self._current_key()
         samples = self._current_samples()
         if key is None or not samples:
-            return
+            return None
         reviewed = [
             sample.item.queue_id
             for sample in samples
@@ -1630,24 +1646,25 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
             samples
         ):
             self.status.setText("BLOCKED: hear every current sample first")
-            return
+            return None
         if decision == "accepted" and bad:
             self.status.setText("BLOCKED: clear bad markers or reject/expand")
-            return
+            return None
         if decision == "rejected" and not reviewed:
             self.status.setText("BLOCKED: hear at least one sample first")
-            return
+            return None
         cohort = next(
             value
             for value in self.bundle.document["cohorts"]
             if (value["workspace_id"], value["cohort_id"]) == key
         )
+        source = next(
+            value
+            for value in self.bundle.document["sources"]
+            if value["workspace_id"] == key[0]
+        )
+        current_clean = source["plan"]["policy"]["clean_samples_per_bucket"]
         if decision == "split":
-            source = next(
-                value
-                for value in self.bundle.document["sources"]
-                if value["workspace_id"] == key[0]
-            )
             plan_cohort = next(
                 value
                 for value in source["plan"]["cohorts"]
@@ -1660,15 +1677,9 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
                     "BLOCKED: mixed review requires a marked-bad WAV and at least "
                     "one acceptable or unreviewed WAV"
                 )
-                return
+                return None
         if not self.confirmer(decision, cohort, len(reviewed), len(bad)):
-            return
-        source = next(
-            value
-            for value in self.bundle.document["sources"]
-            if value["workspace_id"] == key[0]
-        )
-        current_clean = source["plan"]["policy"]["clean_samples_per_bucket"]
+            return None
         assessments = {
             queue_id: {
                 "assessment": "bad" if queue_id in bad else "acceptable",
@@ -1676,40 +1687,63 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
             }
             for queue_id in reviewed
         }
+        scope_text = self._decision_scope_text_for(
+            decision,
+            len(reviewed),
+            len(bad),
+            cohort["item_count"],
+        )
+        return _DecisionRequest(
+            decision,
+            key,
+            reviewed,
+            assessments,
+            current_clean + 1 if decision == "expand" else None,
+            scope_text,
+        )
+
+    @staticmethod
+    def _decision_scope_text_for(
+        decision: str,
+        reviewed_count: int,
+        bad_count: int,
+        item_count: int,
+    ) -> str:
         if decision == "split":
-            unreviewed = max(0, cohort["item_count"] - len(reviewed))
-            self._decision_scope_text = (
-                f"rejecting {len(bad)} marked WAVs for repair; approving "
-                f"{len(reviewed) - len(bad)} individually heard WAVs; leaving "
+            unreviewed = max(0, item_count - reviewed_count)
+            return (
+                f"rejecting {bad_count} marked WAVs for repair; approving "
+                f"{reviewed_count - bad_count} individually heard WAVs; leaving "
                 f"{unreviewed} unreviewed WAVs pending"
             )
-        elif decision == "expand":
-            self._decision_scope_text = (
-                f"requesting more evidence after {len(reviewed)} heard samples; "
+        if decision == "expand":
+            return (
+                f"requesting more evidence after {reviewed_count} heard samples; "
                 "changing 0 WAV decisions"
             )
-        else:
-            verb = "approving" if decision == "accepted" else "rejecting"
-            self._decision_scope_text = (
-                f"{verb} all {cohort['item_count']} cohort WAVs after "
-                f"{len(reviewed)} heard samples"
-            )
+        verb = "approving" if decision == "accepted" else "rejecting"
+        return (
+            f"{verb} all {item_count} cohort WAVs after {reviewed_count} heard samples"
+        )
+
+    def _start_decision(self, request: _DecisionRequest) -> None:
+        self._decision_scope_text = request.scope_text
         self._decision_active = True
         self._decision_started_at = time.perf_counter()
         self._operation_timer.start()
         self.status.setText(
-            f"SAVING {decision}: audio replay and navigation remain available"
+            f"SAVING {request.decision}: audio replay and navigation remain available"
         )
         self._update_actions()
         operation: Callable[..., object] = self.decision_executor
         arguments: tuple[object, ...] = (
             self.bundle,
-            key[0],
-            key[1],
-            decision,
-            reviewed,
-            assessments,
-            current_clean + 1 if decision == "expand" else None,
+            request.key[0],
+            request.key[1],
+            request.decision,
+            request.reviewed,
+            request.assessments,
+            request.next_clean_samples_per_bucket,
         )
         if self._checkpoint_decisions:
             operation = _execute_and_checkpoint_bundle_decision

@@ -69,12 +69,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/cohort_bundle_ui.py",
-      "scope": "CohortReviewBundleDialog.apply_decision",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/authoring/delivery.py",
       "scope": "annotate_delivery",
       "count": 1
