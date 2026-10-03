@@ -129,8 +129,8 @@ class ListeningKey(TypedDict):
 class ModelReport(TypedDict):
     backend: str
     model_id: str
-    provider: NotRequired[object]
-    model: NotRequired[object]
+    provider: str
+    model: str
 
 
 class ModelReportSample(TypedDict):
@@ -307,14 +307,13 @@ def _collect_model_report_samples(
     corpus_items: dict[str, CorpusItem],
 ) -> None:
     report, samples = _load_model_report(report_path)
-    backend = report["backend"]
     model_id = report["model_id"]
     metadata = model_metadata.setdefault(
         model_id,
         {
             "model_id": model_id,
-            "provider": str(report.get("provider") or backend),
-            "model": str(report.get("model") or model_id),
+            "provider": report["provider"],
+            "model": report["model"],
             "reports": [],
         },
     )
@@ -1123,7 +1122,16 @@ def _model_report_metadata(
         raise ModelListeningError(f"Model report backend is invalid: {path}")
     if not isinstance(model_id, str) or not model_id.strip():
         raise ModelListeningError(f"Model report model_id is invalid: {path}")
-    return {"backend": backend.strip(), "model_id": model_id.strip()}
+    for field in ("provider", "model"):
+        value = report.get(field)
+        if value is not None and not isinstance(value, str):
+            raise ModelListeningError(f"Model report {field} is invalid: {path}")
+    return {
+        "backend": backend.strip(),
+        "model_id": model_id.strip(),
+        "provider": str(report.get("provider") or backend.strip()),
+        "model": str(report.get("model") or model_id.strip()),
+    }
 
 
 def _parse_model_report_sample(

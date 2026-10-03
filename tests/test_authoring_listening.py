@@ -260,6 +260,58 @@ class AuthoringListeningTest(unittest.TestCase):
                         create_listening_session_from_reports(reports, root / "session")
                     self.assertFalse((root / "session").exists())
 
+    def test_malformed_model_labels_are_domain_errors(self):
+        for field in ("provider", "model"):
+            for value in ([], {}):
+                with (
+                    self.subTest(field=field, value=value),
+                    TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    reports = write_model_reports(root, item_count=1)
+                    document = json.loads(reports[0].read_text())
+                    target = document
+                    target[field] = value
+                    reports[0].write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaises(ModelListeningError):
+                        create_listening_session_from_reports(reports, root / "session")
+                    self.assertFalse((root / "session").exists())
+
+    def test_hidden_key_and_report_keep_explicit_model_metadata(self):
+        for explicit in (False, True):
+            with self.subTest(explicit=explicit), TemporaryDirectory() as directory:
+                root = Path(directory)
+                reports = write_model_reports(root, item_count=1)
+                expected = {}
+                for index, path in enumerate(reports):
+                    document = json.loads(path.read_text())
+                    if explicit:
+                        document.update(
+                            provider=f"provider-{index}", model=f"model-{index}"
+                        )
+                    else:
+                        document.pop("provider")
+                        document.pop("model")
+                    path.write_text(json.dumps(document), encoding="utf-8")
+                    expected[document["model_id"]] = (
+                        document.get("provider", document["backend"]),
+                        document.get("model", document["model_id"]),
+                    )
+                session = create_listening_session_from_reports(
+                    reports, root / "session"
+                )
+                key = json.loads(session.with_name(".blind-key.json").read_text())
+                report = aggregate_listening_report(session)
+                for models in (key["models"], report["models"]):
+                    self.assertEqual(
+                        {
+                            item["model_id"]: (item["provider"], item["model"])
+                            for item in models
+                        },
+                        expected,
+                    )
+                self.assertNotIn("provider-", session.read_text())
+
     def test_creates_deterministic_blind_trials_without_public_model_names(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
