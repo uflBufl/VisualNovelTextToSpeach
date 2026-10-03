@@ -2481,6 +2481,15 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             state = load_generation_state(result.state, queue)
             state_sha256 = sha256_file(result.state)
             published_wavs = list((root / "output").rglob("*.wav"))
+            for version in (True, 1.0, [], {}):
+                with self.subTest(evidence_version=version):
+                    malformed = dict(document, schema_version=version)
+                    (evidence / "evidence.json").write_text(json.dumps(malformed))
+                    with self.assertRaisesRegex(
+                        SilenceFailureEvidenceError, "malformed"
+                    ):
+                        load_silence_failure_evidence(evidence)
+            (evidence / "evidence.json").write_text(json.dumps(document))
             tampered = json.loads((evidence / "evidence.json").read_text())
             tampered["metadata"]["state_item"]["seed"] = 999
             (evidence / "evidence.json").write_text(json.dumps(tampered))

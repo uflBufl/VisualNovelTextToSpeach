@@ -195,12 +195,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/silence_evidence.py",
-      "scope": "load_silence_failure_evidence",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/authoring/sound_effect_benchmark.py",
       "scope": "benchmark_sound_effects",
       "count": 1

@@ -73,6 +73,13 @@ def load_silence_failure_evidence(directory: str | Path) -> dict[str, object]:
         raise SilenceFailureEvidenceError(
             f"Unable to read silence-failure evidence: {error}"
         ) from error
+    document = _validated_evidence_document(document)
+    _validate_evidence_metadata(document["metadata"])
+    _validate_evidence_wav(root / "rejected.wav", document.get("audio_sha256"))
+    return document
+
+
+def _validated_evidence_document(document: object) -> dict[str, object]:
     if (
         not isinstance(document, dict)
         or set(document)
@@ -86,6 +93,7 @@ def load_silence_failure_evidence(directory: str | Path) -> dict[str, object]:
             "metadata",
         }
         or document.get("schema") != SILENCE_FAILURE_EVIDENCE_SCHEMA
+        or type(document.get("schema_version")) is not int
         or document.get("schema_version") != SILENCE_FAILURE_EVIDENCE_VERSION
         or document.get("reviewable") is not False
         or document.get("generated_outcome") is not False
@@ -93,7 +101,14 @@ def load_silence_failure_evidence(directory: str | Path) -> dict[str, object]:
         or not isinstance(document.get("metadata"), dict)
     ):
         raise SilenceFailureEvidenceError("Silence-failure evidence is malformed")
-    metadata = document["metadata"]
+    return document
+
+
+def _validate_evidence_metadata(metadata: object) -> None:
+    if not isinstance(metadata, dict):
+        raise SilenceFailureEvidenceError(
+            "Silence-failure evidence metadata is malformed"
+        )
     required_metadata = {
         "queue",
         "queue_sha256",
@@ -143,7 +158,9 @@ def load_silence_failure_evidence(directory: str | Path) -> dict[str, object]:
         raise SilenceFailureEvidenceError(
             "Silence-failure evidence state item is malformed"
         )
-    wav = root / "rejected.wav"
+
+
+def _validate_evidence_wav(wav: Path, expected_sha256: object) -> None:
     if wav.is_symlink() or not wav.is_file():
         raise SilenceFailureEvidenceError("Silence-failure evidence WAV is missing")
     try:
@@ -153,11 +170,10 @@ def load_silence_failure_evidence(directory: str | Path) -> dict[str, object]:
         raise SilenceFailureEvidenceError(
             f"Unable to read silence-failure evidence WAV: {error}"
         ) from error
-    if hashlib.sha256(payload).hexdigest() != document.get("audio_sha256"):
+    if hashlib.sha256(payload).hexdigest() != expected_sha256:
         raise SilenceFailureEvidenceError(
             "Silence-failure evidence WAV checksum changed"
         )
-    return document
 
 
 def _probe_pcm16_mono_bytes(payload: bytes) -> None:
