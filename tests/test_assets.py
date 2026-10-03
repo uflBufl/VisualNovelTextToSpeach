@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import shutil
@@ -6,6 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 import vntts.assets as assets
 from tests.symlink_support import symlink_or_skip
@@ -165,18 +167,46 @@ class ModelAssetManagerTest(unittest.TestCase):
         def opener(request, timeout):
             if request.get_method() == "GET" and request.full_url == asset.urls[0]:
                 complete_opener.requests.append(request)
-                return MemoryResponse(b"truncated")
+                return MemoryResponse(files[asset.urls[0]][:9])
             return complete_opener(request, timeout)
 
         with TemporaryDirectory() as temporary_directory:
             manager = ModelAssetManager(temporary_directory, opener=opener)
+            model_path = manager.model_path(asset.name)
+            model_path.mkdir(parents=True)
+            (model_path / "hash.md5").write_bytes(files[asset.urls[1]])
 
             with self.assertRaisesRegex(ModelIntegrityError, "size"):
                 manager.download(asset.name, asset=asset)
 
-            self.assertFalse(
-                (manager.model_path(asset.name) / "vntts-asset.json").exists()
+            self.assertFalse(manager.is_ready_with_asset(asset.name, asset))
+            self.assertFalse((model_path / "model.pth").exists())
+            self.assertFalse((model_path / "vntts-asset.json").exists())
+            self.assertEqual(
+                (model_path / "model.pth.part").read_bytes(), files[asset.urls[0]][:9]
             )
+
+            manager.opener = complete_opener
+            manager.download(asset.name, asset=asset)
+            self.assertEqual(
+                (model_path / "model.pth").read_bytes(), files[asset.urls[0]]
+            )
+            self.assertTrue(manager.is_ready_with_asset(asset.name, asset))
+
+    def test_get_length_protects_download_when_head_is_unavailable(self):
+        asset = ModelAsset("get-length", ("https://models.invalid/model.pth",))
+        for length in ("100", "-1", "invalid"):
+            with self.subTest(length=length), TemporaryDirectory() as directory:
+
+                def opener(request, timeout):
+                    if request.get_method() == "HEAD":
+                        raise OSError("HEAD not supported")
+                    return MemoryResponse(b"short", headers={"Content-Length": length})
+
+                manager = ModelAssetManager(directory, opener=opener)
+                with self.assertRaisesRegex(ModelIntegrityError, "size"):
+                    manager.download(asset.name, asset=asset)
+                self.assertFalse(manager.is_ready_with_asset(asset.name, asset))
 
     def test_cancelled_download_keeps_partial_file_and_retry_resumes(self):
         asset = self.create_asset()
@@ -215,6 +245,97 @@ class ModelAssetManagerTest(unittest.TestCase):
             any(request.get_header("Range") for request in get_requests),
             "Retry should continue from the partial file",
         )
+
+    def test_complete_partial_retry_needs_no_transfer(self):
+        asset = ModelAsset("complete-partial", ("https://models.invalid/model.pth",))
+        data = b"complete model"
+        for head_available in (True, False):
+            with (
+                self.subTest(head_available=head_available),
+                TemporaryDirectory() as directory,
+            ):
+                cancel = Event()
+                original = MemoryOpener({asset.urls[0]: data})
+
+                def opener(request, timeout):
+                    if request.get_method() == "HEAD" and not head_available:
+                        raise OSError("HEAD unsupported")
+                    if request.get_header("Range") == f"bytes={len(data)}-":
+                        raise HTTPError(
+                            request.full_url,
+                            416,
+                            "Range complete",
+                            {"Content-Range": f"bytes */{len(data)}"},
+                            None,
+                        )
+                    return original(request, timeout)
+
+                manager = ModelAssetManager(directory, opener=opener)
+                with self.assertRaises(ModelDownloadCancelled):
+                    manager.download(
+                        asset.name,
+                        asset=asset,
+                        cancel_event=cancel,
+                        progress=lambda _percent, _message: cancel.set(),
+                    )
+                requests_before = len(original.requests)
+                manager.download(asset.name, asset=asset)
+                self.assertEqual(
+                    (manager.model_path(asset.name) / "model.pth").read_bytes(), data
+                )
+                self.assertEqual(
+                    len(
+                        [
+                            r
+                            for r in original.requests[requests_before:]
+                            if r.get_method() == "GET"
+                        ]
+                    ),
+                    0,
+                )
+
+    def test_completed_range_requires_matching_size_and_closes_response(self):
+        asset = ModelAsset("bad-complete-range", ("https://models.invalid/model.pth",))
+        response_body = io.BytesIO(b"range error")
+
+        def opener(request, timeout):
+            if request.get_method() == "HEAD":
+                raise OSError("HEAD unsupported")
+            raise HTTPError(
+                request.full_url,
+                416,
+                "Not complete",
+                {"Content-Range": "bytes */4"},
+                response_body,
+            )
+
+        with TemporaryDirectory() as directory:
+            manager = ModelAssetManager(directory, opener=opener)
+            partial = manager.model_path(asset.name) / "model.pth.part"
+            partial.parent.mkdir(parents=True)
+            partial.write_bytes(b"old")
+            with self.assertRaisesRegex(ModelIntegrityError, "invalid resume range"):
+                manager.download(asset.name, asset=asset)
+            self.assertTrue(response_body.closed)
+            self.assertEqual(partial.read_bytes(), b"old")
+            self.assertFalse((partial.parent / "model.pth").exists())
+            self.assertFalse((partial.parent / "vntts-asset.json").exists())
+
+    def test_oversized_partial_retry_starts_from_the_beginning(self):
+        asset = ModelAsset("oversized-partial", ("https://models.invalid/model.pth",))
+        opener = MemoryOpener({asset.urls[0]: b"model"})
+        with TemporaryDirectory() as directory:
+            manager = ModelAssetManager(directory, opener=opener)
+            partial = manager.model_path(asset.name) / "model.pth.part"
+            partial.parent.mkdir(parents=True)
+            partial.write_bytes(b"oversized partial")
+            manager.download(asset.name, asset=asset)
+            self.assertEqual((partial.parent / "model.pth").read_bytes(), b"model")
+            self.assertFalse(
+                next(r for r in opener.requests if r.get_method() == "GET").get_header(
+                    "Range"
+                )
+            )
 
     def test_resume_rejects_a_response_for_the_wrong_range(self):
         asset = self.create_asset()

@@ -9,6 +9,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
 from typing import Protocol
+from urllib.error import HTTPError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from uuid import uuid4
@@ -250,13 +251,6 @@ class ModelAssetManager:
                     progress,
                     cancel_event,
                 )
-                if (
-                    expected_length is not None
-                    and output.stat().st_size != expected_length
-                ):
-                    raise ModelIntegrityError(
-                        f"Downloaded model file has the wrong size: {filename}"
-                    )
 
             self._check_cancelled(cancel_event)
             self._validate_upstream_hash(model_path, asset)
@@ -285,34 +279,51 @@ class ModelAssetManager:
         partial = output.with_suffix(f"{output.suffix}.part")
         self._check_model_file(partial, partial.name)
         existing_bytes = partial.stat().st_size if partial.is_file() else 0
+        self._check_cancelled(cancel_event)
+        if (
+            expected_length is not None
+            and partial.is_file()
+            and existing_bytes == expected_length
+        ):
+            return downloaded_before + self._publish_download(
+                partial, output, expected_length
+            )
+        existing_bytes = (
+            existing_bytes
+            if expected_length is None or existing_bytes < expected_length
+            else 0
+        )
         headers = {"User-Agent": "VisualNovelTextToSpeech/0.1"}
         if existing_bytes:
             headers["Range"] = f"bytes={existing_bytes}-"
         request = Request(url, headers=headers)
         self._check_cancelled(cancel_event)
-        with self.opener(request, timeout=60) as response:
-            status = getattr(response, "status", None) or response.getcode()
-            resumes = existing_bytes > 0 and status == 206
-            resume_total = None
-            if resumes:
-                content_range = re.fullmatch(
-                    r"bytes (\d+)-(\d+)/(\d+)",
-                    response.headers.get("Content-Range", ""),
+        try:
+            response_context = self.opener(request, timeout=60)
+        except HTTPError as error:
+            if error.code != 416:
+                raise
+            response_context = error
+        with response_context as response:
+            status = response.getcode()
+            if status == 416:
+                completed_length = self._resume_length(
+                    response, existing_bytes, expected_length, output.name
                 )
-                if (
-                    content_range is None
-                    or int(content_range[1]) != existing_bytes
-                    or int(content_range[2]) < existing_bytes
-                    or int(content_range[2]) + 1 != int(content_range[3])
-                    or (
-                        expected_length is not None
-                        and int(content_range[3]) != expected_length
-                    )
-                ):
-                    raise ModelIntegrityError(
-                        f"Model download returned an invalid resume range: {output.name}"
-                    )
-                resume_total = int(content_range[3])
+                self._check_cancelled(cancel_event)
+                return downloaded_before + self._publish_download(
+                    partial, output, completed_length
+                )
+            resumes = existing_bytes > 0 and status == 206
+            file_length = (
+                self._resume_length(
+                    response, existing_bytes, expected_length, output.name
+                )
+                if resumes
+                else expected_length
+            )
+            if file_length is None:
+                file_length = self._response_length(response)
             mode = "ab" if resumes else "wb"
             if not resumes:
                 existing_bytes = 0
@@ -332,12 +343,58 @@ class ModelAssetManager:
                         else None
                     )
                     progress(percent, f"Downloading {output.name}")
-            if resume_total is not None and current_bytes != resume_total:
-                raise ModelIntegrityError(
-                    f"Model download returned an incomplete resume: {output.name}"
-                )
+        self._check_cancelled(cancel_event)
+        return downloaded_before + self._publish_download(
+            partial, output, file_length, resumes=resumes
+        )
+
+    @staticmethod
+    def _resume_length(
+        response: _ModelResponse,
+        existing_bytes: int,
+        expected_length: int | None,
+        filename: str,
+    ) -> int:
+        header = response.headers.get("Content-Range", "")
+        if response.getcode() == 416:
+            match = re.fullmatch(r"bytes \*/(\d+)", header)
+            total = int(match[1]) if match is not None else None
+            valid = existing_bytes > 0 and total == existing_bytes
+        else:
+            match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", header)
+            total = int(match[3]) if match is not None else None
+            valid = (
+                match is not None
+                and int(match[1]) == existing_bytes
+                and int(match[2]) >= existing_bytes
+                and int(match[2]) + 1 == total
+            )
+        if (
+            total is None
+            or not valid
+            or (expected_length is not None and total != expected_length)
+        ):
+            raise ModelIntegrityError(
+                f"Model download returned an invalid resume range: {filename}"
+            )
+        return total
+
+    @staticmethod
+    def _publish_download(
+        partial: Path,
+        output: Path,
+        expected_length: int | None,
+        *,
+        resumes: bool = False,
+    ) -> int:
+        size = partial.stat().st_size
+        if expected_length is not None and size != expected_length:
+            reason = "an incomplete resume" if resumes else "the wrong size"
+            raise ModelIntegrityError(
+                f"Model download returned {reason}: {output.name}"
+            )
         partial.replace(output)
-        return downloaded_before + output.stat().st_size
+        return size
 
     def _content_length(self, url: str) -> int | None:
         request = Request(
@@ -347,10 +404,24 @@ class ModelAssetManager:
         )
         try:
             with self.opener(request, timeout=30) as response:
-                value = response.headers.get("Content-Length")
-                return int(value) if value else None
-        except OSError, ValueError:
+                return self._response_length(response)
+        except OSError, ModelIntegrityError:
             return None
+
+    @staticmethod
+    def _response_length(response: _ModelResponse) -> int | None:
+        value = response.headers.get("Content-Length")
+        if not value:
+            return None
+        try:
+            length = int(value)
+            if length < 0:
+                raise ValueError("Content-Length must not be negative")
+        except ValueError as error:
+            raise ModelIntegrityError(
+                f"Model download returned an invalid file size: {value!r}"
+            ) from error
+        return length
 
     @staticmethod
     def _check_cancelled(cancel_event: Event) -> None:
