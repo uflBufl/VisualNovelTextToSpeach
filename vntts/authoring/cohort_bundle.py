@@ -1083,43 +1083,12 @@ def load_cohort_review_bundle_samples(
 
 
 def _current_source_snapshot(source: _SourceDocument) -> _CurrentSourceSnapshot:
-    workspace = Path(source["workspace"])
-    configuration_path = workspace / "workspace.json"
-    if configuration_path.is_symlink():
-        raise CohortReviewError("Bundle workspace configuration cannot be a symlink")
-    configuration_payload = _read_bytes(
-        configuration_path, "bundle workspace configuration"
-    )
-    configuration = _decode_json(
-        configuration_payload,
-        "bundle workspace configuration",
-    )
-    if (
-        not isinstance(configuration, dict)
-        or configuration.get("workspace_id") != source["workspace_id"]
-        or configuration.get("config_fingerprint")
-        != source["plan"]["workspace_config_fingerprint"]
-    ):
-        raise CohortReviewError("Bundle workspace configuration identity changed")
-    queue_path = _contained_source_path(
-        workspace, configuration.get("queue"), "bundle queue"
-    )
-    output = _contained_source_path(
-        workspace, configuration.get("output"), "bundle output"
-    )
-    state_path = output / "generation-state.json"
-    if (
-        queue_path.is_symlink()
-        or state_path.is_symlink()
-        or output.is_symlink()
-        or not output.is_dir()
-    ):
-        raise CohortReviewError("Bundle queue, state and output must be safe")
-    queue_payload = _read_bytes(queue_path, "bundle queue")
+    paths = _sample_source_paths(source)
+    queue_payload = _read_bytes(paths.queue_path, "bundle queue")
     queue_sha256 = hashlib.sha256(queue_payload).hexdigest()
     if queue_sha256 != source["plan"]["queue_sha256"]:
         raise CohortReviewError("Bundle source queue changed")
-    state_payload = _read_bytes(state_path, "bundle state")
+    state_payload = _read_bytes(paths.state_path, "bundle state")
     state = _decode_json(state_payload, "bundle state")
     if not isinstance(state, dict):
         raise CohortReviewError("Bundle source state identity changed")
@@ -1127,12 +1096,12 @@ def _current_source_snapshot(source: _SourceDocument) -> _CurrentSourceSnapshot:
     if state.get("queue_sha256") != queue_sha256 or not _is_json_object(state_items):
         raise CohortReviewError("Bundle source state identity changed")
     return {
-        "output": output,
-        "configuration_path": configuration_path,
-        "configuration_sha256": hashlib.sha256(configuration_payload).hexdigest(),
-        "queue_path": queue_path,
+        "output": paths.output,
+        "configuration_path": paths.configuration_path,
+        "configuration_sha256": paths.configuration_sha256,
+        "queue_path": paths.queue_path,
         "queue_sha256": queue_sha256,
-        "state_path": state_path,
+        "state_path": paths.state_path,
         "queue": _decode_queue_records(queue_payload),
         "items": state_items,
         "state_sha256": hashlib.sha256(state_payload).hexdigest(),
