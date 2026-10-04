@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import json
 import shutil
 from collections.abc import Iterable, Mapping
@@ -72,18 +71,10 @@ class _CompositeAuthority(TypedDict):
     quality_review_sha256: str
 
 
-class _ExperimentalCompositeVoice(TypedDict):
+class _ExperimentalCompositeVoice(_CompositeAuthority):
     voice_character: str
     speaker: str
     reference: str
-    character: str
-    portrait: str
-    source_bank: str
-    reference_sha256: str
-    composite_path: str
-    composite_ledger_sha256: str
-    composite_evaluation_sha256: str
-    quality_review_sha256: str
     quality_decision: str
     authority: str
 
@@ -213,9 +204,9 @@ def publish_experimental_composite_voice_input(
     with staged_directory(output.parent, prefix=".experimental-composite-") as staging:
         inventory, reference_relative = _copy_experimental_artifacts(staging, expected)
 
-        successor = copy.deepcopy(source_document)
+        successor = source_document
         successor["voices"] = [
-            *copy.deepcopy(source_document["voices"]),
+            *source_document["voices"],
             {
                 "character": voice_character,
                 "speaker": speaker,
