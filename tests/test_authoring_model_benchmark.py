@@ -11,6 +11,8 @@ from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 
 import vntts.authoring.model_benchmark as benchmark_module
 from tests.symlink_support import symlink_or_skip
+from tests.test_authoring_legacy_import import write_legacy_fixture
+from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.model_benchmark import (
     ModelBenchmarkError,
     ModelVariant,
@@ -171,6 +173,120 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
                             load_model_variants(path)[0].generation_profile,
                             value or "stable",
                         )
+
+    def test_comparison_voice_projection_uses_captured_data_and_original_root(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            manifest = root / "manifest.json"
+            document = {
+                "version": 2,
+                "voices": [
+                    {
+                        "character": "Voice",
+                        "speaker": "captured",
+                        "references": ["reference.wav"],
+                    }
+                ],
+            }
+            manifest.write_text(json.dumps(document), encoding="utf-8")
+            payload = manifest.read_bytes()
+            original_read = Path.read_bytes
+
+            def replace_after_read(path):
+                captured = original_read(path)
+                if path == manifest:
+                    changed = json.loads(captured)
+                    changed["voices"][0]["speaker"] = "unreviewed"
+                    manifest.write_text(json.dumps(changed), encoding="utf-8")
+                return captured
+
+            with patch.object(Path, "read_bytes", replace_after_read):
+                context = _comparison_voice_context(manifest, None)
+
+            self.assertEqual(context.sha256, hashlib.sha256(payload).hexdigest())
+            voice = context.registry.resolve("Voice")
+            self.assertEqual(voice.speaker, "captured")
+            self.assertEqual(voice.reference, root / "reference.wav")
+
+    def test_failure_corpus_projects_the_captured_queue_with_custom_loader(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = write_legacy_fixture(root / "legacy")
+            queue = fixture["queue"].resolve()
+            original_payload = queue.read_bytes()
+            state = {
+                "items": {
+                    fixture["queue_id"]: {"status": "failed", "provider": "moss-tts"}
+                }
+            }
+            fixture["state"].write_text(json.dumps(state), encoding="utf-8")
+            original_read = Path.read_bytes
+
+            def replace_after_read(path):
+                captured = original_read(path)
+                if path == queue:
+                    records = [json.loads(line) for line in captured.splitlines()]
+                    records[-1]["voice_character"] = "Unreviewed voice"
+                    queue.write_text(
+                        "".join(json.dumps(record) + "\n" for record in records),
+                        encoding="utf-8",
+                    )
+                return captured
+
+            def restore_queue(_state_path, _queue_path):
+                self.assertEqual(Path(_queue_path), queue)
+                queue.write_bytes(original_payload)
+                return state
+
+            with patch.object(Path, "read_bytes", replace_after_read):
+                corpus = build_failure_comparison_corpus(
+                    queue,
+                    fixture["state"],
+                    root / "corpus.json",
+                    state_loader=restore_queue,
+                )
+            self.assertEqual(corpus["samples"][0]["character"], "Rhiannon")
+            self.assertEqual(
+                corpus["source_queue_sha256"],
+                hashlib.sha256(original_payload).hexdigest(),
+            )
+
+    def test_failure_corpus_default_loader_retains_current_and_legacy_state_validation(
+        self,
+    ):
+        for schema in (
+            "vntts.authoring-generation-state",
+            "r1999.bulk-generation-state",
+        ):
+            with self.subTest(schema=schema), TemporaryDirectory() as directory:
+                root = Path(directory)
+                fixture = write_legacy_fixture(root / "legacy")
+                state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+                state["schema"] = schema
+                state["items"] = {
+                    fixture["queue_id"]: {
+                        "status": "failed",
+                        "attempts": 1,
+                        "provider": "moss-tts",
+                    }
+                }
+                fixture["state"].write_text(json.dumps(state), encoding="utf-8")
+                corpus = build_failure_comparison_corpus(
+                    fixture["queue"], fixture["state"], root / "corpus.json"
+                )
+                self.assertEqual(corpus["samples"][0]["character"], "Rhiannon")
+                self.assertEqual(
+                    corpus["source_state_sha256"],
+                    hashlib.sha256(fixture["state"].read_bytes()).hexdigest(),
+                )
+
+                state["queue_sha256"] = "0" * 64
+                fixture["state"].write_text(json.dumps(state), encoding="utf-8")
+                with self.assertRaisesRegex(BulkGenerationError, "queue changed"):
+                    build_failure_comparison_corpus(
+                        fixture["queue"], fixture["state"], root / "invalid.json"
+                    )
+                self.assertFalse((root / "invalid.json").exists())
 
     def test_failure_corpus_supports_manifest_without_selected_variants(self):
         variants = (

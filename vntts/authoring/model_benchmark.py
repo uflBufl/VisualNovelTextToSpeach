@@ -24,8 +24,11 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 from vntts_artifacts.voice_manifest import VoiceManifestError
 
-from vntts.authoring.bulk_generation import (
+from vntts.authoring.generation_lease import BulkGenerationError
+from vntts.authoring.generation_state import (
     load_generation_state,
+    load_generation_state_from_snapshot,
+    load_stable_generation_queue,
 )
 from vntts.authoring.publication import (
     AtomicPublicationError,
@@ -33,6 +36,7 @@ from vntts.authoring.publication import (
     staged_directory,
 )
 from vntts.authoring.speech_quality import measure_generated_speech_bytes
+from vntts.authoring.workspace_foundation import load_json_object_snapshot
 from vntts.cli import cli_error, cli_messages
 from vntts.document_identity import canonical_document_sha256
 from vntts.settings import get_local_data_directory
@@ -249,21 +253,33 @@ def _capture_failure_corpus_inputs(
     queue_path = Path(queue_path).expanduser().resolve()
     state_path = Path(state_path).expanduser().resolve()
     try:
-        queue_payload = queue_path.read_bytes()
-        state_payload = state_path.read_bytes()
-        state_snapshot = json.loads(state_payload)
-    except (OSError, json.JSONDecodeError) as error:
+        queue, queue_sha256 = load_stable_generation_queue(queue_path)
+    except BulkGenerationError as error:
         raise ModelBenchmarkError(
             f"Unable to capture comparison inputs: {error}"
         ) from error
-    queue_sha256 = hashlib.sha256(queue_payload).hexdigest()
-    state_sha256 = hashlib.sha256(state_payload).hexdigest()
-    queue = VoiceGenerationQueue.load(queue_path)
-    state = state_loader(state_path, queue_path)
-    if state != state_snapshot:
-        raise ModelBenchmarkError(
-            "Validated generation state does not match its captured bytes"
+    if state_loader is load_generation_state:
+        state, state_sha256, _payload = load_json_object_snapshot(
+            state_path, "comparison generation state", error_type=ModelBenchmarkError
         )
+        state = load_generation_state_from_snapshot(
+            state_path, queue, queue_sha256, state_document=state
+        )
+    else:
+        # Custom loaders retain their path-based and byte-decoder contracts.
+        try:
+            state_payload = state_path.read_bytes()
+            state_snapshot = json.loads(state_payload)
+        except (OSError, json.JSONDecodeError) as error:
+            raise ModelBenchmarkError(
+                f"Unable to capture comparison inputs: {error}"
+            ) from error
+        state_sha256 = hashlib.sha256(state_payload).hexdigest()
+        state = state_loader(state_path, queue_path)
+        if state != state_snapshot:
+            raise ModelBenchmarkError(
+                "Validated generation state does not match its captured bytes"
+            )
     return _FailureCorpusCapture(
         queue_path,
         state_path,
@@ -464,9 +480,14 @@ def _comparison_voice_context(
     manifest_path = Path(manifest_path).expanduser().resolve()
     try:
         payload = manifest_path.read_bytes()
-        document = json.loads(payload)
-        registry = CharacterVoiceRegistry.from_file(manifest_path)
-    except (OSError, json.JSONDecodeError, VoiceManifestError) as error:
+        document = json.loads(payload.decode("utf-8"))
+        registry = CharacterVoiceRegistry.from_document(document, manifest_path)
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        VoiceManifestError,
+    ) as error:
         raise ModelBenchmarkError(
             f"Unable to capture comparison voice manifest: {error}"
         ) from error
