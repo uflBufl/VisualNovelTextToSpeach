@@ -143,6 +143,35 @@ class CiUnitTestRunnerTest(unittest.TestCase):
         run.assert_called_once()
         self.assertEqual(run.call_args.args[0][-3:-1], ["--shard", "qt-app"])
 
+    def test_selected_modules_reject_unknown_names_before_running(self):
+        test_ids = (
+            "tests.test_app.AppTest.test_ui",
+            "tests.test_asset_ui.AssetTest.test_ui",
+            "tests.test_ocr_review.OcrTest.test_ui",
+            "tests.test_settings.SettingsTest.test_value",
+        )
+        for system in ("Darwin", "Windows"):
+            with (
+                self.subTest(system=system),
+                patch(
+                    "scripts.run_ci_unittests._flatten_suite",
+                    return_value=(
+                        Mock(id=Mock(return_value=value)) for value in test_ids
+                    ),
+                ),
+                patch(
+                    "scripts.run_ci_unittests.subprocess.run",
+                    return_value=Mock(returncode=0),
+                ) as run,
+            ):
+                self.assertEqual(
+                    _run_sharded_full_discovery(
+                        system, ["tests.test_settings", "tests.test_typo_missing"]
+                    ),
+                    2,
+                )
+                run.assert_not_called()
+
     def test_shard_captures_stacks_before_deadline_and_cancels_timer(self):
         for result in (0, RuntimeError("test loading failed")):
             with (

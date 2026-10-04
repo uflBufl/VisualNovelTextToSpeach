@@ -116,6 +116,18 @@ def _run_exact_test_file(path):
 def _run_sharded_full_discovery(system, selected_modules=None):
     suite = unittest.defaultTestLoader.discover("tests", top_level_dir=".")
     test_ids = tuple(value.id() for value in _flatten_suite(suite))
+    if selected_modules is not None:
+        missing = [
+            module
+            for module in selected_modules
+            if not any(value.startswith(f"{module}.") for value in test_ids)
+        ]
+        if missing:
+            print(
+                f"Requested unittest modules have no discovered tests: {', '.join(missing)}",
+                file=sys.stderr,
+            )
+            return 2
     try:
         app_ids, asset_ids, ocr_ids, remainder_ids = partition_ui_test_ids(test_ids)
     except ValueError as error:
