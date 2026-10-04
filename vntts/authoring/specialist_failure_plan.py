@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +23,7 @@ from vntts.authoring.failure_repair import (
     OFFLINE_FALLBACK_BACKEND,
     SENTENCE_BOUNDARY_SEGMENTATION,
 )
+from vntts.document_identity import is_lowercase_sha256
 
 SPECIALIST_FAILURE_PLAN_SCHEMA = "vntts.authoring-specialist-failure-plan"
 SPECIALIST_FAILURE_PLAN_VERSION = 1
@@ -68,7 +69,7 @@ def build_specialist_failure_plan(
         except OSError as error:
             raise CohortReviewError(str(error)) from error
     plan_id = canonical_document_sha256(body)
-    return SpecialistFailurePlan(plan_id, {**body, "plan_id": plan_id})
+    return SpecialistFailurePlan(plan_id, _validated({**body, "plan_id": plan_id}))
 
 
 def _capture_workspace(
@@ -163,26 +164,31 @@ def _project_failed_item(
         "next_action": action,
         "rationale": rationale,
     }
-    item["cluster_key"] = canonical_document_sha256(
-        {
-            key: item[key]
-            for key in (
-                "provider",
-                "model",
-                "generation_profile",
-                "effective_voice",
-                "repair_strategy",
-                "text_shape",
-                "next_action",
-            )
-        }
+    item["cluster_key"] = _cluster_key(item)
+    return item
+
+
+def _cluster_key(item: JsonObject) -> str:
+    fields = (
+        "provider",
+        "model",
+        "generation_profile",
+        "effective_voice",
+        "repair_strategy",
+        "text_shape",
+        "next_action",
+    )
+    failure = item.get("failure")
+    if not isinstance(failure, dict) or any(field not in item for field in fields):
+        raise CohortReviewError("Specialist cluster evidence is invalid")
+    return canonical_document_sha256(
+        {key: item[key] for key in fields}
         | {
             "failure_kind": failure.get("kind"),
             "completion": failure.get("completion"),
             "error_type": failure.get("error_type"),
         }
     )
-    return item
 
 
 def _build_plan_body(sources: list[JsonObject], items: list[JsonObject]) -> JsonObject:
@@ -353,7 +359,79 @@ def _validated(plan: SpecialistFailurePlan | object) -> JsonObject:
         or sum(action_counts.values()) != document["item_count"]
     ):
         raise CohortReviewError("Specialist failure plan action counts are invalid")
+    _validate_plan_membership(sources, items, clusters, action_counts)
     return document
+
+
+def _validate_plan_membership(
+    sources: list[object],
+    items: list[object],
+    clusters: list[object],
+    action_counts: JsonObject,
+) -> None:
+    validated_items: list[JsonObject] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise CohortReviewError("Specialist failure plan item is invalid")
+        for field in ("queue_id", "workspace", "workspace_id", "next_action"):
+            _text_field(item, field)
+        text = _text_field(item, "text")
+        if (
+            item.get("cluster_key") != _cluster_key(item)
+            or item.get("text_sha256")
+            != hashlib.sha256(text.encode("utf-8")).hexdigest()
+            or item["next_action"]
+            not in {SENTENCE_REPAIR_RETRY, OFFLINE_FALLBACK_BACKEND, REFERENCE_OR_LIVE}
+        ):
+            raise CohortReviewError("Specialist failure plan item evidence is invalid")
+        validated_items.append(item)
+    queue_ids = [_text_field(item, "queue_id") for item in validated_items]
+    if queue_ids != sorted(set(queue_ids)):
+        raise CohortReviewError(
+            "Specialist failure plan item IDs must be unique and sorted"
+        )
+    _validate_source_membership(sources, validated_items)
+    expected = _build_plan_body([], validated_items)
+    declared_clusters = [
+        {
+            field: cluster.get(field)
+            for field in ("cluster_key", "item_count", "queue_ids", "next_action")
+        }
+        for cluster in clusters
+        if isinstance(cluster, dict)
+    ]
+    if declared_clusters != expected["clusters"]:
+        raise CohortReviewError("Specialist failure plan cluster membership is invalid")
+    if action_counts != expected["action_counts"]:
+        raise CohortReviewError("Specialist failure plan actions differ from items")
+
+
+def _validate_source_membership(sources: list[object], items: list[JsonObject]) -> None:
+    remaining = Counter(
+        (_text_field(item, "workspace"), _text_field(item, "workspace_id"))
+        for item in items
+    )
+    seen: set[tuple[str, str]] = set()
+    for source in sources:
+        if not isinstance(source, dict):
+            raise CohortReviewError("Specialist failure plan source is invalid")
+        identity = (
+            _text_field(source, "workspace"),
+            _text_field(source, "workspace_id"),
+        )
+        if identity in seen:
+            raise CohortReviewError("Specialist failure plan source is duplicated")
+        seen.add(identity)
+        for field in ("config_fingerprint", "state_sha256", "queue_sha256"):
+            digest = source.get(field)
+            if not isinstance(digest, str) or not is_lowercase_sha256(digest):
+                raise CohortReviewError(f"Specialist source {field} is invalid")
+        if source.get("failed_item_count") != remaining.pop(identity, 0):
+            raise CohortReviewError(
+                "Specialist failure plan source membership is invalid"
+            )
+    if remaining:
+        raise CohortReviewError("Specialist failure plan items have an unknown source")
 
 
 def _read(path: str | Path, label: str) -> bytes:

@@ -27,6 +27,27 @@ class FailurePlanContractsTest(unittest.TestCase):
         )
         path.write_text(json.dumps(document))
 
+    def test_checksum_valid_specialist_summaries_must_match_items(self):
+        for field in ("actions", "clusters", "sources", "items"):
+            with self.subTest(field=field), TemporaryDirectory() as directory:
+                root = Path(directory)
+                workspace = self.specialist_fixture(root)
+                document = specialist.build_specialist_failure_plan(
+                    (workspace,)
+                ).document
+                if field == "actions":
+                    document["action_counts"] = {specialist.REFERENCE_OR_LIVE: 1}
+                elif field == "clusters":
+                    document["clusters"][0]["queue_ids"] = ["not-selected"]
+                elif field == "sources":
+                    document["sources"][0]["workspace"] = "different-source"
+                else:
+                    document["items"][0] = None
+                path = root / "plan.json"
+                self.rewrite_plan(path, document)
+                with self.assertRaises(CohortReviewError):
+                    specialist.load_specialist_failure_plan(path)
+
     def test_duplicate_queue_records_are_not_silently_replaced(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -171,3 +192,25 @@ class FailurePlanContractsTest(unittest.TestCase):
                     json.loads(state.read_text())["items"][item["queue_id"]]
                 ),
             )
+
+    def test_invalid_selected_result_and_negative_attempts_raise_domain_errors(self):
+        for kind in ("result", "attempts", "provider_attempts", "workspace_id"):
+            with self.subTest(kind=kind), TemporaryDirectory() as directory:
+                root = Path(directory)
+                workspace = self.specialist_fixture(root)
+                path = workspace / "generated-audio/generation-state.json"
+                doc = json.loads(path.read_text())
+                if kind == "result":
+                    doc["items"]["a"] = []
+                elif kind == "attempts":
+                    doc["items"]["a"]["attempts"] = -1
+                elif kind == "provider_attempts":
+                    doc["items"]["a"]["attempts_by_provider"]["pocket-tts"] = -1
+                else:
+                    config_path = workspace / "workspace.json"
+                    config = json.loads(config_path.read_text())
+                    config["workspace_id"] = None
+                    config_path.write_text(json.dumps(config))
+                path.write_text(json.dumps(doc))
+                with self.assertRaises(CohortReviewError):
+                    specialist.build_specialist_failure_plan((workspace,))
