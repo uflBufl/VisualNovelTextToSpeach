@@ -274,7 +274,7 @@ def _probe_relocated_runtime(
         return report
 
 
-def stage_pocket_runtime(
+def stage_speech_runtime(
     project_root: str | os.PathLike[str],
     destination: str | os.PathLike[str],
     *,
@@ -292,15 +292,15 @@ def stage_pocket_runtime(
     project_root = Path(project_root).resolve()
     destination = Path(destination)
     if destination.is_symlink() or destination.is_junction():
-        raise RuntimeError("Pocket runtime staging destination must not be an alias")
+        raise RuntimeError("Speech runtime staging destination must not be an alias")
     destination = destination.resolve()
     backend_project = project_root / "backends" / backend
     lockfile = backend_project / "uv.lock"
     if not lockfile.is_file():
-        raise FileNotFoundError(f"Pocket runtime lockfile is missing: {lockfile}")
+        raise FileNotFoundError(f"Speech runtime lockfile is missing: {lockfile}")
     if backend_project.is_relative_to(destination):
         raise RuntimeError(
-            "Pocket runtime staging destination contains the source project"
+            "Speech runtime staging destination contains the source project"
         )
     if destination.exists() and not append:
         shutil.rmtree(destination)
@@ -446,6 +446,10 @@ def stage_pocket_runtime(
     return manifest_path
 
 
+# Preserve the public name used before Qwen release runtimes were supported.
+stage_pocket_runtime = stage_speech_runtime
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Stage a locked speech runtime for a release bundle."
@@ -457,7 +461,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--backend", choices=(BACKEND, "qwen-tts"), default=BACKEND)
     parser.add_argument("--append", action="store_true")
     arguments = parser.parse_args(argv)
-    manifest = stage_pocket_runtime(
+    manifest = stage_speech_runtime(
         arguments.project_root,
         arguments.destination,
         uv_executable=arguments.uv,

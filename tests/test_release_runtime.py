@@ -21,6 +21,7 @@ from vntts.release_runtime import (
     _runtime_interpreter,
     _runtime_site,
     stage_pocket_runtime,
+    stage_speech_runtime,
 )
 
 
@@ -58,7 +59,7 @@ class ReleaseRuntimeTest(unittest.TestCase):
             run = Mock()
 
             with self.assertRaisesRegex(RuntimeError, "contains the source project"):
-                stage_pocket_runtime(project, project, run=run)
+                stage_speech_runtime(project, project, run=run)
 
             self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep")
             run.assert_not_called()
@@ -119,7 +120,7 @@ class ReleaseRuntimeTest(unittest.TestCase):
                 }
                 return SimpleNamespace(stdout=json.dumps(report))
 
-            manifest_path = stage_pocket_runtime(
+            manifest_path = stage_speech_runtime(
                 project,
                 destination,
                 platform_name="darwin",
@@ -192,7 +193,7 @@ class ReleaseRuntimeTest(unittest.TestCase):
                 }
                 return SimpleNamespace(stdout=json.dumps(report))
 
-            manifest_path = stage_pocket_runtime(
+            manifest_path = stage_speech_runtime(
                 project,
                 destination,
                 platform_name="win32",
@@ -254,7 +255,7 @@ class ReleaseRuntimeTest(unittest.TestCase):
             with patch(
                 "vntts.release_runtime._probe_relocated_runtime", return_value={}
             ):
-                manifest = stage_pocket_runtime(
+                manifest = stage_speech_runtime(
                     project,
                     destination,
                     backend="qwen-tts",
