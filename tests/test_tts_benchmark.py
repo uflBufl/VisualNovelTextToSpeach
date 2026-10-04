@@ -765,6 +765,68 @@ class TTSBenchmarkTest(unittest.TestCase):
         }
         self.assertEqual(len(identities), 1)
 
+    def test_cache_lives_until_backend_shutdown_on_every_exit(self):
+        class CacheFinalizingBackend(FakeRenderingBackend):
+            def __init__(self, cache, limited, shutdown_fails):
+                super().__init__(
+                    completions=(
+                        SynthesisCompletion.LIMITED
+                        if limited
+                        else SynthesisCompletion.COMPLETE,
+                    )
+                )
+                self.cache = Path(cache)
+                (self.cache / "state").write_text("backend state", encoding="utf-8")
+                self.shutdown_fails = shutdown_fails
+                self.shutdown_calls = 0
+                self.finalized_state = None
+
+            def shutdown(self):
+                self.shutdown_calls += 1
+                self.finalized_state = (self.cache / "state").read_text(
+                    encoding="utf-8"
+                )
+                if self.shutdown_fails:
+                    raise RuntimeError("shutdown failed")
+
+        for limited, shutdown_fails, error in (
+            (False, False, None),
+            (False, True, "shutdown failed"),
+            (True, False, "limited"),
+            (True, True, "limited"),
+        ):
+            with (
+                self.subTest(error=error, limited=limited),
+                TemporaryDirectory() as directory,
+            ):
+                created = []
+
+                def factory(_name, _registry, cache):
+                    backend = CacheFinalizingBackend(cache, limited, shutdown_fails)
+                    created.append(backend)
+                    return backend
+
+                output = Path(directory) / "output"
+                expected = (
+                    self.assertRaisesRegex(RuntimeError, error)
+                    if error
+                    else nullcontext()
+                )
+                with expected:
+                    benchmark_backend(
+                        "fake",
+                        CharacterVoiceRegistry(),
+                        ["Kamuta"],
+                        "Text",
+                        output,
+                        backend_factory=factory,
+                    )
+                backend = created[0]
+                self.assertEqual(backend.shutdown_calls, 1)
+                self.assertEqual(backend.finalized_state, "backend state")
+                self.assertFalse(backend.cache.exists())
+                self.assertEqual(len(list(output.glob("*.wav"))), 0 if error else 1)
+
     def test_shutdown_releases_backend_and_preserves_primary_errors(self):
         class ShutdownBackend(FakeRenderingBackend):
             def __init__(self, limited, shutdown_fails):

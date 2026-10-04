@@ -550,28 +550,30 @@ def benchmark_backend(
     with TemporaryDirectory(
         prefix=".tts-benchmark-", dir=output_directory.parent
     ) as staging_directory:
-        try:
-            report = _benchmark_backend_staged(
-                backend_name,
-                registry,
-                characters,
-                text,
-                staging_directory,
-                benchmark_samples=benchmark_samples,
-                corpus_name=corpus_name,
-                model_id=model_id,
-                seed=seed,
-                backend_factory=tracked_backend_factory,
-                clock=clock,
-                cpu_clock=cpu_clock,
-            )
-        finally:
-            failed = sys.exc_info()[0] is not None
+        with TemporaryDirectory() as cache_directory:
             try:
-                shutdown_speech_backend(created_backend)
-            except Exception:
-                if not failed:
-                    raise
+                report = _benchmark_backend_staged(
+                    backend_name,
+                    registry,
+                    characters,
+                    text,
+                    staging_directory,
+                    benchmark_samples=benchmark_samples,
+                    corpus_name=corpus_name,
+                    model_id=model_id,
+                    seed=seed,
+                    cache_directory=cache_directory,
+                    backend_factory=tracked_backend_factory,
+                    clock=clock,
+                    cpu_clock=cpu_clock,
+                )
+            finally:
+                failed = sys.exc_info()[0] is not None
+                try:
+                    shutdown_speech_backend(created_backend)
+                except Exception:
+                    if not failed:
+                        raise
 
         staging_root = Path(staging_directory).resolve()
         publications: list[tuple[BenchmarkSampleReport, Path, Path]] = []
@@ -665,6 +667,7 @@ def _benchmark_backend_staged(
     text: str,
     output_directory: PathInput,
     *,
+    cache_directory: PathInput,
     benchmark_samples: Sequence[BenchmarkCorpusSample | BenchmarkSampleInput]
     | None = None,
     corpus_name: str | None = None,
@@ -678,113 +681,108 @@ def _benchmark_backend_staged(
     work_items = _prepare_benchmark_samples(
         backend_name, characters, text, benchmark_samples
     )
-    with TemporaryDirectory() as temporary_directory:
-        wall_started = clock()
+    wall_started = clock()
+    cpu_started = cpu_clock()
+    raw_backend = backend_factory(backend_name, registry, cache_directory)
+    backend = _require_renderable_backend(raw_backend, backend_name)
+    generation_profile = getattr(backend, "generation_profile", "stable")
+    if not isinstance(generation_profile, str):
+        generation_profile = "stable"
+    startup_wall_ms = (clock() - wall_started) * 1000
+    startup_cpu_ms = (cpu_clock() - cpu_started) * 1000
+    samples: list[BenchmarkSampleReport] = []
+    for item, output_name in work_items:
+        sample_id = item["id"]
+        character = item["character"]
+        sample_text = item["text"]
+        conditioning_started = clock()
+        prime = getattr(backend, "prime", None)
+        if callable(prime):
+            prime(character)
+        conditioning_ms = (clock() - conditioning_started) * 1000
+        fresh_request = SynthesisRequest(
+            voice=character,
+            text=sample_text,
+            seed=seed,
+            generation_profile=generation_profile,
+            cache_policy=SynthesisCachePolicy.REFRESH,
+        )
         cpu_started = cpu_clock()
-        raw_backend = backend_factory(backend_name, registry, temporary_directory)
-        backend = _require_renderable_backend(raw_backend, backend_name)
-        generation_profile = getattr(backend, "generation_profile", "stable")
-        if not isinstance(generation_profile, str):
-            generation_profile = "stable"
-        startup_wall_ms = (clock() - wall_started) * 1000
-        startup_cpu_ms = (cpu_clock() - cpu_started) * 1000
-        samples: list[BenchmarkSampleReport] = []
-        for item, output_name in work_items:
-            sample_id = item["id"]
-            character = item["character"]
-            sample_text = item["text"]
-            conditioning_started = clock()
-            prime = getattr(backend, "prime", None)
-            if callable(prime):
-                prime(character)
-            conditioning_ms = (clock() - conditioning_started) * 1000
-            fresh_request = SynthesisRequest(
-                voice=character,
-                text=sample_text,
-                seed=seed,
-                generation_profile=generation_profile,
-                cache_policy=SynthesisCachePolicy.REFRESH,
-            )
-            cpu_started = cpu_clock()
-            rendered, generation_wall_ms, fresh = _benchmark_render(
-                backend,
-                fresh_request,
-                "Fresh",
-                "fresh-generation",
-                clock,
-            )
-            generation_cpu_ms = (cpu_clock() - cpu_started) * 1000
-            audio = rendered.pcm
-            audio_sample_rate = rendered.sample_rate
-            first_audio_ms = rendered.timing.first_chunk_ms
-            duration_seconds = len(audio) / audio_sample_rate
-            realtime_factor = generation_wall_ms / (duration_seconds * 1000)
-            fresh["realtime_factor"] = realtime_factor
+        rendered, generation_wall_ms, fresh = _benchmark_render(
+            backend,
+            fresh_request,
+            "Fresh",
+            "fresh-generation",
+            clock,
+        )
+        generation_cpu_ms = (cpu_clock() - cpu_started) * 1000
+        audio = rendered.pcm
+        audio_sample_rate = rendered.sample_rate
+        first_audio_ms = rendered.timing.first_chunk_ms
+        duration_seconds = len(audio) / audio_sample_rate
+        realtime_factor = generation_wall_ms / (duration_seconds * 1000)
+        fresh["realtime_factor"] = realtime_factor
 
-            cache_request = replace(
-                fresh_request, cache_policy=SynthesisCachePolicy.USE
-            )
-            _memory_rendered, cached_replay_ms, memory_cache = _benchmark_render(
+        cache_request = replace(fresh_request, cache_policy=SynthesisCachePolicy.USE)
+        _memory_rendered, cached_replay_ms, memory_cache = _benchmark_render(
+            backend,
+            cache_request,
+            "Memory-cache",
+            "memory-cache",
+            clock,
+        )
+
+        persistent_cache: CacheStageReport = {
+            "cache_source": None,
+            "first_pcm_ms": None,
+            "wall_ms": None,
+            "underrun": None,
+            "generation_limited": None,
+        }
+        if hasattr(backend, "persistent_audio_cache"):
+            if not _is_persistent_cache_backend(backend):
+                raise RuntimeError("Persistent backend has no memory cache")
+            backend.audio_cache.clear()
+            _persistent_rendered, _persistent_ms, persistent_cache = _benchmark_render(
                 backend,
                 cache_request,
-                "Memory-cache",
-                "memory-cache",
+                "Persistent-cache",
+                "persistent-cache",
                 clock,
             )
-
-            persistent_cache: CacheStageReport = {
-                "cache_source": None,
-                "first_pcm_ms": None,
-                "wall_ms": None,
-                "underrun": None,
-                "generation_limited": None,
+        audio_path = write_wav(
+            _contained_child(output_directory, output_name, "Benchmark WAV"),
+            audio,
+            audio_sample_rate,
+        )
+        samples.append(
+            {
+                "id": sample_id,
+                "line_id": item["line_id"],
+                "character": character,
+                "text": sample_text,
+                "text_sha256": item["text_sha256"],
+                "audio": str(audio_path),
+                "audio_sha256": sha256_file(audio_path),
+                "duration_seconds": duration_seconds,
+                "conditioning_ms": conditioning_ms,
+                "first_audio_ms": first_audio_ms,
+                "generation_wall_ms": generation_wall_ms,
+                "generation_cpu_ms": generation_cpu_ms,
+                "realtime_factor": realtime_factor,
+                "cached_replay_ms": cached_replay_ms,
+                "fresh": fresh,
+                "memory_cache": memory_cache,
+                "persistent_cache": persistent_cache,
+                "dialogue_to_first_pcm_ms": (
+                    conditioning_ms + first_audio_ms
+                    if first_audio_ms is not None
+                    else None
+                ),
+                "speaker_similarity_rating": None,
+                "artifact_rating": None,
             }
-            if hasattr(backend, "persistent_audio_cache"):
-                if not _is_persistent_cache_backend(backend):
-                    raise RuntimeError("Persistent backend has no memory cache")
-                backend.audio_cache.clear()
-                _persistent_rendered, _persistent_ms, persistent_cache = (
-                    _benchmark_render(
-                        backend,
-                        cache_request,
-                        "Persistent-cache",
-                        "persistent-cache",
-                        clock,
-                    )
-                )
-            audio_path = write_wav(
-                _contained_child(output_directory, output_name, "Benchmark WAV"),
-                audio,
-                audio_sample_rate,
-            )
-            samples.append(
-                {
-                    "id": sample_id,
-                    "line_id": item["line_id"],
-                    "character": character,
-                    "text": sample_text,
-                    "text_sha256": item["text_sha256"],
-                    "audio": str(audio_path),
-                    "audio_sha256": sha256_file(audio_path),
-                    "duration_seconds": duration_seconds,
-                    "conditioning_ms": conditioning_ms,
-                    "first_audio_ms": first_audio_ms,
-                    "generation_wall_ms": generation_wall_ms,
-                    "generation_cpu_ms": generation_cpu_ms,
-                    "realtime_factor": realtime_factor,
-                    "cached_replay_ms": cached_replay_ms,
-                    "fresh": fresh,
-                    "memory_cache": memory_cache,
-                    "persistent_cache": persistent_cache,
-                    "dialogue_to_first_pcm_ms": (
-                        conditioning_ms + first_audio_ms
-                        if first_audio_ms is not None
-                        else None
-                    ),
-                    "speaker_similarity_rating": None,
-                    "artifact_rating": None,
-                }
-            )
+        )
     return {
         "schema": TTS_BENCHMARK_REPORT_SCHEMA,
         "schema_version": TTS_BENCHMARK_REPORT_VERSION,
