@@ -68,6 +68,30 @@ class FailurePlanContractsTest(unittest.TestCase):
                 with self.assertRaises(CohortReviewError):
                     specialist.build_specialist_failure_plan((workspace,))
 
+    def test_later_workspace_does_not_hide_earlier_source_changes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = self.specialist_fixture(root)
+            second = specialist_fixture.SpecialistFailurePlanTest().create_workspace(
+                root, "sentence_boundary_segmentation", "b"
+            )
+            original = specialist._next_action
+            calls = [0]
+
+            def mutate(*args):
+                result = original(*args)
+                calls[0] += 1
+                if calls[0] == 2:
+                    path = first / "workspace.json"
+                    doc = json.loads(path.read_text())
+                    doc["context"] = doc.get("context", 0) + 1
+                    path.write_text(json.dumps(doc))
+                return result
+
+            with patch.object(specialist, "_next_action", side_effect=mutate):
+                with self.assertRaises(CohortReviewError):
+                    specialist.build_specialist_failure_plan((first, second))
+
     def regeneration_fixture(self, root):
         workspace = {"workspace_id": "fixture", "config_fingerprint": "a" * 64}
         (root / "workspace.json").write_text(json.dumps(workspace))

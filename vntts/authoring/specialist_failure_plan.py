@@ -9,6 +9,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from vntts_artifacts.file_integrity import sha256_file
+
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.cohort_review import (
     CohortReviewError,
@@ -49,19 +51,29 @@ def build_specialist_failure_plan(
     sources: list[JsonObject] = []
     items: list[JsonObject] = []
     seen: set[str] = set()
+    snapshots: list[tuple[Path, str]] = []
     for workspace in paths:
-        source, workspace_items = _capture_workspace(workspace, seen)
+        source, workspace_items, captured = _capture_workspace(workspace, seen)
         sources.append(source)
         items.extend(workspace_items)
+        snapshots.extend(captured)
     items.sort(key=lambda value: _text_field(value, "queue_id"))
     body = _build_plan_body(sources, items)
+    for path, digest in snapshots:
+        try:
+            if sha256_file(path) != digest:
+                raise CohortReviewError(
+                    f"Specialist source changed during planning: {path}"
+                )
+        except OSError as error:
+            raise CohortReviewError(str(error)) from error
     plan_id = canonical_document_sha256(body)
     return SpecialistFailurePlan(plan_id, {**body, "plan_id": plan_id})
 
 
 def _capture_workspace(
     workspace: Path, seen: set[str]
-) -> tuple[JsonObject, list[JsonObject]]:
+) -> tuple[JsonObject, list[JsonObject], list[tuple[Path, str]]]:
     configuration_path = workspace / "workspace.json"
     state_path = workspace / "generated-audio/generation-state.json"
     queue_path = workspace / "queue.jsonl"
@@ -99,6 +111,7 @@ def _capture_workspace(
         "queue_sha256": hashlib.sha256(queue_payload).hexdigest(),
         "failed_item_count": len(items),
     }
+    snapshots: list[tuple[Path, str]] = []
     for path, payload, label in (
         (configuration_path, configuration_payload, "workspace configuration"),
         (state_path, state_payload, "generation state"),
@@ -106,7 +119,8 @@ def _capture_workspace(
     ):
         if _read(path, label) != payload:
             raise CohortReviewError(f"Specialist {label} changed during planning")
-    return source, items
+        snapshots.append((path, hashlib.sha256(payload).hexdigest()))
+    return source, items, snapshots
 
 
 def _project_failed_item(
