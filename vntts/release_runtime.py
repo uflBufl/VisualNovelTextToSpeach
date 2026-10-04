@@ -121,10 +121,28 @@ def _promote_windows_runtime(
 
 
 def _remove_runtime_entrypoint(path: Path) -> None:
-    if path.is_dir() and not path.is_symlink():
+    if path.is_junction():
+        path.rmdir()
+    elif path.is_dir() and not path.is_symlink():
         shutil.rmtree(path)
     else:
         path.unlink()
+
+
+def _prune_runtime_scripts(runtime_root: Path, platform_name: str) -> None:
+    scripts = runtime_root / ("Scripts" if platform_name == "win32" else "bin")
+    if scripts.is_symlink() or scripts.is_junction():
+        _remove_runtime_entrypoint(scripts)
+        return
+    if not scripts.is_dir():
+        return
+    if platform_name == "win32":
+        _remove_runtime_entrypoint(scripts)
+        return
+    runtime_interpreter = _runtime_interpreter(runtime_root, platform_name)
+    for candidate in scripts.iterdir():
+        if candidate != runtime_interpreter:
+            _remove_runtime_entrypoint(candidate)
 
 
 def _prune_runtime_entrypoints(
@@ -139,15 +157,8 @@ def _prune_runtime_entrypoints(
         for candidate in root.iterdir():
             if candidate.name.startswith("."):
                 _remove_runtime_entrypoint(candidate)
-    runtime_interpreter = _runtime_interpreter(runtime_root, platform_name)
-    scripts = runtime_root / ("Scripts" if platform_name == "win32" else "bin")
-    if scripts.is_dir():
-        for candidate in scripts.iterdir():
-            if platform_name == "win32" or candidate != runtime_interpreter:
-                _remove_runtime_entrypoint(candidate)
+    _prune_runtime_scripts(runtime_root, platform_name)
     if platform_name == "win32":
-        if scripts.is_dir():
-            scripts.rmdir()
         return
     for candidate in managed_interpreter.parent.iterdir():
         if candidate != managed_interpreter:

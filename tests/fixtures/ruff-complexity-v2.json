@@ -573,7 +573,7 @@
       "path": "vntts/release_runtime.py",
       "scope": "_prune_runtime_entrypoints",
       "count": 1,
-      "maximum": 15
+      "maximum": 11
     },
     {
       "code": "C901",
@@ -1001,13 +1001,6 @@
       "scope": "VoicePlanStore._resolve_group",
       "count": 1,
       "maximum": 34
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/release_runtime.py",
-      "scope": "_prune_runtime_entrypoints",
-      "count": 1,
-      "maximum": 14
     },
     {
       "code": "PLR0912",

@@ -1,5 +1,7 @@
 import json
 import os
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -446,6 +448,66 @@ class ReleaseRuntimeTest(unittest.TestCase):
             self.assertFalse(entrypoint.exists())
             self.assertFalse(entrypoint.parent.exists())
             self.assertTrue(runtime_library.exists())
+
+    def test_entrypoint_pruning_removes_directory_links_without_visiting_targets(self):
+        for platform_name, scripts_folder in (("darwin", "bin"), ("win32", "Scripts")):
+            with (
+                self.subTest(platform=platform_name),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                managed = root / "_python/cpython/bin/python3.14"
+                managed.parent.mkdir(parents=True)
+                managed.write_bytes(b"python")
+                runtime = root / "runtime"
+                runtime.mkdir()
+                outside = root / "outside"
+                outside.mkdir()
+                sentinel = outside / "keep.txt"
+                sentinel.write_bytes(b"keep")
+                scripts = runtime / scripts_folder
+                symlink_or_skip(scripts, outside, target_is_directory=True)
+
+                _prune_runtime_entrypoints(
+                    root / "_python", managed, runtime, platform_name
+                )
+
+                self.assertEqual(sentinel.read_bytes(), b"keep")
+                self.assertFalse(scripts.is_symlink())
+                self.assertFalse(scripts.exists())
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows junctions require Windows")
+    def test_entrypoint_pruning_removes_junctions_without_visiting_targets(self):
+        for platform_name, scripts_folder in (("darwin", "bin"), ("win32", "Scripts")):
+            with (
+                self.subTest(platform=platform_name),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                managed = root / "_python/cpython/bin/python3.14"
+                managed.parent.mkdir(parents=True)
+                managed.write_bytes(b"python")
+                runtime = root / "runtime"
+                runtime.mkdir()
+                outside = root / "outside"
+                outside.mkdir()
+                sentinel = outside / "keep.txt"
+                sentinel.write_bytes(b"keep")
+                scripts = runtime / scripts_folder
+                subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", str(scripts), str(outside)],
+                    check=True,
+                    capture_output=True,
+                )
+                self.assertTrue(scripts.is_junction())
+
+                _prune_runtime_entrypoints(
+                    root / "_python", managed, runtime, platform_name
+                )
+
+                self.assertEqual(sentinel.read_bytes(), b"keep")
+                self.assertFalse(scripts.is_junction())
+                self.assertFalse(scripts.exists())
 
     def test_runtime_site_rejects_ambiguous_posix_layout(self):
         with TemporaryDirectory() as directory:
