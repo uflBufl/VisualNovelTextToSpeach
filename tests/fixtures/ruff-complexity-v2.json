@@ -1,1433 +1,1671 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "findings": [
     {
       "code": "C901",
       "path": "examples/benchmark_tts_backends.py",
       "scope": "create_backend",
-      "count": 1
+      "count": 1,
+      "maximum": 12
     },
     {
       "code": "C901",
       "path": "scripts/moss_native_compare.py",
       "scope": "prepare_downloads",
-      "count": 1
+      "count": 1,
+      "maximum": 15
     },
     {
       "code": "C901",
       "path": "scripts/moss_native_compare.py",
       "scope": "run",
-      "count": 1
+      "count": 1,
+      "maximum": 18
     },
     {
       "code": "C901",
       "path": "scripts/moss_native_pause_probe.py",
       "scope": "_cancel_and_restart",
-      "count": 1
+      "count": 1,
+      "maximum": 12
     },
     {
       "code": "C901",
       "path": "scripts/moss_native_pause_probe.py",
       "scope": "run",
-      "count": 1
+      "count": 1,
+      "maximum": 25
     },
     {
       "code": "C901",
       "path": "scripts/render_ui_catalog.py",
       "scope": "_render_stories",
-      "count": 1
+      "count": 1,
+      "maximum": 204
     },
     {
       "code": "C901",
       "path": "scripts/smoke_speech_runtime.py",
       "scope": "check_runtime",
-      "count": 1
+      "count": 1,
+      "maximum": 15
     },
     {
       "code": "C901",
       "path": "tests/test_fresh_install_gui_journey.py",
       "scope": "_first_process",
-      "count": 1
+      "count": 1,
+      "maximum": 23
     },
     {
       "code": "C901",
       "path": "tests/test_fresh_install_gui_journey.py",
       "scope": "_second_process",
-      "count": 1
+      "count": 1,
+      "maximum": 13
     },
     {
       "code": "C901",
       "path": "vntts/app.py",
       "scope": "SettingsDialog.validation_errors",
-      "count": 1
+      "count": 1,
+      "maximum": 20
     },
     {
       "code": "C901",
       "path": "vntts/authoring/delivery.py",
       "scope": "annotate_delivery",
-      "count": 1
+      "count": 1,
+      "maximum": 11
     },
     {
       "code": "C901",
       "path": "vntts/authoring/failed_control_carry.py",
       "scope": "carry_failed_controls",
-      "count": 1
+      "count": 1,
+      "maximum": 17
     },
     {
       "code": "C901",
       "path": "vntts/authoring/failed_prompt_hypothesis.py",
       "scope": "publish_failed_prompt_hypothesis_selection",
-      "count": 1
+      "count": 1,
+      "maximum": 11
     },
     {
       "code": "C901",
       "path": "vntts/authoring/failure_repair.py",
       "scope": "compress_single_sentence_boundary_silence",
-      "count": 1
+      "count": 1,
+      "maximum": 16
     },
     {
       "code": "C901",
       "path": "vntts/authoring/generation_manifest.py",
       "scope": "snapshot_recorded_voices",
-      "count": 1
+      "count": 1,
+      "maximum": 13
     },
     {
       "code": "C901",
       "path": "vntts/authoring/legacy_reason_review.py",
       "scope": "publish_reason_review_decisions",
-      "count": 1
+      "count": 1,
+      "maximum": 11
     },
     {
       "code": "C901",
       "path": "vntts/authoring/listening_cli.py",
       "scope": "main",
-      "count": 1
+      "count": 1,
+      "maximum": 11
     },
     {
       "code": "C901",
       "path": "vntts/authoring/listening_ui.py",
       "scope": "ModelListeningDialog.poll_playback",
-      "count": 1
+      "count": 1,
+      "maximum": 14
     },
     {
       "code": "C901",
       "path": "vntts/authoring/missing_voice_live_fallback.py",
       "scope": "authorize_missing_voice_live_fallback",
-      "count": 1
+      "count": 1,
+      "maximum": 17
     },
     {
       "code": "C901",
       "path": "vntts/authoring/missing_voice_reuse_binding.py",
       "scope": "_validate_binding_bundle",
-      "count": 1
+      "count": 1,
+      "maximum": 14
     },
     {
       "code": "C901",
       "path": "vntts/authoring/missing_voice_reuse_binding.py",
       "scope": "publish_missing_voice_reuse_binding",
-      "count": 1
+      "count": 1,
+      "maximum": 26
     },
     {
       "code": "C901",
       "path": "vntts/authoring/queue_builder.py",
       "scope": "plan_generation_queue",
-      "count": 1
+      "count": 1,
+      "maximum": 24
     },
     {
       "code": "C901",
       "path": "vntts/authoring/queue_extension.py",
       "scope": "validate_additive_generation_queue",
-      "count": 1
+      "count": 1,
+      "maximum": 17
     },
     {
       "code": "C901",
       "path": "vntts/authoring/reconciliation_schema.py",
       "scope": "_validated_report_actions",
-      "count": 1
+      "count": 1,
+      "maximum": 15
     },
     {
       "code": "C901",
       "path": "vntts/authoring/reconciliation_schema.py",
       "scope": "validate_authoring_reconciliation_document",
-      "count": 1
+      "count": 1,
+      "maximum": 12
     },
     {
       "code": "C901",
       "path": "vntts/authoring/reference_selection.py",
       "scope": "validate_reference_selection_provenance",
-      "count": 1
+      "count": 1,
+      "maximum": 17
     },
     {
       "code": "C901",
       "path": "vntts/authoring/robustness_asr.py",
       "scope": "build_speech_robustness_asr_report",
-      "count": 1
+      "count": 1,
+      "maximum": 20
     },
     {
       "code": "C901",
       "path": "vntts/authoring/sound_effect_benchmark.py",
       "scope": "benchmark_sound_effects",
-      "count": 1
+      "count": 1,
+      "maximum": 12
     },
     {
       "code": "C901",
       "path": "vntts/authoring/speaker_identity.py",
       "scope": "build_labelled_pairs",
-      "count": 1
+      "count": 1,
+      "maximum": 12
     },
     {
       "code": "C901",
       "path": "vntts/authoring/terminal_conflict_workspace.py",
       "scope": "_publish_staged_terminal_conflict_workspace",
-      "count": 1
+      "count": 1,
+      "maximum": 18
     },
     {
       "code": "C901",
       "path": "vntts/authoring/terminal_conflict_workspace.py",
       "scope": "_select_terminal_conflict_sources",
-      "count": 1
+      "count": 1,
+      "maximum": 18
     },
     {
       "code": "C901",
       "path": "vntts/authoring/workbench_ui.py",
       "scope": "AuthoringWorkbenchDialog._apply_review_filters",
-      "count": 1
+      "count": 1,
+      "maximum": 20
     },
     {
       "code": "C901",
       "path": "vntts/authoring/workbench_ui.py",
       "scope": "AuthoringWorkbenchDialog._apply_review_filters.included",
-      "count": 1
+      "count": 1,
+      "maximum": 13
     },
     {
       "code": "C901",
       "path": "vntts/authoring/workbench_ui.py",
       "scope": "AuthoringWorkbenchDialog._populate_recent_choices",
-      "count": 1
+      "count": 1,
+      "maximum": 13
     },
     {
       "code": "C901",
       "path": "vntts/authoring/workbench_ui.py",
       "scope": "AuthoringWorkbenchDialog._review_save_finished",
-      "count": 1
+      "count": 1,
+      "maximum": 14
     },
     {
       "code": "C901",
       "path": "vntts/authoring/workbench_ui.py",
       "scope": "AuthoringWorkbenchDialog._update_review_actions",
-      "count": 1
+      "count": 1,
+      "maximum": 18
     },
     {
       "code": "C901",
       "path": "vntts/chapter_voice_preload.py",
       "scope": "ChapterVoicePreloader.resolve_bounded_among",
-      "count": 1
+      "count": 1,
+      "maximum": 13
     },
     {
       "code": "C901",
       "path": "vntts/chapter_voice_preload.py",
       "scope": "_speaker_bounded_text_match",
-      "count": 1
+      "count": 1,
+      "maximum": 11
     },
     {
       "code": "C901",
       "path": "vntts/controller.py",
       "scope": "AppController._dialog_observed",
-      "count": 1
+      "count": 1,
+      "maximum": 16
     },
     {
       "code": "C901",
       "path": "vntts/controller.py",
       "scope": "AppController._get_live_sequence_status_locked",
-      "count": 1
+      "count": 1,
+      "maximum": 16
     },
     {
       "code": "C901",
       "path": "vntts/controller.py",
       "scope": "AppController._observe_live_sequence_locked",
-      "count": 1
+      "count": 1,
+      "maximum": 13
     },
     {
       "code": "C901",
       "path": "vntts/controller.py",
       "scope": "AppController._play_live_chunk",
-      "count": 1
+      "count": 1,
+      "maximum": 13
     },
     {
       "code": "C901",
       "path": "vntts/controller_components.py",
       "scope": "RuntimeLifecycleComponent._initialize_backend",
-      "count": 1
+      "count": 1,
+      "maximum": 18
     },
     {
       "code": "C901",
       "path": "vntts/game_audio_decoder.py",
       "scope": "ensure_game_decoder",
-      "count": 1
+      "count": 1,
+      "maximum": 19
     },
     {
       "code": "C901",
       "path": "vntts/game_pack.py",
       "scope": "_source_audio_semantic_evidence",
-      "count": 1
+      "count": 1,
+      "maximum": 11
     },
     {
       "code": "C901",
       "path": "vntts/generated_audio.py",
       "scope": "GeneratedAudioFallbackBackend.has_resolved_route_in_live_mode",
-      "count": 1
+      "count": 1,
+      "maximum": 12
     },
     {
       "code": "C901",
       "path": "vntts/generated_audio.py",
       "scope": "GeneratedAudioFallbackBackend.prepare_route",
-      "count": 1
+      "count": 1,
+      "maximum": 22
     },
     {
       "code": "C901",
       "path": "vntts/generated_audio.py",
       "scope": "_live_fallback_index",
-      "count": 1
+      "count": 1,
+      "maximum": 27
     },
     {
       "code": "C901",
       "path": "vntts/live_tracking.py",
       "scope": "IncrementalDialogTracker.observe",
-      "count": 1
+      "count": 1,
+      "maximum": 12
     },
     {
       "code": "C901",
       "path": "vntts/live.py",
       "scope": "LiveDialogReader._run_auto_advance",
-      "count": 1
+      "count": 1,
+      "maximum": 22
     },
     {
       "code": "C901",
       "path": "vntts/live.py",
       "scope": "LiveDialogReader._run_ocr",
-      "count": 1
+      "count": 1,
+      "maximum": 25
     },
     {
       "code": "C901",
       "path": "vntts/live.py",
       "scope": "LiveDialogReader._set_generation",
-      "count": 1
+      "count": 1,
+      "maximum": 12
     },
     {
       "code": "C901",
       "path": "vntts/live_replay.py",
       "scope": "LiveReplayRunner._run_legacy",
-      "count": 1
+      "count": 1,
+      "maximum": 14
     },
     {
       "code": "C901",
       "path": "vntts/live_replay.py",
       "scope": "LiveReplayRunner._run_sequence",
-      "count": 1
+      "count": 1,
+      "maximum": 25
     },
     {
       "code": "C901",
       "path": "vntts/live_replay.py",
       "scope": "_live_sequence_binding",
-      "count": 1
+      "count": 1,
+      "maximum": 19
     },
     {
       "code": "C901",
       "path": "vntts/live_replay.py",
       "scope": "_load_frame",
-      "count": 1
+      "count": 1,
+      "maximum": 11
     },
     {
       "code": "C901",
       "path": "vntts/live_replay.py",
       "scope": "load_live_replay_corpus",
-      "count": 1
+      "count": 1,
+      "maximum": 16
     },
     {
       "code": "C901",
       "path": "vntts/live_replay_capture.py",
       "scope": "LiveReplayCaptureSession._validate_bound_inputs",
-      "count": 1
+      "count": 1,
+      "maximum": 12
     },
     {
       "code": "C901",
       "path": "vntts/live_replay_capture.py",
       "scope": "main",
-      "count": 1
+      "count": 1,
+      "maximum": 12
     },
     {
       "code": "C901",
       "path": "vntts/live_replay_capture_recover.py",
       "scope": "_frontier_bounded_match",
-      "count": 1
+      "count": 1,
+      "maximum": 13
     },
     {
       "code": "C901",
       "path": "vntts/live_replay_capture_recover.py",
       "scope": "_longest_explicit_run",
-      "count": 1
+      "count": 1,
+      "maximum": 13
     },
     {
       "code": "C901",
       "path": "vntts/live_replay_capture_recover.py",
       "scope": "recover_live_replay_capture",
-      "count": 1
+      "count": 1,
+      "maximum": 20
     },
     {
       "code": "C901",
       "path": "vntts/live_replay_coverage.py",
       "scope": "audit_live_replay_coverage",
-      "count": 1
+      "count": 1,
+      "maximum": 20
     },
     {
       "code": "C901",
       "path": "vntts/live_replay_sequence_seal.py",
       "scope": "_map_dialogue",
-      "count": 1
+      "count": 1,
+      "maximum": 17
     },
     {
       "code": "C901",
       "path": "vntts/live_replay_sequence_seal.py",
       "scope": "_snapshot_generated_audio",
-      "count": 1
+      "count": 1,
+      "maximum": 11
     },
     {
       "code": "C901",
       "path": "vntts/live_replay_sequence_seal.py",
       "scope": "_validate_capture_observation_ledger",
-      "count": 1
+      "count": 1,
+      "maximum": 18
     },
     {
       "code": "C901",
       "path": "vntts/live_replay_sequence_seal.py",
       "scope": "seal_sequence_replay",
-      "count": 1
+      "count": 1,
+      "maximum": 18
     },
     {
       "code": "C901",
       "path": "vntts/live_speaker_corpus.py",
       "scope": "LiveSpeakerCorpus.load",
-      "count": 1
+      "count": 1,
+      "maximum": 12
     },
     {
       "code": "C901",
       "path": "vntts/moss_cpp_backend.py",
       "scope": "MossCppVoiceRouterBackend._generate",
-      "count": 1
+      "count": 1,
+      "maximum": 37
     },
     {
       "code": "C901",
       "path": "vntts/moss_cpp_backend.py",
       "scope": "MossCppVoiceRouterBackend._start_server_once",
-      "count": 1
+      "count": 1,
+      "maximum": 13
     },
     {
       "code": "C901",
       "path": "vntts/moss_cpp_installation.py",
       "scope": "_download",
-      "count": 1
+      "count": 1,
+      "maximum": 19
     },
     {
       "code": "C901",
       "path": "vntts/moss_delay_backend.py",
       "scope": "MossTTSDelayVoiceRouterBackend._render_chunks",
-      "count": 1
+      "count": 1,
+      "maximum": 13
     },
     {
       "code": "C901",
       "path": "vntts/ocr.py",
       "scope": "recognize_speaker_from_data",
-      "count": 1
+      "count": 1,
+      "maximum": 16
     },
     {
       "code": "C901",
       "path": "vntts/onboarding_ui.py",
       "scope": "ConfigurationPage.validation_errors",
-      "count": 1
+      "count": 1,
+      "maximum": 19
     },
     {
       "code": "C901",
       "path": "vntts/pregeneration_activation.py",
       "scope": "OfflinePackActivator.activate",
-      "count": 1
+      "count": 1,
+      "maximum": 13
     },
     {
       "code": "C901",
       "path": "vntts/pregeneration_pack.py",
       "scope": "OfflinePackPublisher.publish",
-      "count": 1
+      "count": 1,
+      "maximum": 14
     },
     {
       "code": "C901",
       "path": "vntts/pregeneration_queue.py",
       "scope": "_load_existing",
-      "count": 1
+      "count": 1,
+      "maximum": 13
     },
     {
       "code": "C901",
       "path": "vntts/pregeneration_voices.py",
       "scope": "VoicePlanStore._resolve_group",
-      "count": 1
+      "count": 1,
+      "maximum": 31
     },
     {
       "code": "C901",
       "path": "vntts/pregeneration_voices.py",
       "scope": "_candidate_inventory",
-      "count": 1
+      "count": 1,
+      "maximum": 16
     },
     {
       "code": "C901",
       "path": "vntts/pregeneration_voices.py",
       "scope": "_manifest_candidate_variants",
-      "count": 1
+      "count": 1,
+      "maximum": 13
     },
     {
       "code": "C901",
       "path": "vntts/readiness_ui.py",
       "scope": "ReadinessDialog._checks_finished",
-      "count": 1
+      "count": 1,
+      "maximum": 12
     },
     {
       "code": "C901",
       "path": "vntts/release_runtime.py",
       "scope": "_prune_runtime_entrypoints",
-      "count": 1
+      "count": 1,
+      "maximum": 15
     },
     {
       "code": "C901",
       "path": "vntts/release_smoke_test.py",
       "scope": "run_release_smoke_test",
-      "count": 1
+      "count": 1,
+      "maximum": 20
     },
     {
       "code": "C901",
       "path": "vntts/runtime_ownership.py",
       "scope": "_cleanup_managed_runtimes",
-      "count": 1
+      "count": 1,
+      "maximum": 12
     },
     {
       "code": "C901",
       "path": "vntts/services/tts_engine.py",
       "scope": "TTSEngine._synthesize_locked",
-      "count": 1
+      "count": 1,
+      "maximum": 14
     },
     {
       "code": "C901",
       "path": "vntts/settings.py",
       "scope": "AppSettings.from_mapping",
-      "count": 1
+      "count": 1,
+      "maximum": 27
     },
     {
       "code": "C901",
       "path": "vntts/speech_backend.py",
       "scope": "MossTTSVoiceRouterBackend._render_chunks",
-      "count": 1
+      "count": 1,
+      "maximum": 24
     },
     {
       "code": "C901",
       "path": "vntts/speech_backend.py",
       "scope": "MossTTSVoiceRouterBackend.play_prepared",
-      "count": 1
+      "count": 1,
+      "maximum": 12
     },
     {
       "code": "C901",
       "path": "vntts/speech_backend.py",
       "scope": "PocketTTSVoiceRouterBackend._render_chunks",
-      "count": 1
+      "count": 1,
+      "maximum": 17
     },
     {
       "code": "C901",
       "path": "vntts/speech_presentation.py",
       "scope": "playback_labels",
-      "count": 1
+      "count": 1,
+      "maximum": 12
     },
     {
       "code": "C901",
       "path": "vntts/speech_worker.py",
       "scope": "IsolatedSpeechBackend._launch_worker",
-      "count": 1
+      "count": 1,
+      "maximum": 20
     },
     {
       "code": "C901",
       "path": "vntts/speech_worker.py",
       "scope": "worker_main",
-      "count": 1
+      "count": 1,
+      "maximum": 23
     },
     {
       "code": "C901",
       "path": "vntts/support.py",
       "scope": "_sanitize_game_import_value",
-      "count": 1
+      "count": 1,
+      "maximum": 12
     },
     {
       "code": "C901",
       "path": "vntts/tts_benchmark.py",
       "scope": "benchmark_backend",
-      "count": 1
+      "count": 1,
+      "maximum": 11
     },
     {
       "code": "C901",
       "path": "vntts/tts_benchmark.py",
       "scope": "load_tts_benchmark_corpus",
-      "count": 1
+      "count": 1,
+      "maximum": 14
     },
     {
       "code": "C901",
       "path": "vntts/voices.py",
       "scope": "_read_owned_voice_reference",
-      "count": 1
+      "count": 1,
+      "maximum": 12
     },
     {
       "code": "PLR0912",
       "path": "scripts/moss_native_compare.py",
       "scope": "prepare_downloads",
-      "count": 1
+      "count": 1,
+      "maximum": 14
     },
     {
       "code": "PLR0912",
       "path": "scripts/moss_native_compare.py",
       "scope": "run",
-      "count": 1
+      "count": 1,
+      "maximum": 18
     },
     {
       "code": "PLR0912",
       "path": "scripts/moss_native_pause_probe.py",
       "scope": "run",
-      "count": 1
+      "count": 1,
+      "maximum": 28
     },
     {
       "code": "PLR0912",
       "path": "scripts/smoke_speech_runtime.py",
       "scope": "check_runtime",
-      "count": 1
+      "count": 1,
+      "maximum": 16
     },
     {
       "code": "PLR0912",
       "path": "tests/test_fresh_install_gui_journey.py",
       "scope": "_first_process",
-      "count": 1
+      "count": 1,
+      "maximum": 25
     },
     {
       "code": "PLR0912",
       "path": "tests/test_fresh_install_gui_journey.py",
       "scope": "_second_process",
-      "count": 1
+      "count": 1,
+      "maximum": 13
     },
     {
       "code": "PLR0912",
       "path": "vntts/app.py",
       "scope": "SettingsDialog.validation_errors",
-      "count": 1
+      "count": 1,
+      "maximum": 17
     },
     {
       "code": "PLR0912",
       "path": "vntts/authoring/failed_control_carry.py",
       "scope": "carry_failed_controls",
-      "count": 1
+      "count": 1,
+      "maximum": 16
     },
     {
       "code": "PLR0912",
       "path": "vntts/authoring/failure_repair.py",
       "scope": "compress_single_sentence_boundary_silence",
-      "count": 1
+      "count": 1,
+      "maximum": 15
     },
     {
       "code": "PLR0912",
       "path": "vntts/authoring/generation_manifest.py",
       "scope": "snapshot_recorded_voices",
-      "count": 1
+      "count": 1,
+      "maximum": 13
     },
     {
       "code": "PLR0912",
       "path": "vntts/authoring/listening_ui.py",
       "scope": "ModelListeningDialog.poll_playback",
-      "count": 1
+      "count": 1,
+      "maximum": 14
     },
     {
       "code": "PLR0912",
       "path": "vntts/authoring/missing_voice_live_fallback.py",
       "scope": "authorize_missing_voice_live_fallback",
-      "count": 1
+      "count": 1,
+      "maximum": 17
     },
     {
       "code": "PLR0912",
       "path": "vntts/authoring/missing_voice_reuse_binding.py",
       "scope": "_validate_binding_bundle",
-      "count": 1
+      "count": 1,
+      "maximum": 13
     },
     {
       "code": "PLR0912",
       "path": "vntts/authoring/missing_voice_reuse_binding.py",
       "scope": "publish_missing_voice_reuse_binding",
-      "count": 1
+      "count": 1,
+      "maximum": 25
     },
     {
       "code": "PLR0912",
       "path": "vntts/authoring/queue_builder.py",
       "scope": "plan_generation_queue",
-      "count": 1
+      "count": 1,
+      "maximum": 26
     },
     {
       "code": "PLR0912",
       "path": "vntts/authoring/queue_extension.py",
       "scope": "validate_additive_generation_queue",
-      "count": 1
+      "count": 1,
+      "maximum": 16
     },
     {
       "code": "PLR0912",
       "path": "vntts/authoring/reconciliation_schema.py",
       "scope": "_validated_report_actions",
-      "count": 1
+      "count": 1,
+      "maximum": 15
     },
     {
       "code": "PLR0912",
       "path": "vntts/authoring/reference_selection.py",
       "scope": "validate_reference_selection_provenance",
-      "count": 1
+      "count": 1,
+      "maximum": 16
     },
     {
       "code": "PLR0912",
       "path": "vntts/authoring/robustness_asr.py",
       "scope": "build_speech_robustness_asr_report",
-      "count": 1
+      "count": 1,
+      "maximum": 20
     },
     {
       "code": "PLR0912",
       "path": "vntts/authoring/terminal_conflict_workspace.py",
       "scope": "_publish_staged_terminal_conflict_workspace",
-      "count": 1
+      "count": 1,
+      "maximum": 18
     },
     {
       "code": "PLR0912",
       "path": "vntts/authoring/terminal_conflict_workspace.py",
       "scope": "_select_terminal_conflict_sources",
-      "count": 1
+      "count": 1,
+      "maximum": 18
     },
     {
       "code": "PLR0912",
       "path": "vntts/authoring/workbench_ui.py",
       "scope": "AuthoringWorkbenchDialog._populate_recent_choices",
-      "count": 1
+      "count": 1,
+      "maximum": 13
     },
     {
       "code": "PLR0912",
       "path": "vntts/authoring/workbench_ui.py",
       "scope": "AuthoringWorkbenchDialog._review_save_finished",
-      "count": 1
+      "count": 1,
+      "maximum": 14
     },
     {
       "code": "PLR0912",
       "path": "vntts/authoring/workbench_ui.py",
       "scope": "AuthoringWorkbenchDialog._update_review_actions",
-      "count": 1
+      "count": 1,
+      "maximum": 20
     },
     {
       "code": "PLR0912",
       "path": "vntts/controller.py",
       "scope": "AppController._dialog_observed",
-      "count": 1
+      "count": 1,
+      "maximum": 16
     },
     {
       "code": "PLR0912",
       "path": "vntts/controller.py",
       "scope": "AppController._get_live_sequence_status_locked",
-      "count": 1
+      "count": 1,
+      "maximum": 18
     },
     {
       "code": "PLR0912",
       "path": "vntts/controller.py",
       "scope": "AppController._observe_live_sequence_locked",
-      "count": 1
+      "count": 1,
+      "maximum": 14
     },
     {
       "code": "PLR0912",
       "path": "vntts/controller.py",
       "scope": "AppController._play_live_chunk",
-      "count": 1
+      "count": 1,
+      "maximum": 13
     },
     {
       "code": "PLR0912",
       "path": "vntts/controller_components.py",
       "scope": "RuntimeLifecycleComponent._initialize_backend",
-      "count": 1
+      "count": 1,
+      "maximum": 17
     },
     {
       "code": "PLR0912",
       "path": "vntts/game_audio_decoder.py",
       "scope": "ensure_game_decoder",
-      "count": 1
+      "count": 1,
+      "maximum": 18
     },
     {
       "code": "PLR0912",
       "path": "vntts/generated_audio.py",
       "scope": "GeneratedAudioFallbackBackend.prepare_route",
-      "count": 1
+      "count": 1,
+      "maximum": 25
     },
     {
       "code": "PLR0912",
       "path": "vntts/generated_audio.py",
       "scope": "_live_fallback_index",
-      "count": 1
+      "count": 1,
+      "maximum": 26
     },
     {
       "code": "PLR0912",
       "path": "vntts/live.py",
       "scope": "LiveDialogReader._run_auto_advance",
-      "count": 1
+      "count": 1,
+      "maximum": 23
     },
     {
       "code": "PLR0912",
       "path": "vntts/live.py",
       "scope": "LiveDialogReader._run_ocr",
-      "count": 1
+      "count": 1,
+      "maximum": 29
     },
     {
       "code": "PLR0912",
       "path": "vntts/live_replay.py",
       "scope": "_live_sequence_binding",
-      "count": 1
+      "count": 1,
+      "maximum": 19
     },
     {
       "code": "PLR0912",
       "path": "vntts/live_replay.py",
       "scope": "load_live_replay_corpus",
-      "count": 1
+      "count": 1,
+      "maximum": 16
     },
     {
       "code": "PLR0912",
       "path": "vntts/live_replay_capture_recover.py",
       "scope": "recover_live_replay_capture",
-      "count": 1
+      "count": 1,
+      "maximum": 19
     },
     {
       "code": "PLR0912",
       "path": "vntts/live_replay_coverage.py",
       "scope": "audit_live_replay_coverage",
-      "count": 1
+      "count": 1,
+      "maximum": 19
     },
     {
       "code": "PLR0912",
       "path": "vntts/live_replay_sequence_seal.py",
       "scope": "_map_dialogue",
-      "count": 1
+      "count": 1,
+      "maximum": 19
     },
     {
       "code": "PLR0912",
       "path": "vntts/live_replay_sequence_seal.py",
       "scope": "_validate_capture_observation_ledger",
-      "count": 1
+      "count": 1,
+      "maximum": 17
     },
     {
       "code": "PLR0912",
       "path": "vntts/live_replay_sequence_seal.py",
       "scope": "seal_sequence_replay",
-      "count": 1
+      "count": 1,
+      "maximum": 17
     },
     {
       "code": "PLR0912",
       "path": "vntts/moss_cpp_backend.py",
       "scope": "MossCppVoiceRouterBackend._generate",
-      "count": 1
+      "count": 1,
+      "maximum": 33
     },
     {
       "code": "PLR0912",
       "path": "vntts/moss_cpp_installation.py",
       "scope": "_download",
-      "count": 1
+      "count": 1,
+      "maximum": 18
     },
     {
       "code": "PLR0912",
       "path": "vntts/ocr.py",
       "scope": "recognize_speaker_from_data",
-      "count": 1
+      "count": 1,
+      "maximum": 15
     },
     {
       "code": "PLR0912",
       "path": "vntts/onboarding_ui.py",
       "scope": "ConfigurationPage.validation_errors",
-      "count": 1
+      "count": 1,
+      "maximum": 16
     },
     {
       "code": "PLR0912",
       "path": "vntts/pregeneration_pack.py",
       "scope": "OfflinePackPublisher.publish",
-      "count": 1
+      "count": 1,
+      "maximum": 14
     },
     {
       "code": "PLR0912",
       "path": "vntts/pregeneration_voices.py",
       "scope": "VoicePlanStore._resolve_group",
-      "count": 1
+      "count": 1,
+      "maximum": 34
     },
     {
       "code": "PLR0912",
       "path": "vntts/release_runtime.py",
       "scope": "_prune_runtime_entrypoints",
-      "count": 1
+      "count": 1,
+      "maximum": 14
     },
     {
       "code": "PLR0912",
       "path": "vntts/release_smoke_test.py",
       "scope": "run_release_smoke_test",
-      "count": 1
+      "count": 1,
+      "maximum": 19
     },
     {
       "code": "PLR0912",
       "path": "vntts/services/tts_engine.py",
       "scope": "TTSEngine._synthesize_locked",
-      "count": 1
+      "count": 1,
+      "maximum": 13
     },
     {
       "code": "PLR0912",
       "path": "vntts/settings.py",
       "scope": "AppSettings.from_mapping",
-      "count": 1
+      "count": 1,
+      "maximum": 35
     },
     {
       "code": "PLR0912",
       "path": "vntts/speech_backend.py",
       "scope": "MossTTSVoiceRouterBackend._render_chunks",
-      "count": 1
+      "count": 1,
+      "maximum": 16
     },
     {
       "code": "PLR0912",
       "path": "vntts/speech_backend.py",
       "scope": "PocketTTSVoiceRouterBackend._render_chunks",
-      "count": 1
+      "count": 1,
+      "maximum": 14
     },
     {
       "code": "PLR0912",
       "path": "vntts/speech_worker.py",
       "scope": "IsolatedSpeechBackend._launch_worker",
-      "count": 1
+      "count": 1,
+      "maximum": 19
     },
     {
       "code": "PLR0912",
       "path": "vntts/speech_worker.py",
       "scope": "worker_main",
-      "count": 1
+      "count": 1,
+      "maximum": 23
     },
     {
       "code": "PLR0912",
       "path": "vntts/tts_benchmark.py",
       "scope": "load_tts_benchmark_corpus",
-      "count": 1
+      "count": 1,
+      "maximum": 14
     },
     {
       "code": "PLR0915",
       "path": "examples/benchmark_tts_backends.py",
       "scope": "create_backend",
-      "count": 1
+      "count": 1,
+      "maximum": 51
     },
     {
       "code": "PLR0915",
       "path": "scripts/moss_native_compare.py",
       "scope": "run",
-      "count": 1
+      "count": 1,
+      "maximum": 74
     },
     {
       "code": "PLR0915",
       "path": "scripts/moss_native_pause_probe.py",
       "scope": "run",
-      "count": 1
+      "count": 1,
+      "maximum": 130
     },
     {
       "code": "PLR0915",
       "path": "scripts/render_ui_catalog.py",
       "scope": "_render_stories",
-      "count": 1
+      "count": 1,
+      "maximum": 962
     },
     {
       "code": "PLR0915",
       "path": "scripts/render_ui_catalog.py",
       "scope": "_render_stories.offline_preparation",
-      "count": 1
+      "count": 1,
+      "maximum": 94
     },
     {
       "code": "PLR0915",
       "path": "scripts/render_ui_catalog.py",
       "scope": "_render_stories.voice_editor",
-      "count": 1
+      "count": 1,
+      "maximum": 60
     },
     {
       "code": "PLR0915",
       "path": "tests/test_authoring_failure_reference_audit.py",
       "scope": "FailureReferenceAuditTest.test_imports_exact_blind_preference_into_fresh_audit",
-      "count": 1
+      "count": 1,
+      "maximum": 122
     },
     {
       "code": "PLR0915",
       "path": "tests/test_authoring_failure_reference_binding.py",
       "scope": "FailureReferenceBindingTest.test_same_backend_repair_successor_preserves_the_exact_overlay",
-      "count": 1
+      "count": 1,
+      "maximum": 61
     },
     {
       "code": "PLR0915",
       "path": "tests/test_authoring_source_reference_review.py",
       "scope": "AuthoringSourceReferenceReviewTest.test_binding_successor_preserves_existing_plan_and_adds_reviewed_plan",
-      "count": 1
+      "count": 1,
+      "maximum": 70
     },
     {
       "code": "PLR0915",
       "path": "tests/test_authoring_workbench.py",
       "scope": "AuthoringWorkbenchTest.test_automatic_unresolved_authority_unlocks_exact_early_pocket_fallback",
-      "count": 1
+      "count": 1,
+      "maximum": 61
     },
     {
       "code": "PLR0915",
       "path": "tests/test_authoring_workbench.py",
       "scope": "AuthoringWorkbenchTest.test_bounded_seed_repair_carries_provider_attempts_and_stops_at_three",
-      "count": 1
+      "count": 1,
+      "maximum": 61
     },
     {
       "code": "PLR0915",
       "path": "tests/test_authoring_workbench.py",
       "scope": "AuthoringWorkbenchTest.test_exhausted_inline_pause_failure_moves_to_one_typed_pocket_attempt",
-      "count": 1
+      "count": 1,
+      "maximum": 74
     },
     {
       "code": "PLR0915",
       "path": "tests/test_authoring_workbench.py",
       "scope": "AuthoringWorkbenchTest.test_offline_pocket_fallback_carries_exact_failure_with_fresh_seed_space",
-      "count": 1
+      "count": 1,
+      "maximum": 61
     },
     {
       "code": "PLR0915",
       "path": "tests/test_authoring_workbench.py",
       "scope": "AuthoringWorkbenchTest.test_outcome_merge_copies_only_exact_reviewed_repair_and_is_idempotent",
-      "count": 1
+      "count": 1,
+      "maximum": 68
     },
     {
       "code": "PLR0915",
       "path": "tests/test_authoring_workbench.py",
       "scope": "AuthoringWorkbenchTest.test_partial_voice_manifest_allows_exact_covered_failed_retry_only",
-      "count": 1
+      "count": 1,
+      "maximum": 71
     },
     {
       "code": "PLR0915",
       "path": "tests/test_authoring_workbench_ui.py",
       "scope": "AuthoringWorkbenchUiTest.test_review_playback_restores_actions_and_keeps_navigation_fixed",
-      "count": 1
+      "count": 1,
+      "maximum": 54
     },
     {
       "code": "PLR0915",
       "path": "tests/test_fresh_install_gui_journey.py",
       "scope": "_first_process",
-      "count": 1
+      "count": 1,
+      "maximum": 109
     },
     {
       "code": "PLR0915",
       "path": "tests/test_fresh_install_gui_journey.py",
       "scope": "_second_process",
-      "count": 1
+      "count": 1,
+      "maximum": 63
     },
     {
       "code": "PLR0915",
       "path": "tests/test_game_content_importer.py",
       "scope": "Reverse1999GameImporterTest.test_narrator_upgrade_reuses_previously_imported_custom_installation",
-      "count": 1
+      "count": 1,
+      "maximum": 52
     },
     {
       "code": "PLR0915",
       "path": "tests/test_game_narrator.py",
       "scope": "GameNarratorTest.test_main_and_preparation_persist_only_an_accepted_selection",
-      "count": 1
+      "count": 1,
+      "maximum": 52
     },
     {
       "code": "PLR0915",
       "path": "tests/test_live_replay.py",
       "scope": "LiveReplayTest.test_serialized_media_paths_are_contained_and_not_symlinks",
-      "count": 1
+      "count": 1,
+      "maximum": 52
     },
     {
       "code": "PLR0915",
       "path": "tests/test_pregeneration_audition_ui.py",
       "scope": "VoiceAuditionPanelTest.test_auto_preview_replay_candidate_cycle_and_persisted_choice",
-      "count": 1
+      "count": 1,
+      "maximum": 52
     },
     {
       "code": "PLR0915",
       "path": "tests/test_pregeneration_audition_ui.py",
       "scope": "VoiceAuditionPanelTest.test_original_buttons_play_exact_references_without_synthesis_and_recheck_files",
-      "count": 1
+      "count": 1,
+      "maximum": 59
     },
     {
       "code": "PLR0915",
       "path": "tests/test_pregeneration_setup.py",
       "scope": "OfflineAudioPreparationDialogTest.test_checked_story_readiness_updates_list_and_primary_without_preparing",
-      "count": 1
+      "count": 1,
+      "maximum": 51
     },
     {
       "code": "PLR0915",
       "path": "tests/test_pregeneration_setup.py",
       "scope": "OfflineAudioPreparationDialogTest.test_default_path_selects_content_and_saves_resumable_player_choice",
-      "count": 1
+      "count": 1,
+      "maximum": 54
     },
     {
       "code": "PLR0915",
       "path": "tests/test_self_service_pregeneration.py",
       "scope": "SelfServicePregenerationJourneyTest.test_game_narrator_and_routes_are_confirmed_before_generation",
-      "count": 1
+      "count": 1,
+      "maximum": 69
     },
     {
       "code": "PLR0915",
       "path": "tests/test_self_service_pregeneration.py",
       "scope": "SelfServicePregenerationJourneyTest.test_reopened_dialog_resumes_only_the_cancelled_line",
-      "count": 1
+      "count": 1,
+      "maximum": 52
     },
     {
       "code": "PLR0915",
       "path": "vntts/app.py",
       "scope": "TrayApplication.shutdown",
-      "count": 1
+      "count": 1,
+      "maximum": 58
     },
     {
       "code": "PLR0915",
       "path": "vntts/authoring/failed_control_carry.py",
       "scope": "carry_failed_controls",
-      "count": 1
+      "count": 1,
+      "maximum": 85
     },
     {
       "code": "PLR0915",
       "path": "vntts/authoring/failure_reference_audit_ui.py",
       "scope": "FailureReferenceAuditDialog.__init__",
-      "count": 1
+      "count": 1,
+      "maximum": 219
     },
     {
       "code": "PLR0915",
       "path": "vntts/authoring/failure_repair.py",
       "scope": "compress_single_sentence_boundary_silence",
-      "count": 1
+      "count": 1,
+      "maximum": 54
     },
     {
       "code": "PLR0915",
       "path": "vntts/authoring/legacy_reason_review_ui.py",
       "scope": "LegacyReasonReviewDialog.__init__",
-      "count": 1
+      "count": 1,
+      "maximum": 86
     },
     {
       "code": "PLR0915",
       "path": "vntts/authoring/listening_ui.py",
       "scope": "ModelListeningDialog.__init__",
-      "count": 1
+      "count": 1,
+      "maximum": 177
     },
     {
       "code": "PLR0915",
       "path": "vntts/authoring/missing_voice_live_fallback.py",
       "scope": "authorize_missing_voice_live_fallback",
-      "count": 1
+      "count": 1,
+      "maximum": 83
     },
     {
       "code": "PLR0915",
       "path": "vntts/authoring/missing_voice_reuse_binding.py",
       "scope": "publish_missing_voice_reuse_binding",
-      "count": 1
+      "count": 1,
+      "maximum": 111
     },
     {
       "code": "PLR0915",
       "path": "vntts/authoring/missing_voice_reuse_review_ui.py",
       "scope": "MissingVoiceReuseReviewDialog.__init__",
-      "count": 1
+      "count": 1,
+      "maximum": 183
     },
     {
       "code": "PLR0915",
       "path": "vntts/authoring/queue_builder.py",
       "scope": "plan_generation_queue",
-      "count": 1
+      "count": 1,
+      "maximum": 96
     },
     {
       "code": "PLR0915",
       "path": "vntts/authoring/reconciliation_schema.py",
       "scope": "_validated_report_actions",
-      "count": 1
+      "count": 1,
+      "maximum": 59
     },
     {
       "code": "PLR0915",
       "path": "vntts/authoring/robustness_asr.py",
       "scope": "build_speech_robustness_asr_report",
-      "count": 1
+      "count": 1,
+      "maximum": 59
     },
     {
       "code": "PLR0915",
       "path": "vntts/authoring/terminal_conflict_review_ui.py",
       "scope": "TerminalConflictReviewDialog.__init__",
-      "count": 1
+      "count": 1,
+      "maximum": 118
     },
     {
       "code": "PLR0915",
       "path": "vntts/authoring/terminal_conflict_workspace.py",
       "scope": "_select_terminal_conflict_sources",
-      "count": 1
+      "count": 1,
+      "maximum": 74
     },
     {
       "code": "PLR0915",
       "path": "vntts/authoring/workbench_ui.py",
       "scope": "AuthoringWorkbenchDialog._review_save_finished",
-      "count": 1
+      "count": 1,
+      "maximum": 52
     },
     {
       "code": "PLR0915",
       "path": "vntts/authoring/workbench_ui.py",
       "scope": "AuthoringWorkbenchDialog._update_review_actions",
-      "count": 1
+      "count": 1,
+      "maximum": 68
     },
     {
       "code": "PLR0915",
       "path": "vntts/controller.py",
       "scope": "AppController.__init__",
-      "count": 1
+      "count": 1,
+      "maximum": 84
     },
     {
       "code": "PLR0915",
       "path": "vntts/diagnostics_ui.py",
       "scope": "DiagnosticsDialog.__init__",
-      "count": 1
+      "count": 1,
+      "maximum": 113
     },
     {
       "code": "PLR0915",
       "path": "vntts/game_audio_decoder.py",
       "scope": "ensure_game_decoder",
-      "count": 1
+      "count": 1,
+      "maximum": 68
     },
     {
       "code": "PLR0915",
       "path": "vntts/generated_audio.py",
       "scope": "GeneratedAudioFallbackBackend.prepare_route",
-      "count": 1
+      "count": 1,
+      "maximum": 70
     },
     {
       "code": "PLR0915",
       "path": "vntts/generated_audio.py",
       "scope": "_live_fallback_index",
-      "count": 1
+      "count": 1,
+      "maximum": 55
     },
     {
       "code": "PLR0915",
       "path": "vntts/history_ui.py",
       "scope": "DialogueHistoryDialog.__init__",
-      "count": 1
+      "count": 1,
+      "maximum": 69
     },
     {
       "code": "PLR0915",
       "path": "vntts/live.py",
       "scope": "LiveDialogReader.__init__",
-      "count": 1
+      "count": 1,
+      "maximum": 107
     },
     {
       "code": "PLR0915",
       "path": "vntts/live.py",
       "scope": "LiveDialogReader._run_auto_advance",
-      "count": 1
+      "count": 1,
+      "maximum": 84
     },
     {
       "code": "PLR0915",
       "path": "vntts/live.py",
       "scope": "LiveDialogReader._run_ocr",
-      "count": 1
+      "count": 1,
+      "maximum": 140
     },
     {
       "code": "PLR0915",
       "path": "vntts/live_replay.py",
       "scope": "LiveReplayRunner._run_legacy",
-      "count": 1
+      "count": 1,
+      "maximum": 66
     },
     {
       "code": "PLR0915",
       "path": "vntts/live_replay.py",
       "scope": "LiveReplayRunner._run_sequence",
-      "count": 1
+      "count": 1,
+      "maximum": 113
     },
     {
       "code": "PLR0915",
       "path": "vntts/live_replay.py",
       "scope": "load_live_replay_corpus",
-      "count": 1
+      "count": 1,
+      "maximum": 58
     },
     {
       "code": "PLR0915",
       "path": "vntts/live_replay_capture_recover.py",
       "scope": "recover_live_replay_capture",
-      "count": 1
+      "count": 1,
+      "maximum": 87
     },
     {
       "code": "PLR0915",
       "path": "vntts/live_replay_coverage.py",
       "scope": "audit_live_replay_coverage",
-      "count": 1
+      "count": 1,
+      "maximum": 68
     },
     {
       "code": "PLR0915",
       "path": "vntts/live_replay_sequence_seal.py",
       "scope": "seal_sequence_replay",
-      "count": 1
+      "count": 1,
+      "maximum": 99
     },
     {
       "code": "PLR0915",
       "path": "vntts/moss_cpp_backend.py",
       "scope": "MossCppVoiceRouterBackend._generate",
-      "count": 1
+      "count": 1,
+      "maximum": 169
     },
     {
       "code": "PLR0915",
       "path": "vntts/moss_cpp_installation.py",
       "scope": "_download",
-      "count": 1
+      "count": 1,
+      "maximum": 57
     },
     {
       "code": "PLR0915",
       "path": "vntts/ocr_review_ui.py",
       "scope": "OCRReviewDialog.__init__",
-      "count": 1
+      "count": 1,
+      "maximum": 103
     },
     {
       "code": "PLR0915",
       "path": "vntts/pregeneration_audition_ui.py",
       "scope": "VoiceAuditionPanel.__init__",
-      "count": 1
+      "count": 1,
+      "maximum": 128
     },
     {
       "code": "PLR0915",
       "path": "vntts/pregeneration_pack.py",
       "scope": "OfflinePackPublisher.publish",
-      "count": 1
+      "count": 1,
+      "maximum": 90
     },
     {
       "code": "PLR0915",
       "path": "vntts/pregeneration_voices.py",
       "scope": "VoicePlanStore._resolve_group",
-      "count": 1
+      "count": 1,
+      "maximum": 110
     },
     {
       "code": "PLR0915",
       "path": "vntts/readiness_ui.py",
       "scope": "ReadinessDialog.__init__",
-      "count": 1
+      "count": 1,
+      "maximum": 89
     },
     {
       "code": "PLR0915",
       "path": "vntts/release_smoke_test.py",
       "scope": "run_release_smoke_test",
-      "count": 1
+      "count": 1,
+      "maximum": 73
     },
     {
       "code": "PLR0915",
       "path": "vntts/runtime_installation.py",
       "scope": "_ensure_speech_runtime",
-      "count": 1
+      "count": 1,
+      "maximum": 57
     },
     {
       "code": "PLR0915",
       "path": "vntts/settings.py",
       "scope": "AppSettings.from_mapping",
-      "count": 1
+      "count": 1,
+      "maximum": 83
     },
     {
       "code": "PLR0915",
       "path": "vntts/speech_backend.py",
       "scope": "MossTTSVoiceRouterBackend.__init__",
-      "count": 1
+      "count": 1,
+      "maximum": 55
     },
     {
       "code": "PLR0915",
       "path": "vntts/speech_backend.py",
       "scope": "MossTTSVoiceRouterBackend._render_chunks",
-      "count": 1
+      "count": 1,
+      "maximum": 76
     },
     {
       "code": "PLR0915",
       "path": "vntts/speech_backend.py",
       "scope": "PocketTTSVoiceRouterBackend._render_chunks",
-      "count": 1
+      "count": 1,
+      "maximum": 60
     },
     {
       "code": "PLR0915",
       "path": "vntts/speech_worker.py",
       "scope": "IsolatedSpeechBackend._launch_worker",
-      "count": 1
+      "count": 1,
+      "maximum": 65
     },
     {
       "code": "PLR0915",
       "path": "vntts/speech_worker.py",
       "scope": "worker_main",
-      "count": 1
+      "count": 1,
+      "maximum": 72
     },
     {
       "code": "PLR0915",
       "path": "vntts/support_ui.py",
       "scope": "SupportCenterDialog.__init__",
-      "count": 1
+      "count": 1,
+      "maximum": 55
     },
     {
       "code": "C901",
       "path": "scripts/render_ui_catalog.py",
       "scope": "_render_stories.ocr_review",
-      "count": 1
+      "count": 1,
+      "maximum": 12
     },
     {
       "code": "C901",
       "path": "scripts/run_ci_unittests.py",
       "scope": "_run_sharded_full_discovery",
-      "count": 1
+      "count": 1,
+      "maximum": 13
     },
     {
       "code": "C901",
       "path": "scripts/run_ci_unittests.py",
       "scope": "main",
-      "count": 1
+      "count": 1,
+      "maximum": 12
     },
     {
       "code": "PLR0915",
       "path": "vntts/authoring/workbench_ui.py",
       "scope": "AuthoringWorkbenchDialog._apply_projection",
-      "count": 1
+      "count": 1,
+      "maximum": 52
     },
     {
       "code": "PLR0915",
       "path": "vntts/authoring/workbench_ui.py",
       "scope": "AuthoringWorkbenchDialog._build_workbench_layout",
-      "count": 1
+      "count": 1,
+      "maximum": 65
     },
     {
       "code": "PLR0915",
       "path": "vntts/dashboard_ui.py",
       "scope": "ControlDashboard._build_status_widgets",
-      "count": 1
+      "count": 1,
+      "maximum": 60
     },
     {
       "code": "PLR0915",
       "path": "vntts/macos_ui.py",
       "scope": "MacOSPermissionsDialog.__init__",
-      "count": 1
+      "count": 1,
+      "maximum": 63
     },
     {
       "code": "PLR0915",
       "path": "vntts/onboarding_ui.py",
       "scope": "DiagnosticsPage.__init__",
-      "count": 1
+      "count": 1,
+      "maximum": 64
     },
     {
       "code": "PLR0915",
       "path": "vntts/profiles_ui.py",
       "scope": "GameProfilesDialog.__init__",
-      "count": 1
+      "count": 1,
+      "maximum": 57
     },
     {
       "code": "C901",
       "path": "vntts/app.py",
       "scope": "TrayApplication._narrator_finished",
-      "count": 1
+      "count": 1,
+      "maximum": 11
     },
     {
       "code": "PLR0912",
       "path": "vntts/app.py",
       "scope": "TrayApplication._narrator_finished",
-      "count": 1
+      "count": 1,
+      "maximum": 13
     },
     {
       "code": "PLR0915",
       "path": "vntts/pregeneration_ui.py",
       "scope": "OfflineAudioPreparationDialog._populate_stories",
-      "count": 1
+      "count": 1,
+      "maximum": 72
     }
   ]
 }
