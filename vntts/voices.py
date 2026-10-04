@@ -10,10 +10,12 @@ from tempfile import TemporaryDirectory
 from typing import Literal, Protocol
 
 from vntts_artifacts.voice_manifest import (
-    VoiceManifestError as VoiceManifestError,
+    VoiceManifestEntry,
+    load_voice_manifest,
+    validate_voice_manifest,
 )
 from vntts_artifacts.voice_manifest import (
-    load_voice_manifest,
+    VoiceManifestError as VoiceManifestError,
 )
 from vntts_artifacts.voice_manifest import (
     normalize_character_name as normalize_character_name,
@@ -95,6 +97,26 @@ class CharacterVoiceRegistry:
     def from_file(cls, manifest_path: str | os.PathLike[str]) -> CharacterVoiceRegistry:
         manifest_path = Path(manifest_path).expanduser().resolve()
         manifest, entries = load_voice_manifest(manifest_path)
+        return cls._from_validated_manifest(manifest, entries, manifest_path)
+
+    @classmethod
+    def from_document(
+        cls, manifest: object, manifest_path: str | os.PathLike[str]
+    ) -> CharacterVoiceRegistry:
+        """Project captured data using the original manifest's reference root."""
+        manifest_path = Path(manifest_path).expanduser().resolve()
+        entries = voice_manifest_entries_at_path(manifest, manifest_path)
+        return cls._from_validated_manifest(manifest, entries, manifest_path)
+
+    @classmethod
+    def _from_validated_manifest(
+        cls,
+        manifest: object,
+        entries: Sequence[VoiceManifestEntry],
+        manifest_path: Path,
+    ) -> CharacterVoiceRegistry:
+        if not isinstance(manifest, dict):
+            raise VoiceManifestError("Voice manifest must be a JSON object")
         source_characters: list[str | None] = []
         for raw in manifest["voices"]:
             source = raw.get("vntts.source_character")
@@ -479,6 +501,22 @@ def _project_binding(
         projected.assignment_names[key] = role
         return
     projected.set_assignment(role, source_id)
+
+
+def voice_manifest_entries_at_path(
+    document: object,
+    manifest_path: str | os.PathLike[str],
+    *,
+    allow_legacy: bool = True,
+) -> tuple[VoiceManifestEntry, ...]:
+    """Validate captured manifest data and its original reference containment."""
+    entries: tuple[VoiceManifestEntry, ...] = validate_voice_manifest(
+        document, allow_legacy=allow_legacy
+    )
+    for entry in entries:
+        for reference in entry.references:
+            _contained_manifest_reference(manifest_path, reference)
+    return entries
 
 
 def _contained_manifest_reference(

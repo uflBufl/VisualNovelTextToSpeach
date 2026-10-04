@@ -213,6 +213,42 @@ class CharacterVoiceRegistryTest(unittest.TestCase):
             "Mrs. Owen",
         )
 
+    def test_captured_document_registry_preserves_legacy_metadata_and_root(self):
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy), TemporaryDirectory() as directory:
+                root = Path(directory)
+                path = root / "manifest.json"
+                document = {
+                    "voices": [
+                        {
+                            "character": "Voice",
+                            "speaker": "original",
+                            "aliases": ["Alias"],
+                            "reference": "references/source.wav",
+                            "vntts.source_character": " Display identity ",
+                            "vntts.reference_transcript": " Exact original line. ",
+                        }
+                    ]
+                }
+                if not legacy:
+                    document["version"] = 2
+                path.write_text(json.dumps(document), encoding="utf-8")
+                expected = CharacterVoiceRegistry.from_file(path)
+                path.write_text("{}", encoding="utf-8")
+                captured = CharacterVoiceRegistry.from_document(document, path)
+                self.assertEqual(captured.unique_voices(), expected.unique_voices())
+                voice = captured.resolve("Alias")
+                self.assertEqual(voice.speaker, "original")
+                self.assertEqual(voice.reference_root, root.resolve())
+                self.assertEqual(voice.source_character, "Display identity")
+                self.assertEqual(voice.reference_transcript, "Exact original line.")
+                outside = root / "outside.wav"
+                outside.write_bytes(b"reference")
+                (root / "references").mkdir()
+                symlink_or_skip(root / "references/source.wav", outside)
+                with self.assertRaisesRegex(VoiceManifestError, "symlink"):
+                    CharacterVoiceRegistry.from_document(document, path)
+
     def test_manifest_must_be_an_object(self):
         with TemporaryDirectory() as temporary_directory:
             manifest_path = Path(temporary_directory) / "manifest.json"
