@@ -27,6 +27,47 @@ class FailurePlanContractsTest(unittest.TestCase):
         )
         path.write_text(json.dumps(document))
 
+    def test_duplicate_queue_records_are_not_silently_replaced(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.specialist_fixture(root)
+            path = workspace / "queue.jsonl"
+            rows = path.read_text().splitlines()
+            path.write_text("\n".join([*rows, rows[-1]]) + "\n")
+            with self.assertRaises(CohortReviewError):
+                specialist.build_specialist_failure_plan((workspace,))
+
+    def test_selected_queue_text_is_not_coerced_to_a_string(self):
+        for text in (123, [], None):
+            with self.subTest(text=text), TemporaryDirectory() as directory:
+                root = Path(directory)
+                workspace = self.specialist_fixture(root)
+                path = workspace / "queue.jsonl"
+                rows = [json.loads(s) for s in path.read_text().splitlines()]
+                rows[-1]["text"] = text
+                path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+                with self.assertRaises(CohortReviewError):
+                    specialist.build_specialist_failure_plan((workspace,))
+
+    def test_malformed_action_evidence_raises_domain_error(self):
+        for field in ("provider", "strategy"):
+            with self.subTest(field=field), TemporaryDirectory() as directory:
+                root = Path(directory)
+                workspace = self.specialist_fixture(root)
+                path = workspace / "generated-audio/generation-state.json"
+                doc = json.loads(path.read_text())
+                if field == "provider":
+                    doc["items"]["a"]["failure_repair"]["strategy"] = (
+                        specialist.INLINE_PAUSE_MARKER
+                    )
+                    doc["items"]["a"]["failure"]["kind"] = "speech_silence"
+                    doc["items"]["a"]["provider"] = []
+                else:
+                    doc["items"]["a"]["failure_repair"]["strategy"] = []
+                path.write_text(json.dumps(doc))
+                with self.assertRaises(CohortReviewError):
+                    specialist.build_specialist_failure_plan((workspace,))
+
     def regeneration_fixture(self, root):
         workspace = {"workspace_id": "fixture", "config_fingerprint": "a" * 64}
         (root / "workspace.json").write_text(json.dumps(workspace))

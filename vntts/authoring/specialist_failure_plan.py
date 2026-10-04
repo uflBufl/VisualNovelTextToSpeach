@@ -76,6 +76,10 @@ def _capture_workspace(
     items: list[JsonObject] = []
     for queue_id in selected:
         result = state_items.get(queue_id)
+        if result is not None and not isinstance(result, dict):
+            raise CohortReviewError(
+                f"Specialist generation result is invalid: {queue_id}"
+            )
         if not isinstance(result, dict) or result.get("status") != "failed":
             continue
         if queue_id in seen:
@@ -119,7 +123,7 @@ def _project_failed_item(
             f"Specialist failure evidence is incomplete: {queue_id}"
         )
     action, rationale = _next_action(result, repair, failure)
-    text = str(record.get("text") or "")
+    text = _text_field(record, "text")
     text_features = failure.get("text_features")
     text_features = text_features if isinstance(text_features, dict) else {}
     item: JsonObject = {
@@ -222,15 +226,15 @@ def load_specialist_failure_plan(path: str | Path) -> SpecialistFailurePlan:
 def _next_action(
     result: JsonObject, repair: JsonObject, failure: JsonObject
 ) -> tuple[str, str]:
-    strategy = repair.get("strategy")
+    strategy = _text_field(repair, "strategy")
     providers = result.get("attempts_by_provider")
     providers = providers if isinstance(providers, dict) else {}
     if (
         strategy == INLINE_PAUSE_MARKER
         and failure.get("kind") == "speech_silence"
-        and _attempt_count(providers.get(result.get("provider")))
+        and _attempt_count(providers.get(_text_field(result, "provider")))
         >= MAX_BOUNDED_TOTAL_ATTEMPTS
-        and not providers.get("pocket-tts")
+        and not _attempt_count(providers.get("pocket-tts"))
     ):
         return (
             OFFLINE_FALLBACK_BACKEND,
@@ -240,13 +244,12 @@ def _next_action(
         strategy == SENTENCE_BOUNDARY_SEGMENTATION
         and failure.get("kind") == "missed_eos_audio_limit"
         and failure.get("completion") == "limited"
-        and not providers.get("pocket-tts")
+        and not _attempt_count(providers.get("pocket-tts"))
     ):
         attempts = result.get("attempts")
         if (
-            isinstance(attempts, int)
-            and not isinstance(attempts, bool)
-            and attempts < 3
+            attempts is not None
+            and _attempt_count(attempts) < MAX_BOUNDED_TOTAL_ATTEMPTS
         ):
             return (
                 SENTENCE_REPAIR_RETRY,
@@ -369,8 +372,12 @@ def _queue_records(payload: bytes) -> dict[str, JsonObject]:
         ) from error
     records: dict[str, JsonObject] = {}
     for value in rows[1:]:
-        if isinstance(value, dict) and isinstance(value.get("queue_id"), str):
-            records[value["queue_id"]] = value
+        if not isinstance(value, dict):
+            raise CohortReviewError("Specialist queue record is invalid")
+        queue_id = _text_field(value, "queue_id")
+        if queue_id in records:
+            raise CohortReviewError(f"Specialist queue ID is duplicated: {queue_id}")
+        records[queue_id] = value
     return records
 
 
@@ -382,7 +389,13 @@ def _text_field(document: JsonObject, field: str) -> str:
 
 
 def _attempt_count(value: object) -> int:
-    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+    if value is None:
+        return 0
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise CohortReviewError(
+            "Specialist attempt count must be a non-negative integer"
+        )
+    return value
 
 
 def _selected_failure_ids(configuration: JsonObject) -> list[str]:
