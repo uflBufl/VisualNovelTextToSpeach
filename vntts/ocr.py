@@ -767,13 +767,16 @@ def _recognized_words(data: OcrData) -> list[tuple[str, float]]:
         if not text or position >= len(confidences):
             continue
         raw_confidence = confidences[position]
-        if not isinstance(raw_confidence, (str, int, float)):
+        if isinstance(raw_confidence, bool) or not isinstance(
+            raw_confidence, (str, int, float)
+        ):
             continue
         try:
             confidence = float(raw_confidence)
-        except TypeError, ValueError:
+        except TypeError, ValueError, OverflowError:
             continue
-        if confidence < 0:
+        # Tesseract reports word confidence on a 0..100 percent scale.
+        if not 0 <= confidence <= 100:
             continue
         words.append((text, confidence))
     return words

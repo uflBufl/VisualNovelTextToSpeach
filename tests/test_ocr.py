@@ -680,6 +680,58 @@ class RecognizedDialogTest(unittest.TestCase):
 
         self.assertAlmostEqual(confidence, (20 + 90 * 8) / 9)
 
+    def test_invalid_confidence_words_do_not_poison_valid_evidence(self):
+        for value in (
+            True,
+            False,
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+            "nan",
+            "inf",
+            "-inf",
+            "1e999",
+            10**400,
+            -(10**400),
+            100.01,
+            1e308,
+            "1e308",
+            -1,
+        ):
+            with self.subTest(value=value):
+                confidence = calculate_ocr_confidence(
+                    {"text": ["noise", "reliable"], "conf": [value, "90"]}
+                )
+                self.assertEqual(confidence, 90)
+
+        for value in (0, 100, 89.5, "90"):
+            with self.subTest(valid=value):
+                self.assertEqual(
+                    calculate_ocr_confidence({"text": ["word"], "conf": [value]}),
+                    float(value),
+                )
+
+    def test_non_finite_confidence_cannot_finish_a_retry_early(self):
+        recognize_text = Mock(side_effect=["Bad result", "Reliable dialogue."])
+        recognize_data = Mock(
+            side_effect=[
+                {"text": ["Bad", "result"], "conf": [float("inf"), float("inf")]},
+                {"text": ["Reliable", "dialogue"], "conf": [90, 90]},
+            ]
+        )
+        result = recognize_dialog_image_result(
+            Image.new("RGB", (320, 120)),
+            recognize_text=recognize_text,
+            recognize_data=recognize_data,
+            profiles=(
+                OCRPreprocessingProfile("first", 1.0, 170),
+                OCRPreprocessingProfile("second", 2.0, 200),
+            ),
+        )
+        self.assertEqual(result.text, "Reliable dialogue.")
+        self.assertEqual(result.attempts, 2)
+        self.assertEqual(result.confidence, 90)
+
     def test_low_confidence_result_retries_with_alternate_preprocessing(self):
         profiles = (
             OCRPreprocessingProfile("first", 1.0, 170),
