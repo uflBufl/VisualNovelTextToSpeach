@@ -24,7 +24,7 @@ _managed_runtime_uses: dict[str, RuntimeUse] = {}
 
 
 def shutdown_speech_backend(backend: object) -> None:
-    """Shut down a backend if present and return the cleared slot value."""
+    """Shut down a supplied backend, falling back to stop when necessary."""
     shutdown = getattr(backend, "shutdown", None)
     if callable(shutdown):
         shutdown()
@@ -32,7 +32,6 @@ def shutdown_speech_backend(backend: object) -> None:
         stop = getattr(backend, "stop", None)
         if callable(stop):
             stop()
-    return None
 
 
 def activate_backend_runtime(
