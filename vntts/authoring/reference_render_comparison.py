@@ -38,8 +38,8 @@ from vntts.authoring.failure_reference_preview import (
 from vntts.authoring.listening import (
     ListeningSession,
     ModelListeningError,
+    _create_listening_session_from_captured_reports,
     aggregate_listening_report,
-    create_listening_session_from_reports,
     load_listening_session,
 )
 from vntts.authoring.publication import (
@@ -655,6 +655,57 @@ def create_reference_render_listening(
         raise ReferenceRenderComparisonError("Reference render comparison is a symlink")
     root = supplied.resolve()
     document = _load_comparison_document(root)
+    try:
+        comparison_snapshot = capture_authority_file(
+            root / "comparison.json", "reference render comparison", root=root
+        )
+        captured_document = comparison_snapshot.json_document(
+            "reference render comparison"
+        )
+        if canonical_document_sha256(captured_document) != canonical_document_sha256(
+            document
+        ):
+            raise ReferenceRenderComparisonError(
+                "Reference render comparison changed during validation"
+            )
+        artifact_snapshots = _comparison_artifact_snapshots(root, document)
+    except (AuthoringAuthorityError, TypeError, ValueError) as error:
+        raise ReferenceRenderComparisonError(str(error)) from error
+    selected_arms, sample_ids = _reference_listening_selection(document, arm_ids)
+    report_snapshots = []
+    try:
+        for arm in selected_arms:
+            report = _contained_file(root, arm["report"])
+            snapshot = capture_authority_file(
+                report, "reference render report", root=root
+            )
+            expected = artifact_snapshots.get(snapshot.path)
+            if expected is None or snapshot.sha256 != expected:
+                raise ReferenceRenderComparisonError(
+                    "Reference render report changed during validation"
+                )
+            report_snapshots.append(snapshot)
+    except (AuthoringAuthorityError, TypeError, ValueError) as error:
+        raise ReferenceRenderComparisonError(str(error)) from error
+    authority_hashes = {
+        comparison_snapshot.path: comparison_snapshot.sha256,
+        **artifact_snapshots,
+    }
+    try:
+        return _create_listening_session_from_captured_reports(
+            report_snapshots,
+            output_directory,
+            seed=seed,
+            sample_ids=sorted(sample_ids),
+            authority_hashes=authority_hashes,
+        )
+    except (AuthoringAuthorityError, ModelListeningError) as error:
+        raise ReferenceRenderComparisonError(str(error)) from error
+
+
+def _reference_listening_selection(
+    document: JsonDocument, arm_ids: Iterable[object] | None
+) -> tuple[tuple[JsonDocument, ...], set[str]]:
     arms_by_id = {
         _safe_id(value.get("arm_id"), "arm ID"): value
         for value in _documents(document.get("arms"), "comparison arms")
@@ -689,16 +740,7 @@ def create_reference_render_listening(
         raise ReferenceRenderComparisonError(
             "Selected reference render arms have no complete matched samples"
         )
-    reports = [
-        _contained_file(root, arms_by_id[arm_id]["report"])
-        for arm_id in selected_arm_ids
-    ]
-    try:
-        return create_listening_session_from_reports(
-            reports, output_directory, seed=seed, sample_ids=sorted(sample_ids)
-        )
-    except ModelListeningError as error:
-        raise ReferenceRenderComparisonError(str(error)) from error
+    return tuple(arms_by_id[arm_id] for arm_id in selected_arm_ids), sample_ids
 
 
 def load_reference_render_comparison_document(

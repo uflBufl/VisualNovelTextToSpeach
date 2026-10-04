@@ -22,6 +22,11 @@ from vntts_artifacts.atomic_io import atomic_output_path, atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
+from vntts.authoring.authority import (
+    AuthoringAuthorityError,
+    AuthoritySnapshot,
+    capture_authority_file,
+)
 from vntts.authoring.private_files import private_file_is_restricted
 from vntts.authoring.publication import (
     AtomicPublicationError,
@@ -229,17 +234,13 @@ def _normalized_text(text: object) -> str:
     return re.sub(r"\s+", " ", normalized).strip()
 
 
-def _source_digest(paths: Iterable[PathInput]) -> tuple[list[SourceRecord], str]:
-    sources: list[SourceRecord] = []
-    for path in paths:
-        resolved = Path(path).expanduser().resolve()
-        try:
-            digest = sha256_file(resolved)
-        except OSError as error:
-            raise ModelListeningError(
-                f"Unable to read model report: {resolved}: {error}"
-            ) from error
-        sources.append({"path": str(resolved), "sha256": digest})
+def _source_digest(
+    snapshots: Iterable[AuthoritySnapshot],
+) -> tuple[list[SourceRecord], str]:
+    sources: list[SourceRecord] = [
+        {"path": str(snapshot.path), "sha256": snapshot.sha256}
+        for snapshot in snapshots
+    ]
     payload = json.dumps(sources, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return sources, hashlib.sha256(payload).hexdigest()
 
@@ -265,14 +266,38 @@ def create_listening_session_from_reports(
     resolved_paths = [Path(path).expanduser().resolve() for path in report_paths]
     if len(resolved_paths) < 2:
         raise ModelListeningError("At least two model reports are required")
+    try:
+        snapshots = tuple(
+            capture_authority_file(path, "model report") for path in resolved_paths
+        )
+    except AuthoringAuthorityError as error:
+        raise ModelListeningError(str(error)) from error
+    return _create_listening_session_from_captured_reports(
+        snapshots, output_directory, seed=seed, sample_ids=sample_ids
+    )
+
+
+def _create_listening_session_from_captured_reports(
+    snapshots: Sequence[AuthoritySnapshot],
+    output_directory: PathInput,
+    *,
+    seed: int = 0,
+    sample_ids: Iterable[str] | None = None,
+    authority_hashes: Mapping[Path, str] | None = None,
+) -> Path:
+    if authority_hashes is not None:
+        for snapshot in snapshots:
+            expected = authority_hashes.get(snapshot.path)
+            if expected is not None and expected != snapshot.sha256:
+                raise ModelListeningError("Model report changed after validation")
     selected_ids = _selected_model_report_ids(sample_ids)
     model_metadata: dict[str, ListeningModel] = {}
     audio_by_model: defaultdict[str, dict[str, AudioRecord]] = defaultdict(dict)
     corpus_items: dict[str, CorpusItem] = {}
-    sources, source_sha256 = _source_digest(resolved_paths)
-    for report_path in resolved_paths:
+    sources, source_sha256 = _source_digest(snapshots)
+    for snapshot in snapshots:
         _collect_model_report_samples(
-            report_path,
+            snapshot,
             selected_ids,
             model_metadata,
             audio_by_model,
@@ -290,6 +315,7 @@ def create_listening_session_from_reports(
         sources=sources,
         source_sha256=source_sha256,
         seed=seed,
+        authority_hashes=authority_hashes,
     )
 
 
@@ -311,13 +337,13 @@ def _selected_model_report_ids(
 
 
 def _collect_model_report_samples(
-    report_path: Path,
+    snapshot: AuthoritySnapshot,
     selected_ids: frozenset[str] | None,
     model_metadata: dict[str, ListeningModel],
     audio_by_model: defaultdict[str, dict[str, AudioRecord]],
     corpus_items: dict[str, CorpusItem],
 ) -> None:
-    report, samples = _load_model_report(report_path)
+    report, samples = _load_model_report(snapshot)
     model_id = report["model_id"]
     metadata = model_metadata.setdefault(
         model_id,
@@ -328,7 +354,7 @@ def _collect_model_report_samples(
             "reports": [],
         },
     )
-    report_name = str(report_path)
+    report_name = str(snapshot.path)
     if report_name not in metadata["reports"]:
         metadata["reports"].append(report_name)
     for sample in samples:
@@ -429,6 +455,7 @@ def _write_listening_session(
     sources: list[SourceRecord],
     source_sha256: str,
     seed: int,
+    authority_hashes: Mapping[Path, str] | None = None,
 ) -> Path:
     output_directory = Path(output_directory).expanduser().resolve()
     if output_directory.exists() and (
@@ -452,7 +479,9 @@ def _write_listening_session(
         )
         for source in sources:
             try:
-                unchanged = sha256_file(source["path"]) == source["sha256"]
+                unchanged = _listening_source_unchanged(
+                    Path(source["path"]), source["sha256"]
+                )
             except OSError as error:
                 raise ModelListeningError(
                     f"Unable to verify model report: {source['path']}: {error}"
@@ -461,6 +490,7 @@ def _write_listening_session(
                 raise ModelListeningError(
                     f"Model report changed while creating listening session: {source['path']}"
                 )
+        _assert_listening_authority(authority_hashes, sources)
         try:
             if output_directory.exists():
                 output_directory.rmdir()
@@ -470,6 +500,33 @@ def _write_listening_session(
                 f"Unable to publish listening session: {error}"
             ) from error
     return output_directory / "session.json"
+
+
+def _listening_source_unchanged(path: Path, digest: str) -> bool:
+    return not path.is_symlink() and path.is_file() and sha256_file(path) == digest
+
+
+def _assert_listening_authority(
+    authority_hashes: Mapping[Path, str] | None, sources: Sequence[SourceRecord]
+) -> None:
+    if authority_hashes is None:
+        return
+    report_paths = {Path(source["path"]) for source in sources}
+    for path, digest in authority_hashes.items():
+        if path in report_paths:
+            continue
+        try:
+            unchanged = (
+                not path.is_symlink() and path.is_file() and sha256_file(path) == digest
+            )
+        except OSError as error:
+            raise ModelListeningError(
+                f"Unable to verify listening authority: {path}: {error}"
+            ) from error
+        if not unchanged:
+            raise ModelListeningError(
+                f"Listening authority changed before publication: {path}"
+            )
 
 
 def _write_listening_session_staged(
@@ -1170,9 +1227,16 @@ def _report_pairwise(
     ]
 
 
-def _load_model_report(path: PathInput) -> tuple[ModelReport, list[ModelReportSample]]:
-    report = _load_schema(
-        path, {MODEL_REPORT_SCHEMA, TTS_MODEL_REPORT_SCHEMA}, "model report"
+def _load_model_report(
+    snapshot: AuthoritySnapshot,
+) -> tuple[ModelReport, list[ModelReportSample]]:
+    path = snapshot.path
+    try:
+        document = snapshot.json_document("model report")
+    except AuthoringAuthorityError as error:
+        raise ModelListeningError(str(error)) from error
+    report = _validate_schema(
+        document, {MODEL_REPORT_SCHEMA, TTS_MODEL_REPORT_SCHEMA}, "model report"
     )
     parsed_report = _model_report_metadata(report, path)
     samples = report.get("samples")
@@ -1437,7 +1501,12 @@ def _within(root: PathInput, value: object, label: str) -> Path:
 def _load_schema(
     path: PathInput, schemas: set[str], description: str
 ) -> dict[str, object]:
-    value = _load_json(path, description)
+    return _validate_schema(_load_json(path, description), schemas, description)
+
+
+def _validate_schema(
+    value: dict[str, object], schemas: set[str], description: str
+) -> dict[str, object]:
     if (
         not isinstance(value.get("schema"), str)
         or value.get("schema") not in schemas

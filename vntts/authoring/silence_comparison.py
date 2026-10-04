@@ -18,6 +18,11 @@ from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import Pcm16MonoWavError, write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 
+from vntts.authoring.authority import (
+    AuthoringAuthorityError,
+    AuthoritySnapshot,
+    capture_authority_file,
+)
 from vntts.authoring.failure_repair import (
     DEFAULT_INTERNAL_SILENCE_TARGET_SECONDS,
     InternalSilenceCompression,
@@ -25,6 +30,7 @@ from vntts.authoring.failure_repair import (
 )
 from vntts.authoring.listening import (
     ModelListeningError,
+    _create_listening_session_from_captured_reports,
     create_listening_session_from_reports,
 )
 from vntts.authoring.publication import rename_directory_no_replace, staged_directory
@@ -467,17 +473,37 @@ def _validate_silence_comparison_staging(
             raise SilenceComparisonError(f"{label.title()} changed during staging")
 
 
+@dataclass(frozen=True)
+class _ValidatedSilenceComparison:
+    document: dict[str, object]
+    snapshot: AuthoritySnapshot
+    reports: tuple[AuthoritySnapshot, AuthoritySnapshot]
+    artifacts: dict[str, str]
+
+
 def load_silence_comparison(directory: str | Path) -> dict[str, object]:
     """Validate a published comparison and every checksum-bound artifact."""
+    return _load_validated_silence_comparison(directory).document
+
+
+def _load_validated_silence_comparison(
+    directory: str | Path,
+) -> _ValidatedSilenceComparison:
     root = Path(directory).expanduser().resolve()
-    document = _read_silence_comparison_document(root)
+    try:
+        snapshot = capture_authority_file(
+            root / "comparison.json", "silence comparison", root=root
+        )
+        document = snapshot.json_document("silence comparison")
+    except AuthoringAuthorityError as error:
+        raise SilenceComparisonError(str(error)) from error
     policy, reports, samples, artifacts = _validate_silence_comparison_document(
         document
     )
     seen = _validate_silence_comparison_artifacts(root, artifacts)
     _validate_silence_comparison_inventory(root, seen, reports)
     by_queue_id = _validate_silence_comparison_samples(root, samples, seen, policy)
-    _validate_comparison_report(
+    segmented = _validate_comparison_report(
         root,
         reports[0],
         "sentence-segmentation",
@@ -485,8 +511,9 @@ def load_silence_comparison(directory: str | Path) -> dict[str, object]:
         "segmented_copy",
         "segmented_source_sha256",
         by_queue_id,
+        seen,
     )
-    _validate_comparison_report(
+    compressed = _validate_comparison_report(
         root,
         reports[1],
         "silence-compression",
@@ -494,20 +521,11 @@ def load_silence_comparison(directory: str | Path) -> dict[str, object]:
         "compressed_audio",
         "compressed_audio_sha256",
         by_queue_id,
+        seen,
     )
-    return document
-
-
-def _read_silence_comparison_document(root: Path) -> dict[str, object]:
-    try:
-        document = json.loads((root / "comparison.json").read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise SilenceComparisonError(
-            f"Unable to read silence comparison: {error}"
-        ) from error
-    if not isinstance(document, dict):
-        raise SilenceComparisonError("Silence comparison document is malformed")
-    return document
+    return _ValidatedSilenceComparison(
+        document, snapshot, (segmented, compressed), seen
+    )
 
 
 def _validate_silence_comparison_document(
@@ -752,11 +770,19 @@ def _silence_comparison_sample_audio(
     root: Path, sample: Mapping[str, object], sample_rate: int
 ) -> dict[str, np.ndarray]:
     audio = {}
-    for path_field in ("raw_copy", "segmented_copy", "compressed_audio"):
-        _path, _payload, _digest, pcm, rate = _read_source_wav(
+    for path_field, digest_field in (
+        ("raw_copy", "raw_source_sha256"),
+        ("segmented_copy", "segmented_source_sha256"),
+        ("compressed_audio", "compressed_audio_sha256"),
+    ):
+        _path, _payload, digest, pcm, rate = _read_source_wav(
             _contained_file(root, sample[path_field]),
             "published silence comparison audio",
         )
+        if digest != sample[digest_field]:
+            raise SilenceComparisonError(
+                "Silence comparison audio changed during validation"
+            )
         if rate != sample_rate:
             raise SilenceComparisonError(
                 "Silence comparison sample rate does not match its WAV"
@@ -780,16 +806,18 @@ def _validate_comparison_report(
     audio_field: str,
     digest_field: str,
     samples: dict[str, dict[str, object]],
-) -> None:
+    artifacts: Mapping[str, str],
+) -> AuthoritySnapshot:
     path = _contained_file(root, relative)
     try:
-        report = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        snapshot = capture_authority_file(path, "silence comparison report", root=root)
+        report = snapshot.json_document("silence comparison report")
+    except AuthoringAuthorityError as error:
+        raise SilenceComparisonError(str(error)) from error
+    if not isinstance(relative, str) or snapshot.sha256 != artifacts[relative]:
         raise SilenceComparisonError(
-            f"Unable to read silence comparison report: {error}"
-        ) from error
-    if not isinstance(report, dict):
-        raise SilenceComparisonError("Silence comparison report is malformed")
+            "Silence comparison report changed during validation"
+        )
     records = _comparison_report_records(report, model_id, model, len(samples))
     seen = set()
     for record in records:
@@ -837,6 +865,7 @@ def _validate_comparison_report(
         raise SilenceComparisonError(
             "Silence comparison report sample inventory is incomplete"
         )
+    return snapshot
 
 
 def _comparison_report_records(
@@ -877,14 +906,18 @@ def create_silence_comparison_session(
 ) -> Path:
     """Create a standard blind A/B session from one verified comparison bundle."""
     root = Path(comparison_directory).expanduser().resolve()
-    document = load_silence_comparison(root)
-    reports = document["reports"]
-    if not isinstance(reports, list):
-        raise SilenceComparisonError("Silence comparison report inventory is malformed")
-    report_paths = tuple(_contained_file(root, value) for value in reports)
+    validated = _load_validated_silence_comparison(root)
+    authority_hashes = {
+        _contained_file(root, relative): digest
+        for relative, digest in validated.artifacts.items()
+    }
+    authority_hashes[validated.snapshot.path] = validated.snapshot.sha256
     try:
-        return create_listening_session_from_reports(
-            report_paths, output_directory, seed=seed
+        return _create_listening_session_from_captured_reports(
+            validated.reports,
+            output_directory,
+            seed=seed,
+            authority_hashes=authority_hashes,
         )
     except ModelListeningError as error:
         raise SilenceComparisonError(str(error)) from error
