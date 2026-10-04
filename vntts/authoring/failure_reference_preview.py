@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import shutil
 import tempfile
 import threading
@@ -21,6 +20,8 @@ from vntts.authoring.bulk_generation import (
 from vntts.authoring.failure_reference_audit import (
     FailureReferenceAudio,
     FailureReferenceAudit,
+    _load_validated_audit,
+    _prepare_failure_reference_audio,
     load_failure_reference_audit,
     prepare_failure_reference_audio,
 )
@@ -177,6 +178,7 @@ class _PreviewKey:
 @dataclass(frozen=True)
 class _PreviewPlan:
     audit: FailureReferenceAudit
+    document: JsonDocument
     key: _PreviewKey
     synthesis_text: str
 
@@ -220,8 +222,8 @@ class FailureReferencePreviewService:
             cached = self._cache.get(plan.key)
             if cached is not None:
                 return cached
-            source = prepare_failure_reference_audio(
-                plan.audit.directory, plan.key.candidate_group_id, candidate_id
+            source = _prepare_failure_reference_audio(
+                plan.audit, plan.document, plan.key.candidate_group_id, candidate_id
             )
             preview = self._render_preview(plan, source)
             self._cache[plan.key] = preview
@@ -234,11 +236,14 @@ class FailureReferencePreviewService:
         text: str,
         candidate_group_id: str | None,
     ) -> _PreviewPlan:
-        audit, document, group = self._load_group(group_id)
+        audit, document = _load_validated_audit(self.audit_directory)
+        groups = {
+            group["group_id"]: group
+            for group in _preview_groups(document.get("groups"))
+        }
+        group = _preview_group(groups, group_id)
         source_group_id = candidate_group_id or group_id
-        _source_audit, _source_document, source_group = self._load_group(
-            source_group_id
-        )
+        source_group = _preview_group(groups, source_group_id)
         if source_group_id != group_id and _reference_family(
             source_group
         ) != _reference_family(group):
@@ -287,7 +292,7 @@ class FailureReferencePreviewService:
             if controls.backend == "moss-tts"
             else text
         )
-        return _PreviewPlan(audit, key, synthesis_text)
+        return _PreviewPlan(audit, document, key, synthesis_text)
 
     def _preview_backend(
         self, source: FailureReferenceAudio, controls: _PreviewControls, voice: str
@@ -412,25 +417,6 @@ class FailureReferencePreviewService:
         except Exception:
             pass
 
-    def _load_group(
-        self, group_id: str
-    ) -> tuple[FailureReferenceAudit, JsonDocument, _PreviewGroup]:
-        audit = load_failure_reference_audit(self.audit_directory)
-        document = _read_audit_document(audit.directory)
-        group = next(
-            (
-                value
-                for value in _preview_groups(document.get("groups"))
-                if value["group_id"] == group_id
-            ),
-            None,
-        )
-        if group is None:
-            raise FailureReferencePreviewError(
-                f"Reference audit group is unknown: {group_id}"
-            )
-        return audit, document, group
-
     def _load_workspace(self, document: JsonDocument) -> tuple[Path, JsonDocument]:
         expected = (
             Path(_required_text(document.get("workspace"), "Reference audit workspace"))
@@ -464,14 +450,13 @@ class FailureReferencePreviewService:
         return target
 
 
-def _read_audit_document(directory: str | Path) -> JsonDocument:
+def _preview_group(groups: dict[str, _PreviewGroup], group_id: str) -> _PreviewGroup:
     try:
-        return _document(
-            json.loads((Path(directory) / "audit.json").read_text(encoding="utf-8")),
-            "Reference audit document is malformed",
-        )
-    except (OSError, ValueError) as error:
-        raise FailureReferencePreviewError(str(error)) from error
+        return groups[group_id]
+    except KeyError as error:
+        raise FailureReferencePreviewError(
+            f"Reference audit group is unknown: {group_id}"
+        ) from error
 
 
 def _required_text(value: object, label: str) -> str:

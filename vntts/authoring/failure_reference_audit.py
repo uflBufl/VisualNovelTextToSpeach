@@ -656,19 +656,26 @@ def _assert_audit_publication_sources_unchanged(
 
 def load_failure_reference_audit(directory: str | Path) -> FailureReferenceAudit:
     """Validate one self-contained audit and its exact source authority."""
+    return _load_validated_audit(directory)[0]
+
+
+def _load_validated_audit(
+    directory: str | Path,
+) -> tuple[FailureReferenceAudit, JsonDocument]:
     directory, document, key = _read_failure_reference_audit(directory)
     claimed, groups, private_groups = _validate_audit_documents(document, key)
     private_by_group = _index_blind_key_groups(private_groups)
     _validate_audit_inventory(directory, document, groups, private_by_group)
     _validate_audit_source_authority(document, groups)
     case_count, group_count, blinded_trial_count = _validated_audit_counts(document)
-    return FailureReferenceAudit(
+    audit = FailureReferenceAudit(
         directory,
         claimed,
         case_count,
         group_count,
         blinded_trial_count,
     )
+    return audit, document
 
 
 def _read_failure_reference_audit(
@@ -1025,11 +1032,17 @@ def prepare_failure_reference_audio(
     directory: str | Path, group_id: str, candidate_id: str
 ) -> FailureReferenceAudio:
     """Read and checksum one copied candidate once for immutable Qt playback."""
-    audit = load_failure_reference_audit(directory)
-    document = _document(
-        json.loads((audit.directory / "audit.json").read_text()),
-        "Reference audit group is malformed",
-    )
+    audit, document = _load_validated_audit(directory)
+    return _prepare_failure_reference_audio(audit, document, group_id, candidate_id)
+
+
+def _prepare_failure_reference_audio(
+    audit: FailureReferenceAudit,
+    document: JsonDocument,
+    group_id: str,
+    candidate_id: str,
+) -> FailureReferenceAudio:
+    """Bind candidate bytes using the full validator's actual document."""
     groups = _audit_groups(document.get("groups"))
     group = next(
         (value for value in groups if value["group_id"] == group_id),
