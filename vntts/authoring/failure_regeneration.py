@@ -304,10 +304,6 @@ def _validated_record(record: object) -> FailureRegenerationRecord:
     }
     if not isinstance(record, dict) or set(record) != required:
         raise FailureRegenerationError("Failure regeneration record is malformed")
-    _required_text(record.get("queue_id"), "Queue ID")
-    _required_text(record.get("line_id"), "Line ID")
-    _required_text(record.get("failure_kind"), "Failure kind")
-    _required_sha256(record.get("item_sha256"), "Item SHA-256")
     attempts = record.get("attempts")
     if not isinstance(attempts, int) or isinstance(attempts, bool) or attempts < 0:
         raise FailureRegenerationError("Failure attempts must be non-negative")
