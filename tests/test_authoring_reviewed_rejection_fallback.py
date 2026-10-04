@@ -211,6 +211,24 @@ class ReviewedRejectionFallbackTests(unittest.TestCase):
         self.assertEqual(ledger["synthesis_character"], "Rhiannon")
         self.assertEqual(len(ledger["route_reference_sha256s"]), 2)
 
+    def test_invalid_config_route_references_fail_before_staging(self):
+        for references in ([[]], [1], ["not-a-sha256"]):
+            with self.subTest(references=references), TemporaryDirectory() as directory:
+                root = Path(directory)
+                base, item = self._base(root / "source")
+                path = base / "generated-audio/generation-state.json"
+                original = json.loads(path.read_text())
+                original["items"][item.queue_id]["config_rebase"][
+                    "target_reference_sha256s"
+                ] = references
+                path.write_text(json.dumps(original))
+                state_bytes = path.read_bytes()
+                target = root / "workspaces"
+                with self.assertRaises(AuthoringWorkbenchError):
+                    create_reviewed_rejection_fallback_workspace(base, target)
+                self.assertEqual(path.read_bytes(), state_bytes)
+                self.assertFalse(target.exists())
+
     def test_batch_version_requires_an_exact_integer(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
