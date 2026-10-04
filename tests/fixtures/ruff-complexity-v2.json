@@ -146,7 +146,7 @@
       "path": "vntts/authoring/missing_voice_reuse_binding.py",
       "scope": "publish_missing_voice_reuse_binding",
       "count": 1,
-      "maximum": 26
+      "maximum": 24
     },
     {
       "code": "C901",
@@ -769,7 +769,7 @@
       "path": "vntts/authoring/missing_voice_reuse_binding.py",
       "scope": "publish_missing_voice_reuse_binding",
       "count": 1,
-      "maximum": 25
+      "maximum": 23
     },
     {
       "code": "PLR0912",
@@ -1308,7 +1308,7 @@
       "path": "vntts/authoring/missing_voice_reuse_binding.py",
       "scope": "publish_missing_voice_reuse_binding",
       "count": 1,
-      "maximum": 111
+      "maximum": 107
     },
     {
       "code": "PLR0915",

@@ -27,12 +27,17 @@ from vntts_artifacts.voice_generation_queue import (
 from vntts_artifacts.voice_manifest import (
     VoiceManifestEntry,
     VoiceManifestError,
-    load_voice_manifest,
     normalize_character_name,
     write_voice_manifest,
 )
 
-from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.authority import (
+    AuthoringAuthorityError,
+    AuthoritySnapshot,
+    assert_authority_snapshot,
+    canonical_document_sha256,
+    capture_authority_file,
+)
 from vntts.authoring.bulk_generation import is_spoken_queue_item
 from vntts.authoring.cohort_review import (
     CohortReviewError,
@@ -70,6 +75,7 @@ from vntts.authoring.workbench import (
 )
 from vntts.authoring.workspace_inspection import generation_failure_category
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
+from vntts.voices import voice_manifest_entries_at_path
 
 JsonObject: TypeAlias = dict[str, object]
 JsonObjects: TypeAlias = list[JsonObject]
@@ -161,7 +167,7 @@ class _PlanSourceSnapshot:
     manifest_path: Path
     manifest_sha256: str
     story_sha256: str
-    voices: list[VoiceManifestEntry]
+    voices: tuple[VoiceManifestEntry, ...]
     overrides: dict[str, str]
     retired_names: set[str]
     story: StoryIndexDocument
@@ -268,11 +274,15 @@ def _load_plan_source(workspace_directory: str | Path) -> _PlanSourceSnapshot:
     manifest_path = directory / "inputs/voice/manifest.json"
     story_path = directory / "inputs/story-index.jsonl"
     queue_sha256 = sha256_file(queue_path)
-    manifest_sha256 = sha256_file(manifest_path)
     story_sha256 = sha256_file(story_path)
     try:
-        manifest_document = json.loads(manifest_path.read_text(encoding="utf-8"))
-        _metadata, voices = load_voice_manifest(manifest_path, allow_legacy=False)
+        manifest_snapshot = capture_authority_file(
+            manifest_path, "missing-voice source manifest"
+        )
+        manifest_document = manifest_snapshot.json_document("source voice manifest")
+        voices = voice_manifest_entries_at_path(
+            manifest_document, manifest_path, allow_legacy=False
+        )
         overrides = queue_voice_overrides_from_manifest(
             manifest_document,
             queue_ids=(item.queue_id for item in queue.items),
@@ -287,6 +297,7 @@ def _load_plan_source(workspace_directory: str | Path) -> _PlanSourceSnapshot:
         VoiceManifestError,
         SourceReferenceBindingError,
         StoryIndexError,
+        AuthoringAuthorityError,
     ) as error:
         raise MissingVoiceReuseError(str(error)) from error
     return _PlanSourceSnapshot(
@@ -298,7 +309,7 @@ def _load_plan_source(workspace_directory: str | Path) -> _PlanSourceSnapshot:
         state_sha256=state_sha256,
         queue_sha256=queue_sha256,
         manifest_path=manifest_path,
-        manifest_sha256=manifest_sha256,
+        manifest_sha256=manifest_snapshot.sha256,
         story_sha256=story_sha256,
         voices=voices,
         overrides=overrides,
@@ -840,7 +851,7 @@ def _publish_candidate_input(
         return destination, False
     with staged_directory(root, prefix=".missing-voice-reuse-staging-") as staging:
         source_manifest = source_directory / "inputs/voice/manifest.json"
-        manifest, voices = _load_candidate_source_manifest(
+        manifest, voices, manifest_snapshot = _load_candidate_source_manifest(
             source_manifest,
             _string(source_info["voice_manifest_sha256"], "voice manifest hash"),
         )
@@ -874,32 +885,40 @@ def _publish_candidate_input(
             sort_keys=True,
         )
         _validate_candidate_input(staging, document, candidate)
+        try:
+            assert_authority_snapshot(
+                manifest_snapshot, "missing-voice source manifest"
+            )
+        except AuthoringAuthorityError as error:
+            raise MissingVoiceReuseError(str(error)) from error
         rename_directory_no_replace(staging, destination)
     return destination, True
 
 
 def _load_candidate_source_manifest(
     source_manifest: Path, expected_sha256: str
-) -> tuple[JsonObject, list[VoiceManifestEntry]]:
-    source_payload = source_manifest.read_bytes()
-    if hashlib.sha256(source_payload).hexdigest() != expected_sha256:
-        raise MissingVoiceReuseError(
-            "Missing-voice source manifest changed after planning"
-        )
+) -> tuple[JsonObject, tuple[VoiceManifestEntry, ...], AuthoritySnapshot]:
     try:
-        manifest = _object(
-            json.loads(source_payload.decode("utf-8")), "source voice manifest"
+        snapshot = capture_authority_file(
+            source_manifest, "missing-voice source manifest"
         )
-        _metadata, voices = load_voice_manifest(source_manifest, allow_legacy=False)
-    except (UnicodeDecodeError, json.JSONDecodeError, VoiceManifestError) as error:
+        if snapshot.sha256 != expected_sha256:
+            raise MissingVoiceReuseError(
+                "Missing-voice source manifest changed after planning"
+            )
+        manifest = snapshot.json_document("source voice manifest")
+        voices = voice_manifest_entries_at_path(
+            manifest, source_manifest, allow_legacy=False
+        )
+    except (AuthoringAuthorityError, VoiceManifestError) as error:
         raise MissingVoiceReuseError(str(error)) from error
-    return manifest, voices
+    return manifest, voices, snapshot
 
 
 def _copy_candidate_references(
     source_root: Path,
     staging: Path,
-    voices: list[VoiceManifestEntry],
+    voices: tuple[VoiceManifestEntry, ...],
 ) -> JsonObjects:
     inventory = []
     seen = set()
@@ -1047,7 +1066,9 @@ def _validate_candidate_manifest(
 ) -> None:
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        _metadata, voices = load_voice_manifest(manifest_path, allow_legacy=False)
+        voices = voice_manifest_entries_at_path(
+            manifest, manifest_path, allow_legacy=False
+        )
         overrides = queue_voice_overrides_from_manifest(manifest, voices=voices)
     except (
         OSError,

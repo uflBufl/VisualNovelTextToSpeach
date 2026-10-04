@@ -11,6 +11,7 @@ from tests.test_authoring_missing_voice_reuse import (
 from tests.test_authoring_missing_voice_reuse_review import (
     create_missing_voice_reuse_review_fixture,
 )
+from vntts.authoring import missing_voice_reuse_binding as binding_module
 from vntts.authoring.missing_voice_reuse import write_missing_voice_reuse_plan
 from vntts.authoring.missing_voice_reuse_binding import (
     MissingVoiceReuseBindingError,
@@ -158,6 +159,54 @@ class AuthoringMissingVoiceReuseBindingTest(unittest.TestCase):
             binding["source_failed_state_item_sha256s"],
             {queue_id: source_state_item_sha256},
         )
+
+    def test_manifest_change_after_capture_cannot_publish_or_return_existing(self):
+        for existing in (False, True):
+            with self.subTest(existing=existing), TemporaryDirectory() as directory:
+                root = Path(directory)
+                plan_path, session_path, _queue_id = self.create_failed_review(root)
+                output = root / "binding"
+                if existing:
+                    publish_missing_voice_reuse_binding(plan_path, session_path, output)
+                plan = json.loads(plan_path.read_text(encoding="utf-8"))
+                source = (
+                    Path(plan["source"]["workspace"]) / "inputs/voice/manifest.json"
+                ).resolve()
+                changed = json.loads(source.read_text(encoding="utf-8"))
+                changed["unreviewed_metadata"] = "must not be imported"
+                original_open = Path.open
+                original_review_loader = binding_module.load_missing_voice_reuse_review
+                ready = False
+                reads = 0
+
+                def mark_source_boundary(path):
+                    nonlocal ready
+                    result = original_review_loader(path)
+                    ready = True
+                    return result
+
+                def change_on_second_read(path, mode="r", *args, **kwargs):
+                    nonlocal reads
+                    if ready and path == source and mode in ("r", "rb"):
+                        reads += 1
+                        if reads == 2:
+                            source.write_text(json.dumps(changed), encoding="utf-8")
+                    return original_open(path, mode, *args, **kwargs)
+
+                with (
+                    patch.object(
+                        binding_module,
+                        "load_missing_voice_reuse_review",
+                        side_effect=mark_source_boundary,
+                    ),
+                    patch.object(Path, "open", change_on_second_read),
+                    self.assertRaisesRegex(
+                        MissingVoiceReuseBindingError, "manifest changed"
+                    ),
+                ):
+                    publish_missing_voice_reuse_binding(plan_path, session_path, output)
+                self.assertEqual(output.exists(), existing)
+                self.assertFalse(list(root.glob(".missing-voice-binding-*")))
 
     def test_incomplete_review_and_tampered_bundle_fail_closed(self):
         with TemporaryDirectory() as directory:

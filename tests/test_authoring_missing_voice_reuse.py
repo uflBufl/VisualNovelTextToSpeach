@@ -15,6 +15,7 @@ from vntts_artifacts.voice_generation_queue import (
 )
 
 from tests.test_authoring_legacy_import import write_legacy_fixture
+from vntts.authoring import missing_voice_reuse as reuse_module
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.legacy_import import import_legacy_job
 from vntts.authoring.missing_voice_reuse import (
@@ -47,6 +48,41 @@ def build_failed_missing_voice_reuse_plan_fixture(fixture, workspace):
 
 
 class AuthoringMissingVoiceReuseTest(unittest.TestCase):
+    def test_candidate_manifest_change_before_publication_cleans_staging(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, _imported, workspace = self.create_workspace(root)
+            plan = self.build_plan(workspace)
+            candidate = plan.document["candidates"][0]
+            source = (
+                Path(plan.document["source"]["workspace"])
+                / "inputs/voice/manifest.json"
+            )
+            original_copy = reuse_module._copy_candidate_references
+
+            def change_source_after_copy(*arguments):
+                inventory = original_copy(*arguments)
+                document = json.loads(source.read_text(encoding="utf-8"))
+                document["unreviewed_metadata"] = True
+                source.write_text(json.dumps(document), encoding="utf-8")
+                return inventory
+
+            with (
+                patch.object(
+                    reuse_module,
+                    "_copy_candidate_references",
+                    side_effect=change_source_after_copy,
+                ),
+                self.assertRaisesRegex(MissingVoiceReuseError, "manifest changed"),
+            ):
+                reuse_module._publish_candidate_input(
+                    plan.document,
+                    candidate,
+                    source.parents[2],
+                    root / "candidate-inputs",
+                )
+            self.assertEqual(list((root / "candidate-inputs").iterdir()), [])
+
     def create_workspace(self, root, *, text=None, missing_voice_policy=None):
         fixture = write_legacy_fixture(root / "legacy")
         queue = VoiceGenerationQueue.load(fixture["queue"])

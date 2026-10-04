@@ -12,12 +12,18 @@ from pathlib import Path
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_manifest import (
+    VoiceManifestEntry,
     VoiceManifestError,
-    load_voice_manifest,
     write_voice_manifest,
 )
 
-from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.authority import (
+    AuthoringAuthorityError,
+    AuthoritySnapshot,
+    assert_authority_snapshot,
+    canonical_document_sha256,
+    capture_authority_file,
+)
 from vntts.authoring.missing_voice_reuse import (
     MissingVoiceReuseError,
     _require_fresh_plan,
@@ -46,6 +52,7 @@ from vntts.authoring.workbench import (
     contained_workspace_path,
     safe_workspace_relative_path,
 )
+from vntts.voices import voice_manifest_entries_at_path
 
 MISSING_VOICE_REUSE_DECISION_SCHEMA = "vntts.authoring-missing-voice-reuse-decision"
 MISSING_VOICE_REUSE_DECISION_VERSION = 1
@@ -209,25 +216,9 @@ def publish_missing_voice_reuse_binding(
     source_manifest = (
         Path(document["source"]["workspace"]) / "inputs/voice/manifest.json"
     ).resolve()
-    if (
-        not source_manifest.is_file()
-        or sha256_file(source_manifest) != document["source"]["voice_manifest_sha256"]
-    ):
-        raise MissingVoiceReuseBindingError(
-            "Missing-voice source manifest changed after planning"
-        )
-    try:
-        source_document = json.loads(source_manifest.read_text(encoding="utf-8"))
-        _metadata, source_voices = load_voice_manifest(
-            source_manifest, allow_legacy=False
-        )
-    except (
-        OSError,
-        UnicodeDecodeError,
-        json.JSONDecodeError,
-        VoiceManifestError,
-    ) as error:
-        raise MissingVoiceReuseBindingError(str(error)) from error
+    source_snapshot, source_document, source_voices = _capture_binding_source_manifest(
+        source_manifest, document["source"]["voice_manifest_sha256"]
+    )
     if MISSING_VOICE_REUSE_BINDING_FIELD in source_document:
         raise MissingVoiceReuseBindingError(
             "Source manifest already contains a missing-voice reuse authority"
@@ -280,7 +271,12 @@ def publish_missing_voice_reuse_binding(
     if output.exists():
         try:
             _validate_binding_bundle(output, document, binding)
-        except (AuthoringWorkbenchError, SourceReferenceBindingError) as error:
+            assert_authority_snapshot(source_snapshot, "missing-voice source manifest")
+        except (
+            AuthoringWorkbenchError,
+            SourceReferenceBindingError,
+            AuthoringAuthorityError,
+        ) as error:
             raise MissingVoiceReuseBindingError(str(error)) from error
         return _result(output, binding, created=False)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -358,10 +354,41 @@ def publish_missing_voice_reuse_binding(
                 sort_keys=True,
             )
             _validate_binding_bundle(staging, document, binding)
+            assert_authority_snapshot(source_snapshot, "missing-voice source manifest")
             rename_directory_no_replace(staging, output)
-    except (AuthoringWorkbenchError, SourceReferenceBindingError) as error:
+    except (
+        AuthoringWorkbenchError,
+        SourceReferenceBindingError,
+        AuthoringAuthorityError,
+    ) as error:
         raise MissingVoiceReuseBindingError(str(error)) from error
     return _result(output, binding, created=True)
+
+
+def _capture_binding_source_manifest(
+    source_manifest: Path, expected_sha256: object
+) -> tuple[AuthoritySnapshot, JsonObject, tuple[VoiceManifestEntry, ...]]:
+    try:
+        source_snapshot = capture_authority_file(
+            source_manifest, "missing-voice source manifest"
+        )
+        if source_snapshot.sha256 != expected_sha256:
+            raise MissingVoiceReuseBindingError(
+                "Missing-voice source manifest changed after planning"
+            )
+        source_document = source_snapshot.json_document("missing-voice source manifest")
+        source_voices = voice_manifest_entries_at_path(
+            source_document, source_manifest, allow_legacy=False
+        )
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        VoiceManifestError,
+        AuthoringAuthorityError,
+    ) as error:
+        raise MissingVoiceReuseBindingError(str(error)) from error
+    return source_snapshot, source_document, source_voices
 
 
 def _validate_binding_bundle(
@@ -443,7 +470,9 @@ def _validate_binding_bundle(
     manifest_path = directory / "manifest.json"
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        _metadata, voices = load_voice_manifest(manifest_path, allow_legacy=False)
+        voices = voice_manifest_entries_at_path(
+            manifest, manifest_path, allow_legacy=False
+        )
         combined_overrides = queue_voice_overrides_from_manifest(
             manifest,
             voices=voices,
