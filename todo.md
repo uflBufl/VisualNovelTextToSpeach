@@ -561,3 +561,21 @@ Planned implementation order after approval:
 ## Investigate intermittent macOS Qt test crash
 
 - [ ] A macOS changed-test run intermittently terminated with `shiboken6` `mainThreadDeletionHandler` SIGSEGV during pure-Python `test_player_session` after UI tests. The exact final 10-test sequence passed 10 times, the full onboarding/person/player sequence passed five times, and a later 2734-test selector passed. Reproduce and bisect an earlier Qt owner in the remainder shard with faulthandler before changing cleanup; retain the crash log in `.codex/investigations/` if it becomes repeatable. Gate: a narrowed failing sequence and a deterministic cleanup check.
+
+## Cross-project refactor plan - Shared data boundaries and enforceable quality
+
+### Immutable inputs: finish migration to existing capture owners
+
+- [ ] Inventory authority-bound readers in `model_benchmark`, `missing_voice_reuse_binding`, `voice_repair_comparison`, `failed_control_carry`, `reference_selection` and `cohort_review`: distinguish raw byte identity, UTF-8 vs byte-decoder compatibility, regular-file policy, active/read-only state and final publication/recovery guarantees. The global scan found local parsing in 73/109 authoring modules; this count is an investigation map, not 73 defects.
+- [ ] Start with `missing_voice_reuse_binding` and `model_benchmark`: reproduce any gap between checked bytes and parsed/projected data, then carry existing `AuthoritySnapshot`/workspace snapshot results through the full operation. Consume validated manifests from captured data using existing artifact validators when available. Preserve current/legacy formats, relative reference roots and domain errors; do not replace review reads with an inactive-state loader.
+- [ ] Migrate the remaining confirmed equivalent acquisition/copy/recheck paths in independent slices; consolidate per-family typed projections only when multiple real consumers share the same contract. Keep domain policy and supported version adapters separate.
+- [ ] Protect the migrated boundary through focused mutation/legacy/publication gates and existing import-graph checks. Completion: parsed document and checksum share bytes, success branches recheck required sources, old local acquisition paths removed, canonical IDs/outputs unchanged. Do not ban all direct JSON parsing or add a generic workflow framework.
+
+### Static typing: close return-value Any gaps
+
+- [ ] Investigate all 13 `mypy --warn-return-any` findings across 10 production files: versioned_json, prepared_sequence, game_pack, qwen_backend, pregeneration_audition, bulk_generation, controller, reviewed_waveform_publication, pregeneration_ui and app. Separate known scalar/Path/outcome projections from third-party model and Qt adapter boundaries; reuse existing types/validators, no casts/ignores or unchecked annotations solely to silence the checker.
+- [ ] Fix each established contract and enable `warn_return_any` for the complete existing 246-file production check. If a third-party boundary requires a real adapter migration, define its methods/consumer scope and execute that slice before enabling the final gate; do not reinstate a file whitelist or blanket suppression. Completion: zero candidate errors, original domain behavior and relevant real adapter tests pass.
+
+### Completion gates for the remaining migration stages
+
+- [ ] For each reader/type slice, run the local changed-test selector first after source edits, focused compatibility checks, configured Ruff/MyPy/complexity gates, final branch selector and independent review. Commit verified slices separately and push main; remove only completed steps. Finish when the confirmed shared readers are migrated and the whole-production return-Any gate passes.
