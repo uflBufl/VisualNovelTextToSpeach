@@ -183,12 +183,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/specialist_failure_plan.py",
-      "scope": "build_specialist_failure_plan",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/authoring/terminal_conflict_workspace.py",
       "scope": "_publish_staged_terminal_conflict_workspace",
       "count": 1

@@ -50,117 +50,137 @@ def build_specialist_failure_plan(
     items: list[JsonObject] = []
     seen: set[str] = set()
     for workspace in paths:
-        configuration_path = workspace / "workspace.json"
-        state_path = workspace / "generated-audio/generation-state.json"
-        queue_path = workspace / "queue.jsonl"
-        configuration_payload = _read(configuration_path, "workspace configuration")
-        state_payload = _read(state_path, "generation state")
-        queue_payload = _read(queue_path, "generation queue")
-        configuration = _decode(configuration_payload, "workspace configuration")
-        state = _decode(state_payload, "generation state")
-        queue = _queue_records(queue_payload)
-        selected = _selected_failure_ids(configuration)
-        state_items = _object_field(state, "items", "generation state items")
-        source_item_count = 0
-        for queue_id in selected:
-            result = state_items.get(queue_id)
-            if not isinstance(result, dict) or result.get("status") != "failed":
-                continue
-            if queue_id in seen:
-                raise CohortReviewError(f"Specialist failure is duplicated: {queue_id}")
-            seen.add(queue_id)
-            record = queue.get(queue_id)
-            if not isinstance(record, dict):
-                raise CohortReviewError(
-                    f"Specialist queue item disappeared: {queue_id}"
-                )
-            failure = result.get("failure")
-            repair = result.get("failure_repair")
-            if not isinstance(failure, dict) or not isinstance(repair, dict):
-                raise CohortReviewError(
-                    f"Specialist failure evidence is incomplete: {queue_id}"
-                )
-            action, rationale = _next_action(result, repair, failure)
-            text = str(record.get("text") or "")
-            text_features = failure.get("text_features")
-            text_features = text_features if isinstance(text_features, dict) else {}
-            item: JsonObject = {
-                "workspace": str(workspace),
-                "workspace_id": configuration.get("workspace_id"),
-                "queue_id": queue_id,
-                "line_id": record.get("line_id"),
-                "text": text,
-                "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-                "source_speaker": record.get("speaker"),
-                "effective_voice": result.get("voice_character"),
-                "provider": result.get("provider"),
-                "model": result.get("model"),
-                "generation_profile": result.get("generation_profile"),
-                "repair_strategy": repair.get("strategy"),
-                "failure": failure,
-                "result_sha256": canonical_document_sha256(result),
-                "text_shape": {
-                    "sentence_boundary_count": text_features.get(
-                        "sentence_boundary_count"
-                    ),
-                    "word_count": text_features.get("word_count"),
-                    "has_ellipsis": bool(text_features.get("ellipsis_count")),
-                },
-                "next_action": action,
-                "rationale": rationale,
-            }
-            item["cluster_key"] = canonical_document_sha256(
-                {
-                    key: item[key]
-                    for key in (
-                        "provider",
-                        "model",
-                        "generation_profile",
-                        "effective_voice",
-                        "repair_strategy",
-                        "text_shape",
-                        "next_action",
-                    )
-                }
-                | {
-                    "failure_kind": failure.get("kind"),
-                    "completion": failure.get("completion"),
-                    "error_type": failure.get("error_type"),
-                }
-            )
-            items.append(item)
-            source_item_count += 1
-        sources.append(
-            {
-                "workspace": str(workspace),
-                "workspace_id": configuration.get("workspace_id"),
-                "config_fingerprint": configuration.get("config_fingerprint"),
-                "state_sha256": hashlib.sha256(state_payload).hexdigest(),
-                "queue_sha256": hashlib.sha256(queue_payload).hexdigest(),
-                "failed_item_count": source_item_count,
-            }
-        )
-        for path, payload, label in (
-            (configuration_path, configuration_payload, "workspace configuration"),
-            (state_path, state_payload, "generation state"),
-            (queue_path, queue_payload, "generation queue"),
-        ):
-            if _read(path, label) != payload:
-                raise CohortReviewError(f"Specialist {label} changed during planning")
+        source, workspace_items = _capture_workspace(workspace, seen)
+        sources.append(source)
+        items.extend(workspace_items)
     items.sort(key=lambda value: _text_field(value, "queue_id"))
+    body = _build_plan_body(sources, items)
+    plan_id = canonical_document_sha256(body)
+    return SpecialistFailurePlan(plan_id, {**body, "plan_id": plan_id})
+
+
+def _capture_workspace(
+    workspace: Path, seen: set[str]
+) -> tuple[JsonObject, list[JsonObject]]:
+    configuration_path = workspace / "workspace.json"
+    state_path = workspace / "generated-audio/generation-state.json"
+    queue_path = workspace / "queue.jsonl"
+    configuration_payload = _read(configuration_path, "workspace configuration")
+    state_payload = _read(state_path, "generation state")
+    queue_payload = _read(queue_path, "generation queue")
+    configuration = _decode(configuration_payload, "workspace configuration")
+    state = _decode(state_payload, "generation state")
+    queue = _queue_records(queue_payload)
+    selected = _selected_failure_ids(configuration)
+    state_items = _object_field(state, "items", "generation state items")
+    items: list[JsonObject] = []
+    for queue_id in selected:
+        result = state_items.get(queue_id)
+        if not isinstance(result, dict) or result.get("status") != "failed":
+            continue
+        if queue_id in seen:
+            raise CohortReviewError(f"Specialist failure is duplicated: {queue_id}")
+        seen.add(queue_id)
+        record = queue.get(queue_id)
+        if not isinstance(record, dict):
+            raise CohortReviewError(f"Specialist queue item disappeared: {queue_id}")
+        items.append(
+            _project_failed_item(workspace, configuration, record, result, queue_id)
+        )
+    source = {
+        "workspace": str(workspace),
+        "workspace_id": configuration.get("workspace_id"),
+        "config_fingerprint": configuration.get("config_fingerprint"),
+        "state_sha256": hashlib.sha256(state_payload).hexdigest(),
+        "queue_sha256": hashlib.sha256(queue_payload).hexdigest(),
+        "failed_item_count": len(items),
+    }
+    for path, payload, label in (
+        (configuration_path, configuration_payload, "workspace configuration"),
+        (state_path, state_payload, "generation state"),
+        (queue_path, queue_payload, "generation queue"),
+    ):
+        if _read(path, label) != payload:
+            raise CohortReviewError(f"Specialist {label} changed during planning")
+    return source, items
+
+
+def _project_failed_item(
+    workspace: Path,
+    configuration: JsonObject,
+    record: JsonObject,
+    result: JsonObject,
+    queue_id: str,
+) -> JsonObject:
+    failure = result.get("failure")
+    repair = result.get("failure_repair")
+    if not isinstance(failure, dict) or not isinstance(repair, dict):
+        raise CohortReviewError(
+            f"Specialist failure evidence is incomplete: {queue_id}"
+        )
+    action, rationale = _next_action(result, repair, failure)
+    text = str(record.get("text") or "")
+    text_features = failure.get("text_features")
+    text_features = text_features if isinstance(text_features, dict) else {}
+    item: JsonObject = {
+        "workspace": str(workspace),
+        "workspace_id": configuration.get("workspace_id"),
+        "queue_id": queue_id,
+        "line_id": record.get("line_id"),
+        "text": text,
+        "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "source_speaker": record.get("speaker"),
+        "effective_voice": result.get("voice_character"),
+        "provider": result.get("provider"),
+        "model": result.get("model"),
+        "generation_profile": result.get("generation_profile"),
+        "repair_strategy": repair.get("strategy"),
+        "failure": failure,
+        "result_sha256": canonical_document_sha256(result),
+        "text_shape": {
+            "sentence_boundary_count": text_features.get("sentence_boundary_count"),
+            "word_count": text_features.get("word_count"),
+            "has_ellipsis": bool(text_features.get("ellipsis_count")),
+        },
+        "next_action": action,
+        "rationale": rationale,
+    }
+    item["cluster_key"] = canonical_document_sha256(
+        {
+            key: item[key]
+            for key in (
+                "provider",
+                "model",
+                "generation_profile",
+                "effective_voice",
+                "repair_strategy",
+                "text_shape",
+                "next_action",
+            )
+        }
+        | {
+            "failure_kind": failure.get("kind"),
+            "completion": failure.get("completion"),
+            "error_type": failure.get("error_type"),
+        }
+    )
+    return item
+
+
+def _build_plan_body(sources: list[JsonObject], items: list[JsonObject]) -> JsonObject:
     grouped: defaultdict[str, list[str]] = defaultdict(list)
+    next_actions: dict[str, str] = {}
     for item in items:
-        grouped[_text_field(item, "cluster_key")].append(_text_field(item, "queue_id"))
+        cluster_key = _text_field(item, "cluster_key")
+        grouped[cluster_key].append(_text_field(item, "queue_id"))
+        if cluster_key not in next_actions:
+            next_actions[cluster_key] = _text_field(item, "next_action")
     clusters = [
         {
             "cluster_key": key,
             "item_count": len(queue_ids),
             "queue_ids": sorted(queue_ids),
-            "next_action": next(
-                _text_field(item, "next_action")
-                for item in items
-                if item.get("cluster_key") == key
-            ),
+            "next_action": next_actions[key],
         }
         for key, queue_ids in sorted(grouped.items())
     ]
@@ -182,8 +202,7 @@ def build_specialist_failure_plan(
         "clusters": clusters,
         "items": items,
     }
-    plan_id = canonical_document_sha256(body)
-    return SpecialistFailurePlan(plan_id, {**body, "plan_id": plan_id})
+    return body
 
 
 def write_specialist_failure_plan(
