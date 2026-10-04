@@ -211,6 +211,30 @@ class ReviewedRejectionFallbackTests(unittest.TestCase):
         self.assertEqual(ledger["synthesis_character"], "Rhiannon")
         self.assertEqual(len(ledger["route_reference_sha256s"]), 2)
 
+    def test_batch_version_requires_an_exact_integer(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, _item = self._base(root / "source")
+            result = create_reviewed_rejection_fallback_workspace(
+                base, root / "workspaces"
+            )
+            workspace = json.loads((result.directory / "workspace.json").read_text())
+            batch = workspace["reviewed_rejection_live_fallback"]
+            for version in (True, 1.0):
+                with self.subTest(version=version):
+                    forged = {**batch, "schema_version": version}
+                    forged["batch_id"] = canonical_document_sha256(
+                        {
+                            key: value
+                            for key, value in forged.items()
+                            if key != "batch_id"
+                        }
+                    )
+                    with self.assertRaisesRegex(
+                        AuthoringWorkbenchError, "batch is malformed"
+                    ):
+                        _validated_rejection_batch(forged)
+
     def test_only_declared_downstream_overlay_ids_are_exempt(self):
         workspace = {
             "explicit_fallback_merge": {"items": [{"queue_id": "fallback-id"}]},

@@ -478,6 +478,7 @@ def _validated_rejection_batch(value: object) -> tuple[dict[str, object], list[o
         not isinstance(batch, dict)
         or set(batch) != fields
         or batch.get("schema") != SCHEMA
+        or type(batch.get("schema_version")) is not int
         or batch.get("schema_version") != SCHEMA_VERSION
         or batch.get("reason") != REASON
         or not isinstance(batch.get("items"), list)
