@@ -90,7 +90,7 @@ def _read_silence_comparison_input_plan(
     try:
         payload = source.read_bytes()
         document = json.loads(payload)
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SilenceComparisonError(
             f"Unable to read silence comparison input plan: {error}"
         ) from error
@@ -501,7 +501,7 @@ def load_silence_comparison(directory: str | Path) -> dict[str, object]:
 def _read_silence_comparison_document(root: Path) -> dict[str, object]:
     try:
         document = json.loads((root / "comparison.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SilenceComparisonError(
             f"Unable to read silence comparison: {error}"
         ) from error
@@ -595,17 +595,23 @@ def _silence_comparison_created_at(value: object) -> datetime:
 
 def _validate_silence_comparison_artifacts(
     root: Path, artifacts: Iterable[object]
-) -> dict[object, object]:
-    seen: dict[object, object] = {}
+) -> dict[str, str]:
+    seen: dict[str, str] = {}
     for artifact in artifacts:
         if not isinstance(artifact, dict) or set(artifact) != {"path", "sha256"}:
             raise SilenceComparisonError("Silence comparison artifact is malformed")
         relative = artifact["path"]
+        if not isinstance(relative, str):
+            raise SilenceComparisonError("Silence comparison artifact path is invalid")
         if relative in seen:
             raise SilenceComparisonError("Silence comparison artifact is duplicated")
         path = _contained_file(root, relative)
         digest = artifact["sha256"]
-        if not is_lowercase_sha256(digest) or sha256_file(path) != digest:
+        if (
+            not isinstance(digest, str)
+            or not is_lowercase_sha256(digest)
+            or sha256_file(path) != digest
+        ):
             raise SilenceComparisonError(
                 f"Silence comparison artifact checksum changed: {relative}"
             )
@@ -614,7 +620,7 @@ def _validate_silence_comparison_artifacts(
 
 
 def _validate_silence_comparison_inventory(
-    root: Path, seen: Mapping[object, object], reports: Iterable[object]
+    root: Path, seen: Mapping[str, str], reports: Iterable[object]
 ) -> None:
     actual_inventory = set()
     for path in root.rglob("*"):
@@ -637,7 +643,7 @@ def _validate_silence_comparison_inventory(
 def _validate_silence_comparison_samples(
     root: Path,
     samples: list[object],
-    seen: Mapping[object, object],
+    seen: Mapping[str, str],
     policy: Mapping[str, object],
 ) -> dict[str, dict[str, object]]:
     required_sample_fields = {
@@ -673,7 +679,7 @@ def _validate_silence_comparison_samples(
 def _validate_silence_comparison_sample(
     root: Path,
     sample: dict[str, object],
-    seen: Mapping[object, object],
+    seen: Mapping[str, str],
     policy: Mapping[str, object],
 ) -> None:
     if (
@@ -710,7 +716,7 @@ def _validate_silence_comparison_sample(
 
 
 def _validate_silence_comparison_sample_artifacts(
-    sample: Mapping[str, object], seen: Mapping[object, object]
+    sample: Mapping[str, object], seen: Mapping[str, str]
 ) -> None:
     for path_field, digest_field in (
         ("raw_copy", "raw_source_sha256"),
@@ -719,7 +725,8 @@ def _validate_silence_comparison_sample_artifacts(
     ):
         relative = sample[path_field]
         if (
-            not is_lowercase_sha256(sample[digest_field])
+            not isinstance(relative, str)
+            or not is_lowercase_sha256(sample[digest_field])
             or seen.get(relative) != sample[digest_field]
         ):
             raise SilenceComparisonError(
@@ -777,36 +784,15 @@ def _validate_comparison_report(
     path = _contained_file(root, relative)
     try:
         report = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SilenceComparisonError(
             f"Unable to read silence comparison report: {error}"
         ) from error
-    if (
-        not isinstance(report, dict)
-        or set(report)
-        != {
-            "schema",
-            "schema_version",
-            "model_id",
-            "provider",
-            "backend",
-            "model",
-            "samples",
-        }
-        or report["schema"] != "vntts.voice-model-report"
-        or not isinstance(report["schema_version"], int)
-        or isinstance(report["schema_version"], bool)
-        or report["schema_version"] != 1
-        or report["model_id"] != model_id
-        or report["provider"] != "derived-comparison"
-        or report["backend"] != "derived-comparison"
-        or report["model"] != model
-        or not isinstance(report["samples"], list)
-        or len(report["samples"]) != len(samples)
-    ):
+    if not isinstance(report, dict):
         raise SilenceComparisonError("Silence comparison report is malformed")
+    records = _comparison_report_records(report, model_id, model, len(samples))
     seen = set()
-    for record in report["samples"]:
+    for record in records:
         if not isinstance(record, dict) or set(record) != {
             "id",
             "line_id",
@@ -819,6 +805,10 @@ def _validate_comparison_report(
                 "Silence comparison report sample is malformed"
             )
         queue_id = record["id"]
+        if not isinstance(queue_id, str):
+            raise SilenceComparisonError(
+                "Silence comparison report sample identity is invalid"
+            )
         source = samples.get(queue_id)
         if source is None or queue_id in seen:
             raise SilenceComparisonError(
@@ -847,6 +837,36 @@ def _validate_comparison_report(
         raise SilenceComparisonError(
             "Silence comparison report sample inventory is incomplete"
         )
+
+
+def _comparison_report_records(
+    report: dict[str, object], model_id: str, model: str, sample_count: int
+) -> list[object]:
+    records = report.get("samples")
+    if (
+        set(report)
+        != {
+            "schema",
+            "schema_version",
+            "model_id",
+            "provider",
+            "backend",
+            "model",
+            "samples",
+        }
+        or report["schema"] != "vntts.voice-model-report"
+        or not isinstance(report["schema_version"], int)
+        or isinstance(report["schema_version"], bool)
+        or report["schema_version"] != 1
+        or report["model_id"] != model_id
+        or report["provider"] != "derived-comparison"
+        or report["backend"] != "derived-comparison"
+        or report["model"] != model
+        or not isinstance(records, list)
+        or len(records) != sample_count
+    ):
+        raise SilenceComparisonError("Silence comparison report is malformed")
+    return records
 
 
 def create_silence_comparison_session(
