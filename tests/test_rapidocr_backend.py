@@ -57,6 +57,54 @@ class RapidOCRBackendTest(unittest.TestCase):
                 Image.new("RGB", (10, 10))
             )
 
+    def test_rejects_malformed_scores_at_rapidocr_boundary(self):
+        for score in (
+            True,
+            np.bool_(True),
+            np.nan,
+            np.inf,
+            -np.inf,
+            10**400,
+            "0.9",
+        ):
+            with self.subTest(score=repr(score)):
+                output = SimpleNamespace(
+                    boxes=([[0, 0], [10, 0], [10, 10], [0, 10]],),
+                    txts=("Hello",),
+                    scores=(score,),
+                )
+
+                with self.assertRaisesRegex(ValueError, "score"):
+                    RapidOCRBackend(lambda image, **options: output).recognize(
+                        Image.new("RGB", (10, 10))
+                    )
+
+    def test_rejects_nonfinite_rapidocr_confidence_aggregate(self):
+        output = SimpleNamespace(
+            boxes=([[0, 0], [10, 0], [10, 10], [0, 10]],),
+            txts=("Hello",),
+            scores=(1e308,),
+        )
+
+        with self.assertRaisesRegex(ValueError, "confidence aggregate"):
+            RapidOCRBackend(lambda image, **options: output).recognize(
+                Image.new("RGB", (10, 10))
+            )
+
+    def test_normalizes_valid_numpy_scores_to_float(self):
+        output = SimpleNamespace(
+            boxes=([[0, 0], [10, 0], [10, 10], [0, 10]],),
+            txts=("Hello",),
+            scores=(np.float32(0.92),),
+        )
+
+        result = RapidOCRBackend(lambda image, **options: output).recognize(
+            Image.new("RGB", (10, 10))
+        )
+
+        self.assertIs(type(result.confidence), float)
+        self.assertAlmostEqual(result.confidence, 92.0, places=5)
+
     def test_rejects_language_without_a_configured_model(self):
         backend = RapidOCRBackend(lambda image, **options: None)
 

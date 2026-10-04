@@ -1,4 +1,6 @@
+import math
 from collections.abc import Iterable, Sequence
+from numbers import Real
 from typing import Protocol, TypeAlias
 
 import numpy as np
@@ -106,6 +108,8 @@ class RapidOCRBackend:
             if total_characters
             else 0.0
         )
+        if not math.isfinite(confidence):
+            raise ValueError("RapidOCR confidence aggregate is non-finite")
         return OCRResult(
             character,
             text,
@@ -121,7 +125,19 @@ class RapidOCRBackend:
         scores = getattr(output, "scores", None)
         if boxes is None or texts is None or scores is None:
             return []
-        lines = list(zip(boxes, texts, scores, strict=True))
+        lines: list[RapidOCRLine] = []
+        for box, text, raw_score in zip(boxes, texts, scores, strict=True):
+            if isinstance(raw_score, bool) or not isinstance(raw_score, Real):
+                raise ValueError("RapidOCR score must be a finite real number")
+            try:
+                score = float(raw_score)
+            except (OverflowError, TypeError, ValueError) as error:
+                raise ValueError(
+                    "RapidOCR score must be a finite real number"
+                ) from error
+            if not math.isfinite(score):
+                raise ValueError("RapidOCR score must be a finite real number")
+            lines.append((box, text, score))
         lines.sort(
             key=lambda item: (
                 min(float(point[1]) for point in item[0]),
