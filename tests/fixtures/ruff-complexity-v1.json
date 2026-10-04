@@ -129,12 +129,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/pending_resolution.py",
-      "scope": "_validated_plan_document",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/authoring/queue_builder.py",
       "scope": "plan_generation_queue",
       "count": 1

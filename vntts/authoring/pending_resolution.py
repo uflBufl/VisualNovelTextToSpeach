@@ -37,7 +37,7 @@ class _ResolutionRecord(TypedDict):
     action: str
 
 
-class _PlanDocument(TypedDict):
+class _PlanBody(TypedDict):
     schema: str
     schema_version: int
     workspace_id: str
@@ -47,6 +47,9 @@ class _PlanDocument(TypedDict):
     blocked_pending_count: int
     action_counts: dict[str, int]
     records: list[_ResolutionRecord]
+
+
+class _PlanDocument(_PlanBody):
     plan_id: str
 
 
@@ -154,7 +157,7 @@ def build_pending_resolution_plan(
         cohort_plan.document.get("state_sha256"), "State SHA-256"
     )
     action_counts = {RECOVER_OR_REGENERATE: len(records)} if records else {}
-    body: JsonDocument = {
+    body: _PlanBody = {
         "schema": PENDING_RESOLUTION_PLAN_SCHEMA,
         "schema_version": PENDING_RESOLUTION_PLAN_VERSION,
         "workspace_id": workspace_id,
@@ -166,18 +169,7 @@ def build_pending_resolution_plan(
         "records": records,
     }
     plan_id = canonical_document_sha256(body)
-    document: _PlanDocument = {
-        "schema": PENDING_RESOLUTION_PLAN_SCHEMA,
-        "schema_version": PENDING_RESOLUTION_PLAN_VERSION,
-        "workspace_id": workspace_id,
-        "workspace_config_fingerprint": workspace_fingerprint,
-        "queue_sha256": queue_sha256,
-        "state_sha256": state_sha256,
-        "blocked_pending_count": len(records),
-        "action_counts": action_counts,
-        "records": records,
-        "plan_id": plan_id,
-    }
+    document: _PlanDocument = {**body, "plan_id": plan_id}
     return PendingResolutionPlan(plan_id, document)
 
 
@@ -309,14 +301,13 @@ def _validated_plan_document(plan: object) -> _PlanDocument:
         or document["schema_version"] != PENDING_RESOLUTION_PLAN_VERSION
     ):
         raise PendingResolutionError("Pending resolution plan version is unsupported")
-    _required_text(document.get("workspace_id"), "Workspace ID")
-    for field, label in (
-        ("workspace_config_fingerprint", "Workspace config fingerprint"),
-        ("queue_sha256", "Queue SHA-256"),
-        ("state_sha256", "State SHA-256"),
-        ("plan_id", "Plan ID"),
-    ):
-        _required_sha256(document.get(field), label)
+    workspace_id = _required_text(document.get("workspace_id"), "Workspace ID")
+    workspace_fingerprint = _required_sha256(
+        document.get("workspace_config_fingerprint"), "Workspace config fingerprint"
+    )
+    queue_sha256 = _required_sha256(document.get("queue_sha256"), "Queue SHA-256")
+    state_sha256 = _required_sha256(document.get("state_sha256"), "State SHA-256")
+    plan_id = _required_sha256(document.get("plan_id"), "Plan ID")
     records = document.get("records")
     if not isinstance(records, list):
         raise PendingResolutionError("Pending resolution records must be a list")
@@ -346,17 +337,14 @@ def _validated_plan_document(plan: object) -> _PlanDocument:
     return {
         "schema": PENDING_RESOLUTION_PLAN_SCHEMA,
         "schema_version": PENDING_RESOLUTION_PLAN_VERSION,
-        "workspace_id": _required_text(document.get("workspace_id"), "Workspace ID"),
-        "workspace_config_fingerprint": _required_sha256(
-            document.get("workspace_config_fingerprint"),
-            "Workspace config fingerprint",
-        ),
-        "queue_sha256": _required_sha256(document.get("queue_sha256"), "Queue SHA-256"),
-        "state_sha256": _required_sha256(document.get("state_sha256"), "State SHA-256"),
+        "workspace_id": workspace_id,
+        "workspace_config_fingerprint": workspace_fingerprint,
+        "queue_sha256": queue_sha256,
+        "state_sha256": state_sha256,
         "blocked_pending_count": len(canonical),
         "action_counts": expected_counts,
         "records": canonical,
-        "plan_id": _required_sha256(document.get("plan_id"), "Plan ID"),
+        "plan_id": plan_id,
     }
 
 
