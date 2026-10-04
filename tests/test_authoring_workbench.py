@@ -1186,6 +1186,9 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "queue.jsonl").write_text("queue", encoding="utf-8")
+            workspace = {"queue": "queue.jsonl", "output": "generated-audio"}
+            workspace_payload = json.dumps(workspace).encode("utf-8")
+            (root / "workspace.json").write_bytes(workspace_payload)
             output = root / "generated-audio"
             output.mkdir()
             state_path = output / "generation-state.json"
@@ -1209,10 +1212,11 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             with (
                 patch.object(
                     workspace_inspection_module,
-                    "_load_workspace",
+                    "load_workspace_authority",
                     return_value=(
                         root,
-                        {"queue": "queue.jsonl", "output": "generated-audio"},
+                        workspace,
+                        hashlib.sha256(workspace_payload).hexdigest(),
                     ),
                 ),
                 patch.object(
@@ -1228,7 +1232,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 patch.object(
                     workspace_inspection_module,
                     "workspace_queue_sha256",
-                    return_value="a" * 64,
+                    return_value=hashlib.sha256(b"queue").hexdigest(),
                 ),
                 patch.object(
                     workspace_inspection_module,

@@ -27,11 +27,9 @@ from vntts.authoring.workbench import (
     WORKSPACE_VERSION,
     AuthoringWorkbenchError,
     ReviewItem,
-    inspect_workspace,
-    list_review_items,
-    load_workspace_authority,
 )
 from vntts.authoring.workspace_config import workspace_successor_config_fingerprint
+from vntts.authoring.workspace_inspection import load_review_items_snapshot
 from vntts.document_identity import is_lowercase_sha256
 
 COHORT_REVIEW_PLAN_SCHEMA = "vntts.authoring-cohort-review-plan"
@@ -189,40 +187,20 @@ def _validate_clean_samples_per_bucket(clean_samples_per_bucket: int) -> None:
 
 def _load_plan_review_source(workspace_directory: str | Path) -> _PlanReviewSource:
     try:
-        directory, workspace, _workspace_sha256 = load_workspace_authority(
-            workspace_directory
-        )
-        summary = inspect_workspace(directory)
+        snapshot = load_review_items_snapshot(workspace_directory)
     except AuthoringWorkbenchError as error:
         raise CohortReviewError(str(error)) from error
-    if summary.state is None:
+    if snapshot is None:
         raise CohortReviewError("Workspace has no generation state to review")
-    try:
-        state_payload = summary.state.read_bytes()
-        state = json.loads(state_payload.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise CohortReviewError(
-            f"Unable to read generation state {summary.state}: {error}"
-        ) from error
-    if not isinstance(state, dict) or not isinstance(state.get("items"), dict):
+    state_items = snapshot.state.get("items")
+    if not isinstance(state_items, dict):
         raise CohortReviewError("Generation state items must be an object")
-    state_sha256 = hashlib.sha256(state_payload).hexdigest()
-    try:
-        projected = list_review_items(directory)
-    except AuthoringWorkbenchError as error:
-        raise CohortReviewError(str(error)) from error
-    try:
-        final_state_sha256 = hashlib.sha256(summary.state.read_bytes()).hexdigest()
-    except OSError as error:
-        raise CohortReviewError(
-            f"Unable to re-read generation state {summary.state}: {error}"
-        ) from error
-    if final_state_sha256 != state_sha256:
-        raise CohortReviewError(
-            "Generation state changed while cohort review was being planned"
-        )
     return _PlanReviewSource(
-        workspace, state, state["items"], state_sha256, tuple(projected)
+        snapshot.workspace,
+        snapshot.state,
+        state_items,
+        snapshot.state_sha256,
+        snapshot.items,
     )
 
 

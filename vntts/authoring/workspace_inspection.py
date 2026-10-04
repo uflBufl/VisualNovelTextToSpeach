@@ -79,6 +79,7 @@ from vntts.authoring.workbench_contracts import (
     GenerationReadiness,
     ImmutableHistoryTimestamp,
     ReviewItem,
+    ReviewItemsSnapshot,
     WorkbenchProjectionData,
     WorkspaceCollection,
     WorkspaceSummary,
@@ -641,44 +642,36 @@ def _normalize_review_queue_ids(queue_ids: object) -> set[str] | None:
 def list_review_items(
     workspace_directory: str | Path, queue_ids: object = None
 ) -> tuple[ReviewItem, ...]:
+    snapshot = load_review_items_snapshot(workspace_directory, queue_ids)
+    return () if snapshot is None else snapshot.items
+
+
+def load_review_items_snapshot(
+    workspace_directory: str | Path, queue_ids: object = None
+) -> ReviewItemsSnapshot | None:
+    """Read review state once and retain the identity used to project its rows."""
     selected_queue_ids = _normalize_review_queue_ids(queue_ids)
-    directory, workspace = _load_workspace(workspace_directory)
-    queue_path = _within(
-        directory, _safe_relative(workspace["queue"], "Queue"), "Queue"
+    read = _load_workbench_projection_read(
+        workspace_directory, load_projection_details=False
     )
-    output = _within(
-        directory,
-        _safe_relative(workspace["output"], "Output"),
-        "Output",
+    if read.state_path is None or read.state is None or read.state_sha256 is None:
+        return None
+    story = _load_bound_story_document(read.directory, read.workspace)
+    items = _list_review_items_from_read(
+        read.queue,
+        story,
+        read.state_path,
+        read.state,
+        read.state_sha256,
+        read.queue_path,
+        read.output,
+        selected_queue_ids=selected_queue_ids,
     )
-    state_path = output / "generation-state.json"
-    if not state_path.is_file():
-        return ()
-    queue = _load_bound_workspace_queue(directory, workspace)
-    story = _load_bound_story_document(directory, workspace)
-    state_document, state_sha256, _payload = _load_json_snapshot(
-        state_path, "generation state"
-    )
-    state = load_generation_state_from_snapshot(
-        state_path,
-        queue,
-        workspace_queue_sha256(workspace, error_type=AuthoringWorkbenchError),
-        state_document=state_document,
-    )
-    if sha256_file(state_path) != state_sha256:
+    if sha256_file(read.state_path) != read.state_sha256:
         raise AuthoringWorkbenchError(
             "Generation state changed while review rows were being projected"
         )
-    return _list_review_items_from_read(
-        queue,
-        story,
-        state_path,
-        state,
-        state_sha256,
-        queue_path,
-        output,
-        selected_queue_ids=selected_queue_ids,
-    )
+    return ReviewItemsSnapshot(read.workspace, read.state, read.state_sha256, items)
 
 
 def _list_review_items_from_read(
@@ -2087,6 +2080,7 @@ __all__ = [
     "inspect_voice_readiness",
     "inspect_workspace",
     "list_review_items",
+    "load_review_items_snapshot",
     "list_workspace_collections",
     "load_workbench_projection_data",
     "workspace_voice_snapshot",

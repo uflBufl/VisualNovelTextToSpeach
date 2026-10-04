@@ -566,8 +566,7 @@ Planned implementation order after approval:
 
 ### Immutable inputs: finish migration to existing capture owners
 
-- [ ] Make `cohort_review` consume workspace/state/digest/review rows from one shared read result owned by workspace_inspection, retaining list_review_items compatibility. A/B/A investigation reproduced a pending source item disappearing into an empty plan when the intermediate state contained only approved rows, bypassing per-item authority checks. Preserve active read-only review, legacy/current state validation, WAV authority, no-state behavior and final checks; remove duplicate state reads and inspect_workspace projection. `reference_selection` already has manifest/reference captures and rechecks, so retain its stronger operation-specific owner.
-- [ ] Migrate the remaining confirmed equivalent acquisition/copy/recheck paths in independent slices; consolidate per-family typed projections only when multiple real consumers share the same contract. Keep domain policy and supported version adapters separate.
+- [ ] Migrate `bulk_generation._fallback_manifest_entries` to the shared captured-manifest projection: it still writes a temporary relocated manifest, loses original-root symlink validation, and returns untyped dependency entries. Preserve the captured checksum, UTF-8 decoding, legacy/current formats, narrator/role rules and no-output-on-error; prove the symlink case against the old code.
 - [ ] Protect the migrated boundary through focused mutation/legacy/publication gates and existing import-graph checks. Completion: parsed document and checksum share bytes, success branches recheck required sources, old local acquisition paths removed, canonical IDs/outputs unchanged. Do not ban all direct JSON parsing or add a generic workflow framework.
 
 ### Static typing: close return-value Any gaps

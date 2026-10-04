@@ -157,6 +157,16 @@ class ReviewItem:
 
 
 @dataclass(frozen=True)
+class ReviewItemsSnapshot:
+    """Validated state and review rows derived from one captured state payload."""
+
+    workspace: dict[str, object]
+    state: dict[str, object]
+    state_sha256: str
+    items: tuple[ReviewItem, ...]
+
+
+@dataclass(frozen=True)
 class GenerationReadiness:
     selected: int
     pending: int
@@ -258,6 +268,7 @@ __all__ = [
     "GenerationReadiness",
     "ImmutableHistoryTimestamp",
     "ReviewItem",
+    "ReviewItemsSnapshot",
     "WorkbenchProjectionData",
     "WorkspaceCollection",
     "WorkspaceCreationResult",

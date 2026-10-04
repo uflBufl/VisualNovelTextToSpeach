@@ -1,3 +1,4 @@
+import hashlib
 import json
 import unittest
 from contextlib import redirect_stdout
@@ -7,8 +8,13 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
+
+from tests import test_authoring_workbench as workbench_tests
 from tests.symlink_support import symlink_or_skip
+from tests.test_authoring_legacy_import import write_legacy_fixture
 from tests.test_authoring_workbench import create_test_workspace
+from vntts.authoring import workspace_inspection as inspection_module
 from vntts.authoring.bulk_generation import _canonical_sha256
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.cohort_review import (
@@ -47,6 +53,122 @@ class AuthoringCohortReviewTest(unittest.TestCase):
         state["active"] = None
         state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
         return created.directory, state_path, queue_id
+
+    def test_second_state_projection_cannot_hide_pending_items(self):
+        with TemporaryDirectory() as directory:
+            workspace, path, queue_id = self.create_pending_workspace(Path(directory))
+            payload = path.read_bytes()
+            original_load = inspection_module._load_json_snapshot
+            original_project = inspection_module._list_review_items_from_read
+            state_reads = 0
+
+            def alternate_second_capture(candidate, *arguments, **keywords):
+                nonlocal state_reads
+                if Path(candidate) == path:
+                    state_reads += 1
+                    if state_reads == 2:
+                        alternate = json.loads(payload)
+                        alternate["items"][queue_id].update(
+                            status="approved", review_status="approved"
+                        )
+                        path.write_text(json.dumps(alternate), encoding="utf-8")
+                return original_load(candidate, *arguments, **keywords)
+
+            def restore_after_projection(*arguments, **keywords):
+                rows = original_project(*arguments, **keywords)
+                path.write_bytes(payload)
+                return rows
+
+            with (
+                patch.object(
+                    inspection_module,
+                    "_load_json_snapshot",
+                    side_effect=alternate_second_capture,
+                ),
+                patch.object(
+                    inspection_module,
+                    "_list_review_items_from_read",
+                    side_effect=restore_after_projection,
+                ),
+            ):
+                plan = build_cohort_review_plan(workspace)
+            self.assertEqual(plan.document["pending_item_count"], 1)
+            self.assertEqual(
+                plan.document["state_sha256"], hashlib.sha256(payload).hexdigest()
+            )
+
+    def test_review_snapshot_binds_rows_and_state_even_when_no_pending_rows(self):
+        with TemporaryDirectory() as directory:
+            workspace, path, queue_id = self.create_pending_workspace(Path(directory))
+            for status, review_status in (
+                ("generated", "pending_review"),
+                ("approved", "approved"),
+            ):
+                state = json.loads(path.read_text())
+                state["items"][queue_id].update(
+                    status=status, review_status=review_status
+                )
+                path.write_text(json.dumps(state), encoding="utf-8")
+                snapshot = inspection_module.load_review_items_snapshot(workspace)
+                self.assertEqual(snapshot.state, state)
+                self.assertEqual(
+                    snapshot.state_sha256, hashlib.sha256(path.read_bytes()).hexdigest()
+                )
+                self.assertEqual(snapshot.items[0].status, status)
+                self.assertEqual(snapshot.items[0].review_status, review_status)
+                self.assertEqual(
+                    snapshot.items[0].authority.state_sha256, snapshot.state_sha256
+                )
+                self.assertEqual(
+                    snapshot.items, inspection_module.list_review_items(workspace)
+                )
+                plan = build_cohort_review_plan(workspace)
+                self.assertEqual(plan.document["state_sha256"], snapshot.state_sha256)
+                self.assertEqual(
+                    plan.document["pending_item_count"], int(status == "generated")
+                )
+
+    def test_review_snapshot_keeps_active_and_legacy_review_supported(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, path, queue_id = self.create_pending_workspace(
+                root / "workspace"
+            )
+            fixture = write_legacy_fixture(root / "legacy")
+            active = json.loads(fixture["state"].read_text())["active"]
+            self.assertEqual(active["queue_id"], queue_id)
+            queue_item = VoiceGenerationQueue.load(workspace / "queue.jsonl").items[0]
+            state = json.loads(path.read_text())
+            result = state["items"][queue_id]
+            result.update(
+                workbench_tests.AuthoringWorkbenchTest()._current_carry_fields(
+                    workspace, queue_item, path.parent / result["path"]
+                )
+            )
+            result.update(status="generated", review_status="pending_review")
+            path.write_text(json.dumps(state), encoding="utf-8")
+            for schema in (
+                "vntts.authoring-generation-state",
+                "r1999.bulk-generation-state",
+            ):
+                state = json.loads(path.read_text())
+                state["schema"] = schema
+                state["active"] = active
+                path.write_text(json.dumps(state), encoding="utf-8")
+                snapshot = inspection_module.load_review_items_snapshot(workspace)
+                self.assertEqual(snapshot.state["active"], active)
+                plan = build_cohort_review_plan(workspace)
+                self.assertEqual(plan.document["pending_item_count"], 1)
+                self.assertEqual(plan.document["state_sha256"], snapshot.state_sha256)
+
+    def test_review_snapshot_without_state_keeps_empty_list_behavior(self):
+        with TemporaryDirectory() as directory:
+            workspace, path, _queue_id = self.create_pending_workspace(Path(directory))
+            path.unlink()
+            self.assertIsNone(inspection_module.load_review_items_snapshot(workspace))
+            self.assertEqual(inspection_module.list_review_items(workspace), ())
+            with self.assertRaisesRegex(CohortReviewError, "no generation state"):
+                build_cohort_review_plan(workspace)
 
     def test_plan_is_deterministic_and_samples_every_attention_item(self):
         with TemporaryDirectory() as directory:
@@ -427,7 +549,7 @@ class AuthoringCohortReviewTest(unittest.TestCase):
                 Path(directory)
             )
 
-            def mutate(_workspace):
+            def mutate(*_arguments, **_keywords):
                 state = json.loads(state_path.read_text(encoding="utf-8"))
                 state["active"] = {"phase": "changed"}
                 state_path.write_text(
@@ -437,7 +559,7 @@ class AuthoringCohortReviewTest(unittest.TestCase):
 
             with (
                 patch(
-                    "vntts.authoring.cohort_review.list_review_items",
+                    "vntts.authoring.workspace_inspection._list_review_items_from_read",
                     side_effect=mutate,
                 ),
                 self.assertRaisesRegex(CohortReviewError, "state changed"),
@@ -546,8 +668,8 @@ class AuthoringCohortReviewTest(unittest.TestCase):
                     side_effect=AssertionError("full plan rescan"),
                 ),
                 patch(
-                    "vntts.authoring.cohort_review.inspect_workspace",
-                    side_effect=AssertionError("broad workspace inspection"),
+                    "vntts.authoring.cohort_review.load_review_items_snapshot",
+                    side_effect=AssertionError("review state rescan"),
                 ),
             ):
                 projection = apply_cohort_review_decision(workspace, plan, decision)
