@@ -8,6 +8,7 @@ from PIL import Image
 from vntts.ocr import (
     OCRResult,
     VoiceRegistry,
+    default_minimum_ocr_confidence,
     parse_recognized_dialog,
     recognize_dialog_image_result,
 )
@@ -22,7 +23,7 @@ class OCRRecognizer(Protocol):
         image: Image.Image,
         voice_registry: VoiceRegistry | None = None,
         *,
-        minimum_confidence: float = 60.0,
+        minimum_confidence: float = default_minimum_ocr_confidence,
         language: str = "eng",
     ) -> OCRResult: ...
 
@@ -39,7 +40,7 @@ class OCRBackend(Protocol):
         image: Image.Image,
         voice_registry: VoiceRegistry | None = None,
         *,
-        minimum_confidence: float = 60.0,
+        minimum_confidence: float = default_minimum_ocr_confidence,
         language: str = "eng",
     ) -> OCRResult: ...
 
@@ -56,7 +57,7 @@ class TesseractOCRBackend:
         image: Image.Image,
         voice_registry: VoiceRegistry | None = None,
         *,
-        minimum_confidence: float = 60.0,
+        minimum_confidence: float = default_minimum_ocr_confidence,
         language: str = "eng",
     ) -> OCRResult:
         return self.recognizer(
@@ -87,7 +88,7 @@ class RapidOCRBackend:
         image: Image.Image,
         voice_registry: VoiceRegistry | None = None,
         *,
-        minimum_confidence: float = 60.0,
+        minimum_confidence: float = default_minimum_ocr_confidence,
         language: str = "eng",
     ) -> OCRResult:
         del minimum_confidence

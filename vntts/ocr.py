@@ -16,7 +16,11 @@ from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from pytesseract import pytesseract as pytesseract_runtime
 from vntts_artifacts.atomic_io import atomic_output_group
 
-from vntts.dialog import is_probable_character_name, parse_dialog
+from vntts.dialog import (
+    MAX_CHARACTER_NAME_LENGTH,
+    is_probable_character_name,
+    parse_dialog,
+)
 from vntts.ocr_review import OCR_REVIEW_SCHEMA_VERSION
 from vntts.versioned_json import write_versioned_json
 
@@ -537,7 +541,7 @@ def recognize_speaker_from_data(
 
     if voice_registry is not None:
         for line in lines:
-            if len(line.text) > 40:
+            if len(line.text) > MAX_CHARACTER_NAME_LENGTH:
                 continue
             character = voice_registry.resolve_closest_character(line.text)
             if character is not None and _has_dialog_below(line, lines):
@@ -545,7 +549,7 @@ def recognize_speaker_from_data(
 
     candidates = []
     for position, line in enumerate(lines[:-1]):
-        if len(line.text) > 40:
+        if len(line.text) > MAX_CHARACTER_NAME_LENGTH:
             continue
         if _normalize_unknown_nameplate(
             line.text
@@ -840,7 +844,7 @@ def parse_recognized_dialog(
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     if voice_registry is not None:
         for position, line in enumerate(lines[:6]):
-            if len(line) > 40:
+            if len(line) > MAX_CHARACTER_NAME_LENGTH:
                 continue
             character = voice_registry.resolve_closest_character(line)
             if character is None:
