@@ -561,35 +561,28 @@ def _validate_rejection_ledger(
     if (
         queue_item is None
         or not isinstance(base_result, dict)
-        or canonical_document_sha256(base_result) != ledger.get("base_result_sha256")
-        or ledger.get("line_id") != queue_item.line_id
-        or ledger.get("text_sha256") != queue_item.text_sha256
-        or ledger.get("speaker") != queue_item.speaker
         or not isinstance(evidence, dict)
-        or evidence.get("base_result") != base_result
-        or evidence.get("batch_id") != batch.get("batch_id")
-        or evidence.get("synthesis_character") != ledger.get("synthesis_character")
-        or evidence.get("route_source") != ledger.get("route_source")
-        or evidence.get("route_reference_sha256s")
-        != ledger.get("route_reference_sha256s")
     ):
         raise AuthoringWorkbenchError(
             f"Reviewed-rejection result changed for {queue_id!r}"
         )
-    if ledger["route_source"] == "voice_manifest":
-        character, references = _manifest_route(
-            queue_item,
-            base_result,
-            overrides,
-            reference_sha256s,
+    expected = _rejection_ledger(
+        queue_id, base_result, queue_by_id, overrides, reference_sha256s
+    )
+    if expected != ledger:
+        raise AuthoringWorkbenchError(
+            f"Reviewed-rejection result changed for {queue_id!r}"
         )
-        if (
-            character != ledger["synthesis_character"]
-            or references != ledger["route_reference_sha256s"]
-        ):
-            raise AuthoringWorkbenchError(
-                f"Reviewed-rejection manifest route changed for {queue_id!r}"
-            )
+    if (
+        evidence.get("base_result") != base_result
+        or evidence.get("batch_id") != batch.get("batch_id")
+        or evidence.get("synthesis_character") != ledger["synthesis_character"]
+        or evidence.get("route_source") != ledger["route_source"]
+        or evidence.get("route_reference_sha256s") != ledger["route_reference_sha256s"]
+    ):
+        raise AuthoringWorkbenchError(
+            f"Reviewed-rejection result changed for {queue_id!r}"
+        )
     return queue_id
 
 
