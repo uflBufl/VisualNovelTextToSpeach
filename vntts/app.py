@@ -3780,7 +3780,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                     mapping_speaker
                     and dialog.voice_library.binding(mapping_speaker) is not None
                 )
-                profile_synced = self._sync_active_profile(candidate)
+                profile_synced = self._sync_active_profile()
                 return_to_stories |= self._apply_narrator_to_preparation(
                     dialog, candidate, preparation
                 )

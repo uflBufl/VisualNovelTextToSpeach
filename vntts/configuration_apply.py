@@ -137,7 +137,7 @@ class ConfigurationApplyMixin:
 
         def _update_auto_advance_action(self) -> None: ...
 
-        def _sync_active_profile(self, settings: AppSettings | None = None) -> bool: ...
+        def _sync_active_profile(self) -> bool: ...
 
         def _save_settings_candidate(self, candidate: AppSettings) -> Path: ...
 
@@ -329,7 +329,7 @@ class ConfigurationApplyMixin:
             is_live_sequence_audio_mode(self.settings.live_sequence_mode)
         )
         self._update_auto_advance_action()
-        profile_synced = self._sync_active_profile(updated_settings)
+        profile_synced = self._sync_active_profile()
         profile_suffix = ""
         if not profile_synced:
             profile_suffix = "; active profile could not be updated"
@@ -365,7 +365,7 @@ class ConfigurationApplyMixin:
             self.show_error(f"Unable to save model and voice settings: {error}")
             return
         self.settings = candidate
-        profile_synced = self._sync_active_profile(candidate)
+        profile_synced = self._sync_active_profile()
         profile_suffix = ""
         if not profile_synced:
             profile_suffix = "; active profile could not be updated"

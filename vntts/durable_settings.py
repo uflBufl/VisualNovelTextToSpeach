@@ -185,10 +185,12 @@ class DurableSettingsMixin:
             return
         self.settings = candidate
 
-    def _sync_active_profile(self, settings: AppSettings | None = None) -> bool:
-        settings = self.settings if settings is None else settings
-        if settings is self.settings and self._last_saved_settings is not None:
-            settings = self._last_saved_settings
+    def _sync_active_profile(self) -> bool:
+        return self._sync_profile_from_settings(
+            self._last_saved_settings or self.settings
+        )
+
+    def _sync_profile_from_settings(self, settings: AppSettings) -> bool:
         profile_id = settings.active_profile_id
         if profile_id and self.profile_store.get(profile_id) is not None:
             try:
@@ -221,4 +223,4 @@ class DurableSettingsMixin:
             return True
         if profile.updated_from_settings(persisted) == profile:
             return True
-        return self._sync_active_profile(persisted)
+        return self._sync_profile_from_settings(persisted)
