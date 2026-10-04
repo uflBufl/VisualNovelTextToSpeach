@@ -15,7 +15,6 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import TypeAlias, TypedDict, TypeGuard
 
 import numpy as np
@@ -31,7 +30,6 @@ from vntts_artifacts.voice_generation_queue import (
 from vntts_artifacts.voice_manifest import (
     VoiceManifestEntry,
     VoiceManifestError,
-    load_voice_manifest,
     normalize_character_name,
 )
 
@@ -243,7 +241,11 @@ from vntts.synthesis import (
 from vntts.synthesis import (
     normalize_short_trailing_ellipsis as normalize_short_trailing_ellipsis,
 )
-from vntts.voices import pocket_tts_preset_voices, synthesis_character_for_line
+from vntts.voices import (
+    pocket_tts_preset_voices,
+    synthesis_character_for_line,
+    voice_manifest_entries_at_path,
+)
 
 NO_PROMPT_SHA256 = hashlib.sha256(b"").hexdigest()
 PURE_SOUND_EFFECT_PATTERN = re.compile(r'^\s*["“”]?\*[^*]+\*["“”]?[.!?]?\s*$')
@@ -1172,13 +1174,15 @@ def _fallback_manifest_entries(
             "Voice manifest changed while fallback roles were validated"
         )
     try:
-        with TemporaryDirectory(prefix="vntts-voice-manifest-") as directory:
-            snapshot = Path(directory) / "manifest.json"
-            snapshot.write_bytes(payload)
-            _manifest, entries = load_voice_manifest(snapshot)
-    except (OSError, VoiceManifestError) as error:
+        document = json.loads(payload.decode("utf-8"))
+        return voice_manifest_entries_at_path(document, path)
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        VoiceManifestError,
+    ) as error:
         raise BulkGenerationError(str(error)) from error
-    return entries
 
 
 def _voice_manifest_entries_by_name(

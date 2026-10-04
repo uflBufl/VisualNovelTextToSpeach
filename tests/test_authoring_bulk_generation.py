@@ -20,6 +20,7 @@ from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 
 import vntts.authoring.bulk_generation as bulk_module
 import vntts.authoring.generation_lease as generation_lease_module
+from tests.symlink_support import symlink_or_skip
 from vntts.audio_cache import PersistentAudioCache
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.authoring.bulk_generation import (
@@ -887,6 +888,59 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
         self.assertEqual(result.generated, 1)
         self.assertEqual(renderer.requests[0].voice, "Narrator")
+
+    def test_fallback_manifest_checks_reference_symlinks_at_source_root(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_root = root / "voices"
+            manifest_root.mkdir()
+            reference = root / "outside.wav"
+            reference.write_bytes(b"reference")
+            symlink_or_skip(manifest_root / "narrator.wav", reference)
+            manifest = manifest_root / "manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "voices": [
+                            {
+                                "character": "Narrator",
+                                "speaker": "Narrator",
+                                "reference": "narrator.wav",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            control = {"path": manifest, "sha256": sha256_file(manifest)}
+            with self.assertRaisesRegex(BulkGenerationError, "symlinks"):
+                bulk_module._fallback_manifest_entries(control)
+
+    def test_fallback_manifest_preserves_legacy_and_missing_reference_policy(self):
+        with TemporaryDirectory() as directory:
+            manifest = Path(directory) / "manifest.json"
+            document = {
+                "voices": [
+                    {
+                        "character": "Narrator",
+                        "speaker": "Narrator",
+                        "aliases": ["Storyteller"],
+                        "reference": "missing.wav",
+                    }
+                ]
+            }
+            for version in (None, 2):
+                with self.subTest(version=version):
+                    if version is not None:
+                        document["version"] = version
+                    manifest.write_text(json.dumps(document), encoding="utf-8")
+                    control = {"path": manifest, "sha256": sha256_file(manifest)}
+                    entries = bulk_module._fallback_manifest_entries(control)
+                    self.assertEqual(len(entries), 1)
+                    self.assertEqual(entries[0].character, "Narrator")
+                    self.assertEqual(entries[0].aliases, ("Storyteller",))
+                    self.assertEqual(entries[0].references, ("missing.wav",))
 
     def test_fallback_refuses_a_role_that_still_has_manifest_references(self):
         with TemporaryDirectory() as directory:

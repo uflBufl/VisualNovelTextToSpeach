@@ -564,14 +564,11 @@ Planned implementation order after approval:
 
 ## Cross-project refactor plan - Shared data boundaries and enforceable quality
 
-### Immutable inputs: finish migration to existing capture owners
-
-- [ ] Migrate `bulk_generation._fallback_manifest_entries` to the shared captured-manifest projection: it still writes a temporary relocated manifest, loses original-root symlink validation, and returns untyped dependency entries. Preserve the captured checksum, UTF-8 decoding, legacy/current formats, narrator/role rules and no-output-on-error; prove the symlink case against the old code.
-- [ ] Protect the migrated boundary through focused mutation/legacy/publication gates and existing import-graph checks. Completion: parsed document and checksum share bytes, success branches recheck required sources, old local acquisition paths removed, canonical IDs/outputs unchanged. Do not ban all direct JSON parsing or add a generic workflow framework.
-
 ### Static typing: close return-value Any gaps
 
-- [ ] Investigate all 13 `mypy --warn-return-any` findings across 10 production files: versioned_json, prepared_sequence, game_pack, qwen_backend, pregeneration_audition, bulk_generation, controller, reviewed_waveform_publication, pregeneration_ui and app. Separate known scalar/Path/outcome projections from third-party model and Qt adapter boundaries; reuse existing types/validators, no casts/ignores or unchecked annotations solely to silence the checker.
+- [ ] Close the remaining 12 `mypy --warn-return-any` findings across 9 production files: versioned_json, prepared_sequence, game_pack, qwen_backend, pregeneration_audition, controller, reviewed_waveform_publication, pregeneration_ui and app. The shared manifest migration already resolved bulk_generation. Separate known scalar/Path/outcome projections from third-party model and worker adapter boundaries; no casts/ignores or unchecked annotations solely to silence the checker.
+- [ ] Type the actual shared I/O owner in an isolated durable-file worktree: Path inputs/returns for byte/text/JSON writers, string digest from sha256_file, and a packaged py.typed marker. Verify existing runtime tests, wheel metadata and an external MyPy contract probe. Advance the artifact dependency pin in its own worktree, then VNTTS pins/lock; consume the same typed owner directly for I/O returns. Preserve facade function identity and runtime publication policies.
+- [ ] Normalize imported Path projections, narrow the already-validated reviewed-waveform import ID once, validate dynamic playback outcomes and worker exit status at their real boundaries, and make Qwen model acquisition versus platform validation types truthful. Preserve active backend, route fallback, MLX/CUDA and worker CLI behavior with focused real adapter checks before enabling the final whole-production gate.
 - [ ] Fix each established contract and enable `warn_return_any` for the complete existing 246-file production check. If a third-party boundary requires a real adapter migration, define its methods/consumer scope and execute that slice before enabling the final gate; do not reinstate a file whitelist or blanket suppression. Completion: zero candidate errors, original domain behavior and relevant real adapter tests pass.
 
 ### Completion gates for the remaining migration stages
