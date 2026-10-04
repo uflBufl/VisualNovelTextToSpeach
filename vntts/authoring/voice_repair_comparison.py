@@ -6,7 +6,6 @@ import copy
 import hashlib
 import json
 import re
-import tempfile
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,7 +17,6 @@ from vntts_artifacts.voice_generation_queue import VoiceGenerationQueueItem
 from vntts_artifacts.voice_manifest import (
     VoiceManifestEntry,
     VoiceManifestError,
-    load_voice_manifest,
     normalize_character_name,
 )
 
@@ -52,6 +50,7 @@ from vntts.authoring.workspace_inspection import generation_failure_category
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 from vntts.document_identity import is_lowercase_sha256
 from vntts.speech_backend import get_moss_tts_generation_profile
+from vntts.voices import voice_manifest_entries_at_path
 
 JsonObject: TypeAlias = dict[str, object]
 JsonList: TypeAlias = list[object]
@@ -286,10 +285,9 @@ def _comparison_plan_inputs(workspace_directory: str | Path) -> _ComparisonPlanI
     manifest_payload = _read(manifest_path, "voice manifest")
     try:
         manifest_document = json.loads(manifest_payload.decode("utf-8"))
-        with tempfile.TemporaryDirectory(prefix="vntts-voice-repair-manifest-") as temp:
-            snapshot = Path(temp) / "manifest.json"
-            snapshot.write_bytes(manifest_payload)
-            _metadata, voices = load_voice_manifest(snapshot, allow_legacy=False)
+        voices = voice_manifest_entries_at_path(
+            manifest_document, manifest_path, allow_legacy=False
+        )
         overrides = queue_voice_overrides_from_manifest(
             manifest_document,
             queue_ids=(item.queue_id for item in queue.items),
@@ -715,12 +713,9 @@ def _candidate_source_manifest(
         raise VoiceRepairComparisonError("Source voice manifest changed after planning")
     try:
         manifest = json.loads(source_payload.decode("utf-8"))
-        with tempfile.TemporaryDirectory(
-            prefix="vntts-voice-repair-candidate-manifest-"
-        ) as temp:
-            snapshot = Path(temp) / "manifest.json"
-            snapshot.write_bytes(source_payload)
-            _metadata, voices = load_voice_manifest(snapshot, allow_legacy=False)
+        voices = voice_manifest_entries_at_path(
+            manifest, source_manifest, allow_legacy=False
+        )
     except (
         UnicodeDecodeError,
         json.JSONDecodeError,
@@ -729,7 +724,7 @@ def _candidate_source_manifest(
         raise VoiceRepairComparisonError(str(error)) from error
     if not isinstance(manifest, dict):
         raise VoiceRepairComparisonError("Source voice manifest is malformed")
-    return manifest, tuple(voices)
+    return manifest, voices
 
 
 def _source_manifest_sha256(document: JsonObject) -> str:

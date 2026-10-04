@@ -1,3 +1,4 @@
+import hashlib
 import json
 import unittest
 from contextlib import redirect_stdout
@@ -7,6 +8,7 @@ from tempfile import TemporaryDirectory
 
 from tests.symlink_support import symlink_or_skip
 from tests.test_authoring_workbench import create_test_workspace
+from vntts.authoring import voice_repair_comparison as comparison_module
 from vntts.authoring.bulk_generation import _canonical_sha256
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.voice_repair_comparison import (
@@ -30,6 +32,52 @@ class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
         result["review_status"] = "rejected"
         state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
         return fixture, workspace.directory, state_path
+
+    def test_captured_manifest_validates_original_reference_root(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / "manifest.json"
+            reference = root / "reference.wav"
+            reference.write_bytes(b"original reference")
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "voices": [
+                            {
+                                "character": "Voice",
+                                "speaker": "voice",
+                                "references": ["reference.wav"],
+                            },
+                            {
+                                "character": "Unused",
+                                "speaker": "unused",
+                                "references": ["missing.wav"],
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            plan = {
+                "source": {
+                    "voice_manifest_sha256": hashlib.sha256(
+                        manifest.read_bytes()
+                    ).hexdigest()
+                }
+            }
+            document, entries = comparison_module._candidate_source_manifest(
+                manifest, plan
+            )
+            self.assertEqual(document["voices"][0]["character"], "Voice")
+            self.assertEqual(entries[0].references, ("reference.wav",))
+            self.assertEqual(entries[1].references, ("missing.wav",))
+
+            outside = root / "outside.wav"
+            outside.write_bytes(b"external reference")
+            symlink_or_skip(root / "missing.wav", outside)
+            with self.assertRaisesRegex(VoiceRepairComparisonError, "symlink"):
+                comparison_module._candidate_source_manifest(manifest, plan)
 
     def test_plan_binds_exact_unresolved_item_and_supported_profiles(self):
         with TemporaryDirectory() as directory:
