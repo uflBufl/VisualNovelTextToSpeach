@@ -765,6 +765,28 @@ class RecognizedDialogTest(unittest.TestCase):
         self.assertEqual(recognize_text.call_args.kwargs["timeout"], 2)
         self.assertEqual(recognize_data.call_args.kwargs["timeout"], 2)
 
+    def test_malformed_group_ids_do_not_hide_later_string_id_lines(self):
+        for field in ("block_num", "par_num", "line_num"):
+            for invalid in ([], {}, ([1],)):
+                with self.subTest(field=field, invalid=invalid):
+                    data = {
+                        "text": ["bad", "Marcus", "Hello there."],
+                        "block_num": ["block"] * 3,
+                        "par_num": ["paragraph"] * 3,
+                        "line_num": ["noise", "name", "dialog"],
+                        "left": [40] * 3,
+                        "top": [0, 40, 180],
+                        "width": [120] * 3,
+                        "height": [45] * 3,
+                    }
+                    data[field][0] = invalid
+                    speaker = recognize_speaker_from_data(
+                        data, self.registry, image_width=1000, image_height=400
+                    )
+                    self.assertIsNotNone(speaker)
+                    self.assertEqual(speaker[0], "Marcus")
+                    self.assertEqual(speaker[1].text, "Marcus")
+
     def test_low_confidence_result_retries_with_alternate_preprocessing(self):
         profiles = (
             OCRPreprocessingProfile("first", 1.0, 170),

@@ -690,7 +690,11 @@ def extract_ocr_lines(data: OcrData) -> list[OCRLine]:
             paragraph,
             line,
         )
-        grouped_words.setdefault(key, []).append(
+        try:
+            words = grouped_words.setdefault(key, [])
+        except TypeError:
+            continue
+        words.append(
             (
                 text,
                 left,
