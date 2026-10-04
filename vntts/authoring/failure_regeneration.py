@@ -8,10 +8,15 @@ from pathlib import Path
 from typing import TypedDict
 
 from vntts.authoring.authority import (
+    AuthoringAuthorityError,
+    AuthoritySnapshot,
+    assert_authority_snapshot,
     canonical_document_sha256,
+    capture_authority_file,
     write_json_document_no_replace,
 )
 from vntts.authoring.bulk_generation import (
+    BulkGenerationError,
     generation_failure_repair_plan,
     load_generation_state,
 )
@@ -85,14 +90,20 @@ def build_failure_regeneration_plan(
 ) -> FailureRegenerationPlan:
     """Bind every current provenance-unbound failure without changing state."""
     try:
-        directory, workspace, _workspace_sha256 = load_workspace_authority(
+        directory, workspace, workspace_sha256 = load_workspace_authority(
             workspace_directory
         )
         queue_path = directory / "queue.jsonl"
         state_path = directory / "generated-audio/generation-state.json"
         repair = generation_failure_repair_plan(state_path, queue_path)
-        state = load_generation_state(state_path, queue_path)
-    except (AuthoringWorkbenchError, OSError, ValueError) as error:
+        state, sources = _failure_plan_inputs(directory, workspace_sha256, repair)
+    except (
+        AuthoringWorkbenchError,
+        AuthoringAuthorityError,
+        BulkGenerationError,
+        OSError,
+        ValueError,
+    ) as error:
         raise FailureRegenerationError(str(error)) from error
     records: list[FailureRegenerationRecord] = []
     state_items = _object_field(state, "items", "Generation state items")
@@ -131,11 +142,38 @@ def build_failure_regeneration_plan(
         "failure_count": len(records),
         "records": records,
     }
+    try:
+        for source in sources:
+            assert_authority_snapshot(source, "failure regeneration source")
+    except AuthoringAuthorityError as error:
+        raise FailureRegenerationError(str(error)) from error
     plan_id = canonical_document_sha256(body)
     return FailureRegenerationPlan(
         plan_id,
         _validated_plan_document({**body, "plan_id": plan_id}),
     )
+
+
+def _failure_plan_inputs(
+    directory: Path, workspace_sha256: str, repair: dict[str, object]
+) -> tuple[dict[str, object], tuple[AuthoritySnapshot, ...]]:
+    workspace = capture_authority_file(
+        directory / "workspace.json", "workspace configuration"
+    )
+    queue = capture_authority_file(directory / "queue.jsonl", "generation queue")
+    state = capture_authority_file(
+        directory / "generated-audio/generation-state.json", "generation state"
+    )
+    if (
+        workspace.sha256 != workspace_sha256
+        or queue.sha256 != repair.get("queue_sha256")
+        or state.sha256 != repair.get("state_sha256")
+    ):
+        raise FailureRegenerationError("Failure repair sources changed while planning")
+    document = load_generation_state(state.path, queue.path)
+    if document != state.json_document("generation state"):
+        raise FailureRegenerationError("Generation state changed while planning")
+    return document, (workspace, queue, state)
 
 
 def build_failure_regeneration_command(
