@@ -508,7 +508,7 @@ def _validate_bundle_inventory(directory: Path, inventory: object) -> None:
     actual = {
         path.relative_to(directory).as_posix()
         for path in directory.rglob("*")
-        if path.is_file() and path.name != "bundle.json"
+        if path.is_file() and path != directory / "bundle.json"
     }
     if declared != actual:
         raise ExperimentalCompositeVoiceError(

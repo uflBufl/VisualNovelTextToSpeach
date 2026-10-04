@@ -230,3 +230,17 @@ class CompositeContractsTest(unittest.TestCase):
                         composite.directory, generation.state, root / "quality"
                     )
             self.assertFalse((root / "quality").exists())
+
+    def test_nested_bundle_named_artifact_is_preserved(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            inputs = self.fixture(root)
+            (inputs[2].parent / "bundle.json").write_text('{"context":"retained"}')
+            first = self.publish(root, inputs)
+            second = self.publish(root, inputs)
+            self.assertTrue(first.created)
+            self.assertFalse(second.created)
+            self.assertEqual(
+                (root / "output/authority/quality-review/bundle.json").read_text(),
+                '{"context":"retained"}',
+            )
