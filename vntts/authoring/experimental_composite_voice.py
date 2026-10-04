@@ -45,6 +45,7 @@ from vntts.authoring.workbench import (
     contained_workspace_path,
     safe_workspace_relative_path,
 )
+from vntts.authoring.workspace_foundation import load_json_object
 from vntts.document_identity import is_lowercase_sha256
 
 EXPERIMENTAL_COMPOSITE_VOICE_FIELD = "vntts.authoring.experimental_composite_voices"
@@ -280,8 +281,14 @@ def _load_composite_authority(
     ledger_path = composite_directory / "composite.json"
     evaluation_path = composite_directory / "evaluation.json"
     try:
-        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
-        evaluation = json.loads(evaluation_path.read_text(encoding="utf-8"))
+        ledger = load_json_object(
+            ledger_path, "composite ledger", error_type=ExperimentalCompositeVoiceError
+        )
+        evaluation = load_json_object(
+            evaluation_path,
+            "composite evaluation",
+            error_type=ExperimentalCompositeVoiceError,
+        )
         review = load_source_reference_quality_review(quality_review)
     except (
         OSError,
@@ -294,8 +301,10 @@ def _load_composite_authority(
     evaluation_sha256 = sha256_file(evaluation_path)
     if (
         ledger.get("schema") != COMPOSITE_SCHEMA
+        or type(ledger.get("schema_version")) is not int
         or ledger.get("schema_version") != COMPOSITE_VERSION
         or evaluation.get("schema") != COMPOSITE_EVALUATION_SCHEMA
+        or type(evaluation.get("schema_version")) is not int
         or evaluation.get("schema_version") != COMPOSITE_EVALUATION_VERSION
         or evaluation.get("source_composite_sha256") != ledger_sha256
         or review.get("source_reference_plan_sha256") != ledger_sha256
@@ -324,9 +333,9 @@ def _load_composite_authority(
     _validate_composite_clips(composite_directory, ledger.get("clips"))
     _exact_quality_card(review, ledger, reference_sha256)
     return {
-        "character": ledger["character"],
-        "portrait": ledger["portrait"],
-        "source_bank": ledger["source_bank"],
+        "character": _text(ledger.get("character"), "Composite character"),
+        "portrait": _text(ledger.get("portrait"), "Composite portrait"),
+        "source_bank": _text(ledger.get("source_bank"), "Composite source bank"),
         "reference_sha256": reference_sha256,
         "composite_path": relative.as_posix(),
         "composite_ledger_sha256": ledger_sha256,
@@ -398,11 +407,16 @@ def _validate_experimental_composite_voice_input(
 ) -> dict[str, object]:
     directory = Path(directory).resolve()
     try:
-        bundle = json.loads((directory / "bundle.json").read_text(encoding="utf-8"))
+        bundle = load_json_object(
+            directory / "bundle.json",
+            "experimental composite bundle",
+            error_type=ExperimentalCompositeVoiceError,
+        )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ExperimentalCompositeVoiceError(str(error)) from error
     if (
         bundle.get("schema") != EXPERIMENTAL_COMPOSITE_INPUT_SCHEMA
+        or type(bundle.get("schema_version")) is not int
         or bundle.get("schema_version") != EXPERIMENTAL_COMPOSITE_INPUT_VERSION
         or bundle.get("source_voice_manifest_sha256")
         != sha256_file(expected["source_manifest"])
