@@ -4568,6 +4568,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.application.quit()
 
 
+def _worker_exit_code(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError("Worker returned a non-integer exit code")
+    return value
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     freeze_support()
     parser = argparse.ArgumentParser(
@@ -4604,15 +4610,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.game_content_import_worker == "reverse1999":
         from r1999extractor.bootstrap import main as reverse1999_bootstrap_main
 
-        return reverse1999_bootstrap_main(qt_arguments)
+        return _worker_exit_code(reverse1999_bootstrap_main(qt_arguments))
     if arguments.source_audio_publisher_worker == "duration":
         from r1999extractor.source_audio_duration import main as duration_main
 
-        return duration_main(qt_arguments)
+        return _worker_exit_code(duration_main(qt_arguments))
     if arguments.source_audio_publisher_worker == "semantics":
         from r1999extractor.source_audio_semantics import main as semantics_main
 
-        return semantics_main(qt_arguments)
+        return _worker_exit_code(semantics_main(qt_arguments))
     if arguments.offline_generation_worker:
         from vntts.authoring.cli_generation import main as generation_main
 
@@ -4620,7 +4626,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.prepared_sequence_worker:
         from r1999extractor.live_sequence import main as live_sequence_main
 
-        return live_sequence_main(qt_arguments)
+        return _worker_exit_code(live_sequence_main(qt_arguments))
     if arguments.package_self_test:
         return run_package_self_test(arguments.package_self_test_report).exit_code
     if any(

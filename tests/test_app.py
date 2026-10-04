@@ -544,6 +544,41 @@ class TrayApplicationTest(unittest.TestCase):
         full_controls.assert_called_once_with()
         tray_application.shutdown()
 
+    def test_external_worker_exit_codes_are_validated_before_qt_startup(self):
+        workers = (
+            ("bootstrap", ["--game-content-import-worker", "reverse1999"]),
+            ("source_audio_duration", ["--source-audio-publisher-worker", "duration"]),
+            (
+                "source_audio_semantics",
+                ["--source-audio-publisher-worker", "semantics"],
+            ),
+            ("live_sequence", ["--prepared-sequence-worker"]),
+        )
+        for module_name, arguments in workers:
+            package = ModuleType("r1999extractor")
+            package.__path__ = []
+            module = ModuleType(f"r1999extractor.{module_name}")
+            worker = Mock()
+            module.main = worker
+            with (
+                patch.dict(
+                    "sys.modules",
+                    {"r1999extractor": package, module.__name__: module},
+                ),
+                patch("vntts.app.QApplication") as qt_application,
+            ):
+                for value in (None, True, "0", object()):
+                    with self.subTest(module=module_name, value=value):
+                        worker.return_value = value
+                        with self.assertRaisesRegex(TypeError, "exit code"):
+                            main(arguments)
+                for code in (0, 1, 7, 127):
+                    with self.subTest(module=module_name, code=code):
+                        worker.return_value = code
+                        self.assertEqual(main(arguments), code)
+                worker.assert_called_with([])
+                qt_application.assert_not_called()
+
     def test_packaged_content_import_worker_runs_without_creating_qt(self):
         package = ModuleType("r1999extractor")
         package.__path__ = []
