@@ -74,6 +74,36 @@ class CudaProbeTest(unittest.TestCase):
 
         self.assertIsNone(report["bf16_supported"])
 
+    def test_rejects_malformed_availability_before_device_inspection(self):
+        for value in ("false", 1, None):
+            with self.subTest(value=value):
+                torch = FakeTorch()
+                torch.cuda.is_available = Mock(return_value=value)
+                torch.cuda.current_device = Mock()
+
+                with self.assertRaisesRegex(CudaProbeError, "boolean"):
+                    inspect_cuda(torch)
+
+                torch.cuda.current_device.assert_not_called()
+
+    def test_requires_boolean_bf16_probe_result(self):
+        for value in ("false", 1, None):
+            with self.subTest(value=value):
+                torch = FakeTorch()
+                torch.cuda.is_bf16_supported = Mock(return_value=value)
+
+                with self.assertRaisesRegex(CudaProbeError, "boolean"):
+                    inspect_cuda(torch)
+
+        for value in (True, False):
+            with self.subTest(value=value):
+                torch = FakeTorch()
+                torch.cuda.is_bf16_supported = Mock(return_value=value)
+
+                report = inspect_cuda(torch)
+
+                self.assertIs(report["bf16_supported"], value)
+
     def test_rejects_malformed_cudnn_version(self):
         torch = FakeTorch()
         torch.backends.cudnn.version = Mock(return_value=True)

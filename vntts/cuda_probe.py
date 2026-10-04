@@ -56,6 +56,12 @@ class _CudaInspection(Protocol):
     def get_device_capability(self, index: int) -> tuple[int, ...]: ...
 
 
+def _boolean_probe_result(value: object, label: str) -> bool:
+    if not isinstance(value, bool):
+        raise TypeError(f"{label} probe returned a non-boolean")
+    return value
+
+
 def inspect_cuda(torch_module: object | None = None) -> CudaProbeReport:
     """Return stable CUDA provenance without loading model weights."""
     if torch_module is None:
@@ -76,7 +82,7 @@ def inspect_cuda(torch_module: object | None = None) -> CudaProbeReport:
             "from the CUDA speech runtime"
         )
     try:
-        if not cuda.is_available():
+        if not _boolean_probe_result(cuda.is_available(), "CUDA availability"):
             raise CudaProbeError(
                 f"PyTorch includes CUDA {cuda_runtime}, but no CUDA device is "
                 "available; check the NVIDIA driver, GPU visibility and selected "
@@ -101,7 +107,11 @@ def inspect_cuda(torch_module: object | None = None) -> CudaProbeReport:
         if cudnn_version is not None and type(cudnn_version) is not int:
             raise TypeError("cuDNN version probe returned a non-integer")
         bf16_probe = getattr(cuda, "is_bf16_supported", None)
-        bf16_supported = bool(bf16_probe()) if callable(bf16_probe) else None
+        bf16_supported = (
+            _boolean_probe_result(bf16_probe(), "BF16 support")
+            if callable(bf16_probe)
+            else None
+        )
     except CudaProbeError:
         raise
     except (AttributeError, RuntimeError, TypeError, ValueError) as error:
