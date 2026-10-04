@@ -732,6 +732,39 @@ class RecognizedDialogTest(unittest.TestCase):
         self.assertEqual(result.attempts, 2)
         self.assertEqual(result.confidence, 90)
 
+    def test_invalid_timeout_is_rejected_before_preprocessing(self):
+        for value in (float("nan"), float("inf"), float("-inf"), 10**400):
+            with self.subTest(value=value):
+                recognize_text = Mock()
+                recognize_data = Mock()
+                with (
+                    patch("vntts.ocr.preprocess_dialog_image") as preprocess,
+                    self.assertRaisesRegex(ValueError, "positive.*finite"),
+                ):
+                    recognize_dialog_image_result(
+                        Image.new("RGB", (32, 16)),
+                        recognize_text=recognize_text,
+                        recognize_data=recognize_data,
+                        timeout=value,
+                    )
+                preprocess.assert_not_called()
+                recognize_text.assert_not_called()
+                recognize_data.assert_not_called()
+
+    def test_positive_finite_timeout_reaches_both_recognizers(self):
+        recognize_text = Mock(return_value="Reliable dialogue.")
+        recognize_data = Mock(return_value={"text": ["Reliable"], "conf": [90]})
+        with patch("vntts.ocr.monotonic", return_value=1000):
+            result = recognize_dialog_image_result(
+                Image.new("RGB", (32, 16)),
+                recognize_text=recognize_text,
+                recognize_data=recognize_data,
+                timeout=2,
+            )
+        self.assertEqual(result.text, "Reliable dialogue.")
+        self.assertEqual(recognize_text.call_args.kwargs["timeout"], 2)
+        self.assertEqual(recognize_data.call_args.kwargs["timeout"], 2)
+
     def test_low_confidence_result_retries_with_alternate_preprocessing(self):
         profiles = (
             OCRPreprocessingProfile("first", 1.0, 170),

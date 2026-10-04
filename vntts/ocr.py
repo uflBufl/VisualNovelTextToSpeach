@@ -50,8 +50,13 @@ def _call_ocr(
 def _ocr_budget(
     timeout: float | None, cancelled: Callable[[], bool] | None
 ) -> Callable[[], float | None]:
-    if timeout is not None and timeout <= 0:
-        raise ValueError("OCR timeout must be positive")
+    if timeout is not None:
+        try:
+            finite = math.isfinite(timeout)
+        except OverflowError:
+            finite = False
+        if not finite or timeout <= 0:
+            raise ValueError("OCR timeout must be positive and finite")
     deadline = monotonic() + timeout if timeout is not None else None
 
     def remaining() -> float | None:
