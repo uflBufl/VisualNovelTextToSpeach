@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from collections.abc import Iterable, Mapping
@@ -45,7 +46,10 @@ from vntts.authoring.workbench import (
     contained_workspace_path,
     safe_workspace_relative_path,
 )
-from vntts.authoring.workspace_foundation import load_json_object
+from vntts.authoring.workspace_foundation import (
+    load_json_object,
+    load_json_object_snapshot,
+)
 from vntts.document_identity import is_lowercase_sha256
 
 EXPERIMENTAL_COMPOSITE_VOICE_FIELD = "vntts.authoring.experimental_composite_voices"
@@ -142,6 +146,8 @@ def publish_experimental_composite_voice_input(
         VoiceManifestError,
     ) as error:
         raise ExperimentalCompositeVoiceError(str(error)) from error
+    if _metadata != source_document:
+        raise ExperimentalCompositeVoiceError("Source manifest changed while loading")
     if EXPERIMENTAL_COMPOSITE_VOICE_FIELD in source_document:
         raise ExperimentalCompositeVoiceError(
             "Source manifest already contains experimental composite authority"
@@ -160,7 +166,7 @@ def publish_experimental_composite_voice_input(
         raise ExperimentalCompositeVoiceError(
             "Experimental composite speaker identity already exists"
         )
-    source_manifest_sha256 = sha256_file(source_manifest)
+    source_manifest_sha256 = hashlib.sha256(source_payload).hexdigest()
     try:
         source_overrides = queue_voice_overrides_from_manifest(
             source_document, voices=source_voices
@@ -199,6 +205,7 @@ def publish_experimental_composite_voice_input(
     }
     if output.exists() or output.is_symlink():
         bundle = _validate_experimental_composite_voice_input(output, expected)
+        _assert_input_sources(expected)
         return _result(output, bundle, authority, created=False)
 
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -231,8 +238,29 @@ def publish_experimental_composite_voice_input(
         bundle = {**body, "bundle_id": canonical_document_sha256(body)}
         atomic_write_json(staging / "bundle.json", bundle, sort_keys=True)
         _validate_experimental_composite_voice_input(staging, expected)
+        _assert_input_sources(expected)
         rename_directory_no_replace(staging, output)
     return _result(output, bundle, authority, created=True)
+
+
+def _assert_input_sources(expected: _ExperimentalCompositeVoiceInput) -> None:
+    authority = expected["authority"]
+    voice = authority["voices"][0]
+    composite = expected["composite_directory"]
+    sources = (
+        (expected["source_manifest"], authority["source_voice_manifest_sha256"]),
+        (composite / "composite.json", voice["composite_ledger_sha256"]),
+        (composite / "evaluation.json", voice["composite_evaluation_sha256"]),
+        (expected["quality_review"], voice["quality_review_sha256"]),
+    )
+    for path, digest in sources:
+        try:
+            if path.is_symlink() or not path.is_file() or sha256_file(path) != digest:
+                raise ExperimentalCompositeVoiceError(
+                    f"Composite input changed: {path}"
+                )
+        except OSError as error:
+            raise ExperimentalCompositeVoiceError(str(error)) from error
 
 
 def _copy_experimental_artifacts(
@@ -281,12 +309,17 @@ def _load_composite_authority(
     ledger_path = composite_directory / "composite.json"
     evaluation_path = composite_directory / "evaluation.json"
     try:
-        ledger = load_json_object(
+        ledger, ledger_sha256, _ledger_payload = load_json_object_snapshot(
             ledger_path, "composite ledger", error_type=ExperimentalCompositeVoiceError
         )
-        evaluation = load_json_object(
+        evaluation, evaluation_sha256, _evaluation_payload = load_json_object_snapshot(
             evaluation_path,
             "composite evaluation",
+            error_type=ExperimentalCompositeVoiceError,
+        )
+        review_document, review_sha256, _review_payload = load_json_object_snapshot(
+            quality_review,
+            "composite quality review",
             error_type=ExperimentalCompositeVoiceError,
         )
         review = load_source_reference_quality_review(quality_review)
@@ -297,8 +330,6 @@ def _load_composite_authority(
         SourceReferenceQualityError,
     ) as error:
         raise ExperimentalCompositeVoiceError(str(error)) from error
-    ledger_sha256 = sha256_file(ledger_path)
-    evaluation_sha256 = sha256_file(evaluation_path)
     if (
         ledger.get("schema") != COMPOSITE_SCHEMA
         or type(ledger.get("schema_version")) is not int
@@ -332,6 +363,10 @@ def _load_composite_authority(
         raise ExperimentalCompositeVoiceError("Composite WAV changed")
     _validate_composite_clips(composite_directory, ledger.get("clips"))
     _exact_quality_card(review, ledger, reference_sha256)
+    if review != review_document:
+        raise ExperimentalCompositeVoiceError(
+            "Composite quality review changed while loading"
+        )
     return {
         "character": _text(ledger.get("character"), "Composite character"),
         "portrait": _text(ledger.get("portrait"), "Composite portrait"),
@@ -340,7 +375,7 @@ def _load_composite_authority(
         "composite_path": relative.as_posix(),
         "composite_ledger_sha256": ledger_sha256,
         "composite_evaluation_sha256": evaluation_sha256,
-        "quality_review_sha256": sha256_file(quality_review),
+        "quality_review_sha256": review_sha256,
     }
 
 

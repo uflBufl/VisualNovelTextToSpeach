@@ -26,7 +26,11 @@ from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_manifest
 
-from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
+from vntts.authoring.bulk_generation import BulkGenerationError
+from vntts.authoring.generation_state import (
+    load_generation_state_from_snapshot,
+    load_stable_generation_queue,
+)
 from vntts.authoring.publication import (
     no_replace_destination,
     rename_directory_no_replace,
@@ -41,7 +45,10 @@ from vntts.authoring.source_reference_quality_records import (
     load_source_reference_quality_review,
 )
 from vntts.authoring.source_reference_review import FIXED_EVALUATION_CORPUS
-from vntts.authoring.workspace_foundation import contained_regular_file
+from vntts.authoring.workspace_foundation import (
+    contained_regular_file,
+    load_json_object_snapshot,
+)
 from vntts.cli import cli_error, cli_success
 from vntts.document_identity import is_lowercase_sha256
 from vntts.reference_quality import ReferenceQualityReport, analyze_reference_bytes
@@ -88,6 +95,7 @@ class _CompositeReviewInputs:
     evaluation: JsonObject
     evaluation_sha256: str
     queue_path: Path
+    queue_sha256: str
 
 
 @dataclass(frozen=True)
@@ -140,11 +148,17 @@ def publish_composite_quality_review(
         raise ReferenceCompositeError(f"Composite quality output exists: {output}")
     inputs = _load_composite_review_inputs(composite_directory)
     try:
-        queue = VoiceGenerationQueue.load(inputs.queue_path)
-        state = load_generation_state(state_path, inputs.queue_path)
+        queue, queue_sha256 = load_stable_generation_queue(inputs.queue_path)
+        if queue_sha256 != inputs.queue_sha256:
+            raise ReferenceCompositeError("Composite evaluation queue changed")
+        state_document, state_sha256, _state_payload = load_json_object_snapshot(
+            state_path, "composite generation state", error_type=ReferenceCompositeError
+        )
+        state = load_generation_state_from_snapshot(
+            state_path, queue, queue_sha256, state_document=state_document
+        )
     except (BulkGenerationError, OSError, ValueError) as error:
         raise ReferenceCompositeError(str(error)) from error
-    state_sha256 = sha256_file(state_path)
     state_items = state.get("items")
     if not isinstance(state_items, dict):
         raise ReferenceCompositeError("Composite generation state is malformed")
@@ -156,7 +170,7 @@ def publish_composite_quality_review(
     snapshots = [
         (inputs.ledger_path, inputs.ledger_sha256),
         (inputs.evaluation_path, inputs.evaluation_sha256),
-        (inputs.queue_path, sha256_file(inputs.queue_path)),
+        (inputs.queue_path, queue_sha256),
         (state_path, state_sha256),
         *sources.snapshots,
     ]
@@ -240,6 +254,7 @@ def _load_composite_review_inputs(directory: Path) -> _CompositeReviewInputs:
         evaluation,
         evaluation_sha256,
         queue_path,
+        _sha256(evaluation.get("queue_sha256"), "Composite queue hash"),
     )
 
 
@@ -334,7 +349,9 @@ def _composite_quality_session(
                 "portrait_image": None,
                 "source_bank": inputs.ledger["source_bank"],
                 "reference_kind": "exact_bank_composite",
-                "media_ids": [clip["media_id"] for clip in sources.clips],
+                "media_ids": [
+                    _media_id(clip.get("media_id")) for clip in sources.clips
+                ],
                 "affected_queue_item_count": sources.affected,
                 "reference": reference,
                 "generated_samples": generated,
@@ -389,7 +406,7 @@ def _matching_group(
 
 def _verify_snapshots(snapshots: list[Snapshot], error_prefix: str) -> None:
     for source, digest in snapshots:
-        if sha256_file(source) != digest:
+        if source.is_symlink() or not source.is_file() or sha256_file(source) != digest:
             raise ReferenceCompositeError(f"{error_prefix}: {source.name}")
 
 
@@ -447,13 +464,10 @@ def publish_exact_bank_reference_composite(
             trim_padding_ms,
             staged,
         )
-        if (
-            hashlib.sha256(report_path.read_bytes()).hexdigest()
-            != selection.report_sha256
-        ):
-            raise ReferenceCompositeError(
-                "Candidate report changed during composite publication"
-            )
+        _verify_snapshots(
+            [(report_path, selection.report_sha256)],
+            "Candidate report changed during composite publication",
+        )
         _verify_snapshots(
             staged.snapshots, "Candidate reference changed during publication"
         )

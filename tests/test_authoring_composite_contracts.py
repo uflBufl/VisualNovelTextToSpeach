@@ -2,6 +2,7 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from vntts_artifacts.file_integrity import sha256_file
 
@@ -106,3 +107,126 @@ class CompositeContractsTest(unittest.TestCase):
                 publish_exact_bank_reference_composite(
                     report, "Hotelier", "505401.png", "hotelier.bnk", root / "composite"
                 )
+
+    def test_manifest_change_after_parsing_blocks_publication(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            inputs = self.fixture(root)
+            original = experimental._load_composite_authority
+
+            def change(*args):
+                result = original(*args)
+                doc = json.loads(inputs[0].read_text())
+                doc["context"] = "changed after capture"
+                inputs[0].write_text(json.dumps(doc))
+                return result
+
+            with patch.object(
+                experimental, "_load_composite_authority", side_effect=change
+            ):
+                with self.assertRaises(experimental.ExperimentalCompositeVoiceError):
+                    self.publish(root, inputs)
+            self.assertFalse((root / "output").exists())
+
+    def test_review_change_after_validation_blocks_publication(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            inputs = self.fixture(root)
+            original = experimental.load_source_reference_quality_review
+
+            def change(*args):
+                result = original(*args)
+                doc = json.loads(inputs[2].read_text())
+                doc["variants"][0]["decision"]["decision"] = "reject"
+                inputs[2].write_text(json.dumps(doc))
+                return result
+
+            with patch.object(
+                experimental, "load_source_reference_quality_review", side_effect=change
+            ):
+                with self.assertRaises(experimental.ExperimentalCompositeVoiceError):
+                    self.publish(root, inputs)
+            self.assertFalse((root / "output").exists())
+
+    def test_same_bytes_symlink_substitution_blocks_publication(self):
+        import vntts.authoring.reference_composite as reference
+
+        for source_name in ("report.json", "references/10.wav"):
+            with (
+                self.subTest(source_name=source_name),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                report = (
+                    reference_fixture.AuthoringReferenceCompositeTest().make_report(
+                        root
+                    )
+                )
+                source = root / source_name
+                target = root / "same-bytes"
+                target.write_bytes(source.read_bytes())
+                probe = root / "symlink-probe"
+                try:
+                    probe.symlink_to(target)
+                except OSError as error:
+                    self.skipTest(f"Symlink creation is unavailable: {error}")
+                probe.unlink()
+                original = reference._write_composite_artifacts
+
+                def change(*args, **kwargs):
+                    result = original(*args, **kwargs)
+                    source.unlink()
+                    source.symlink_to(target)
+                    return result
+
+                with patch.object(
+                    reference, "_write_composite_artifacts", side_effect=change
+                ):
+                    with self.assertRaises(reference.ReferenceCompositeError):
+                        reference.publish_exact_bank_reference_composite(
+                            report,
+                            "Hotelier",
+                            "505401.png",
+                            "hotelier.bnk",
+                            root / "composite",
+                        )
+                self.assertFalse((root / "composite").exists())
+
+    def test_quality_state_change_after_validation_blocks_publication(self):
+        import vntts.authoring.generation_state as generation_state
+        import vntts.authoring.reference_composite as reference
+        from vntts.authoring.bulk_generation import run_bulk_generation
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = reference_fixture.AuthoringReferenceCompositeTest().make_report(
+                root
+            )
+            composite = reference.publish_exact_bank_reference_composite(
+                report, "Hotelier", "505401.png", "hotelier.bnk", root / "composite"
+            )
+            generation = run_bulk_generation(
+                composite.directory / "queue.jsonl",
+                root / "generation",
+                reference_fixture._Renderer(),
+                provider="synthetic",
+                model="synthetic-v1",
+                generation_profile="stable",
+            )
+            original = generation_state._validate_state_document
+
+            def change(*args, **kwargs):
+                result = original(*args, **kwargs)
+                doc = json.loads(generation.state.read_text())
+                doc["context"] = "changed after validation"
+                generation.state.write_text(json.dumps(doc))
+                return result
+
+            with patch.object(
+                generation_state, "_validate_state_document", side_effect=change
+            ):
+                with self.assertRaises(reference.ReferenceCompositeError):
+                    reference.publish_composite_quality_review(
+                        composite.directory, generation.state, root / "quality"
+                    )
+            self.assertFalse((root / "quality").exists())
