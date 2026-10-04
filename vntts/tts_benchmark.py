@@ -423,11 +423,10 @@ def load_tts_benchmark_corpus(path: PathInput) -> BenchmarkCorpus:
         seen_ids.add(sample_id)
         line_id = str(sample["line_id"]) if strict else sample_id
         text_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        if strict:
-            if sample.get("text_sha256") != text_digest:
-                raise ValueError(
-                    f"TTS benchmark sample {index} text_sha256 does not match exact text"
-                )
+        if strict and sample.get("text_sha256") != text_digest:
+            raise ValueError(
+                f"TTS benchmark sample {index} text_sha256 does not match exact text"
+            )
         samples.append(
             {
                 "id": sample_id,

@@ -664,7 +664,7 @@
       "path": "vntts/tts_benchmark.py",
       "scope": "load_tts_benchmark_corpus",
       "count": 1,
-      "maximum": 14
+      "maximum": 13
     },
     {
       "code": "C901",
@@ -1056,7 +1056,7 @@
       "path": "vntts/tts_benchmark.py",
       "scope": "load_tts_benchmark_corpus",
       "count": 1,
-      "maximum": 14
+      "maximum": 13
     },
     {
       "code": "PLR0915",
