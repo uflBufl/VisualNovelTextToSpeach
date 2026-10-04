@@ -274,6 +274,35 @@ def _probe_relocated_runtime(
         return report
 
 
+def _prepare_runtime_destination(
+    destination: Path, backend_project: Path, *, append: bool
+) -> Path:
+    if destination.is_symlink() or destination.is_junction():
+        raise RuntimeError("Speech runtime staging destination must not be an alias")
+    destination = destination.resolve()
+    lockfile = backend_project / "uv.lock"
+    if not lockfile.is_file():
+        raise FileNotFoundError(f"Speech runtime lockfile is missing: {lockfile}")
+    if backend_project.is_relative_to(destination):
+        raise RuntimeError(
+            "Speech runtime staging destination contains the source project"
+        )
+    if append:
+        for name in ("_python", backend_project.name):
+            path = destination / name
+            if path.is_symlink() or path.is_junction():
+                raise RuntimeError(
+                    f"Speech runtime staging directory must not be an alias: {path}"
+                )
+    if destination.exists() and not append:
+        shutil.rmtree(destination)
+    destination.mkdir(parents=True, exist_ok=True)
+    runtime_root = destination / backend_project.name
+    if runtime_root.exists():
+        shutil.rmtree(runtime_root)
+    return destination
+
+
 def stage_speech_runtime(
     project_root: str | os.PathLike[str],
     destination: str | os.PathLike[str],
@@ -290,26 +319,13 @@ def stage_speech_runtime(
     if backend == "qwen-tts" and platform_name != "win32":
         raise ValueError("The Qwen release runtime currently supports Windows only")
     project_root = Path(project_root).resolve()
-    destination = Path(destination)
-    if destination.is_symlink() or destination.is_junction():
-        raise RuntimeError("Speech runtime staging destination must not be an alias")
-    destination = destination.resolve()
     backend_project = project_root / "backends" / backend
     lockfile = backend_project / "uv.lock"
-    if not lockfile.is_file():
-        raise FileNotFoundError(f"Speech runtime lockfile is missing: {lockfile}")
-    if backend_project.is_relative_to(destination):
-        raise RuntimeError(
-            "Speech runtime staging destination contains the source project"
-        )
-    if destination.exists() and not append:
-        shutil.rmtree(destination)
-    destination.mkdir(parents=True, exist_ok=True)
-
+    destination = _prepare_runtime_destination(
+        Path(destination), backend_project, append=append
+    )
     managed_root = destination / "_python"
     runtime_root = destination / backend
-    if runtime_root.exists():
-        shutil.rmtree(runtime_root)
     _run_checked(
         run,
         (

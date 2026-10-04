@@ -48,6 +48,75 @@ class ReleaseRuntimeTest(unittest.TestCase):
             self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep")
             run.assert_not_called()
 
+    def _assert_append_rejects_aliases(
+        self, make_alias, *, target_exists=True, platform_name="darwin"
+    ):
+        for name in ("_python", "pocket-tts"):
+            with self.subTest(directory=name), TemporaryDirectory() as directory:
+                root = Path(directory)
+                project = root / "project"
+                backend = project / "backends/pocket-tts"
+                backend.mkdir(parents=True)
+                (backend / "uv.lock").write_text("locked", encoding="utf-8")
+                destination = root / "speech-runtimes"
+                destination.mkdir()
+                retained = destination / "keep.txt"
+                retained.write_bytes(b"keep")
+                outside = root / "outside"
+                external = outside / "cpython/include/keep.txt"
+                if target_exists:
+                    external.parent.mkdir(parents=True)
+                    external.write_bytes(b"outside")
+                    interpreter = outside / "cpython/bin/python3.14"
+                    interpreter.parent.mkdir()
+                    interpreter.write_bytes(b"python")
+                if name == "_python":
+                    previous = destination / "pocket-tts/previous.txt"
+                    previous.parent.mkdir()
+                    previous.write_bytes(b"previous")
+                make_alias(destination / name, outside)
+                run = Mock()
+
+                with self.assertRaisesRegex(RuntimeError, "must not be an alias"):
+                    stage_speech_runtime(
+                        project,
+                        destination,
+                        append=True,
+                        platform_name=platform_name,
+                        run=run,
+                    )
+
+                run.assert_not_called()
+                self.assertEqual(retained.read_bytes(), b"keep")
+                if target_exists:
+                    self.assertEqual(external.read_bytes(), b"outside")
+                else:
+                    self.assertFalse(outside.exists())
+                if name == "_python":
+                    self.assertEqual(previous.read_bytes(), b"previous")
+
+    def test_append_rejects_directory_links_before_mutating_destination(self):
+        for target_exists in (True, False):
+            with self.subTest(target_exists=target_exists):
+                self._assert_append_rejects_aliases(
+                    lambda link, target: symlink_or_skip(
+                        link, target, target_is_directory=True
+                    ),
+                    target_exists=target_exists,
+                )
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows junctions require Windows")
+    def test_append_rejects_junctions_before_mutating_destination(self):
+        def make_junction(link, target):
+            subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                check=True,
+                capture_output=True,
+            )
+            self.assertTrue(link.is_junction())
+
+        self._assert_append_rejects_aliases(make_junction, platform_name="win32")
+
     def test_staging_rejects_destination_containing_source_project(self):
         with TemporaryDirectory() as directory:
             project = Path(directory) / "project"
@@ -72,6 +141,12 @@ class ReleaseRuntimeTest(unittest.TestCase):
             (backend / "uv.lock").write_text("locked", encoding="utf-8")
             (project / "pyproject.toml").write_text("[project]", encoding="utf-8")
             destination = Path(directory) / "build" / "speech-runtimes"
+            outside = Path(directory) / "outside"
+            outside.mkdir()
+            retained = outside / "keep.txt"
+            retained.write_bytes(b"keep")
+            destination.mkdir(parents=True)
+            symlink_or_skip(destination / "_python", outside, target_is_directory=True)
             calls = []
 
             def runner(command, **options):
@@ -130,6 +205,7 @@ class ReleaseRuntimeTest(unittest.TestCase):
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             interpreter = destination / "pocket-tts/bin/python"
             self.assertEqual(manifest["backend"], "pocket-tts")
+            self.assertEqual(retained.read_bytes(), b"keep")
             self.assertTrue(interpreter.is_symlink())
             self.assertFalse(os.readlink(interpreter).startswith("/"))
             flattened = [part for command, _options in calls for part in command]
