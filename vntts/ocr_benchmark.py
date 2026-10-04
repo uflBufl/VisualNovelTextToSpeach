@@ -146,6 +146,9 @@ def benchmark_ocr(
     all_latencies: list[float] = []
     for image_path in image_paths:
         image_path = Path(image_path).expanduser().resolve()
+        expected_text, expected_speaker = _expected_dialog(
+            expectations.get(image_path.name), image_path.name
+        )
         with Image.open(image_path) as source:
             image = source.convert("RGB")
         for _index in range(warmups):
@@ -172,9 +175,6 @@ def benchmark_ocr(
         all_latencies.extend(latencies)
         if result is None:
             raise RuntimeError("OCR benchmark produced no measured result")
-        expected_text, expected_speaker = _expected_dialog(
-            expectations.get(image_path.name), image_path.name
-        )
         samples.append(
             {
                 "image": str(image_path),

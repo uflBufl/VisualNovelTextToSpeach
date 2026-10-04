@@ -3,6 +3,7 @@ import io
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import Mock
 
 from PIL import Image
 
@@ -63,17 +64,38 @@ class OCRBenchmarkTest(unittest.TestCase):
         with TemporaryDirectory() as temporary_directory:
             image_path = Path(temporary_directory) / "dialog.png"
             Image.new("RGB", (10, 10), "black").save(image_path)
+            backend = Mock(wraps=FakeOCRBackend())
 
             with self.assertRaisesRegex(ValueError, "expected text"):
                 benchmark_ocr(
                     [image_path],
-                    backend=FakeOCRBackend(),
+                    backend=backend,
                     repeats=1,
                     warmups=0,
                     expectations={"dialog.png": {"text": 42}},
                     clock=lambda: 0.0,
                     cpu_clock=lambda: 0.0,
                 )
+
+            backend.recognize.assert_not_called()
+
+    def test_rejects_selected_malformed_expectation_before_image_decode(self):
+        with TemporaryDirectory() as temporary_directory:
+            image_path = Path(temporary_directory) / "missing.png"
+            backend = Mock()
+
+            with self.assertRaisesRegex(ValueError, "expected text"):
+                benchmark_ocr(
+                    [image_path],
+                    backend=backend,
+                    repeats=1,
+                    warmups=0,
+                    expectations={"missing.png": {"text": 42}},
+                    clock=lambda: 0.0,
+                    cpu_clock=lambda: 0.0,
+                )
+
+            backend.recognize.assert_not_called()
 
     def test_cpu_utilization_is_none_without_positive_wall_intervals(self):
         with TemporaryDirectory() as temporary_directory:
