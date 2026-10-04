@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, TypedDict, cast
+from typing import Literal, TypedDict
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
@@ -18,7 +18,13 @@ from vntts_artifacts.voice_manifest import (
     normalize_character_name,
 )
 
-from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.authority import (
+    AuthoringAuthorityError,
+    AuthoritySnapshot,
+    assert_authority_snapshot,
+    canonical_document_sha256,
+    capture_authority_file,
+)
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     load_generation_state,
@@ -425,10 +431,7 @@ def validate_reviewed_rejection_fallback_workspace(
         return
     batch, ledgers = _validated_rejection_batch(batch)
     root = Path(directory)
-    _validate_rejection_authority_snapshots(root, batch)
-    base_state = load_workspace_json(
-        root / cast(str, batch["base_state_path"]), "reviewed-rejection base state"
-    )
+    base_state, snapshots = _validate_rejection_authority_snapshots(root, batch)
     queue, state, _payload, _state_sha256 = load_stable_workspace_generation_state(
         root,
         workspace,
@@ -475,6 +478,11 @@ def validate_reviewed_rejection_fallback_workspace(
     _validate_rejection_state(
         workspace, base_state, state, base_items, state_items, set(observed)
     )
+    try:
+        for snapshot in snapshots:
+            assert_authority_snapshot(snapshot, "reviewed-rejection source")
+    except AuthoringAuthorityError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
 
 
 def _validated_rejection_batch(value: object) -> tuple[dict[str, object], list[object]]:
@@ -520,22 +528,32 @@ def _validated_rejection_batch(value: object) -> tuple[dict[str, object], list[o
 
 def _validate_rejection_authority_snapshots(
     root: Path, batch: dict[str, object]
-) -> None:
-    for path_field, hash_field, label in (
-        ("base_workspace_path", "base_workspace_sha256", "base workspace"),
-        ("base_state_path", "base_state_sha256", "base state"),
-    ):
-        source = contained_workspace_path(
-            root,
-            safe_workspace_relative_path(
-                batch.get(path_field), f"Reviewed-rejection {label}"
-            ),
-            f"Reviewed-rejection {label}",
-        )
-        if not source.is_file() or sha256_file(source) != batch.get(hash_field):
-            raise AuthoringWorkbenchError(
-                f"Reviewed-rejection {label} authority changed"
+) -> tuple[dict[str, object], tuple[AuthoritySnapshot, ...]]:
+    snapshots: list[AuthoritySnapshot] = []
+    try:
+        for path_field, hash_field, label in (
+            ("base_workspace_path", "base_workspace_sha256", "base workspace"),
+            ("base_state_path", "base_state_sha256", "base state"),
+        ):
+            source = contained_workspace_path(
+                root,
+                safe_workspace_relative_path(
+                    batch.get(path_field), f"Reviewed-rejection {label}"
+                ),
+                f"Reviewed-rejection {label}",
             )
+            captured = capture_authority_file(
+                source, f"reviewed-rejection {label}", root=root
+            )
+            if captured.sha256 != batch.get(hash_field):
+                raise AuthoringWorkbenchError(
+                    f"Reviewed-rejection {label} authority changed"
+                )
+            snapshots.append(captured)
+        base_state = snapshots[1].json_document("reviewed-rejection base state")
+    except AuthoringAuthorityError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+    return base_state, tuple(snapshots)
 
 
 def _expected_rejection_queue_ids(

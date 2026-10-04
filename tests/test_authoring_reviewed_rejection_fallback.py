@@ -2,7 +2,7 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import (
@@ -11,6 +11,7 @@ from vntts_artifacts.generated_audio import (
 )
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
+import vntts.authoring.reviewed_rejection_fallback as rejection
 from tests import test_authoring_audio_event_projection_fallback
 from tests.test_authoring_workbench import create_test_workspace
 from tests.test_generated_audio import FakeAudioOutput
@@ -252,6 +253,37 @@ class ReviewedRejectionFallbackTests(unittest.TestCase):
                         AuthoringWorkbenchError, "batch is malformed"
                     ):
                         _validated_rejection_batch(forged)
+
+    def test_base_snapshot_cannot_change_between_hashing_and_decoding(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, _item = self._base(root / "source")
+            result = create_reviewed_rejection_fallback_workspace(
+                base, root / "workspaces"
+            )
+            workspace = json.loads((result.directory / "workspace.json").read_text())
+            original = rejection._validate_rejection_authority_snapshots
+
+            def replace_after_capture(*args):
+                captured = original(*args)
+                path = (
+                    result.directory
+                    / workspace["reviewed_rejection_live_fallback"]["base_state_path"]
+                )
+                document = json.loads(path.read_text())
+                document["items"]["unexpected-approved-result"] = {"status": "approved"}
+                path.write_text(json.dumps(document))
+                return captured
+
+            with patch.object(
+                rejection,
+                "_validate_rejection_authority_snapshots",
+                side_effect=replace_after_capture,
+            ):
+                with self.assertRaises(AuthoringWorkbenchError):
+                    rejection.validate_reviewed_rejection_fallback_workspace(
+                        result.directory, workspace
+                    )
 
     def test_only_declared_downstream_overlay_ids_are_exempt(self):
         workspace = {
