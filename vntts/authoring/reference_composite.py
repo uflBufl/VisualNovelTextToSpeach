@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import io
 import json
+import math
 import wave
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -436,8 +437,21 @@ def publish_exact_bank_reference_composite(
         or not 0 <= gap_ms <= 500
     ):
         raise ReferenceCompositeError("Composite gap must be 0..500 ms")
-    if not 0 <= trim_padding_ms < trim_trigger_ms <= 500:
+    if (
+        type(trim_padding_ms) is not int
+        or type(trim_trigger_ms) is not int
+        or not 0 <= trim_padding_ms < trim_trigger_ms <= 500
+    ):
         raise ReferenceCompositeError("Composite edge-trim timing is invalid")
+    if (
+        isinstance(silence_dbfs, bool)
+        or not isinstance(silence_dbfs, (int, float))
+        or silence_dbfs > 0
+        or not math.isfinite(silence_dbfs)
+    ):
+        raise ReferenceCompositeError(
+            "Composite silence threshold must be finite and non-positive"
+        )
     selection = _load_composite_selection(
         report_path, (character, portrait, source_bank)
     )
@@ -896,6 +910,10 @@ def _read_pcm16_mono(
     if channels != 1 or width != 2 or rate <= 0 or frames <= 0:
         raise ReferenceCompositeError(
             f"Composite media {media_id} must be non-empty PCM16 mono"
+        )
+    if len(raw) != frames * width:
+        raise ReferenceCompositeError(
+            f"Composite media {media_id} WAV data is incomplete"
         )
     return rate, np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
 

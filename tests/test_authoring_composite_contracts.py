@@ -89,24 +89,19 @@ class CompositeContractsTest(unittest.TestCase):
                 with self.assertRaises(experimental.ExperimentalCompositeVoiceError):
                     self.publish(root, inputs)
 
-    def test_candidate_report_version_requires_exact_integer(self):
-        from vntts.authoring.reference_composite import (
-            ReferenceCompositeError,
-            publish_exact_bank_reference_composite,
-        )
-
+    def test_nested_bundle_named_artifact_is_preserved(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            report = reference_fixture.AuthoringReferenceCompositeTest().make_report(
-                root
+            inputs = self.fixture(root)
+            (inputs[2].parent / "bundle.json").write_text('{"context":"retained"}')
+            first = self.publish(root, inputs)
+            second = self.publish(root, inputs)
+            self.assertTrue(first.created)
+            self.assertFalse(second.created)
+            self.assertEqual(
+                (root / "output/authority/quality-review/bundle.json").read_text(),
+                '{"context":"retained"}',
             )
-            doc = json.loads(report.read_text())
-            doc["schema_version"] = 2.0
-            report.write_text(json.dumps(doc))
-            with self.assertRaises(ReferenceCompositeError):
-                publish_exact_bank_reference_composite(
-                    report, "Hotelier", "505401.png", "hotelier.bnk", root / "composite"
-                )
 
     def test_manifest_change_after_parsing_blocks_publication(self):
         with TemporaryDirectory() as directory:
@@ -147,6 +142,86 @@ class CompositeContractsTest(unittest.TestCase):
                 with self.assertRaises(experimental.ExperimentalCompositeVoiceError):
                     self.publish(root, inputs)
             self.assertFalse((root / "output").exists())
+
+    def test_candidate_report_version_requires_exact_integer(self):
+        from vntts.authoring.reference_composite import (
+            ReferenceCompositeError,
+            publish_exact_bank_reference_composite,
+        )
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = reference_fixture.AuthoringReferenceCompositeTest().make_report(
+                root
+            )
+            doc = json.loads(report.read_text())
+            doc["schema_version"] = 2.0
+            report.write_text(json.dumps(doc))
+            with self.assertRaises(ReferenceCompositeError):
+                publish_exact_bank_reference_composite(
+                    report, "Hotelier", "505401.png", "hotelier.bnk", root / "composite"
+                )
+
+    def test_composite_parameters_reject_wrong_types_and_nonfinite_thresholds(self):
+        from vntts.authoring.reference_composite import (
+            ReferenceCompositeError,
+            publish_exact_bank_reference_composite,
+        )
+
+        for options in (
+            {"trim_trigger_ms": True, "trim_padding_ms": 0},
+            {"trim_padding_ms": 0.5},
+            {"silence_dbfs": float("inf")},
+            {"silence_dbfs": float("nan")},
+            {"silence_dbfs": 1e308},
+        ):
+            with self.subTest(options=options), TemporaryDirectory() as directory:
+                root = Path(directory)
+                report = (
+                    reference_fixture.AuthoringReferenceCompositeTest().make_report(
+                        root
+                    )
+                )
+                with self.assertRaises(ReferenceCompositeError):
+                    publish_exact_bank_reference_composite(
+                        report,
+                        "Hotelier",
+                        "505401.png",
+                        "hotelier.bnk",
+                        root / "composite",
+                        **options,
+                    )
+                self.assertFalse((root / "composite").exists())
+
+    def test_truncated_candidate_wav_is_rejected_before_composition(self):
+        from vntts.authoring.reference_composite import (
+            ReferenceCompositeError,
+            publish_exact_bank_reference_composite,
+        )
+
+        for removed in (1, 2):
+            with self.subTest(removed=removed), TemporaryDirectory() as directory:
+                root = Path(directory)
+                report = (
+                    reference_fixture.AuthoringReferenceCompositeTest().make_report(
+                        root
+                    )
+                )
+                doc = json.loads(report.read_text())
+                candidate = doc["candidates"][0]
+                path = root / candidate["reference"]
+                path.write_bytes(path.read_bytes()[:-removed])
+                candidate["reference_sha256"] = sha256_file(path)
+                report.write_text(json.dumps(doc))
+                with self.assertRaises(ReferenceCompositeError):
+                    publish_exact_bank_reference_composite(
+                        report,
+                        "Hotelier",
+                        "505401.png",
+                        "hotelier.bnk",
+                        root / "composite",
+                    )
+                self.assertFalse((root / "composite").exists())
 
     def test_same_bytes_symlink_substitution_blocks_publication(self):
         import vntts.authoring.reference_composite as reference
@@ -230,17 +305,3 @@ class CompositeContractsTest(unittest.TestCase):
                         composite.directory, generation.state, root / "quality"
                     )
             self.assertFalse((root / "quality").exists())
-
-    def test_nested_bundle_named_artifact_is_preserved(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            inputs = self.fixture(root)
-            (inputs[2].parent / "bundle.json").write_text('{"context":"retained"}')
-            first = self.publish(root, inputs)
-            second = self.publish(root, inputs)
-            self.assertTrue(first.created)
-            self.assertFalse(second.created)
-            self.assertEqual(
-                (root / "output/authority/quality-review/bundle.json").read_text(),
-                '{"context":"retained"}',
-            )
