@@ -98,7 +98,9 @@ class _QwenTTSModel(Protocol):
 
 
 class _QwenTTSModelFactory(Protocol):
-    def __call__(self, model_name: str, *, lazy: bool) -> _QwenTTSModel: ...
+    # MLX and CUDA return different provider models. The constructor validates
+    # the platform-specific interface after shared backend initialization.
+    def __call__(self, model_name: str, *, lazy: bool) -> object: ...
 
 
 @dataclass
@@ -188,7 +190,7 @@ class QwenTTSVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 metal_available = True
                 model_path = snapshot_download(QWEN_MODEL, revision=QWEN_REVISION)
 
-                def load_qwen_model(model_name: str, *, lazy: bool) -> _QwenTTSModel:
+                def load_qwen_model(model_name: str, *, lazy: bool) -> object:
                     return load_model(model_path, lazy=lazy)
 
                 resolved_model_factory = load_qwen_model
@@ -199,8 +201,8 @@ class QwenTTSVoiceRouterBackend(MossTTSVoiceRouterBackend):
                     QWEN_CUDA_MODEL, revision=QWEN_CUDA_REVISION
                 )
 
-                def load_cuda_model(model_name: str, *, lazy: bool) -> _QwenTTSModel:
-                    return cast(_QwenTTSModel, _load_cuda_qwen_model(model_path))
+                def load_cuda_model(model_name: str, *, lazy: bool) -> _CudaQwenModel:
+                    return _load_cuda_qwen_model(model_path)
 
                 resolved_model_factory = load_cuda_model
         else:
