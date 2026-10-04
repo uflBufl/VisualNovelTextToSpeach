@@ -531,7 +531,7 @@ class AppSettings:
 def restart_required_setting_changes(
     current: object, requested: object
 ) -> tuple[str, ...]:
-    """Return runtime-bound fields that cannot change in the current process."""
+    """Return fields that require replacing the loaded speech runtime."""
     if not isinstance(current, AppSettings) or not isinstance(requested, AppSettings):
         raise TypeError("Restart comparison requires AppSettings values")
     return tuple(
