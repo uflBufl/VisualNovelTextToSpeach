@@ -83,7 +83,7 @@
       "path": "vntts/authoring/failed_control_carry.py",
       "scope": "carry_failed_controls",
       "count": 1,
-      "maximum": 17
+      "maximum": 16
     },
     {
       "code": "C901",
@@ -727,7 +727,7 @@
       "path": "vntts/authoring/failed_control_carry.py",
       "scope": "carry_failed_controls",
       "count": 1,
-      "maximum": 16
+      "maximum": 15
     },
     {
       "code": "PLR0912",
@@ -1266,7 +1266,7 @@
       "path": "vntts/authoring/failed_control_carry.py",
       "scope": "carry_failed_controls",
       "count": 1,
-      "maximum": 85
+      "maximum": 84
     },
     {
       "code": "PLR0915",

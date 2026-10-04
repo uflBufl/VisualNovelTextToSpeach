@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -14,19 +15,22 @@ from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
-    BulkGenerationError,
-    load_generation_state,
-    process_is_alive,
-)
-from vntts.authoring.bulk_generation import (
     _state_items as _generation_state_items,
 )
+from vntts.authoring.bulk_generation import process_is_alive
 from vntts.authoring.config_rebase import _route_reference_identity
+from vntts.authoring.generation_lease import BulkGenerationError
+from vntts.authoring.generation_state import (
+    load_generation_state,
+    load_generation_state_from_snapshot,
+    load_stable_generation_queue,
+)
 from vntts.authoring.publication import generation_publication_leases
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     load_workspace_authority,
 )
+from vntts.authoring.workspace_foundation import load_json_object_snapshot
 from vntts.authoring.workspace_voice_runtime import (
     load_failure_reference_runtime_binding,
     load_workspace_queue_voice_overrides,
@@ -58,6 +62,15 @@ class FailedControlCarryResult:
             "carry_id": self.carry_id,
             "item_count": self.item_count,
         }
+
+
+@dataclass(frozen=True)
+class _CarryControlCapture:
+    queue: VoiceGenerationQueue
+    source_state: dict[str, object]
+    target_state: dict[str, object]
+    source_state_sha256: str
+    snapshots: tuple[tuple[Path, str, str], ...]
 
 
 def carry_failed_controls(
@@ -105,7 +118,7 @@ def carry_failed_controls(
         raise FailedControlCarryError(
             "Failed-control carry queues are not byte-identical"
         )
-    queue_sha256 = sha256_file(source_queue)
+    queue_sha256 = hashlib.sha256(source_queue_payload).hexdigest()
     source_output = source_directory / "generated-audio"
     target_output = target_directory / "generated-audio"
     report_path = target_output / FAILED_CONTROL_CARRY_FILENAME
@@ -122,17 +135,15 @@ def carry_failed_controls(
             )
             source_state_path = source_output / "generation-state.json"
             target_state_path = target_output / "generation-state.json"
-            source_state = load_generation_state(source_state_path, source_queue)
-            target_state = load_generation_state(target_state_path, target_queue)
-            if (
-                source_state.get("active") is not None
-                or target_state.get("active") is not None
-            ):
-                raise FailedControlCarryError(
-                    "Failed-control carry authority has an active attempt"
-                )
-            queue = VoiceGenerationQueue.load(source_queue)
-            queue_by_id = {item.queue_id: item for item in queue.items}
+            capture = _capture_carry_controls(
+                source_queue,
+                target_queue,
+                source_state_path,
+                target_state_path,
+                queue_sha256,
+            )
+            source_state, target_state = capture.source_state, capture.target_state
+            queue_by_id = {item.queue_id: item for item in capture.queue.items}
             source_items = _generation_state_items(source_state)
             target_items = _generation_state_items(target_state)
             source_registry = load_workspace_voice_registry(
@@ -229,7 +240,7 @@ def carry_failed_controls(
                 "schema_version": FAILED_CONTROL_CARRY_VERSION,
                 "source_workspace_id": source["workspace_id"],
                 "source_workspace_sha256": source_workspace_sha256,
-                "source_state_sha256": sha256_file(source_state_path),
+                "source_state_sha256": capture.source_state_sha256,
                 "target_workspace_id": target["workspace_id"],
                 "target_workspace_sha256": target_workspace_sha256,
                 "queue_sha256": queue_sha256,
@@ -246,8 +257,10 @@ def carry_failed_controls(
                 raise FailedControlCarryError(
                     "Failed-control carry report must not be a symbolic link"
                 )
+            _assert_carry_controls_unchanged(capture)
             if report_path.exists():
                 _validate_existing_report(report_path, report, proposed)
+                _assert_carry_controls_unchanged(capture)
                 return _result(target_directory, report_path, report, created=False)
             if any(
                 target_items.get(queue_id) is not None
@@ -269,6 +282,56 @@ def carry_failed_controls(
         ValueError,
     ) as error:
         raise FailedControlCarryError(str(error)) from error
+
+
+def _capture_carry_controls(
+    source_queue: Path,
+    target_queue: Path,
+    source_state_path: Path,
+    target_state_path: Path,
+    queue_sha256: str,
+) -> _CarryControlCapture:
+    queue, captured_queue_sha256 = load_stable_generation_queue(source_queue)
+    if captured_queue_sha256 != queue_sha256:
+        raise FailedControlCarryError(
+            "Failed-control source queue changed during capture"
+        )
+    source_state, source_sha256, _source_payload = load_json_object_snapshot(
+        source_state_path, "source generation state", error_type=FailedControlCarryError
+    )
+    target_state, target_sha256, _target_payload = load_json_object_snapshot(
+        target_state_path, "target generation state", error_type=FailedControlCarryError
+    )
+    source_state = load_generation_state_from_snapshot(
+        source_state_path, queue, queue_sha256, state_document=source_state
+    )
+    target_state = load_generation_state_from_snapshot(
+        target_state_path, queue, queue_sha256, state_document=target_state
+    )
+    if source_state.get("active") is not None or target_state.get("active") is not None:
+        raise FailedControlCarryError(
+            "Failed-control carry authority has an active attempt"
+        )
+    return _CarryControlCapture(
+        queue,
+        source_state,
+        target_state,
+        source_sha256,
+        (
+            (source_queue, queue_sha256, "source queue"),
+            (target_queue, queue_sha256, "target queue"),
+            (source_state_path, source_sha256, "source generation state"),
+            (target_state_path, target_sha256, "target generation state"),
+        ),
+    )
+
+
+def _assert_carry_controls_unchanged(capture: _CarryControlCapture) -> None:
+    for path, digest, label in capture.snapshots:
+        if sha256_file(path) != digest:
+            raise FailedControlCarryError(
+                f"Failed-control {label} changed before publication"
+            )
 
 
 def _validate_existing_report(
