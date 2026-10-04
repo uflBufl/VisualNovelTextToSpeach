@@ -1,5 +1,6 @@
 import hashlib
 import json
+import shutil
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -140,6 +141,38 @@ class FailureReferencePreviewTest(unittest.TestCase):
             finally:
                 path.write_bytes(original)
                 service.close()
+
+    def test_close_cleans_ephemeral_files_when_backend_shutdown_fails(self):
+        with TemporaryDirectory() as directory:
+            audit, group = self.create_audit(Path(directory))
+            candidate = group["candidates"][0]
+            factory = _PreviewBackendFactory()
+            service = FailureReferencePreviewService(audit, backend_factory=factory)
+            service.generate(
+                group["group_id"], candidate["candidate_id"], group["cases"][0]["text"]
+            )
+            backend = factory.backends[0]
+            reference = backend.registry.resolve(
+                f"Reference candidate {candidate['sha256'][:16]}"
+            ).references[0]
+            try:
+                with patch.object(
+                    backend, "stop", side_effect=RuntimeError("shutdown failed")
+                ) as stop:
+                    with self.assertRaisesRegex(RuntimeError, "shutdown failed"):
+                        service.close()
+                    self.assertFalse(reference.parent.exists())
+                    service.close()
+                    stop.assert_called_once()
+                with self.assertRaisesRegex(FailureReferencePreviewError, "closed"):
+                    service.generate(
+                        group["group_id"],
+                        candidate["candidate_id"],
+                        group["cases"][0]["text"],
+                    )
+            finally:
+                service.close()
+                shutil.rmtree(reference.parent, ignore_errors=True)
 
     def test_preview_rejects_invalid_sample_rates_without_caching_audio(self):
         with TemporaryDirectory() as directory:

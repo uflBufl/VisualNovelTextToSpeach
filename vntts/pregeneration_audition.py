@@ -564,9 +564,11 @@ class VoiceAuditionPreviewService:
             if self._closed:
                 return
             self._closed = True
-            shutdown_speech_backend(self._backend)
-            self._backend = None
-            self._backend_config = None
+            try:
+                shutdown_speech_backend(self._backend)
+            finally:
+                self._backend = None
+                self._backend_config = None
 
 
 def _preflight_preview(

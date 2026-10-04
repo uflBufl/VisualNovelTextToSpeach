@@ -409,10 +409,12 @@ class FailureReferencePreviewService:
                 return
             self._closed = True
             self._cache.clear()
-            shutdown_speech_backend(self._backend)
-            self._backend = None
-            self._backend_config = None
-            shutil.rmtree(self._root, ignore_errors=True)
+            try:
+                shutdown_speech_backend(self._backend)
+            finally:
+                self._backend = None
+                self._backend_config = None
+                shutil.rmtree(self._root, ignore_errors=True)
 
     def __del__(self) -> None:
         try:

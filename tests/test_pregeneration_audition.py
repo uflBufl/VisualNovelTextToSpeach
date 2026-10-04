@@ -869,6 +869,28 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
 
             self.assertFalse(tuple((root / "auditions").glob("*.wav")))
 
+    def test_close_releases_backend_state_when_shutdown_fails(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            backend = FakeBackend("moss-tts")
+            service = VoiceAuditionPreviewService(
+                root / "auditions", backend_factory=lambda *_args, **_kwargs: backend
+            )
+            preview = service.generate(plan, group, group.candidates[0].source_id)
+            with patch.object(
+                backend, "shutdown", side_effect=RuntimeError("shutdown failed")
+            ) as shutdown:
+                with self.assertRaisesRegex(RuntimeError, "shutdown failed"):
+                    service.close()
+                self.assertIsNone(service._backend)
+                self.assertIsNone(service._backend_config)
+                self.assertTrue(preview.path.exists())
+                service.close()
+                shutdown.assert_called_once()
+            with self.assertRaisesRegex(VoiceAuditionError, "closed"):
+                service.generate(plan, group, group.candidates[0].source_id)
+
     def test_invalid_provider_sample_rates_never_publish_preview(self):
         for rate in (True, 16000.5, "16000", None, 0, -1, float("nan"), float("inf")):
             with self.subTest(rate=rate), TemporaryDirectory() as directory:
