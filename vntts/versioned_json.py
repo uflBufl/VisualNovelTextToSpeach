@@ -8,7 +8,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import TypeVar
 
-from vntts_artifacts.atomic_io import atomic_write_json
+from durable_file import atomic_write_json
 
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 

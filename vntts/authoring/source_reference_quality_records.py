@@ -13,10 +13,9 @@ from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 
+from durable_file import atomic_write_json, sha256_file
 from PIL import Image
-from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import Pcm16MonoWavError, probe_pcm16_mono_wav
-from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.advisory_lock import (
     AdvisoryLockBusyError,

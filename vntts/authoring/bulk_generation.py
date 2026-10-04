@@ -18,10 +18,9 @@ from pathlib import Path
 from typing import TypeAlias, TypedDict, TypeGuard
 
 import numpy as np
+from durable_file import atomic_write_json, sha256_file
 from numpy.typing import NDArray
-from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import write_pcm16_wav
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.text_utils import slugify
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
@@ -869,10 +868,7 @@ def sha256_control_path(path: str | Path) -> str:
     try:
         path = Path(path).expanduser().resolve()
         if path.is_file():
-            digest = sha256_file(path)
-            if not isinstance(digest, str):
-                raise BulkGenerationError(f"Unable to read generation control {path}")
-            return digest
+            return sha256_file(path)
         if not path.is_dir():
             raise BulkGenerationError(f"Generation control does not exist: {path}")
         digest = hashlib.sha256()

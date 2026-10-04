@@ -6,7 +6,7 @@ import importlib
 import re
 from pathlib import Path
 
-from vntts_artifacts.file_integrity import sha256_file as sha256_file
+from durable_file import sha256_file as sha256_file
 
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (

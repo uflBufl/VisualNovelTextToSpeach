@@ -9,8 +9,7 @@ from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
 
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import atomic_write_json, sha256_file
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     VoiceGenerationQueueItem,

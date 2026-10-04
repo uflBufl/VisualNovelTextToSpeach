@@ -10,13 +10,12 @@ from collections.abc import MutableSequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from durable_file import atomic_write_json, sha256_file
 from vntts_artifacts import (
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
     VoiceGenerationQueueItem,
 )
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,

@@ -40,6 +40,7 @@ dependencies = [
     # Needs eSpeak to run
     # "pyttsx3>=2.90",
     "vntts-artifacts[audio]",
+    "durable-file",
 ]
 
 [project.optional-dependencies]
@@ -90,8 +91,10 @@ torchcodec = [
     { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
     { index = "pytorch-cu130", marker = "sys_platform == 'linux'" },
 ]
-vntts-artifacts = { git = "https://github.com/AlexRedby/vntts-artifacts.git", rev = "19e6035986eedae6bbda966d7d5cff8307c9f574" }
-reverse1999-extractor = { git = "https://github.com/AlexRedby/r1999-extractor.git", rev = "3616439937b16a370503c5a0c3b494ecb79575ae" }
+vntts-artifacts = { git = "https://github.com/AlexRedby/vntts-artifacts.git", rev = "ff1413f4ee3fc5a0f221454552175e261358b450" }
+reverse1999-extractor = { git = "https://github.com/AlexRedby/r1999-extractor.git", rev = "1a5133ec56fa497cfecb78fd22c8b3ce1cb640a1" }
+
+durable-file = { git = "https://github.com/AlexRedby/vntts-artifacts.git", rev = "0e22c629dde9de070eb7f13c87609e5905277ab9" }
 
 [dependency-groups]
 dev = [

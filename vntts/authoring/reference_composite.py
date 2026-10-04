@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TypeAlias
 
 import numpy as np
+from durable_file import atomic_write_json, sha256_file
 from numpy.typing import NDArray
 from vntts_artifacts import (
     VoiceGenerationQueue,
@@ -22,9 +23,7 @@ from vntts_artifacts import (
     expected_voice_generation_queue_id,
     write_voice_generation_queue,
 )
-from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import write_pcm16_wav
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_manifest
 
 from vntts.authoring.bulk_generation import BulkGenerationError

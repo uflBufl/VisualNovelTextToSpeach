@@ -17,10 +17,9 @@ from tempfile import TemporaryDirectory
 from typing import TypeAlias, TypeGuard
 
 import numpy as np
+from durable_file import atomic_write_bytes, atomic_write_json, sha256_file
 from numpy.typing import NDArray
-from vntts_artifacts.atomic_io import atomic_write_bytes, atomic_write_json
 from vntts_artifacts.audio import probe_pcm16_mono_wav, write_pcm16_wav
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 from vntts_artifacts.voice_manifest import VoiceManifestError
 

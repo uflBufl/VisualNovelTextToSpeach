@@ -10,6 +10,7 @@ from threading import Event
 from traceback import format_exception
 from typing import TypeGuard
 
+from durable_file import sha256_file
 from PySide6.QtCore import QSignalBlocker, Qt, QThreadPool, QTimer, QUrl, Signal
 from PySide6.QtGui import QCloseEvent, QPixmap, QStandardItemModel
 from PySide6.QtMultimedia import QMediaPlayer
@@ -32,7 +33,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_manifest import VoiceManifestError
 
 from vntts.async_ui import LatestTaskRunner

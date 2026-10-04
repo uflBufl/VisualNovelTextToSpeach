@@ -7,8 +7,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import atomic_write_json, sha256_file
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     VoiceGenerationQueueItem,
@@ -299,11 +298,12 @@ def _write_staged_reviewed_waveform_workspace(
 
 def _reviewed_waveform_import_id(base_document: Mapping[str, object]) -> str:
     source_document = base_document.get("source")
-    if not isinstance(source_document, dict) or not isinstance(
-        source_document.get("import_id"), str
-    ):
+    import_id = (
+        source_document.get("import_id") if isinstance(source_document, dict) else None
+    )
+    if not isinstance(import_id, str):
         raise AuthoringWorkbenchError("Reviewed-waveform source authority is malformed")
-    return source_document["import_id"]
+    return import_id
 
 
 def _validate_staged_reviewed_waveform_workspace(

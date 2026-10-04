@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 from time import perf_counter, process_time
 from typing import Protocol, TypeAlias, TypedDict
 
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import sha256_file
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,

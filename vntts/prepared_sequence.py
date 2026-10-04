@@ -13,7 +13,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Protocol, TypeAlias
 
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import sha256_file
 from vntts_artifacts.live_sequence import (
     LiveSequencePlan,
     LiveSequencePlanError,

@@ -12,7 +12,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import sha256_file
 
 BACKEND = "pocket-tts"
 PYTHON_VERSION = "3.14"

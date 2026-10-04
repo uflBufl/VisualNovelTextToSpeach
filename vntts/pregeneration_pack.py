@@ -15,7 +15,7 @@ from tempfile import TemporaryDirectory
 from time import perf_counter, process_time
 from typing import Protocol, cast
 
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import sha256_file
 from vntts_artifacts.game_pack import GamePackError, write_game_pack
 from vntts_artifacts.generated_audio import (
     GeneratedAudioDocument,

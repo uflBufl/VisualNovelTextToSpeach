@@ -14,14 +14,13 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import TypeAlias
 
+from durable_file import atomic_write_json, sha256_file
 from platformdirs import user_data_path
-from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import (
     Pcm16MonoWavError,
     Pcm16MonoWavInfo,
     probe_pcm16_mono_wav,
 )
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import (
     GeneratedAudioEntry,
     GeneratedAudioIndex,

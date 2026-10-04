@@ -12,13 +12,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypeAlias, TypedDict
 
+from durable_file import atomic_write_json, sha256_file
 from vntts_artifacts import (
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
     VoiceGenerationQueueItem,
 )
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_manifest import (
     VoiceManifestEntry,
     VoiceManifestError,

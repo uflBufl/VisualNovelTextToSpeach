@@ -11,9 +11,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TypedDict
 
+from durable_file import atomic_write_json, sha256_file
 from vntts_artifacts import VoiceGenerationQueueItem
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_manifest import (
     VoiceManifestEntry,
     VoiceManifestError,

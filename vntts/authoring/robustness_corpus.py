@@ -16,13 +16,13 @@ from pathlib import Path, PurePosixPath
 from typing import TypeAlias, TypedDict
 
 import numpy as np
+from durable_file import atomic_write_json
 from numpy.typing import NDArray
 from vntts_artifacts import (
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
     VoiceGenerationQueueItem,
 )
-from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.hashing import text_sha256
 
 from vntts.authoring.authority import (

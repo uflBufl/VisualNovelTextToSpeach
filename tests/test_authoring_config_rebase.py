@@ -87,6 +87,37 @@ def _prepare(
 
 
 class AuthoringConfigRebaseTest(unittest.TestCase):
+    def test_missing_rebase_manifest_fails_before_publishing_workspace(self):
+        for missing_side in ("source", "target"):
+            with (
+                self.subTest(missing_side=missing_side),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                _fixture, source, target = _prepare(root)
+                before = _tree_hashes(root)
+                original = config_rebase_module.selected_voice_manifest_path
+                missing = source if missing_side == "source" else target
+
+                def select(directory, workspace, **options):
+                    if directory == missing:
+                        return None
+                    return original(directory, workspace, **options)
+
+                with (
+                    patch.object(
+                        config_rebase_module,
+                        "selected_voice_manifest_path",
+                        side_effect=select,
+                    ),
+                    self.assertRaisesRegex(
+                        AuthoringWorkbenchError, "bound voice manifest"
+                    ),
+                ):
+                    rebase_workspace_config(source, target, root / "rebased")
+                self.assertEqual(_tree_hashes(root), before)
+                self.assertEqual(list((root / "rebased").iterdir()), [])
+
     def test_ledger_requires_integer_version_and_retains_legacy_versions(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

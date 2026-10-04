@@ -14,9 +14,9 @@ from pathlib import Path
 from typing import Literal, Protocol, TypeAlias, TypedDict, TypeGuard, runtime_checkable
 
 import numpy as np
+from durable_file import atomic_write_json
 from numpy.typing import NDArray
 from scipy.signal import resample_poly
-from vntts_artifacts.atomic_io import atomic_write_json
 
 from vntts.authoring.authority import (
     AuthoringAuthorityError,

@@ -16,6 +16,7 @@ from time import monotonic
 from typing import Protocol, TypeAlias
 
 import numpy as np
+from durable_file import sha256_file
 from numpy.typing import NDArray
 from vntts_artifacts.atomic_io import atomic_output_path
 from vntts_artifacts.audio import (
@@ -23,7 +24,6 @@ from vntts_artifacts.audio import (
     probe_pcm16_mono_wav,
     write_pcm16_wav,
 )
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_manifest import VoiceManifestError
 
 from vntts.application_directories import get_local_data_directory

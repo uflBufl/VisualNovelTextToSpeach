@@ -8,6 +8,7 @@ from pathlib import Path
 from traceback import format_exception
 from typing import Protocol, TypeAlias
 
+from durable_file import sha256_file
 from PySide6.QtCore import QSignalBlocker, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
@@ -21,7 +22,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.async_ui import LatestTaskRunner
 from vntts.pregeneration_audition import (

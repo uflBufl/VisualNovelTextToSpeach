@@ -6,7 +6,7 @@ from pathlib import Path
 from threading import RLock
 from uuid import uuid4
 
-from vntts_artifacts.atomic_io import atomic_write_text
+from durable_file import atomic_write_text
 
 
 @dataclass(frozen=True)

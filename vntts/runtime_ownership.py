@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Protocol, TypeAlias, TypedDict, TypeGuard
 from uuid import uuid4
 
-from vntts_artifacts.atomic_io import atomic_write_json
+from durable_file import atomic_write_json
 
 from vntts import application_directories
 from vntts.authoring.advisory_lock import AdvisoryLockBusyError, exclusive_advisory_lock

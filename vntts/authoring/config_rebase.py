@@ -9,9 +9,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from durable_file import atomic_write_json, sha256_file
 from vntts_artifacts import VoiceGenerationQueue, VoiceGenerationQueueItem
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_manifest import VoiceManifestError, load_voice_manifest
 
 from vntts.authoring.authority import canonical_document_sha256
@@ -129,7 +128,7 @@ class _RebaseRouteSelection:
     source_policy: MissingVoicePolicy
     target_policy: MissingVoicePolicy
     target_reference_sha256s: set[str]
-    target_voice: Path | None
+    target_voice: Path
     retired_variants: Sequence[JsonObject]
     known_role_reuse: object
 
@@ -365,10 +364,8 @@ def _select_rebase_routes(
     target_policy = workspace_missing_voice_policy(
         selection.target_document, error_type=AuthoringWorkbenchError
     )
-    target_voice = selected_voice_manifest_path(
-        selection.target_directory,
-        selection.target_document,
-        error_type=AuthoringWorkbenchError,
+    target_voice = _rebase_voice_manifest_path(
+        selection.target_directory, selection.target_document
     )
     retired_variants, known_role_reuse = _target_voice_rebase_controls(target_voice)
     return _RebaseRouteSelection(
@@ -386,8 +383,19 @@ def _select_rebase_routes(
     )
 
 
+def _rebase_voice_manifest_path(
+    directory: Path, workspace: Mapping[str, object]
+) -> Path:
+    path = selected_voice_manifest_path(
+        directory, workspace, error_type=AuthoringWorkbenchError
+    )
+    if path is None:
+        raise AuthoringWorkbenchError("Config rebase requires a bound voice manifest")
+    return path
+
+
 def _target_voice_rebase_controls(
-    path: Path | None,
+    path: Path,
 ) -> tuple[Sequence[JsonObject], object]:
     try:
         document, _entries = load_voice_manifest(path, allow_legacy=False)
@@ -600,13 +608,11 @@ def _apply_projected_terminal(
 def _rebase_ledger(
     selection: _RebaseSelection,
     state: _RebaseState,
-    target_voice: Path | None,
+    target_voice: Path,
     records: list[JsonObject],
 ) -> JsonObject:
-    source_voice = selected_voice_manifest_path(
-        selection.source_directory,
-        selection.source_document,
-        error_type=AuthoringWorkbenchError,
+    source_voice = _rebase_voice_manifest_path(
+        selection.source_directory, selection.source_document
     )
     return {
         "schema": CONFIG_REBASE_SCHEMA,
@@ -1163,12 +1169,8 @@ def _validate_rebase_voice_authority(
     source_document: Mapping[str, object],
     rebase: Mapping[str, object],
 ) -> tuple[set[str], Sequence[JsonObject], object]:
-    source_voice = selected_voice_manifest_path(
-        source_root, source_document, error_type=AuthoringWorkbenchError
-    )
-    selected_voice = selected_voice_manifest_path(
-        directory, workspace, error_type=AuthoringWorkbenchError
-    )
+    source_voice = _rebase_voice_manifest_path(source_root, source_document)
+    selected_voice = _rebase_voice_manifest_path(directory, workspace)
     if (
         sha256_file(source_voice) != rebase["source_voice_manifest_sha256"]
         or sha256_file(selected_voice) != rebase["target_voice_manifest_sha256"]

@@ -11,9 +11,10 @@ from typing import Protocol, TypeVar
 from uuid import uuid4
 
 import pytesseract
+from durable_file import atomic_write_json
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from pytesseract import pytesseract as pytesseract_runtime
-from vntts_artifacts.atomic_io import atomic_output_group, atomic_write_json
+from vntts_artifacts.atomic_io import atomic_output_group
 
 from vntts.dialog import is_probable_character_name, parse_dialog
 from vntts.ocr_review import OCR_REVIEW_SCHEMA_VERSION

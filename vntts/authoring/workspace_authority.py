@@ -15,7 +15,7 @@ from pathlib import Path
 from re import Match
 from typing import Protocol, TypeAlias, TypeGuard
 
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import sha256_file
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
@@ -1357,7 +1357,7 @@ def _validate_voice_input(
 def _voice_control_inventory(
     directory: Path, entries: Sequence[_VoiceManifestEntry]
 ) -> list[JsonDocument]:
-    controls = []
+    controls: list[JsonDocument] = []
     seen = set()
     for entry in entries:
         for value in entry.references:

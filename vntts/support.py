@@ -362,7 +362,7 @@ class GenerationTimelineLog:
         if self.path is None:
             return
         try:
-            from vntts_artifacts.atomic_io import atomic_write_json
+            from durable_file import atomic_write_json
 
             self.path.parent.mkdir(parents=True, exist_ok=True)
             atomic_write_json(

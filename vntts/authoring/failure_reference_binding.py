@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import NotRequired, TypeAlias, TypedDict
 
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import sha256_file
 
 from vntts.authoring.authority import (
     AuthoringAuthorityError,

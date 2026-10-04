@@ -12,13 +12,12 @@ from pathlib import Path
 from typing import Protocol, TypeAlias, TypedDict, TypeGuard
 
 import numpy as np
-from vntts_artifacts.atomic_io import atomic_write_json
+from durable_file import atomic_write_json, sha256_file
 from vntts_artifacts.audio import (
     PCM16_MONO_WAV_FORMAT,
     Pcm16MonoWavError,
     read_pcm16_mono_wav,
 )
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import (
     GENERATED_AUDIO_SCHEMA,
     GENERATED_AUDIO_SCHEMA_VERSION,

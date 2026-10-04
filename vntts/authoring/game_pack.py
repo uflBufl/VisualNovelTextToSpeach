@@ -19,9 +19,8 @@ from uuid import uuid4
 
 import numpy as np
 import soundfile as sf
-from vntts_artifacts.atomic_io import atomic_write_json
+from durable_file import atomic_write_json, sha256_file
 from vntts_artifacts.audio import probe_pcm16_mono_wav
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.game_pack import GamePackError, load_game_pack, write_game_pack
 from vntts_artifacts.generated_audio import (
     GeneratedAudioManifestError,

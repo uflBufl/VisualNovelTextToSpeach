@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import sha256_file
 
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
@@ -162,7 +162,8 @@ def publish_failed_prompt_hypothesis_selection(
             "state, or approve speech."
         ),
     }
-    selection = {**body, "selection_id": canonical_document_sha256(body)}
+    selection_id = canonical_document_sha256(body)
+    selection = {**body, "selection_id": selection_id}
     try:
         write_json_document_no_replace(
             output, selection, "failed prompt hypothesis selection"
@@ -171,7 +172,7 @@ def publish_failed_prompt_hypothesis_selection(
         raise FailedPromptHypothesisError(str(error)) from error
     return FailedPromptHypothesisResult(
         output,
-        selection["selection_id"],
+        selection_id,
         sum(value["decision"] == "select_hypothesis" for value in decisions),
         sum(value["decision"] == "keep_unresolved" for value in decisions),
     )

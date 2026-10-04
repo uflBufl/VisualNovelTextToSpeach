@@ -7,6 +7,7 @@ from threading import Event
 from time import monotonic, process_time
 from typing import TypeAlias, TypeGuard, cast
 
+from durable_file import sha256_file
 from PySide6.QtCore import (
     QModelIndex,
     QSignalBlocker,
@@ -43,7 +44,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.application_directories import get_local_data_directory
 from vntts.async_ui import LatestTaskRunner
@@ -166,7 +166,7 @@ def _prepare_runtime_sequence(
         )
     except PreparedSequenceError:
         return None
-    return plan.path
+    return Path(plan.path)
 
 
 class _StoryTree(QTreeWidget):

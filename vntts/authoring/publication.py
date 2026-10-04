@@ -72,7 +72,7 @@ def publish_single_base_successor(
     error_type: type[Exception],
 ) -> None:
     """Publish one immutable successor while its source authority is stable."""
-    from vntts_artifacts.file_integrity import sha256_file
+    from durable_file import sha256_file
 
     from vntts.authoring.generation_lease import process_is_alive
 

@@ -8,8 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import atomic_write_json, sha256_file
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
 from vntts.authoring.audio_events import audio_event_plan_for_record

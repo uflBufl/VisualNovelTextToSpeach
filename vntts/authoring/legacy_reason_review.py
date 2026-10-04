@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeAlias
 
-from vntts_artifacts.atomic_io import atomic_write_json
+from durable_file import atomic_write_json
 
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.cohort_review import (

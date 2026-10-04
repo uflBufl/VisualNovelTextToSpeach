@@ -13,8 +13,8 @@ from pathlib import Path
 from time import perf_counter, process_time
 from typing import TYPE_CHECKING
 
+from durable_file import sha256_file
 from platformdirs import user_data_path
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,

@@ -12,8 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import NotRequired, TypeAlias, TypedDict, TypeIs
 
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import atomic_write_json, sha256_file
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
@@ -920,7 +919,7 @@ def _copy_candidate_references(
     staging: Path,
     voices: tuple[VoiceManifestEntry, ...],
 ) -> JsonObjects:
-    inventory = []
+    inventory: JsonObjects = []
     seen = set()
     for voice in voices:
         for value in voice.references:

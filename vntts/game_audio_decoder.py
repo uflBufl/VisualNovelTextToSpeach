@@ -17,8 +17,7 @@ from typing import TYPE_CHECKING, BinaryIO, Protocol, TypeAlias
 from urllib.request import Request, urlopen
 from zipfile import ZipFile
 
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import atomic_write_json, sha256_file
 
 from vntts.application_directories import get_local_data_directory
 from vntts.authoring.advisory_lock import AdvisoryLockBusyError, exclusive_advisory_lock

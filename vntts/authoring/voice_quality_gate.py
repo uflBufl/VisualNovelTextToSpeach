@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeAlias, TypedDict, TypeIs
 
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import sha256_file
 from vntts_artifacts.voice_manifest import (
     VoiceManifestError,
     load_voice_manifest,

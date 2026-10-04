@@ -18,8 +18,8 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Literal, NotRequired, Protocol, TypedDict, TypeGuard
 
-from vntts_artifacts.atomic_io import atomic_output_path, atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import atomic_write_json, sha256_file
+from vntts_artifacts.atomic_io import atomic_output_path
 
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.authoring.authority import (

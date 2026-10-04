@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TypeAlias, TypedDict, TypeGuard
 
-from vntts_artifacts.atomic_io import atomic_write_json
+from durable_file import atomic_write_json
 from vntts_artifacts.audio import Pcm16MonoWavError, probe_pcm16_mono_wav
 
 from vntts.authoring.authority import (

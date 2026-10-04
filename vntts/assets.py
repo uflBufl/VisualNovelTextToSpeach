@@ -14,8 +14,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import atomic_write_json, sha256_file
 from vntts_artifacts.text_utils import slugify
 from vntts_artifacts.voice_manifest import validate_voice_manifest
 

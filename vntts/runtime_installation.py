@@ -13,7 +13,7 @@ from time import monotonic
 from typing import Literal, Protocol, TypeAlias, runtime_checkable
 from uuid import uuid4
 
-from vntts_artifacts.atomic_io import atomic_write_json
+from durable_file import atomic_write_json
 
 from vntts.authoring.advisory_lock import (
     AdvisoryLockBusyError,

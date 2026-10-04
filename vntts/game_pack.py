@@ -8,7 +8,7 @@ from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from time import perf_counter, process_time
 
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import sha256_file
 from vntts_artifacts.game_pack import GamePack, GamePackError, load_game_pack
 from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
 
@@ -154,7 +154,7 @@ def _source_audio_semantic_evidence(pack: GamePack) -> Path | None:
         or any(part in {"", ".", ".."} for part in pure.parts)
     ):
         raise GamePackError("Game pack semantic evidence path is unsafe")
-    root = pack.manifest_path.parent.resolve()
+    root = Path(pack.manifest_path).parent.resolve()
     evidence_path = (root / Path(*pure.parts)).resolve()
     try:
         evidence_path.relative_to(root)

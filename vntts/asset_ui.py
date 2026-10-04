@@ -3,6 +3,7 @@ from pathlib import Path
 from threading import Event
 from typing import Literal, Protocol, TypeAlias
 
+from durable_file import sha256_file
 from PySide6.QtCore import QObject, QThreadPool, Signal
 from PySide6.QtGui import QCloseEvent, QPalette
 from PySide6.QtWidgets import (
@@ -22,7 +23,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.assets import (
     ModelAssetManager,

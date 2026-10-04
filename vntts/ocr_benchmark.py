@@ -9,8 +9,8 @@ from statistics import median
 from time import perf_counter, process_time
 from typing import TypeAlias, TypedDict
 
+from durable_file import atomic_write_json
 from PIL import Image
-from vntts_artifacts.atomic_io import atomic_write_json
 
 from vntts.cli import cli_error, cli_messages
 from vntts.ocr import VoiceRegistry

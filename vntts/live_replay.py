@@ -21,8 +21,8 @@ from time import monotonic
 from typing import NotRequired, Protocol, TypeAlias, TypedDict
 
 import numpy as np
+from durable_file import atomic_write_json
 from PIL import Image
-from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.generated_audio import (
     GeneratedAudioIndex,
     GeneratedAudioManifestError,

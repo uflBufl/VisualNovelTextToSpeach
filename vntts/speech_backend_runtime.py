@@ -10,7 +10,7 @@ from hashlib import blake2b
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TypeAlias
 
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import sha256_file
 
 from vntts.path_safety import contained_path
 from vntts.runtime_paths import resolve_speech_runtime_root

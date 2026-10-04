@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, NotRequired, TypeAlias, TypedDict, TypeGuard
 
-from vntts_artifacts.atomic_io import atomic_write_json
+from durable_file import atomic_write_json
 from vntts_artifacts.audio import Pcm16MonoWavError, probe_pcm16_mono_wav
 
 from vntts.authoring.advisory_lock import (

@@ -15,7 +15,7 @@ from typing import TypeAlias, TypedDict
 
 import numpy as np
 import soundfile as sf
-from vntts_artifacts.file_integrity import sha256_file
+from durable_file import sha256_file
 
 from vntts.authoring.authority import (
     AuthoringAuthorityError,

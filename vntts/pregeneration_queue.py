@@ -12,8 +12,8 @@ from typing import Protocol, TypeAlias, TypedDict
 
 import numpy as np
 import soundfile as sf
+from durable_file import sha256_file
 from vntts_artifacts.audio import probe_pcm16_mono_wav, write_pcm16_wav
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,

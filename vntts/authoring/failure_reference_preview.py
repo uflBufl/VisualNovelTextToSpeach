@@ -10,8 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, TypeAlias, TypedDict
 
+from durable_file import sha256_file
 from vntts_artifacts.audio import Pcm16MonoWavError, write_pcm16_wav
-from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.bulk_generation import (
     generated_mono_pcm,

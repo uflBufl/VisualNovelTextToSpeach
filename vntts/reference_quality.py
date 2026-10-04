@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Literal, TypedDict
 
 import numpy as np
+from durable_file import atomic_write_json
 from numpy.typing import NDArray
-from vntts_artifacts.atomic_io import atomic_write_json
 
 from vntts.cli import cli_error, cli_messages
 

@@ -12,9 +12,8 @@ from time import perf_counter, process_time
 from typing import NotRequired, Protocol, TypeAlias, TypedDict, TypeGuard, overload
 
 import numpy as np
-from vntts_artifacts.atomic_io import atomic_write_json
+from durable_file import atomic_write_json, sha256_file
 from vntts_artifacts.audio import write_pcm16_wav
-from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.cli import cli_error, cli_messages
 from vntts.services.tts_engine import TTSEngine

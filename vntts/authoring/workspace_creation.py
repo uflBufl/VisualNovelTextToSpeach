@@ -13,9 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypeAlias, TypeGuard
 
+from durable_file import atomic_write_json, sha256_file
 from platformdirs import user_data_path
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
@@ -704,7 +703,7 @@ def _failure_reference_workspace_document(
     state_sha256: str,
 ) -> tuple[JsonDocument, Path, WorkspaceDocument]:
     controls = _failure_reference_controls(document, target)
-    config = {
+    config: JsonDocument = {
         "path": "inputs/failure-reference-binding/binding.json",
         "sha256": sha256_file(binding_path),
         "binding_id": binding.binding_id,

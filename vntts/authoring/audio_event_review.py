@@ -10,12 +10,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from durable_file import atomic_write_json
 from vntts_artifacts import (
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
     VoiceGenerationQueueItem,
 )
-from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import (
     Pcm16MonoWavError,
     Pcm16MonoWavInfo,

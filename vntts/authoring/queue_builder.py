@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
+from durable_file import sha256_file
 from vntts_artifacts import (
     VOICE_GENERATION_QUEUE_SCHEMA,
     VOICE_GENERATION_QUEUE_SCHEMA_VERSION,
@@ -20,7 +21,6 @@ from vntts_artifacts import (
     write_voice_generation_queue,
 )
 from vntts_artifacts.audio import probe_pcm16_mono_wav
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_manifest import (
     VoiceManifestEntry,
     VoiceManifestError,
