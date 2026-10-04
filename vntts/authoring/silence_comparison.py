@@ -9,7 +9,7 @@ import math
 import shutil
 import wave
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,6 +20,7 @@ from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.failure_repair import (
     DEFAULT_INTERNAL_SILENCE_TARGET_SECONDS,
+    InternalSilenceCompression,
     compress_single_sentence_boundary_silence,
 )
 from vntts.authoring.listening import (
@@ -316,11 +317,7 @@ def _stage_silence_comparison_sample(
             "compressed_audio": compressed_relative,
             "compressed_audio_sha256": compressed_sha256,
             "sample_rate": raw_rate,
-            "transform": {
-                key: result
-                for key, result in asdict(compression).items()
-                if key != "pcm"
-            },
+            "transform": _compression_metadata(compression),
         },
         {
             **common,
@@ -337,6 +334,20 @@ def _stage_silence_comparison_sample(
             (segmented_path, segmented_sha256, "segmented comparison audio"),
         ),
     )
+
+
+def _compression_metadata(
+    compression: InternalSilenceCompression,
+) -> dict[str, int | float]:
+    return {
+        "source_span_start_sample": compression.source_span_start_sample,
+        "source_span_end_sample": compression.source_span_end_sample,
+        "removed_start_sample": compression.removed_start_sample,
+        "removed_end_sample": compression.removed_end_sample,
+        "removed_samples": compression.removed_samples,
+        "source_pause_seconds": compression.source_pause_seconds,
+        "repaired_pause_seconds": compression.repaired_pause_seconds,
+    }
 
 
 def _validate_silence_comparison_sources(
@@ -689,9 +700,7 @@ def _validate_silence_comparison_sample(
         raise SilenceComparisonError(
             "Silence comparison transform cannot be reproduced"
         ) from error
-    expected_transform = {
-        key: value for key, value in asdict(compression).items() if key != "pcm"
-    }
+    expected_transform = _compression_metadata(compression)
     if sample["transform"] != expected_transform or not np.array_equal(
         audio["compressed_audio"], compression.pcm
     ):
