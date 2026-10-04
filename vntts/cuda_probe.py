@@ -10,6 +10,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol, TypedDict, runtime_checkable
 
+from durable_file import atomic_write_text
+
 CUDA_PROBE_SCHEMA = "vntts.cuda-probe"
 SCHEMA_VERSION = 1
 
@@ -136,8 +138,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         payload = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True)
         if arguments.output is not None:
             output = arguments.output.expanduser().resolve()
-            output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_text(payload + "\n", encoding="utf-8")
+            atomic_write_text(output, payload + "\n")
         print(payload)
     except (CudaProbeError, OSError) as error:
         print(f"CUDA preflight failed: {error}", file=sys.stderr)
