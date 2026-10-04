@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 from scripts.run_ci_unittests import (
     _flatten_suite,
+    _isolate_pregeneration_tests,
     _run_exact_test_file,
     _run_sharded_full_discovery,
     main,
@@ -36,6 +37,51 @@ class CiUnitTestRunnerTest(unittest.TestCase):
         self.assertEqual(ocr, (values[2],))
         self.assertEqual(remainder, tuple(values[3:]))
         self.assertEqual(sorted((*app, *assets, *ocr, *remainder)), sorted(values))
+
+    def test_pregeneration_shard_preserves_every_exact_test_once(self):
+        values = (
+            "tests.test_settings.SettingsTest.test_value",
+            "tests.test_self_service_pregeneration.JourneyTest.test_first",
+            "tests.test_self_service_pregeneration.JourneyTest.test_last",
+        )
+        isolated, remaining = _isolate_pregeneration_tests(values)
+        self.assertEqual(isolated, values[1:])
+        self.assertEqual(remaining, values[:1])
+        self.assertEqual(sorted((*isolated, *remaining)), sorted(values))
+        self.assertEqual(len(set((*isolated, *remaining))), len(values))
+
+    def test_selected_pregeneration_runs_only_its_isolated_shard(self):
+        test_ids = (
+            "tests.test_app.AppTest.test_ui",
+            "tests.test_asset_ui.AssetTest.test_ui",
+            "tests.test_ocr_review.OcrTest.test_ui",
+            "tests.test_self_service_pregeneration.JourneyTest.test_ui",
+            "tests.test_settings.SettingsTest.test_value",
+        )
+        for system in ("Darwin", "Windows"):
+            with (
+                self.subTest(system=system),
+                patch(
+                    "scripts.run_ci_unittests._flatten_suite",
+                    return_value=(
+                        Mock(id=Mock(return_value=value)) for value in test_ids
+                    ),
+                ),
+                patch(
+                    "scripts.run_ci_unittests.subprocess.run",
+                    return_value=Mock(returncode=0),
+                ) as run,
+            ):
+                self.assertEqual(
+                    _run_sharded_full_discovery(
+                        system, ["tests.test_self_service_pregeneration"]
+                    ),
+                    0,
+                )
+                run.assert_called_once()
+                self.assertEqual(
+                    run.call_args.args[0][-3:-1], ["--shard", "qt-pregeneration"]
+                )
 
     def test_partition_rejects_duplicates_and_missing_app_shard(self):
         with self.assertRaisesRegex(ValueError, "duplicate"):

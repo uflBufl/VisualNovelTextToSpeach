@@ -17,6 +17,7 @@ SHARD_TIMEOUTS = {
         "qt-app-2": 180,
         "qt-assets": 60,
         "qt-ocr": 60,
+        "qt-pregeneration": 180,
         "remainder": 900,
     },
     "Windows": {
@@ -24,6 +25,7 @@ SHARD_TIMEOUTS = {
         "qt-app-2": 300,
         "qt-assets": 60,
         "qt-ocr": 60,
+        "qt-pregeneration": 300,
         "remainder": 900,
     },
 }
@@ -88,6 +90,16 @@ def partition_ui_test_ids(test_ids):
     return app, assets, ocr, remainder
 
 
+def _isolate_pregeneration_tests(test_ids):
+    isolated = tuple(
+        value
+        for value in test_ids
+        if value.startswith("tests.test_self_service_pregeneration.")
+    )
+    isolated_set = set(isolated)
+    return isolated, tuple(value for value in test_ids if value not in isolated_set)
+
+
 def _run_exact_test_file(path):
     try:
         test_ids = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -139,10 +151,12 @@ def _run_sharded_full_discovery(system, selected_modules=None):
         app_shards = [("qt-app", app_ids[:midpoint])]
         if len(app_ids) > midpoint:
             app_shards.append(("qt-app-2", app_ids[midpoint:]))
+        pregeneration_ids, remainder_ids = _isolate_pregeneration_tests(remainder_ids)
         shards = (
             *app_shards,
             ("qt-assets", asset_ids),
             ("qt-ocr", ocr_ids),
+            ("qt-pregeneration", pregeneration_ids),
             ("remainder", remainder_ids),
         )
         if selected_modules is not None:
