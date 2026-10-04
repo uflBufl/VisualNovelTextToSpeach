@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, TypeAlias, TypedDict
 
-from vntts_artifacts.audio import write_pcm16_wav
+from vntts_artifacts.audio import Pcm16MonoWavError, write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.bulk_generation import (
@@ -386,10 +386,13 @@ class FailureReferencePreviewService:
                 "Preview render diagnostics differ from the requested controls"
             )
         pcm = generated_mono_pcm(result.pcm)
-        if not len(pcm) or int(result.sample_rate) <= 0:
+        if not len(pcm):
             raise FailureReferencePreviewError("Preview render produced no audio")
         output = self._root / "preview.wav"
-        write_pcm16_wav(output, pcm, int(result.sample_rate))
+        try:
+            write_pcm16_wav(output, pcm, result.sample_rate)
+        except Pcm16MonoWavError as error:
+            raise FailureReferencePreviewError(str(error)) from error
         payload = output.read_bytes()
         output.unlink(missing_ok=True)
         return payload

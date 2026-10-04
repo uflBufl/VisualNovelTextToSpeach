@@ -50,11 +50,13 @@ class FakeBackend:
         completion=SynthesisCompletion.COMPLETE,
         on_render=None,
         pcm=None,
+        result_sample_rate=16_000,
     ):
         self.name = name
         self.completion = completion
         self.on_render = on_render
         self.pcm = pcm
+        self.result_sample_rate = result_sample_rate
         self.registry = None
         self.requests = []
         self.shutdown_count = 0
@@ -70,7 +72,7 @@ class FakeBackend:
                     if self.pcm is None
                     else self.pcm
                 ),
-                sample_rate=16_000,
+                sample_rate=self.result_sample_rate,
                 completion=self.completion,
                 limits=SynthesisLimits(None, None),
                 timing=SynthesisTiming(10.0, 100.0),
@@ -866,6 +868,24 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
             service.close()
 
             self.assertFalse(tuple((root / "auditions").glob("*.wav")))
+
+    def test_invalid_provider_sample_rates_never_publish_preview(self):
+        for rate in (True, 16000.5, "16000", None, 0, -1, float("nan"), float("inf")):
+            with self.subTest(rate=rate), TemporaryDirectory() as directory:
+                root = Path(directory)
+                plan, group, _manifest = ambiguous_fixture(root)
+                backend = FakeBackend("moss-tts", result_sample_rate=rate)
+                service = VoiceAuditionPreviewService(
+                    root / "auditions",
+                    backend_factory=lambda *_args, **_kwargs: backend,
+                )
+                try:
+                    with self.assertRaisesRegex(VoiceAuditionError, "sample rate"):
+                        service.generate(plan, group, group.candidates[0].source_id)
+                    self.assertEqual(len(backend.requests), 1)
+                    self.assertFalse(tuple((root / "auditions").glob("*.wav")))
+                finally:
+                    service.close()
 
     def test_cooperative_cancellation_does_not_publish_preview(self):
         with TemporaryDirectory() as temporary_directory:

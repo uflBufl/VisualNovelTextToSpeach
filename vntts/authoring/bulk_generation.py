@@ -5044,7 +5044,7 @@ def _validate_render_result(
 ) -> None:
     if result.completion is not SynthesisCompletion.COMPLETE:
         raise IncompleteSynthesisError(result)
-    if not isinstance(result.sample_rate, int) or result.sample_rate <= 0:
+    if type(result.sample_rate) is not int or result.sample_rate <= 0:
         raise BulkGenerationError("Typed render returned an invalid sample rate")
     if (
         result.diagnostics.seed != request.seed

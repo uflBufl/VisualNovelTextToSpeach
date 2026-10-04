@@ -1,11 +1,13 @@
 import hashlib
 import json
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from tests.test_authoring_failure_reference_audit import (
+    _CollectedResult,
     _PreviewBackendFactory,
     create_failed_reference_workspace,
 )
@@ -138,3 +140,50 @@ class FailureReferencePreviewTest(unittest.TestCase):
             finally:
                 path.write_bytes(original)
                 service.close()
+
+    def test_preview_rejects_invalid_sample_rates_without_caching_audio(self):
+        with TemporaryDirectory() as directory:
+            audit, group = self.create_audit(Path(directory))
+            for rate in (
+                True,
+                16000.5,
+                "16000",
+                None,
+                0,
+                -1,
+                float("nan"),
+                float("inf"),
+            ):
+                with self.subTest(rate=rate):
+                    factory = _PreviewBackendFactory()
+
+                    def create(*args, **kwargs):
+                        backend = factory(*args, **kwargs)
+                        render = backend.render
+
+                        def invalid(request):
+                            result = render(request).collect()
+                            return _CollectedResult(
+                                lambda: replace(result, sample_rate=rate)
+                            )
+
+                        backend.render = invalid
+                        return backend
+
+                    service = FailureReferencePreviewService(
+                        audit, backend_factory=create
+                    )
+                    try:
+                        with self.assertRaisesRegex(
+                            FailureReferencePreviewError, "sample rate"
+                        ):
+                            service.generate(
+                                group["group_id"],
+                                group["candidates"][0]["candidate_id"],
+                                group["cases"][0]["text"],
+                            )
+                        self.assertEqual(len(factory.backends[0].requests), 1)
+                        self.assertFalse((service._root / "preview.wav").exists())
+                        self.assertEqual(service._cache, {})
+                    finally:
+                        service.close()

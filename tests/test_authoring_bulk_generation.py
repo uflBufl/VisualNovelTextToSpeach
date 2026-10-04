@@ -100,12 +100,14 @@ class SyntheticRenderer:
         inspect_state=None,
         diagnostics_backend=None,
         pcm=None,
+        result_sample_rate=16_000,
     ):
         self.outcomes = list(outcomes or [SynthesisCompletion.COMPLETE])
         self.requests = []
         self.inspect_state = inspect_state
         self.diagnostics_backend = diagnostics_backend
         self.pcm = pcm
+        self.result_sample_rate = result_sample_rate
         self.stop_calls = 0
 
     def render(self, request):
@@ -123,7 +125,7 @@ class SyntheticRenderer:
             yield SynthesisChunk(pcm, 16_000, 0, 1.0)
             return SynthesisResult(
                 pcm=pcm,
-                sample_rate=16_000,
+                sample_rate=self.result_sample_rate,
                 completion=outcome,
                 limits=SynthesisLimits(256, 180.0),
                 timing=SynthesisTiming(1.0, 2.0),
@@ -1064,6 +1066,29 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                             failed_state["items"][item["queue_id"]]["failure"]["kind"],
                             "cancelled",
                         )
+
+    def test_invalid_result_sample_rates_fail_before_the_wav_writer(self):
+        for rate in (True, 16000.5, "16000", None, 0, -1):
+            with self.subTest(rate=rate), TemporaryDirectory() as directory:
+                root = Path(directory)
+                item = queue_item()
+                queue = write_queue(root / "queue.jsonl", [item])
+                renderer = SyntheticRenderer(result_sample_rate=rate)
+                with patch.object(
+                    bulk_module, "write_pcm16_wav", wraps=write_pcm16_wav
+                ) as writer:
+                    result = self.run_generation(
+                        queue, root / "output", renderer, retries=0
+                    )
+                writer.assert_not_called()
+                self.assertEqual(result.generated, 0)
+                self.assertEqual(result.failed, 1)
+                state = load_generation_state(result.state, queue)
+                self.assertIn(
+                    "invalid sample rate",
+                    state["items"][item["queue_id"]]["last_error"],
+                )
+                self.assertEqual(list((root / "output/audio").rglob("*.wav")), [])
 
     def test_audio_limit_plan_retries_whole_multi_sentence_text(self):
         with TemporaryDirectory() as directory:

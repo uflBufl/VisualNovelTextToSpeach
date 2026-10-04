@@ -18,7 +18,11 @@ from typing import Protocol, TypeAlias
 import numpy as np
 from numpy.typing import NDArray
 from vntts_artifacts.atomic_io import atomic_output_path
-from vntts_artifacts.audio import probe_pcm16_mono_wav, write_pcm16_wav
+from vntts_artifacts.audio import (
+    Pcm16MonoWavError,
+    probe_pcm16_mono_wav,
+    write_pcm16_wav,
+)
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_manifest import VoiceManifestError
 
@@ -441,12 +445,14 @@ class VoiceAuditionPreviewService:
         notify: ProgressReporter,
     ) -> str:
         samples = _mono_pcm(result.pcm)
-        sample_rate = int(result.sample_rate)
-        if not len(samples) or sample_rate < 1:
+        if not len(samples):
             raise VoiceAuditionError("Voice preview generation produced no audio")
         staging = _staging_path(target)
         try:
-            write_pcm16_wav(staging, samples, sample_rate)
+            try:
+                write_pcm16_wav(staging, samples, result.sample_rate)
+            except Pcm16MonoWavError as error:
+                raise VoiceAuditionError(str(error)) from error
             notify("Checking generated audio for silence and other failures...")
             try:
                 _inspect_preview(staging, preview_text)
