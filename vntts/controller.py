@@ -3265,6 +3265,8 @@ class AppController:
             )
         if outcome is None:
             raise TypeError("Speech backend does not implement typed playback")
+        if not isinstance(outcome, PlaybackOutcome):
+            raise TypeError("Speech backend returned an untyped playback outcome")
         return outcome
 
     def _report_live_playback_outcome(

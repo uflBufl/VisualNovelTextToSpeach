@@ -11,12 +11,41 @@ from vntts.controller_components import (
     VoiceAssignmentComponent,
 )
 from vntts.generated_audio import GeneratedAudioFallbackBackend
+from vntts.playback import PlaybackOutcome, PlaybackStatus, PreparedPlayback
 from vntts.settings import AppSettings
 from vntts.speech_backend import XTTSVoiceRouterBackend
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry, CharacterVoiceRouter
 
 
 class ControllerComponentsTest(unittest.TestCase):
+    def test_live_dispatch_requires_typed_outcome_from_dynamic_backend(self):
+        class Backend:
+            def __init__(self, outcome):
+                self.outcome = outcome
+
+            def play_prepared(self, _prepared, *, playback_guard):
+                self.guard = playback_guard
+                return self.outcome
+
+        controller = AppController(AppSettings())
+        reader, chunk = Mock(), Mock()
+        prepared = PreparedPlayback(object(), None, None, None, "test")
+        for outcome in (None, True, "completed", object()):
+            with self.subTest(outcome=outcome):
+                controller.speech_backend = Backend(outcome)
+                with self.assertRaisesRegex(TypeError, "typed playback"):
+                    controller._dispatch_live_playback(reader, chunk, prepared)
+        for status in PlaybackStatus:
+            with self.subTest(status=status):
+                outcome = PlaybackOutcome(status, 10.0)
+                backend = Backend(outcome)
+                controller.speech_backend = backend
+                self.assertIs(
+                    controller._dispatch_live_playback(reader, chunk, prepared), outcome
+                )
+                backend.guard()
+                reader.wait_until_playable.assert_called_with(chunk)
+
     def test_controller_is_the_composition_root(self):
         controller = AppController(AppSettings())
 
