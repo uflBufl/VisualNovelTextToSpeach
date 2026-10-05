@@ -146,6 +146,30 @@ class AuthoringRobustnessCorpusTest(unittest.TestCase):
         self.assertGreater(comparison["distance"], 0)
         self.assertGreater(comparison["insertions"], 0)
 
+    def test_word_comparison_preserves_tie_breaking_and_normalization(self):
+        for expected, observed, edits in (
+            ("", "one two", (2, 0, 2, 0)),
+            ("one two", "", (2, 0, 0, 2)),
+            ("one two", "two one", (2, 0, 1, 1)),
+            ("one one", "one", (1, 0, 0, 1)),
+            ("one two one", "two one two", (2, 0, 1, 1)),
+            ("One, isn’t two.", "one ISN'T three", (1, 1, 0, 0)),
+        ):
+            with self.subTest(expected=expected, observed=observed):
+                comparison = compare_speech_transcript(expected, observed)
+                self.assertEqual(
+                    tuple(
+                        comparison[field]
+                        for field in (
+                            "distance",
+                            "substitutions",
+                            "insertions",
+                            "deletions",
+                        )
+                    ),
+                    edits,
+                )
+
     def test_exact_active_pcm_repetition_is_diagnostic_only(self):
         rng = np.random.default_rng(42)
         segment = rng.integers(-8_000, 8_000, size=12 * 320, dtype=np.int16)

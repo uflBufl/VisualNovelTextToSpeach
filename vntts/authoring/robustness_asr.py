@@ -7,7 +7,7 @@ import io
 import json
 import re
 import wave
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -116,24 +116,18 @@ def _words(text: str) -> tuple[str, ...]:
 
 
 def _edit_counts(expected: Sequence[str], observed: Sequence[str]) -> dict[str, int]:
-    rows = len(expected) + 1
-    columns = len(observed) + 1
-    table: list[list[_EditCounts]] = [
-        [(0, 0, 0, 0) for _ in range(columns)] for _ in range(rows)
+    previous: list[_EditCounts] = [
+        (column, 0, column, 0) for column in range(len(observed) + 1)
     ]
-    table[0][0] = (0, 0, 0, 0)
-    for row in range(1, rows):
-        table[row][0] = (row, 0, 0, row)
-    for column in range(1, columns):
-        table[0][column] = (column, 0, column, 0)
-    for row in range(1, rows):
-        for column in range(1, columns):
-            if expected[row - 1] == observed[column - 1]:
-                table[row][column] = table[row - 1][column - 1]
+    for row, expected_word in enumerate(expected, 1):
+        current: list[_EditCounts] = [(row, 0, 0, row)]
+        for column, observed_word in enumerate(observed, 1):
+            if expected_word == observed_word:
+                current.append(previous[column - 1])
                 continue
-            substitution = table[row - 1][column - 1]
-            insertion = table[row][column - 1]
-            deletion = table[row - 1][column]
+            substitution = previous[column - 1]
+            insertion = current[column - 1]
+            deletion = previous[column]
             candidates = (
                 (
                     substitution[0] + 1,
@@ -154,8 +148,9 @@ def _edit_counts(expected: Sequence[str], observed: Sequence[str]) -> dict[str, 
                     deletion[3] + 1,
                 ),
             )
-            table[row][column] = min(candidates)
-    distance, substitutions, insertions, deletions = table[-1][-1]
+            current.append(min(candidates))
+        previous = current
+    distance, substitutions, insertions, deletions = previous[-1]
     return {
         "distance": distance,
         "substitutions": substitutions,
@@ -359,31 +354,23 @@ def _distribution(records: Sequence[_AsrRecord], metric: _RateMetric) -> JsonDoc
 
 
 def _summary(records: Sequence[_AsrRecord]) -> JsonDocument:
-    labels = sorted({record["human_label"] for record in records})
-    providers = sorted({record["provider"] for record in records})
-    groups: dict[str, JsonDocument] = {}
-    for label in labels:
-        selected = [record for record in records if record["human_label"] == label]
-        groups[f"label:{label}"] = {
+    by_label: dict[str, list[_AsrRecord]] = defaultdict(list)
+    by_provider: dict[tuple[str, str], list[_AsrRecord]] = defaultdict(list)
+    for record in records:
+        label = record["human_label"]
+        by_label[label].append(record)
+        by_provider[(record["provider"], label)].append(record)
+    grouped = [(f"label:{label}", by_label[label]) for label in sorted(by_label)] + [
+        (f"provider:{provider}:{label}", by_provider[(provider, label)])
+        for provider, label in sorted(by_provider)
+    ]
+    groups = {
+        key: {
             metric: _distribution(selected, metric)
             for metric in ("word_error_rate", "missing_word_rate", "inserted_word_rate")
         }
-    for provider in providers:
-        for label in labels:
-            selected = [
-                record
-                for record in records
-                if record["provider"] == provider and record["human_label"] == label
-            ]
-            if selected:
-                groups[f"provider:{provider}:{label}"] = {
-                    metric: _distribution(selected, metric)
-                    for metric in (
-                        "word_error_rate",
-                        "missing_word_rate",
-                        "inserted_word_rate",
-                    )
-                }
+        for key, selected in grouped
+    }
     return {
         "sample_count": len(records),
         "human_labels": dict(Counter(record["human_label"] for record in records)),
