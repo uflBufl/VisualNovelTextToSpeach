@@ -108,6 +108,80 @@ class ModelAssetManagerTest(unittest.TestCase):
                     asset,
                 )
 
+    def test_rejects_colliding_model_storage_names_before_io(self):
+        for names in (
+            ("vntts-asset.json",),
+            ("VNTTS-ASSET.JSON",),
+            ("weights.bin", "Weights.bin"),
+            ("weights.bin.part", "weights.bin"),
+            ("weights.bin", "WEIGHTS.BIN.PART"),
+        ):
+            with self.subTest(names=names), TemporaryDirectory() as directory:
+                asset = ModelAsset(
+                    "collision",
+                    tuple("https://models.invalid/" + name for name in names),
+                )
+                opener = MemoryOpener({url: b"data" for url in asset.urls})
+                manager = ModelAssetManager(directory, opener=opener)
+                with self.assertRaises(ModelIntegrityError):
+                    manager.download(asset.name, asset=asset)
+                self.assertEqual(opener.requests, [])
+                self.assertFalse(manager.model_path(asset.name).exists())
+
+    def test_colliding_inventory_validation_preserves_existing_files(self):
+        asset = ModelAsset(
+            "collision",
+            (
+                "https://models.invalid/weights.bin",
+                "https://models.invalid/weights.bin.part",
+            ),
+        )
+        for managed in (False, True):
+            with self.subTest(managed=managed), TemporaryDirectory() as directory:
+                opener = MemoryOpener({url: b"replacement" for url in asset.urls})
+                manager = ModelAssetManager(directory, opener=opener)
+                model = manager.model_path(asset.name)
+                model.mkdir(parents=True)
+                for name in ("weights.bin", "weights.bin.part"):
+                    (model / name).write_bytes(b"original")
+                manifest_path = model / assets.asset_manifest_name
+                if managed:
+                    manifest_path.write_text(
+                        json.dumps(
+                            {
+                                "version": 1,
+                                "model": asset.name,
+                                "files": {
+                                    name: {
+                                        "size": 8,
+                                        "sha256": assets.sha256_file(model / name),
+                                    }
+                                    for name in ("weights.bin", "weights.bin.part")
+                                },
+                            }
+                        )
+                    )
+                before = manifest_path.read_bytes() if managed else None
+                with self.assertRaises(ModelIntegrityError):
+                    manager.download(asset.name, asset=asset)
+                with self.assertRaises(ModelIntegrityError):
+                    manager.validate(asset.name, asset=asset)
+                self.assertEqual(opener.requests, [])
+                after = manifest_path.read_bytes() if manifest_path.exists() else None
+                self.assertEqual(after, before)
+                for name in ("weights.bin", "weights.bin.part"):
+                    self.assertEqual((model / name).read_bytes(), b"original")
+
+    def test_standalone_part_filename_is_valid_and_keeps_source_case(self):
+        asset = ModelAsset("standalone", ("https://models.invalid/Weights.bin.part",))
+        opener = MemoryOpener({asset.urls[0]: b"weights"})
+        with TemporaryDirectory() as directory:
+            manager = ModelAssetManager(directory, opener=opener)
+            model = manager.download(asset.name, asset=asset)
+            self.assertEqual((model / "Weights.bin.part").read_bytes(), b"weights")
+            self.assertFalse((model / "Weights.bin.part.part").exists())
+            self.assertEqual(manager.validate(asset.name, asset=asset), model)
+
     def test_configures_private_huggingface_model_cache(self):
         with TemporaryDirectory() as temporary_directory:
             manager = ModelAssetManager(storage_root=temporary_directory)

@@ -79,8 +79,12 @@ class ModelAsset:
 
 def _model_filenames(asset: ModelAsset) -> dict[str, str]:
     filenames = {url: _model_filename(url) for url in asset.urls}
-    if len(set(filenames.values())) != len(asset.urls):
+    names = {name.casefold() for name in filenames.values()}
+    if len(names) != len(asset.urls):
         raise ModelIntegrityError("Model URLs resolve to the same filename")
+    managed_names = {asset_manifest_name, *(f"{name}.part" for name in names)}
+    if names & managed_names:
+        raise ModelIntegrityError("Model URLs conflict with managed download filenames")
     return filenames
 
 
