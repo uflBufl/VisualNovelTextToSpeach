@@ -450,23 +450,29 @@ def _validated_projection_batch(value: object) -> dict[str, object]:
         "synthesis_character",
         "items",
     }
-    if (
-        not isinstance(batch, dict)
-        or set(batch) != fields
-        or batch.get("schema") != SCHEMA
-        or batch.get("schema_version") != SCHEMA_VERSION
-        or batch.get("provider") != "pocket-tts"
-        or batch.get("model") != "pocket-tts"
-        or batch.get("generation_profile") != "default"
-        or batch.get("synthesis_character") != SYNTHESIS_CHARACTER
-        or batch.get("batch_id")
-        != canonical_document_sha256(
-            {key: value for key, value in batch.items() if key != "batch_id"}
-        )
-    ):
+    try:
+        if (
+            not isinstance(batch, dict)
+            or set(batch) != fields
+            or batch.get("schema") != SCHEMA
+            or type(batch.get("schema_version")) is not int
+            or batch.get("schema_version") != SCHEMA_VERSION
+            or batch.get("provider") != "pocket-tts"
+            or batch.get("model") != "pocket-tts"
+            or batch.get("generation_profile") != "default"
+            or batch.get("synthesis_character") != SYNTHESIS_CHARACTER
+            or batch.get("batch_id")
+            != canonical_document_sha256(
+                {key: value for key, value in batch.items() if key != "batch_id"}
+            )
+        ):
+            raise AuthoringWorkbenchError(
+                "Audio-event projection fallback batch is malformed"
+            )
+    except (TypeError, ValueError) as error:
         raise AuthoringWorkbenchError(
             "Audio-event projection fallback batch is malformed"
-        )
+        ) from error
     for field in (
         "batch_id",
         "base_workspace_sha256",

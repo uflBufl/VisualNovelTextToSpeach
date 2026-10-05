@@ -14,7 +14,9 @@ from tests.test_authoring_workbench import create_test_workspace
 from tests.test_generated_audio import FakeAudioOutput
 from vntts.authoring.audio_event_omission import (
     create_audio_event_omission_workspace,
+    validate_audio_event_omission_workspace,
 )
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     load_generation_state,
@@ -53,6 +55,51 @@ class AudioEventOmissionTests(unittest.TestCase):
             state, base / "generated-audio", base / "generated-audio/manifest.json"
         )
         return base, queue.items[0]
+
+    def _rebind_batch(self, directory, workspace, queue_id):
+        batch = workspace["audio_event_omission"]
+        batch["batch_id"] = canonical_document_sha256(
+            {key: value for key, value in batch.items() if key != "batch_id"}
+        )
+        path = directory / "generated-audio/generation-state.json"
+        state = json.loads(path.read_text())
+        result = state["items"][queue_id]
+        authority = result["audio_event_omission"]["authority"]
+        for field in (
+            "batch_id",
+            "base_workspace_id",
+            "base_workspace_sha256",
+            "base_state_sha256",
+            "queue_sha256",
+        ):
+            authority[field] = batch[field]
+        path.write_text(json.dumps(state, sort_keys=True))
+
+    def test_batch_versions_and_invalid_json_values_raise_workbench_errors(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, item = self._base(root / "source")
+            created = create_audio_event_omission_workspace(
+                base, [item.queue_id], root / "successors"
+            )
+            original = (created.directory / "workspace.json").read_text()
+            for version in (True, 1.0):
+                with self.subTest(version=version):
+                    workspace = json.loads(original)
+                    workspace["audio_event_omission"]["schema_version"] = version
+                    self._rebind_batch(created.directory, workspace, item.queue_id)
+                    with self.assertRaisesRegex(AuthoringWorkbenchError, "malformed"):
+                        validate_audio_event_omission_workspace(
+                            created.directory, workspace
+                        )
+            for value in (float("nan"), object()):
+                with self.subTest(value=type(value).__name__):
+                    workspace = json.loads(original)
+                    workspace["audio_event_omission"]["items"] = value
+                    with self.assertRaisesRegex(AuthoringWorkbenchError, "malformed"):
+                        validate_audio_event_omission_workspace(
+                            created.directory, workspace
+                        )
 
     def test_exact_pure_event_omission_is_terminal_idempotent_and_runtime_safe(self):
         with TemporaryDirectory() as directory:

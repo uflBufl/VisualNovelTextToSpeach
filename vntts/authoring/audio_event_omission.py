@@ -382,18 +382,24 @@ def _validated_omission_batch(
         "queue_sha256",
         "items",
     }
-    if (
-        not isinstance(batch, dict)
-        or set(batch) != fields
-        or batch.get("schema") != SCHEMA
-        or batch.get("schema_version") != SCHEMA_VERSION
-        or batch.get("reason") != AUDIO_EVENT_OMISSION_REASON
-        or batch.get("batch_id")
-        != canonical_document_sha256(
-            {key: value for key, value in batch.items() if key != "batch_id"}
-        )
-    ):
-        raise AuthoringWorkbenchError("Audio-event omission batch is malformed")
+    try:
+        if (
+            not isinstance(batch, dict)
+            or set(batch) != fields
+            or batch.get("schema") != SCHEMA
+            or type(batch.get("schema_version")) is not int
+            or batch.get("schema_version") != SCHEMA_VERSION
+            or batch.get("reason") != AUDIO_EVENT_OMISSION_REASON
+            or batch.get("batch_id")
+            != canonical_document_sha256(
+                {key: value for key, value in batch.items() if key != "batch_id"}
+            )
+        ):
+            raise AuthoringWorkbenchError("Audio-event omission batch is malformed")
+    except (TypeError, ValueError) as error:
+        raise AuthoringWorkbenchError(
+            "Audio-event omission batch is malformed"
+        ) from error
     for field in (
         "batch_id",
         "base_workspace_sha256",

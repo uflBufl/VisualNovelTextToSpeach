@@ -19,7 +19,9 @@ from tests.test_authoring_legacy_import import write_legacy_fixture
 from tests.test_generated_audio import FakeAudioOutput
 from vntts.authoring.audio_event_projection_fallback import (
     create_audio_event_projection_fallback_workspace,
+    validate_audio_event_projection_fallback_workspace,
 )
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
 from vntts.authoring.game_pack import _decision_records
 from vntts.authoring.generation_manifest import write_generated_manifest_from_state
@@ -136,6 +138,53 @@ class AudioEventProjectionFallbackTests(unittest.TestCase):
             missing_voice_policy=policy,
         )
         return workspace.directory, queue_item
+
+    def _rebind_batch(self, directory, workspace, queue_id):
+        batch = workspace["audio_event_projection_fallback"]
+        batch["batch_id"] = canonical_document_sha256(
+            {key: value for key, value in batch.items() if key != "batch_id"}
+        )
+        path = directory / "generated-audio/generation-state.json"
+        state = json.loads(path.read_text())
+        result = state["items"][queue_id]
+        authority = result["live_fallback"]["evidence"]
+        for field in (
+            "batch_id",
+            "base_workspace_id",
+            "base_workspace_sha256",
+            "base_state_sha256",
+            "queue_sha256",
+        ):
+            authority[field] = batch[field]
+        path.write_text(json.dumps(state, sort_keys=True))
+
+    def test_batch_versions_and_invalid_json_values_raise_workbench_errors(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, item = self._base(root / "source")
+            created = create_audio_event_projection_fallback_workspace(
+                base, [item.queue_id], root / "successors"
+            )
+            original = (created.directory / "workspace.json").read_text()
+            for version in (True, 1.0):
+                with self.subTest(version=version):
+                    workspace = json.loads(original)
+                    workspace["audio_event_projection_fallback"]["schema_version"] = (
+                        version
+                    )
+                    self._rebind_batch(created.directory, workspace, item.queue_id)
+                    with self.assertRaisesRegex(AuthoringWorkbenchError, "malformed"):
+                        validate_audio_event_projection_fallback_workspace(
+                            created.directory, workspace
+                        )
+            for value in (float("nan"), object()):
+                with self.subTest(value=type(value).__name__):
+                    workspace = json.loads(original)
+                    workspace["audio_event_projection_fallback"]["items"] = value
+                    with self.assertRaisesRegex(AuthoringWorkbenchError, "malformed"):
+                        validate_audio_event_projection_fallback_workspace(
+                            created.directory, workspace
+                        )
 
     def test_exact_projection_is_idempotent_checksum_bound_and_used_at_runtime(self):
         with TemporaryDirectory() as directory:
