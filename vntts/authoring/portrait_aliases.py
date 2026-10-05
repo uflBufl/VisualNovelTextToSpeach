@@ -143,14 +143,7 @@ def build_portrait_alias_plan(
         "suggestions": suggestions,
     }
     document: _PortraitAliasPlanDocument = {
-        "schema": body["schema"],
-        "schema_version": body["schema_version"],
-        "source_quality_review": body["source_quality_review"],
-        "source_quality_review_sha256": body["source_quality_review_sha256"],
-        "max_dhash_distance": body["max_dhash_distance"],
-        "eligible_variant_count": body["eligible_variant_count"],
-        "suggestion_count": body["suggestion_count"],
-        "suggestions": body["suggestions"],
+        **body,
         "plan_id": canonical_document_sha256(body),
     }
     if (
@@ -305,12 +298,7 @@ def build_portrait_alias_decision(
         "identities": groups,
     }
     document: _PortraitAliasDecisionDocument = {
-        "schema": body["schema"],
-        "schema_version": body["schema_version"],
-        "plan_id": body["plan_id"],
-        "accepted_suggestion_ids": body["accepted_suggestion_ids"],
-        "identity_count": body["identity_count"],
-        "identities": body["identities"],
+        **body,
         "decision_id": canonical_document_sha256(body),
     }
     return PortraitAliasDecision(document["decision_id"], document)
