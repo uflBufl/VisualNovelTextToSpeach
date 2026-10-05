@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import copy
-import io
 import json
 import re
-import wave
 from collections import Counter, defaultdict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -28,6 +26,7 @@ from vntts.authoring.bulk_generation import BulkGenerationError, sha256_control_
 from vntts.authoring.publication import no_replace_destination
 from vntts.authoring.robustness_corpus import (
     SpeechRobustnessCorpusError,
+    _read_pcm16,
     load_speech_robustness_corpus,
 )
 
@@ -213,17 +212,12 @@ class _WhisperTranscriber:
     @staticmethod
     def _input(payload: bytes) -> _AsrInput:
         try:
-            with wave.open(io.BytesIO(payload), "rb") as source:
-                if source.getnchannels() != 1 or source.getsampwidth() != 2:
-                    raise ValueError("ASR requires mono PCM16 WAV")
-                rate = source.getframerate()
-                samples: NDArray[np.float32] = np.frombuffer(
-                    source.readframes(source.getnframes()), dtype="<i2"
-                ).astype(np.float32)
-        except Exception as error:
+            pcm, rate = _read_pcm16(payload)
+        except SpeechRobustnessCorpusError as error:
             raise SpeechRobustnessAsrError(
                 f"Unable to decode robustness WAV for ASR: {error}"
             ) from error
+        samples = pcm.astype(np.float32)
         samples /= 32768.0
         # Transformers 4.57.6 passes the source rate twice to torchaudio,
         # leaving non-16k audio unresampled. Supply Whisper's native rate.

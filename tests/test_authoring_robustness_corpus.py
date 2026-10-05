@@ -170,6 +170,16 @@ class AuthoringRobustnessCorpusTest(unittest.TestCase):
                     edits,
                 )
 
+    def test_whisper_input_rejects_incomplete_pcm_before_resampling(self):
+        for payload in (
+            _wav_bytes([]),
+            _wav_bytes([1, 2, 3, 4])[:-2],
+            _wav_bytes([1, 2, 3, 4])[:24] + bytes(4) + _wav_bytes([1, 2, 3, 4])[28:],
+        ):
+            with self.subTest(payload_length=len(payload)):
+                with self.assertRaises(SpeechRobustnessAsrError):
+                    _WhisperTranscriber._input(payload)
+
     def test_asr_batch_results_match_single_results_and_reject_a_string(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
