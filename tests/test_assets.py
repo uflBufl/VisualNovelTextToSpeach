@@ -182,6 +182,65 @@ class ModelAssetManagerTest(unittest.TestCase):
             self.assertFalse((model / "Weights.bin.part.part").exists())
             self.assertEqual(manager.validate(asset.name, asset=asset), model)
 
+    def test_model_directory_names_cannot_escape_flat_cache(self):
+        for name in (
+            "",
+            ".",
+            "..",
+            "nested\\model",
+            "C:\\model",
+            "C:model",
+            ".. ",
+            "model.",
+            " model",
+            "NUL",
+        ):
+            with self.subTest(name=name), TemporaryDirectory() as directory:
+                asset = ModelAsset(name, ("https://models.invalid/weights.bin",))
+                opener = MemoryOpener({asset.urls[0]: b"weights"})
+                manager = ModelAssetManager(Path(directory) / "models", opener=opener)
+                with self.assertRaises(ModelIntegrityError):
+                    manager.download(name, asset=asset)
+                with self.assertRaises(ModelIntegrityError):
+                    manager.model_path(name)
+                with self.assertRaises(ModelIntegrityError):
+                    _ = asset.directory_name
+                self.assertEqual(opener.requests, [])
+                self.assertFalse(manager.storage_root.exists())
+
+    def test_model_url_names_are_flat_on_all_supported_hosts(self):
+        for filename in (
+            "..",
+            "nested\\weights.bin",
+            "C:weights.bin",
+            "weights.bin:stream",
+            "weights.bin.",
+            " weights.bin",
+            "NUL.bin",
+        ):
+            with self.subTest(filename=filename), TemporaryDirectory() as directory:
+                asset = ModelAsset("model", ("https://models.invalid/" + filename,))
+                opener = MemoryOpener({asset.urls[0]: b"weights"})
+                manager = ModelAssetManager(directory, opener=opener)
+                with self.assertRaises(ModelIntegrityError):
+                    manager.download(asset.name, asset=asset)
+                self.assertEqual(opener.requests, [])
+                self.assertFalse(manager.model_path(asset.name).exists())
+
+    def test_ordinary_model_directory_and_nested_url_keep_layout(self):
+        asset = ModelAsset(
+            "tts_models/test/data/model",
+            ("https://models.invalid/nested/.Weights.bin",),
+        )
+        with TemporaryDirectory() as directory:
+            manager = ModelAssetManager(
+                directory, opener=MemoryOpener({asset.urls[0]: b"weights"})
+            )
+            model = manager.download(asset.name, asset=asset)
+            self.assertEqual(asset.directory_name, "tts_models--test--data--model")
+            self.assertEqual(model, manager.coqui_cache_root / asset.directory_name)
+            self.assertEqual((model / ".Weights.bin").read_bytes(), b"weights")
+
     def test_configures_private_huggingface_model_cache(self):
         with TemporaryDirectory() as temporary_directory:
             manager = ModelAssetManager(storage_root=temporary_directory)

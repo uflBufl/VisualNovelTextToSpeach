@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 from vntts.assets import (
     ModelAssetManager,
     ModelDownloadCancelled,
+    ModelIntegrityError,
     VoicePackManager,
 )
 from vntts.async_ui import LatestTaskRunner
@@ -239,7 +240,7 @@ class AssetManagerDialog(QDialog):
         self.model.addItem(default_model)
         if self.settings_value.tts_model:
             self.model.setCurrentText(self.settings_value.tts_model)
-        self.model_path = QLabel(str(self.model_manager.model_path(self.model_name())))
+        self.model_path = QLabel(self._model_path_text())
         self.model_path.setWordWrap(True)
         self.model.currentTextChanged.connect(self._model_changed)
         self.model_status = QLabel(
@@ -274,8 +275,17 @@ class AssetManagerDialog(QDialog):
         layout.addStretch()
         return tab
 
+    def _model_path_text(self) -> str:
+        name = self.model_name()
+        if not name:
+            return "Choose a model to see its download directory."
+        try:
+            return str(self.model_manager.model_path(name))
+        except ModelIntegrityError as error:
+            return f"Invalid model: {error}"
+
     def _model_changed(self, _text: str) -> None:
-        self.model_path.setText(str(self.model_manager.model_path(self.model_name())))
+        self.model_path.setText(self._model_path_text())
         if not self.operation_running:
             self.model_status.setText(
                 "Installation status not checked. Verify checksums to confirm this model."

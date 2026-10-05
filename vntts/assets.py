@@ -5,7 +5,8 @@ import shutil
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from pathlib import Path
+from ntpath import isreserved
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from tempfile import TemporaryDirectory
 from threading import Event
 from typing import Protocol
@@ -59,10 +60,29 @@ class ModelIntegrityError(AssetError):
     pass
 
 
+def _is_flat_storage_name(value: str) -> bool:
+    return (
+        bool(value)
+        and value not in {".", ".."}
+        and PureWindowsPath(value).name == value
+        and not isreserved(value)
+        and not value.startswith(" ")
+    )
+
+
+def _model_directory_name(model_name: str) -> str:
+    directory = model_name.replace("/", "--")
+    if not _is_flat_storage_name(directory):
+        raise ModelIntegrityError("Model name must resolve to one cache directory")
+    return directory
+
+
 def _model_filename(url: str) -> str:
-    filename = Path(urlparse(url).path).name
+    filename = PurePosixPath(urlparse(url).path).name
     if not filename:
         raise ModelIntegrityError(f"Model URL has no filename: {url}")
+    if not _is_flat_storage_name(filename):
+        raise ModelIntegrityError(f"Model URL has an unsafe filename: {filename!r}")
     return filename
 
 
@@ -74,7 +94,7 @@ class ModelAsset:
 
     @property
     def directory_name(self) -> str:
-        return self.name.replace("/", "--")
+        return _model_directory_name(self.name)
 
 
 def _model_filenames(asset: ModelAsset) -> dict[str, str]:
@@ -118,7 +138,7 @@ class ModelAssetManager:
         return cache_root
 
     def model_path(self, model_name: str) -> Path:
-        return self.coqui_cache_root / model_name.replace("/", "--")
+        return self.coqui_cache_root / _model_directory_name(model_name)
 
     def _check_model_path(self, model_path: Path) -> None:
         if any(
@@ -224,8 +244,8 @@ class ModelAssetManager:
         asset = asset or self.catalog_loader(model_name)
         self._check_cancelled(cancel_event)
         filenames = _model_filenames(asset)
-        self.configure_environment()
         model_path = self.model_path(model_name)
+        self.configure_environment()
         self._check_model_path(model_path)
         lock_path = model_path.with_name(f".{model_path.name}.download.lock")
         with exclusive_advisory_lock(

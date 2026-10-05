@@ -25,7 +25,7 @@ from vntts.asset_ui import (  # noqa: E402
     VoiceImportDialog,
     default_model,
 )
-from vntts.assets import ModelDownloadCancelled  # noqa: E402
+from vntts.assets import ModelDownloadCancelled, ModelIntegrityError  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
 
 
@@ -110,6 +110,28 @@ class AssetManagerDialogTest(unittest.TestCase):
         self.assertTrue(dialog.cancel_button.isHidden())
         self.assertIn("Model ready", dialog.model_status.text())
         self.assertEqual(dialog.settings().tts_model, default_model)
+
+    def test_editable_model_path_handles_invalid_names_and_recovers(self):
+        model_manager = Mock()
+
+        def model_path(name):
+            if name == "..":
+                raise ModelIntegrityError("Invalid model directory")
+            return Path("managed") / name
+
+        model_manager.model_path.side_effect = model_path
+        dialog = AssetManagerDialog(
+            AppSettings(speech_backend="coqui-xtts", tts_model=".."),
+            model_manager=model_manager,
+            voice_manager=Mock(),
+        )
+        self.assertIn("Invalid model directory", dialog.model_path.text())
+        dialog.model.setCurrentText("")
+        self.assertIn("Choose a model", dialog.model_path.text())
+        dialog.model.setCurrentText("valid")
+        self.assertEqual(dialog.model_path.text(), str(Path("managed") / "valid"))
+        self.assertFalse(dialog.operation_running)
+        dialog.reject()
 
     def test_empty_model_selection_does_not_start_verification(self):
         model_manager = Mock()
