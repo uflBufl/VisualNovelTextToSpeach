@@ -450,8 +450,9 @@ class OCRReviewDialog(CloseGuardedDialog):
         if error is not None:
             self.resolve_button.setEnabled(self.current_sample() is not None)
             self._update_save_enabled()
-            if self._write_applies_corrections:
-                self.corrections_changed()
+        if self._write_applies_corrections:
+            self.corrections_changed()
+        if error is not None:
             if isinstance(error, StaleDocumentError) or isinstance(
                 error.__cause__, StaleDocumentError
             ):
@@ -465,8 +466,6 @@ class OCRReviewDialog(CloseGuardedDialog):
                     "data, then use the same button to retry. Your edits are still here."
                 )
         else:
-            if self._write_applies_corrections:
-                self.corrections_changed()
             self.reload_samples()
             self.status.setText("OCR review saved.")
         if self._close_pending:
