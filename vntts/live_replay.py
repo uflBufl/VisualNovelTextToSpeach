@@ -899,18 +899,12 @@ class LiveReplayRunner:
             if item.expect_playback
         ]
         route_sources = [route["effective_source"] for route in routes]
-        expected_sources = [
-            item.expected_source
-            for item in self.corpus.dialogue
-            if item.expect_playback and item.expected_source is not None
-        ]
-        actual_expected_sources = route_sources[: len(expected_sources)]
         successful = bool(
             completed
             and frame_consumption["complete"]
             and not errors
             and observed == expected
-            and actual_expected_sources == expected_sources
+            and _legacy_route_sources_match(self.corpus.dialogue, route_sources)
             and frame_source.advance_requests == len(self.corpus.dialogue)
         )
         return {
@@ -2052,6 +2046,19 @@ def _live_sequence_snapshot(
             ) from error
         resolver = ChapterVoicePreloader.load_snapshot(story_path, story_payload)
         yield plan, resolver, snapshot_story, snapshot_plan
+
+
+def _legacy_route_sources_match(
+    dialogue: Sequence[ReplayDialogue], route_sources: Sequence[object]
+) -> bool:
+    expected_sources = (
+        item.expected_source for item in dialogue if item.expect_playback
+    )
+    return all(
+        expected_source is None
+        or (index < len(route_sources) and route_sources[index] == expected_source)
+        for index, expected_source in enumerate(expected_sources)
+    )
 
 
 def _group_played_dialogue(

@@ -1677,6 +1677,35 @@ class LiveReplayTest(unittest.TestCase):
                 interval_seconds=0.002,
                 timeout_seconds=3,
             ).run()
+            document = json.loads(path.read_text(encoding="utf-8"))
+            for item in document["dialogue"]:
+                item.pop("expected_source")
+            for expected_source, expected_success in (
+                ("generated", True),
+                ("live:replay-live-tts", False),
+            ):
+                with self.subTest(expected_source=expected_source):
+                    document["dialogue"][2]["expected_source"] = expected_source
+                    path.write_text(json.dumps(document), encoding="utf-8")
+                    optional_report = LiveReplayRunner(
+                        load_live_replay_corpus(path),
+                        interval_seconds=0.002,
+                        timeout_seconds=3,
+                    ).run()
+                    self.assertEqual(
+                        optional_report["observed_dialogue"],
+                        report["observed_dialogue"],
+                    )
+                    self.assertEqual(
+                        optional_report["route_sources"], report["route_sources"]
+                    )
+                    self.assertEqual(
+                        optional_report["successful"], expected_success, optional_report
+                    )
+                    self.assertEqual(
+                        optional_report["provenance"],
+                        report["provenance"] | {"corpus_sha256": sha256_file(path)},
+                    )
 
         self.assertTrue(report["successful"], report)
         self.assertEqual(
