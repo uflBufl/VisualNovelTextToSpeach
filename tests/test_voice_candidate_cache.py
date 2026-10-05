@@ -253,6 +253,29 @@ class VoiceCandidateCacheTest(unittest.TestCase):
         )
         self.assertTrue(old.exists())
 
+    def test_unreadable_candidate_subtree_defers_all_cleanup(self) -> None:
+        old = self._candidate("old")
+        unreadable = self._candidate("unreadable")
+        child = unreadable / "nested"
+        child.mkdir()
+        (child / "reference.wav").write_bytes(b"audio")
+        original_scandir = cache.os.scandir
+        canonical_child = child.resolve()
+        denied = []
+
+        def deny_subtree(path):
+            if not isinstance(path, int) and Path(path) == canonical_child:
+                denied.append(canonical_child)
+                raise PermissionError("candidate subtree cannot be inspected")
+            return original_scandir(path)
+
+        with patch.object(cache.os, "scandir", side_effect=deny_subtree):
+            removed = prune_obsolete_voice_candidate_caches(self.root, self.jobs)
+        self.assertEqual(denied, [canonical_child])
+        self.assertEqual(removed, ())
+        self.assertTrue(old.exists())
+        self.assertEqual((child / "reference.wav").read_bytes(), b"audio")
+
     def _candidate(self, name: str) -> Path:
         directory = self.root / hashlib.sha256(name.encode()).hexdigest()[:24]
         directory.mkdir()

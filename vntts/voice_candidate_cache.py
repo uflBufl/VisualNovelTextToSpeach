@@ -332,7 +332,13 @@ def _candidate_for_path(
 
 def _safe_candidate_tree(directory: Path) -> bool:
     entries = 0
-    for base, directories, files in os.walk(directory, followlinks=False):
+
+    def raise_walk_error(error: OSError) -> None:
+        raise error
+
+    for base, directories, files in os.walk(
+        directory, followlinks=False, onerror=raise_walk_error
+    ):
         for name in (*directories, *files):
             entries += 1
             if entries > _MAX_CANDIDATE_TREE_ENTRIES or _unsafe(Path(base) / name):
