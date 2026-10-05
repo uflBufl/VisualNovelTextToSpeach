@@ -28,6 +28,7 @@ from vntts.settings import AppSettings, load_app_settings
 from vntts.source_audio_semantics import (
     SEMANTIC_EVIDENCE_METHOD,
     canonical_document_sha256,
+    load_source_audio_semantic_evidence,
     semantic_text_sha256,
 )
 from vntts.voices import CharacterVoiceRegistry
@@ -339,6 +340,66 @@ class GamePackImportTest(unittest.TestCase):
         self.assertEqual(artifact_story_load.call_count, 2)
         self.assertEqual(vntts_story_load.call_count, 1)
         redundant_story_load.assert_not_called()
+
+    def test_import_rejects_story_replaced_during_semantic_preflight(self):
+        for include_semantics in (False, True):
+            with (
+                self.subTest(include_semantics=include_semantics),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                pack_path, *_unused = write_synthetic_game_pack(
+                    root, include_semantics=include_semantics
+                )
+                story_path = root / "story-index.jsonl"
+
+                def replace_story_before_parse(path):
+                    rows = story_path.read_text(encoding="utf-8").splitlines()
+                    record = json.loads(rows[1])
+                    record["speaker"] = "Changed speaker"
+                    rows[1] = json.dumps(record)
+                    story_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+                    return load_story_index_document(path)
+
+                with (
+                    patch(
+                        "vntts.game_pack.load_story_index_document",
+                        side_effect=replace_story_before_parse,
+                    ),
+                    self.assertRaisesRegex(GamePackError, "checksum changed"),
+                ):
+                    import_game_pack(pack_path)
+
+    def test_import_wraps_missing_files_after_semantic_parse(self):
+        for component, include_semantics in (
+            ("story", False),
+            ("story", True),
+            ("evidence", True),
+        ):
+            with (
+                self.subTest(component=component, include_semantics=include_semantics),
+                TemporaryDirectory() as directory,
+            ):
+                pack_path, *_unused = write_synthetic_game_pack(
+                    Path(directory), include_semantics=include_semantics
+                )
+                if component == "story":
+                    loader = load_story_index_document
+                    target = "vntts.game_pack.load_story_index_document"
+                else:
+                    loader = load_source_audio_semantic_evidence
+                    target = "vntts.game_pack.load_source_audio_semantic_evidence"
+
+                def remove_after_parse(path, *args):
+                    document = loader(path, *args)
+                    Path(path).unlink()
+                    return document
+
+                with (
+                    patch(target, side_effect=remove_after_parse),
+                    self.assertRaises(GamePackError),
+                ):
+                    import_game_pack(pack_path)
 
     def test_import_rejects_modified_semantic_evidence(self):
         with TemporaryDirectory() as directory:

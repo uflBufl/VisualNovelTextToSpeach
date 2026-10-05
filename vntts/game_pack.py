@@ -10,7 +10,11 @@ from time import perf_counter, process_time
 
 from durable_file import sha256_file
 from vntts_artifacts.game_pack import GamePack, GamePackError, load_game_pack
-from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
+from vntts_artifacts.story_index import (
+    StoryIndexDocument,
+    StoryIndexError,
+    load_story_index_document,
+)
 
 from vntts.path_safety import contained_path, safe_relative_path
 from vntts.settings import AppSettings
@@ -129,9 +133,11 @@ def _source_audio_semantic_evidence(pack: GamePack) -> Path | None:
     )
     if extension is None:
         try:
-            story = load_story_index_document(pack.story_index.path)
+            story = _load_bound_story_index(
+                pack.story_index.path, pack.story_index.sha256
+            )
             story_metadata = story.metadata.get("source_audio_semantics")
-        except StoryIndexError as error:
+        except (StoryIndexError, OSError) as error:
             raise GamePackError(str(error)) from error
         if isinstance(story_metadata, dict):
             raise GamePackError(
@@ -171,7 +177,7 @@ def _source_audio_semantic_evidence(pack: GamePack) -> Path | None:
             evidence_id,
             entry_count,
         )
-    except SourceAudioSemanticEvidenceError as error:
+    except (StoryIndexError, SourceAudioSemanticEvidenceError, OSError) as error:
         raise GamePackError(str(error)) from error
     return evidence_path
 
@@ -179,13 +185,13 @@ def _source_audio_semantic_evidence(pack: GamePack) -> Path | None:
 @lru_cache(maxsize=8)
 def _validate_semantic_evidence(
     story_path: str,
-    _story_sha256: str,
+    story_sha256: str,
     evidence_path: str,
-    _evidence_sha256: str,
+    evidence_sha256: str,
     evidence_id: str,
     entry_count: int,
 ) -> None:
-    story = load_story_index_document(story_path)
+    story = _load_bound_story_index(Path(story_path), story_sha256)
     document = load_source_audio_semantic_evidence(evidence_path, story)
     if (
         document["evidence_id"] != evidence_id
@@ -194,6 +200,18 @@ def _validate_semantic_evidence(
         raise SourceAudioSemanticEvidenceError(
             "Game pack semantic evidence extension changed"
         )
+
+    if sha256_file(evidence_path) != evidence_sha256:
+        raise SourceAudioSemanticEvidenceError(
+            "Game pack semantic evidence checksum changed while it was being read"
+        )
+
+
+def _load_bound_story_index(path: Path, checksum: str) -> StoryIndexDocument:
+    document = load_story_index_document(path)
+    if sha256_file(path) != checksum:
+        raise GamePackError("Game pack story checksum changed while it was being read")
+    return document
 
 
 def apply_game_pack(
