@@ -549,29 +549,14 @@ class OfflinePackPublisher:
                     cancel_event=cancel_event,
                 )
                 _raise_if_cancelled(cancel_event)
-                write_generated_audio_manifest(
+                _write_route_manifest(
                     generated_copy,
-                    {
-                        "game": published_story.game,
-                        "language": published_story.language,
-                        "generated_at": datetime.now(timezone.utc).isoformat(),
-                        "vntts.self-service.incremental": {
-                            "schema_version": 1,
-                            "base_pack_identity": base_identity,
-                            "current_queue_sha256": generation_input.queue_sha256,
-                        },
-                        "vntts.authoring.live_fallback": {
-                            "schema_version": 1,
-                            "mode": "explicit",
-                            "entries": live_fallbacks,
-                        },
-                        "vntts.authoring.audio_event_omission": {
-                            "schema_version": 1,
-                            "mode": "explicit",
-                            "entries": omissions,
-                        },
-                    },
+                    published_story,
+                    generation_input.queue_sha256,
+                    base_identity,
                     generated_records,
+                    live_fallbacks,
+                    omissions,
                 )
                 _record_publication_phase(
                     "audio-routes",
@@ -1214,6 +1199,41 @@ def _portable_voice_entries(
             candidate["references"].append(portable)
         result.append(candidate)
     return result
+
+
+def _write_route_manifest(
+    manifest: Path,
+    story: StoryIndexDocument,
+    queue_sha256: str,
+    base_identity: str | None,
+    generated: JsonRecords,
+    fallback: JsonRecords,
+    omissions: JsonRecords,
+) -> None:
+    write_generated_audio_manifest(
+        manifest,
+        {
+            "game": story.game,
+            "language": story.language,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "vntts.self-service.incremental": {
+                "schema_version": 1,
+                "base_pack_identity": base_identity,
+                "current_queue_sha256": queue_sha256,
+            },
+            "vntts.authoring.live_fallback": {
+                "schema_version": 1,
+                "mode": "explicit",
+                "entries": fallback,
+            },
+            "vntts.authoring.audio_event_omission": {
+                "schema_version": 1,
+                "mode": "explicit",
+                "entries": omissions,
+            },
+        },
+        generated,
+    )
 
 
 def _write_cumulative_routes(
