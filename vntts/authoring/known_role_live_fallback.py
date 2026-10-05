@@ -617,6 +617,7 @@ def _validated_known_role_batch(value: object) -> dict[str, object]:
         not isinstance(batch, dict)
         or set(batch) != common
         or batch.get("schema") != SCHEMA
+        or type(batch.get("schema_version")) is not int
         or batch.get("schema_version") != SCHEMA_VERSION
         or batch.get("batch_id")
         != canonical_document_sha256(

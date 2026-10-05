@@ -155,6 +155,45 @@ class KnownRoleLiveFallbackTests(unittest.TestCase):
             plain.assert_not_called()
             validation.assert_called_once()
 
+    def test_public_validation_rejects_noninteger_batch_versions(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, evidence, queue_id = self._fixture(root)
+            created = create_known_role_live_fallback_workspace(
+                base, ((queue_id, evidence),), root / "workspaces"
+            ).directory
+            original = json.loads((created / "workspace.json").read_text())
+            state_path = created / "generated-audio/generation-state.json"
+            state_before = state_path.read_bytes()
+            for version in (True, 1.0):
+                with self.subTest(version=version):
+                    workspace = json.loads(json.dumps(original))
+                    batch = workspace["known_role_live_fallback"]
+                    batch["schema_version"] = version
+                    batch["batch_id"] = canonical_document_sha256(
+                        {
+                            key: value
+                            for key, value in batch.items()
+                            if key != "batch_id"
+                        }
+                    )
+                    state = json.loads(state_before)
+                    state["items"][queue_id]["live_fallback"]["evidence"][
+                        "batch_id"
+                    ] = batch["batch_id"]
+                    state_path.write_text(json.dumps(state))
+                    with self.assertRaisesRegex(
+                        AuthoringWorkbenchError, "batch is malformed"
+                    ):
+                        fallback_module.validate_known_role_live_fallback_workspace(
+                            created, workspace
+                        )
+                    self.assertEqual(json.loads(state_path.read_text()), state)
+            state_path.write_bytes(state_before)
+            fallback_module.validate_known_role_live_fallback_workspace(
+                created, original
+            )
+
     def test_exact_routed_fallback_is_valid_and_idempotent(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
