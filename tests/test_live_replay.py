@@ -467,11 +467,22 @@ class LiveReplayTest(unittest.TestCase):
                 generated_line_id="story:shadow:2",
             )
 
+            corpus = load_live_replay_corpus(path)
             report = LiveReplayRunner(
-                load_live_replay_corpus(path),
+                corpus,
                 interval_seconds=0.002,
                 timeout_seconds=4,
             ).run()
+
+            self.assertEqual(report["provenance"]["corpus_sha256"], sha256_file(path))
+            self.assertEqual(
+                report["provenance"]["story_index_sha256"],
+                sha256_file(corpus.live_sequence.story_index.path),
+            )
+            self.assertEqual(
+                report["provenance"]["live_sequence_plan_sha256"],
+                sha256_file(corpus.live_sequence.plan.path),
+            )
 
         self.assertTrue(report["successful"], report)
         self.assertTrue(report["sequence"]["successful"])

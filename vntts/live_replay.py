@@ -637,13 +637,37 @@ class LiveReplayRunner:
         self.audio_source_policy = audio_source_policy
 
     def run(self) -> ReplayReport:
-        with _generated_audio_index_snapshot(
-            self.corpus.generated_audio_manifest
-        ) as generated_audio_index:
-            with _live_sequence_snapshot(self.corpus.live_sequence) as sequence:
-                if sequence is not None:
-                    return self._run_sequence(generated_audio_index, *sequence)
-                return self._run_legacy(generated_audio_index)
+        with (
+            _generated_audio_index_snapshot(
+                self.corpus.generated_audio_manifest
+            ) as generated_audio_index,
+            _live_sequence_snapshot(self.corpus.live_sequence) as sequence,
+        ):
+            if sequence is not None:
+                return self._run_sequence(generated_audio_index, *sequence)
+            return self._run_legacy(generated_audio_index)
+
+    def _provenance(self) -> dict[str, object]:
+        manifest = self.corpus.generated_audio_manifest
+        return {
+            "corpus_sha256": self.corpus.source_sha256,
+            "generated_audio_manifest_sha256": manifest.sha256 if manifest else None,
+            "generated_audio_artifacts": (
+                [
+                    {"path": artifact.relative_path, "sha256": artifact.sha256}
+                    for artifact in manifest.artifacts
+                ]
+                if manifest
+                else []
+            ),
+            "recognition_sources": sorted(
+                {
+                    source
+                    for dialogue in self.corpus.dialogue
+                    for source in dialogue.frame_recognition_sources
+                }
+            ),
+        }
 
     def _create_audio_stack(
         self,
@@ -910,32 +934,7 @@ class LiveReplayRunner:
                 "recognized_frames": recognized_frames,
                 "frame_consumption": frame_consumption,
             },
-            "provenance": {
-                "corpus_sha256": self.corpus.source_sha256,
-                "generated_audio_manifest_sha256": (
-                    self.corpus.generated_audio_manifest.sha256
-                    if self.corpus.generated_audio_manifest is not None
-                    else None
-                ),
-                "generated_audio_artifacts": (
-                    [
-                        {
-                            "path": artifact.relative_path,
-                            "sha256": artifact.sha256,
-                        }
-                        for artifact in self.corpus.generated_audio_manifest.artifacts
-                    ]
-                    if self.corpus.generated_audio_manifest is not None
-                    else []
-                ),
-                "recognition_sources": sorted(
-                    {
-                        source
-                        for dialogue in self.corpus.dialogue
-                        for source in dialogue.frame_recognition_sources
-                    }
-                ),
-            },
+            "provenance": self._provenance(),
             "timelines": timelines.snapshot(),
         }
 
@@ -1322,30 +1321,10 @@ class LiveReplayRunner:
                 "routed_frames": routed_frames,
                 "frame_consumption": frame_consumption,
             },
-            "provenance": {
-                "corpus_sha256": self.corpus.source_sha256,
+            "provenance": self._provenance()
+            | {
                 "story_index_sha256": binding.story_index.sha256,
                 "live_sequence_plan_sha256": binding.plan.sha256,
-                "generated_audio_manifest_sha256": (
-                    self.corpus.generated_audio_manifest.sha256
-                    if self.corpus.generated_audio_manifest is not None
-                    else None
-                ),
-                "generated_audio_artifacts": (
-                    [
-                        {"path": artifact.relative_path, "sha256": artifact.sha256}
-                        for artifact in self.corpus.generated_audio_manifest.artifacts
-                    ]
-                    if self.corpus.generated_audio_manifest is not None
-                    else []
-                ),
-                "recognition_sources": sorted(
-                    {
-                        source
-                        for dialogue in self.corpus.dialogue
-                        for source in dialogue.frame_recognition_sources
-                    }
-                ),
             },
             "statuses": statuses,
             "timelines": pipeline.timelines.snapshot(),
