@@ -710,6 +710,16 @@ class Reverse1999GameImporter:
 
     @staticmethod
     def _publisher_command(executable: str, module: str) -> tuple[str, ...] | None:
+        if getattr(sys, "frozen", False):
+            worker = {
+                "r1999-source-audio-duration": "duration",
+                "r1999-source-audio-semantics": "semantics",
+            }.get(executable)
+            return (
+                (sys.executable, "--source-audio-publisher-worker", worker)
+                if worker is not None
+                else None
+            )
         command = shutil.which(executable)
         if command:
             return (command,)
@@ -717,16 +727,7 @@ class Reverse1999GameImporter:
             module_available = importlib.util.find_spec(module) is not None
         except ImportError, ModuleNotFoundError, ValueError:
             module_available = False
-        if module_available and not getattr(sys, "frozen", False):
-            return (sys.executable, "-m", module)
-        if getattr(sys, "frozen", False):
-            worker = {
-                "r1999-source-audio-duration": "duration",
-                "r1999-source-audio-semantics": "semantics",
-            }.get(executable)
-            if worker is not None:
-                return (sys.executable, "--source-audio-publisher-worker", worker)
-        return None
+        return (sys.executable, "-m", module) if module_available else None
 
     def _semantic_output_root(self, job: PregenerationJob) -> Path:
         return self.output_root / "reverse1999" / "source-audio-semantics" / job.job_id

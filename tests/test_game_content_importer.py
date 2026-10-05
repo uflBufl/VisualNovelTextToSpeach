@@ -843,19 +843,24 @@ class Reverse1999GameImporterTest(unittest.TestCase):
         )
 
     def test_frozen_app_uses_hidden_source_audio_publisher_worker(self):
-        with (
-            patch("vntts.game_content_importer.shutil.which", return_value=None),
-            patch.object(sys, "frozen", True, create=True),
-        ):
-            command = Reverse1999GameImporter._publisher_command(
-                "r1999-source-audio-semantics",
-                "r1999extractor.source_audio_semantics",
-            )
-
-        self.assertEqual(
-            command,
-            (sys.executable, "--source-audio-publisher-worker", "semantics"),
-        )
+        for worker in ("duration", "semantics"):
+            for conflicting_executable in (None, f"/outside/r1999-{worker}"):
+                with (
+                    self.subTest(worker=worker, executable=conflicting_executable),
+                    patch(
+                        "vntts.game_content_importer.shutil.which",
+                        return_value=conflicting_executable,
+                    ),
+                    patch.object(sys, "frozen", True, create=True),
+                ):
+                    command = Reverse1999GameImporter._publisher_command(
+                        f"r1999-source-audio-{worker}",
+                        f"r1999extractor.source_audio_{worker}",
+                    )
+                    self.assertEqual(
+                        command,
+                        (sys.executable, "--source-audio-publisher-worker", worker),
+                    )
 
     def test_one_selected_installation_folder_resolves_all_importer_inputs(self):
         with TemporaryDirectory() as temporary_directory:
