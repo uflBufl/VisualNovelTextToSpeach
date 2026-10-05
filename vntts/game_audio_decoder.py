@@ -189,16 +189,21 @@ def probe_game_decoder(
         _run(
             [str(path), "-i", "-o", str(output), str(source)], cancellation, timeout=15
         )
-        with wave.open(str(output), "rb") as wav:
-            if (
-                wav.getnchannels(),
-                wav.getsampwidth(),
-                wav.getframerate(),
-                wav.readframes(241),
-            ) != (1, 2, 24000, pcm):
-                raise DecoderSetupError(
-                    "Game-audio decoder failed its audio integrity check"
-                )
+        try:
+            with wave.open(str(output), "rb") as wav:
+                if (
+                    wav.getnchannels(),
+                    wav.getsampwidth(),
+                    wav.getframerate(),
+                    wav.readframes(241),
+                ) != (1, 2, 24000, pcm):
+                    raise DecoderSetupError(
+                        "Game-audio decoder failed its audio integrity check"
+                    )
+        except (wave.Error, EOFError) as error:
+            raise DecoderSetupError(
+                "Game-audio decoder failed its audio integrity check"
+            ) from error
     return str(path)
 
 
