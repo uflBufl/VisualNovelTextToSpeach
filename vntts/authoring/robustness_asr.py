@@ -373,6 +373,15 @@ def _summary(records: Sequence[_AsrRecord]) -> JsonDocument:
     }
 
 
+def _document_sha256(document: object) -> str:
+    try:
+        return canonical_document_sha256(document)
+    except (TypeError, ValueError) as error:
+        raise SpeechRobustnessAsrError(
+            f"ASR evidence cannot be canonically hashed: {error}"
+        ) from error
+
+
 def _validate_document(document: object) -> JsonDocument:
     fields = {
         "schema",
@@ -389,12 +398,21 @@ def _validate_document(document: object) -> JsonDocument:
         raise SpeechRobustnessAsrError("ASR robustness report shape is invalid")
     if (
         document.get("schema") != SPEECH_ROBUSTNESS_ASR_SCHEMA
+        or type(document.get("schema_version")) is not int
         or document.get("schema_version") != SPEECH_ROBUSTNESS_ASR_VERSION
-        or document.get("policy")
-        != {"diagnostic_only": True, "automatic_rejection": False}
+        or type(document.get("corpus_schema_version")) is not int
+        or document["corpus_schema_version"] not in (2, 3)
     ):
         raise SpeechRobustnessAsrError("ASR robustness report policy is invalid")
-    expected_id = canonical_document_sha256(
+    policy = document["policy"]
+    if (
+        not _is_json_document(policy)
+        or set(policy) != {"diagnostic_only", "automatic_rejection"}
+        or policy["diagnostic_only"] is not True
+        or policy["automatic_rejection"] is not False
+    ):
+        raise SpeechRobustnessAsrError("ASR robustness report policy is invalid")
+    expected_id = _document_sha256(
         {key: value for key, value in document.items() if key != "report_id"}
     )
     if document.get("report_id") != expected_id:
@@ -419,7 +437,7 @@ def _progress_document(
         "device": device,
         "records": records,
     }
-    return {**body, "progress_id": canonical_document_sha256(body)}
+    return {**body, "progress_id": _document_sha256(body)}
 
 
 def _load_progress(
@@ -456,12 +474,13 @@ def _load_progress(
         not _is_json_document(document)
         or set(document) != expected
         or document.get("schema") != "vntts.speech-robustness-asr-progress"
+        or type(document.get("schema_version")) is not int
         or document.get("schema_version") != SPEECH_ROBUSTNESS_ASR_VERSION
         or document.get("corpus_id") != corpus_id
         or document.get("model_sha256") != model_sha256
         or document.get("device") != device
         or document.get("progress_id")
-        != canonical_document_sha256(
+        != _document_sha256(
             {key: value for key, value in document.items() if key != "progress_id"}
         )
     ):
@@ -619,7 +638,7 @@ def build_speech_robustness_asr_report(
     }
     document: JsonDocument = {
         **body,
-        "report_id": canonical_document_sha256(body),
+        "report_id": _document_sha256(body),
     }
     validated = _validate_document(document)
     return SpeechRobustnessAsrReport(

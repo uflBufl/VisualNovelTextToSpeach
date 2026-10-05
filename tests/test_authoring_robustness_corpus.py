@@ -4,6 +4,7 @@ import json
 import unittest
 import wave
 from contextlib import redirect_stdout
+from dataclasses import replace
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -217,6 +218,25 @@ class AuthoringRobustnessCorpusTest(unittest.TestCase):
                             transcriber=lambda _: self.fail("changed progress resumed"),
                             progress_path=progress,
                         )
+            for version in (2.0, float("nan")):
+                with self.subTest(version=version):
+                    document = json.loads(original)
+                    document["schema_version"] = version
+                    document["progress_id"] = _canonical_sha256(
+                        {
+                            key: value
+                            for key, value in document.items()
+                            if key != "progress_id"
+                        }
+                    )
+                    progress.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaises(SpeechRobustnessAsrError):
+                        build_speech_robustness_asr_report(
+                            corpus,
+                            model,
+                            transcriber=lambda _: self.fail("invalid progress resumed"),
+                            progress_path=progress,
+                        )
             with self.assertRaisesRegex(SpeechRobustnessAsrError, "immutable model"):
                 build_speech_robustness_asr_report(
                     corpus,
@@ -228,6 +248,42 @@ class AuthoringRobustnessCorpusTest(unittest.TestCase):
             self.assertEqual(
                 sorted(path.name for path in model.iterdir()), ["weights.bin"]
             )
+
+    def test_asr_report_rejects_inexact_policy_version_and_nonfinite_json(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state_path, queue_id = _pending_workspace(root / "reviewed")
+            _decision(workspace, queue_id)
+            corpus = root / "corpus"
+            publish_speech_robustness_corpus([workspace / "cohort-reviews"], [], corpus)
+            model = root / "model"
+            model.mkdir()
+            (model / "weights.bin").write_bytes(b"model")
+            report = build_speech_robustness_asr_report(
+                corpus, model, transcriber=lambda _: "text"
+            )
+            for field, value in (
+                ("schema_version", 2.0),
+                ("corpus_schema_version", 3.0),
+                ("policy", {"diagnostic_only": 1, "automatic_rejection": 0}),
+                ("asr", {"invalid": float("nan")}),
+            ):
+                with self.subTest(field=field):
+                    document = report.to_dict()
+                    document[field] = value
+                    document["report_id"] = _canonical_sha256(
+                        {
+                            key: value
+                            for key, value in document.items()
+                            if key != "report_id"
+                        }
+                    )
+                    output = root / "invalid.json"
+                    with self.assertRaises(SpeechRobustnessAsrError):
+                        write_speech_robustness_asr_report(
+                            replace(report, document=document), output
+                        )
+                    self.assertFalse(output.exists())
 
     def test_asr_batch_results_match_single_results_and_reject_a_string(self):
         with TemporaryDirectory() as directory:
