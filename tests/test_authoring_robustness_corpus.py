@@ -180,6 +180,55 @@ class AuthoringRobustnessCorpusTest(unittest.TestCase):
                 with self.assertRaises(SpeechRobustnessAsrError):
                     _WhisperTranscriber._input(payload)
 
+    def test_asr_resume_preserves_sample_metadata_and_immutable_model(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state_path, queue_id = _pending_workspace(root / "reviewed")
+            _decision(workspace, queue_id)
+            corpus = root / "corpus"
+            publish_speech_robustness_corpus([workspace / "cohort-reviews"], [], corpus)
+            model = root / "model"
+            model.mkdir()
+            weights = model / "weights.bin"
+            weights.write_bytes(b"model")
+            progress = root / "progress.json"
+            build_speech_robustness_asr_report(
+                corpus, model, transcriber=lambda _: "text", progress_path=progress
+            )
+            original = progress.read_bytes()
+            for field, value in (("human_label", "bad"), ("provider", "different")):
+                with self.subTest(field=field):
+                    document = json.loads(original)
+                    document["records"][0][field] = value
+                    document["progress_id"] = _canonical_sha256(
+                        {
+                            key: value
+                            for key, value in document.items()
+                            if key != "progress_id"
+                        }
+                    )
+                    progress.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        SpeechRobustnessAsrError, "record authority"
+                    ):
+                        build_speech_robustness_asr_report(
+                            corpus,
+                            model,
+                            transcriber=lambda _: self.fail("changed progress resumed"),
+                            progress_path=progress,
+                        )
+            with self.assertRaisesRegex(SpeechRobustnessAsrError, "immutable model"):
+                build_speech_robustness_asr_report(
+                    corpus,
+                    model,
+                    transcriber=lambda _: self.fail("model modified"),
+                    progress_path=model / "progress.json",
+                )
+            self.assertEqual(weights.read_bytes(), b"model")
+            self.assertEqual(
+                sorted(path.name for path in model.iterdir()), ["weights.bin"]
+            )
+
     def test_asr_batch_results_match_single_results_and_reject_a_string(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -476,6 +476,9 @@ def _load_progress(
             or record["audio_sha256"] != sample["audio_sha256"]
             or record["text_sha256"] != sample["text_sha256"]
             or record["expected_text"] != sample["text"]
+            or record["human_label"] != sample["human_label"]
+            or record["provider"]
+            != str(sample["synthesis"].get("provider") or "unknown")
         ):
             raise SpeechRobustnessAsrError("ASR progress record authority is invalid")
     return records
@@ -560,14 +563,11 @@ def build_speech_robustness_asr_report(
         None if progress_path is None else Path(progress_path).expanduser().resolve()
     )
     if progress is not None:
-        try:
-            progress.relative_to(corpus.directory)
-        except ValueError:
-            pass
-        else:
-            raise SpeechRobustnessAsrError(
-                "ASR progress must be outside the immutable corpus directory"
-            )
+        for directory, label in ((corpus.directory, "corpus"), (model, "model")):
+            if progress.is_relative_to(directory):
+                raise SpeechRobustnessAsrError(
+                    f"ASR progress must be outside the immutable {label} directory"
+                )
     records = _load_progress(
         progress,
         corpus_id=corpus.corpus_id,
