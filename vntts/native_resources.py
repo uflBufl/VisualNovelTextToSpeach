@@ -129,7 +129,6 @@ class NativeResourceSampler:
         self._stop = Event()
         self._start_lock = Lock()
         self._worker: Thread | None = None
-        self._started_at: float | None = None
         self._first_sample_at: float | None = None
         self._last_sample_at: float | None = None
         self._next_gpu_at: float | None = None
@@ -158,8 +157,7 @@ class NativeResourceSampler:
         with self._start_lock:
             if self._worker is not None:
                 return self
-            self._started_at = monotonic()
-            self._next_gpu_at = self._started_at
+            self._next_gpu_at = monotonic()
             self._worker = Thread(
                 target=self._run, name="native-resource-sampler", daemon=True
             )
