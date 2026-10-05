@@ -2,10 +2,13 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 from vntts_artifacts.voice_manifest import load_voice_manifest
 
+import vntts.authoring.known_role_live_fallback as fallback_module
+import vntts.authoring.workspace_state as workspace_state_module
 from tests.test_authoring_missing_voice_live_fallback import (
     create_missing_voice_live_fallback_fixture,
 )
@@ -125,6 +128,32 @@ class KnownRoleLiveFallbackTests(unittest.TestCase):
             evidence / "generated-audio/manifest.json",
         )
         return base, evidence, queue_id
+
+    def test_public_validation_uses_one_generation_state_snapshot(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, evidence, queue_id = self._fixture(root)
+            created = create_known_role_live_fallback_workspace(
+                base, ((queue_id, evidence),), root / "workspaces"
+            ).directory
+            workspace = json.loads((created / "workspace.json").read_text())
+            with (
+                patch.object(
+                    fallback_module,
+                    "load_generation_state",
+                    wraps=fallback_module.load_generation_state,
+                ) as plain,
+                patch.object(
+                    workspace_state_module,
+                    "validate_generation_state_document",
+                    wraps=workspace_state_module.validate_generation_state_document,
+                ) as validation,
+            ):
+                fallback_module.validate_known_role_live_fallback_workspace(
+                    created, workspace
+                )
+            plain.assert_not_called()
+            validation.assert_called_once()
 
     def test_exact_routed_fallback_is_valid_and_idempotent(self):
         with TemporaryDirectory() as directory:

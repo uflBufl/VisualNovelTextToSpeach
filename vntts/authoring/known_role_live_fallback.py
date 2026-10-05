@@ -643,7 +643,7 @@ def _known_role_validation_inputs(
     Path,
     dict[str, object],
     dict[str, object],
-    dict[str, object],
+    dict[str, VoiceGenerationQueueItem],
     Mapping[str, str],
 ]:
     manifest_path = contained_workspace_path(
@@ -653,23 +653,17 @@ def _known_role_validation_inputs(
     )
     manifest = load_workspace_json(manifest_path, "known-role fallback manifest")
     _metadata, voices = load_voice_manifest(manifest_path, allow_legacy=False)
-    try:
-        queue = load_generation_state(
-            root / "generated-audio/generation-state.json", root / "queue.jsonl"
-        )
-    except BulkGenerationError as error:
-        raise AuthoringWorkbenchError(str(error)) from error
-    queue_document = load_stable_workspace_generation_state(
+    queue, state, _payload, _state_sha256 = load_stable_workspace_generation_state(
         root,
         workspace,
         "known-role fallback workspace",
         error_type=AuthoringWorkbenchError,
-    )[0]
-    queue_by_id = {item.queue_id: item for item in queue_document.items}
+    )
+    queue_by_id = {item.queue_id: item for item in queue.items}
     overrides = queue_voice_overrides_from_manifest(
         manifest, queue_ids=queue_by_id, voices=voices
     )
-    return manifest_path, manifest, queue, queue_by_id, overrides
+    return manifest_path, manifest, state, queue_by_id, overrides
 
 
 def _validate_known_role_route(
