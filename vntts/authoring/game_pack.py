@@ -255,8 +255,9 @@ def publish_final_game_pack(
     )
     initial_state = _load_initial_publication_state(request.paths.state)
     request.paths.destination.parent.mkdir(parents=True, exist_ok=True)
-    with _PublicationLease(request.paths.destination) as publication_lease:
-        with generation_publication_leases(
+    with (
+        _PublicationLease(request.paths.destination) as publication_lease,
+        generation_publication_leases(
             (
                 (
                     request.paths.state.parent,
@@ -264,41 +265,42 @@ def publish_final_game_pack(
                 ),
             ),
             process_checker=process_is_alive,
-        ) as generation_leases:
-            generation_lease = generation_leases[0]
-            queue, queue_sha256, state, state_sha256 = _select_stable_publication_state(
-                request.paths
+        ) as generation_leases,
+    ):
+        generation_lease = generation_leases[0]
+        queue, queue_sha256, state, state_sha256 = _select_stable_publication_state(
+            request.paths
+        )
+        with TemporaryDirectory(
+            dir=request.paths.destination.parent,
+            prefix=f".{request.paths.destination.name}.staging-",
+        ) as staging_directory:
+            controls = _stage_publication_controls(
+                request.paths, Path(staging_directory), state_sha256, queue_sha256
             )
-            with TemporaryDirectory(
-                dir=request.paths.destination.parent,
-                prefix=f".{request.paths.destination.name}.staging-",
-            ) as staging_directory:
-                controls = _stage_publication_controls(
-                    request.paths, Path(staging_directory), state_sha256, queue_sha256
-                )
-                validated_voices = _validate_staged_voice_controls(
-                    state,
-                    queue,
-                    request.paths,
-                    controls,
-                )
-                generated = _stage_generated_audio(state, queue, request, controls)
-                resolved_game_id, counts = _write_staged_game_pack(
-                    request,
-                    state,
-                    queue,
-                    state_sha256,
-                    queue_sha256,
-                    controls,
-                    validated_voices,
-                    generated,
-                )
-                _publish_staged_game_pack(
-                    request.paths.destination,
-                    controls,
-                    generation_lease,
-                    publication_lease,
-                )
+            validated_voices = _validate_staged_voice_controls(
+                state,
+                queue,
+                request.paths,
+                controls,
+            )
+            generated = _stage_generated_audio(state, queue, request, controls)
+            resolved_game_id, counts = _write_staged_game_pack(
+                request,
+                state,
+                queue,
+                state_sha256,
+                queue_sha256,
+                controls,
+                validated_voices,
+                generated,
+            )
+            _publish_staged_game_pack(
+                request.paths.destination,
+                controls,
+                generation_lease,
+                publication_lease,
+            )
     return _publication_result(
         request, resolved_game_id, counts, queue_sha256, state_sha256
     )
