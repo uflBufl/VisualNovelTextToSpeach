@@ -162,6 +162,63 @@ class OCRReviewStoreTest(unittest.TestCase):
                 len(list(directory.glob("uncertain-invalid-number-*.json"))), len(cases)
             )
 
+    def test_skips_nonstring_text_metadata_without_changing_files(self):
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            (directory / "sample.png").write_bytes(b"image")
+            originals = {}
+            for field in ("character", "text", "preprocessing_profile"):
+                for index, value in enumerate((123, 0, 1.5, True, False, [], {})):
+                    path = directory / f"uncertain-{field}-{index}.json"
+                    raw = json.dumps({"image": "sample.png", field: value})
+                    path.write_text(raw, encoding="utf-8")
+                    originals[path] = raw
+
+            self.assertEqual(OCRReviewStore(directory).pending_samples(), [])
+            for path, raw in originals.items():
+                self.assertEqual(path.read_text(encoding="utf-8"), raw)
+
+    def test_preserves_optional_text_defaults_and_literal_strings(self):
+        cases = (
+            ({}, ("Narrator", "", "unknown")),
+            (
+                {
+                    field: None
+                    for field in ("character", "text", "preprocessing_profile")
+                },
+                ("Narrator", "", "unknown"),
+            ),
+            (
+                {field: "" for field in ("character", "text", "preprocessing_profile")},
+                ("Narrator", "", "unknown"),
+            ),
+            (
+                {
+                    "character": "123",
+                    "text": "  Hello.  ",
+                    "preprocessing_profile": "fast",
+                },
+                ("123", "  Hello.  ", "fast"),
+            ),
+        )
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            (directory / "sample.png").write_bytes(b"image")
+            for index, (fields, expected) in enumerate(cases):
+                with self.subTest(fields=fields):
+                    path = directory / f"uncertain-{index}.json"
+                    path.write_text(
+                        json.dumps({"image": "sample.png", **fields}), encoding="utf-8"
+                    )
+                    samples = OCRReviewStore(directory).pending_samples()
+                    sample = next(
+                        item for item in samples if item.metadata_path == path
+                    )
+                    self.assertEqual(
+                        (sample.character, sample.text, sample.preprocessing_profile),
+                        expected,
+                    )
+
     def test_future_metadata_schema_is_not_offered_for_review(self):
         with TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)

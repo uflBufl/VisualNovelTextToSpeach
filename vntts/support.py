@@ -23,7 +23,7 @@ from vntts_artifacts.atomic_io import atomic_output_path
 
 from vntts.audio_lifecycle import audio_lifecycle_context
 from vntts.diagnostics import macos_permission_warnings
-from vntts.ocr_review import OCR_REVIEW_SCHEMA_VERSION
+from vntts.ocr_review import OCR_REVIEW_SCHEMA_VERSION, OCRReviewMetadata
 from vntts.onboarding import probe_audio_output, probe_tesseract
 from vntts.settings import AppSettings
 from vntts.versioned_json import read_versioned_json
@@ -2133,19 +2133,10 @@ def collect_ocr_metrics(directory: str | Path) -> SupportDocument:
                     document_name="OCR review metadata",
                     allow_unversioned=True,
                 )
-                confidence = payload.get("confidence", 0)
-                attempt_count = payload.get("attempts", 0)
-                if not isinstance(confidence, (str, int, float)) or not isinstance(
-                    attempt_count, (str, int, float)
-                ):
-                    raise TypeError("OCR metrics must be numeric")
-                confidence = float(confidence)
-                attempt_count = int(attempt_count)
-                if not math.isfinite(confidence):
-                    raise ValueError("OCR confidence must be finite")
-                confidences.append(confidence)
-                attempts.append(attempt_count)
-                profiles[str(payload.get("preprocessing_profile") or "unknown")] += 1
+                metadata = OCRReviewMetadata.from_payload(payload)
+                confidences.append(metadata.confidence)
+                attempts.append(metadata.attempts)
+                profiles[metadata.preprocessing_profile] += 1
                 resolved += payload.get("resolved") is True
             except OSError, TypeError, ValueError, OverflowError:
                 invalid += 1

@@ -40,6 +40,39 @@ def _int_field(value: object) -> int:
     return result
 
 
+def _text_field(value: object, default: str = "") -> str:
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        raise TypeError("OCR review text must be a string")
+    return value or default
+
+
+@dataclass(frozen=True)
+class OCRReviewMetadata:
+    """Recognized fields shared by review and image-independent diagnostics."""
+
+    character: str
+    text: str
+    confidence: float
+    minimum_confidence: float
+    preprocessing_profile: str
+    attempts: int
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, object]) -> "OCRReviewMetadata":
+        return cls(
+            character=_text_field(payload.get("character"), "Narrator"),
+            text=_text_field(payload.get("text")),
+            confidence=_float_field(payload.get("confidence", 0)),
+            minimum_confidence=_float_field(payload.get("minimum_confidence", 0)),
+            preprocessing_profile=_text_field(
+                payload.get("preprocessing_profile"), "unknown"
+            ),
+            attempts=_int_field(payload.get("attempts", 0)),
+        )
+
+
 @dataclass(frozen=True)
 class OCRReviewSample:
     metadata_path: Path
@@ -133,15 +166,14 @@ class OCRReviewStore:
         image_path = metadata_path.parent / image_name
         if image_path.is_symlink() or not image_path.is_file():
             return None
+        metadata = OCRReviewMetadata.from_payload(payload)
         return OCRReviewSample(
             metadata_path=metadata_path,
             image_path=image_path,
-            character=str(payload.get("character") or "Narrator"),
-            text=str(payload.get("text") or ""),
-            confidence=_float_field(payload.get("confidence", 0)),
-            minimum_confidence=_float_field(payload.get("minimum_confidence", 0)),
-            preprocessing_profile=str(
-                payload.get("preprocessing_profile") or "unknown"
-            ),
-            attempts=_int_field(payload.get("attempts", 0)),
+            character=metadata.character,
+            text=metadata.text,
+            confidence=metadata.confidence,
+            minimum_confidence=metadata.minimum_confidence,
+            preprocessing_profile=metadata.preprocessing_profile,
+            attempts=metadata.attempts,
         )

@@ -1525,6 +1525,44 @@ class SupportBundleBuilderTest(unittest.TestCase):
         self.assertFalse(active["available"])
         self.assertIn("invalid", active["reason"])
 
+    def test_ocr_metrics_skip_malformed_fields_and_keep_metadata_only_samples(self):
+        cases = (
+            ("confidence", True),
+            ("confidence", 10**400),
+            ("attempts", True),
+            ("attempts", 1.5),
+            ("attempts", -1),
+            ("preprocessing_profile", ["balanced"]),
+            ("text", {"bad": "shape"}),
+            ("character", 123),
+        )
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            for index, (field, value) in enumerate(cases):
+                (directory / f"uncertain-invalid-{index}.json").write_text(
+                    json.dumps({"confidence": 40, "attempts": 2, field: value}),
+                    encoding="utf-8",
+                )
+            for index, fields in enumerate(
+                (
+                    {"confidence": "42.5", "attempts": "2"},
+                    {"confidence": 57.5, "attempts": 4, "resolved": True},
+                )
+            ):
+                (directory / f"uncertain-valid-{index}.json").write_text(
+                    json.dumps(fields), encoding="utf-8"
+                )
+
+            metrics = collect_ocr_metrics(directory)
+
+        self.assertEqual(metrics["sample_count"], 2)
+        self.assertEqual(metrics["resolved_count"], 1)
+        self.assertEqual(metrics["pending_count"], 1)
+        self.assertEqual(metrics["invalid_metadata_count"], len(cases))
+        self.assertEqual(metrics["average_confidence"], 50)
+        self.assertEqual(metrics["average_attempts"], 3)
+        self.assertEqual(metrics["preprocessing_profiles"], {"unknown": 2})
+
     def test_ocr_metrics_report_resolved_pending_and_invalid_counts(self):
         with TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)
