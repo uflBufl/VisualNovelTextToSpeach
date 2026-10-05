@@ -158,13 +158,6 @@
     {
       "code": "C901",
       "path": "vntts/authoring/reconciliation_schema.py",
-      "scope": "_validated_report_actions",
-      "count": 1,
-      "maximum": 15
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/reconciliation_schema.py",
       "scope": "validate_authoring_reconciliation_document",
       "count": 1,
       "maximum": 12
@@ -759,13 +752,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/authoring/reconciliation_schema.py",
-      "scope": "_validated_report_actions",
-      "count": 1,
-      "maximum": 15
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/authoring/reference_selection.py",
       "scope": "validate_reference_selection_provenance",
       "count": 1,
@@ -1267,13 +1253,6 @@
       "scope": "plan_generation_queue",
       "count": 1,
       "maximum": 96
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/reconciliation_schema.py",
-      "scope": "_validated_report_actions",
-      "count": 1,
-      "maximum": 59
     },
     {
       "code": "PLR0915",
