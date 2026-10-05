@@ -15,9 +15,13 @@ from vntts_artifacts import (
     load_story_index_document,
     write_story_index_document,
 )
-from vntts_artifacts.audio import write_pcm16_wav
+from vntts_artifacts.audio import probe_pcm16_mono_wav, write_pcm16_wav
 from vntts_artifacts.hashing import text_sha256
-from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_manifest
+from vntts_artifacts.voice_manifest import (
+    VoiceManifestEntry,
+    load_voice_manifest,
+    write_voice_manifest,
+)
 
 from tests.symlink_support import symlink_or_skip
 from vntts.authoring.audio_events import AUDIO_EVENT_PLAN_FIELD, STORY_AUDIO_CUES_FIELD
@@ -135,6 +139,65 @@ def write_inputs(root, records):
 
 
 class AuthoringQueueBuilderTest(unittest.TestCase):
+    def test_only_needed_references_are_probed_once_per_plan(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story_path, manifest_path = write_inputs(
+                root, [story_record("line-1", "unavailable")]
+            )
+            with patch(
+                "vntts.authoring.queue_builder.probe_pcm16_mono_wav",
+                wraps=probe_pcm16_mono_wav,
+            ) as probe:
+                plan = inspect_generation_queue(story_path, manifest_path)
+                probe.assert_not_called()
+                self.assertEqual(plan.summary.recoverable_source_audio, 1)
+
+                write_story_index_document(
+                    story_path,
+                    story_metadata(),
+                    [
+                        story_record("line-1", "absent"),
+                        story_record(
+                            "line-2",
+                            "absent",
+                            speaker="Narrator",
+                            voice_character="Narrator",
+                        ),
+                        story_record("line-3", "absent"),
+                    ],
+                )
+                plan = inspect_generation_queue(story_path, manifest_path)
+                self.assertEqual(plan.summary.ready, 3)
+                probe.assert_called_once_with(
+                    (root / "references" / "ada.wav").resolve()
+                )
+
+                (root / "references" / "ada.wav").write_bytes(b"not a WAV")
+                plan = inspect_generation_queue(story_path, manifest_path)
+                self.assertEqual(plan.summary.ready, 0)
+                self.assertEqual(plan.summary.missing_reference, 3)
+                self.assertEqual(probe.call_count, 2)
+
+    def test_unused_typed_reference_must_stay_inside_manifest_directory(self):
+        with TemporaryDirectory() as directory:
+            story_path, manifest_path = write_inputs(
+                Path(directory), [story_record("line-1", "unavailable")]
+            )
+            document = StoryIndexDocument.load(story_path)
+            entries = (
+                VoiceManifestEntry(
+                    character="Unused",
+                    speaker="unused",
+                    aliases=(),
+                    references=("../outside.wav",),
+                ),
+            )
+            with patch("vntts.authoring.queue_builder.probe_pcm16_mono_wav") as probe:
+                with self.assertRaisesRegex(GenerationQueueBuildError, "inside"):
+                    plan_generation_queue(document, entries, manifest_path)
+                probe.assert_not_called()
+
     def test_partial_source_audio_is_queued_for_complete_text_generation(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

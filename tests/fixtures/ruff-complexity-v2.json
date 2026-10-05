@@ -146,7 +146,7 @@
       "path": "vntts/authoring/queue_builder.py",
       "scope": "plan_generation_queue",
       "count": 1,
-      "maximum": 24
+      "maximum": 23
     },
     {
       "code": "C901",
@@ -741,7 +741,7 @@
       "path": "vntts/authoring/queue_builder.py",
       "scope": "plan_generation_queue",
       "count": 1,
-      "maximum": 26
+      "maximum": 24
     },
     {
       "code": "PLR0912",
@@ -1252,7 +1252,7 @@
       "path": "vntts/authoring/queue_builder.py",
       "scope": "plan_generation_queue",
       "count": 1,
-      "maximum": 96
+      "maximum": 90
     },
     {
       "code": "PLR0915",

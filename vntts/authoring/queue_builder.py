@@ -6,6 +6,7 @@ from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import cache
 from pathlib import Path, PurePosixPath
 
 from durable_file import sha256_file
@@ -174,9 +175,20 @@ def plan_generation_queue(
         )
     voice_index = _voice_index(entries)
     manifest_directory = voice_manifest_path.parent
-    reference_availability = {
-        entry: _has_local_reference(entry, manifest_directory) for entry in entries
+    reference_paths = {
+        entry: _local_reference_paths(entry, manifest_directory) for entry in entries
     }
+
+    valid_reference = cache(_valid_local_reference)
+
+    @cache
+    def has_local_reference(paths: tuple[Path, ...]) -> bool:
+        return (
+            bool(paths)
+            and all(path.is_file() for path in paths)
+            and all(valid_reference(path) for path in paths)
+        )
+
     delivery_policy = (
         PRESERVE_DELIVERY_POLICY
         if delivery_policy is None
@@ -239,7 +251,7 @@ def plan_generation_queue(
         if action == "generate":
             if audio_event_plan is not None:
                 audio_event_composition += 1
-            elif entry is not None and reference_availability[entry]:
+            elif entry is not None and has_local_reference(reference_paths[entry]):
                 ready += 1
             else:
                 missing_reference += 1
@@ -318,6 +330,29 @@ def plan_generation_queue(
             "unknown_action": unknown_action,
             "partial_source_audio_only": bool(partial_source_audio_only),
         },
+        **_source_queue_metadata(document, document_path, entries, voice_manifest_path),
+    }
+    if delivery_policy != PRESERVE_DELIVERY_POLICY:
+        metadata["delivery_annotation_policy"] = {
+            "name": delivery_policy,
+            "version": DELIVERY_ANNOTATION_VERSION,
+            "mode": "missing-only",
+            "policy_generated_count": annotation_origins["policy"],
+            "source_complete_count": annotation_origins["source_complete"],
+            "source_partial_count": annotation_origins["source_partial"],
+            "unannotated_count": annotation_origins["none"],
+            "generated_items": policy_generated_items,
+        }
+    return GenerationQueuePlan(metadata, tuple(items), summary)
+
+
+def _source_queue_metadata(
+    document: StoryIndexDocument,
+    document_path: Path,
+    entries: tuple[VoiceManifestEntry, ...],
+    voice_manifest_path: Path,
+) -> dict[str, object]:
+    metadata: dict[str, object] = {
         "source_story_index_document_sha256": canonical_document_sha256(
             {
                 "metadata": document.metadata,
@@ -344,18 +379,7 @@ def plan_generation_queue(
     metadata["source_story_index_sha256"] = sha256_file(document_path)
     metadata["source_voice_manifest"] = str(voice_manifest_path)
     metadata["source_voice_manifest_sha256"] = sha256_file(voice_manifest_path)
-    if delivery_policy != PRESERVE_DELIVERY_POLICY:
-        metadata["delivery_annotation_policy"] = {
-            "name": delivery_policy,
-            "version": DELIVERY_ANNOTATION_VERSION,
-            "mode": "missing-only",
-            "policy_generated_count": annotation_origins["policy"],
-            "source_complete_count": annotation_origins["source_complete"],
-            "source_partial_count": annotation_origins["source_partial"],
-            "unannotated_count": annotation_origins["none"],
-            "generated_items": policy_generated_items,
-        }
-    return GenerationQueuePlan(metadata, tuple(items), summary)
+    return metadata
 
 
 def inspect_generation_queue(
@@ -427,11 +451,17 @@ def _voice_index(
     return result
 
 
-def _has_local_reference(
-    entry: VoiceManifestEntry | None, manifest_directory: str | Path
-) -> bool:
-    if entry is None or not entry.references:
+def _valid_local_reference(path: Path) -> bool:
+    try:
+        probe_pcm16_mono_wav(path)
+    except OSError, ValueError:
         return False
+    return True
+
+
+def _local_reference_paths(
+    entry: VoiceManifestEntry, manifest_directory: Path
+) -> tuple[Path, ...]:
     candidates = []
     root = Path(manifest_directory).resolve()
     for reference in entry.references:
@@ -456,14 +486,7 @@ def _has_local_reference(
                 f"Voice reference leaves the manifest directory: {reference!r}"
             ) from error
         candidates.append(candidate)
-    if not candidates or not all(candidate.is_file() for candidate in candidates):
-        return False
-    try:
-        for candidate in candidates:
-            probe_pcm16_mono_wav(candidate)
-    except OSError, ValueError:
-        return False
-    return True
+    return tuple(candidates)
 
 
 def _queue_item(
