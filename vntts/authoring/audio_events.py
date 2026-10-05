@@ -6,6 +6,7 @@ import hashlib
 import math
 import re
 from dataclasses import dataclass
+from typing import TypedDict
 
 from vntts.document_identity import canonical_document_sha256
 
@@ -40,13 +41,23 @@ _EVENT_DEFINITIONS = {
 }
 
 
+class _InlineAudioEvent(TypedDict):
+    event_index: int
+    source: str
+    label: str
+    kind: str
+    synthesis_policy: str
+    start: int
+    end: int
+
+
 @dataclass(frozen=True)
 class AudioEventPlan:
     """Canonical text split into speech and ordered non-verbal events."""
 
     canonical_text: str
     spoken_text: str
-    events: tuple[dict[str, object], ...]
+    events: tuple[_InlineAudioEvent, ...]
 
     @property
     def requires_composition(self) -> bool:
@@ -75,7 +86,7 @@ def plan_inline_audio_events(text: object) -> AudioEventPlan:
     if not isinstance(text, str) or not text.strip():
         raise ValueError("Audio-event source text must be non-empty text")
     matches = list(_STAGE_EVENT_PATTERN.finditer(text))
-    events = []
+    events: list[_InlineAudioEvent] = []
     for index, match in enumerate(matches, start=1):
         label = " ".join(match.group("label").split())
         normalized = label.casefold()
@@ -116,14 +127,12 @@ def audio_event_plan_document(
     text: object, *, story_audio_cues: object = _MISSING
 ) -> dict[str, object] | None:
     """Return an additive queue document only when composition is required."""
-    if story_audio_cues is not _MISSING:
-        story_audio_cues = validate_story_audio_cues(story_audio_cues)
     plan = plan_inline_audio_events(text)
-    return (
-        plan.to_document(story_audio_cues=story_audio_cues)
-        if plan.requires_composition
-        else None
-    )
+    if plan.requires_composition:
+        return plan.to_document(story_audio_cues=story_audio_cues)
+    if story_audio_cues is not _MISSING:
+        validate_story_audio_cues(story_audio_cues)
+    return None
 
 
 def audio_event_plan_for_record(value: object) -> dict[str, object] | None:
@@ -166,7 +175,7 @@ def _validate_story_audio_cue(source: object, expected_index: int) -> dict[str, 
     if not isinstance(source, dict):
         raise ValueError(f"story_audio_cues[{expected_index}] must be an object")
     cue = dict(source)
-    if cue.get("cue_index") != expected_index:
+    if type(cue.get("cue_index")) is not int or cue["cue_index"] != expected_index:
         raise ValueError("story_audio_cues must have consecutive source-order indices")
     audio_id = cue.get("source_audio_id")
     if not isinstance(audio_id, str) or not audio_id.isdecimal():
@@ -201,11 +210,15 @@ def _validate_cue_numbers(cue: dict[str, object], cue_index: int) -> None:
             raise ValueError(f"story_audio_cues[{cue_index}] {field} is invalid")
     for field in _CUE_NUMBER_FIELDS:
         field_value = cue.get(field)
-        if (
-            not isinstance(field_value, (int, float))
-            or isinstance(field_value, bool)
-            or not math.isfinite(field_value)
-        ):
+        if not isinstance(field_value, (int, float)) or isinstance(field_value, bool):
+            raise ValueError(f"story_audio_cues[{cue_index}] {field} is invalid")
+        try:
+            finite = math.isfinite(field_value)
+        except OverflowError as error:
+            raise ValueError(
+                f"story_audio_cues[{cue_index}] {field} is invalid"
+            ) from error
+        if not finite:
             raise ValueError(f"story_audio_cues[{cue_index}] {field} is invalid")
 
 
