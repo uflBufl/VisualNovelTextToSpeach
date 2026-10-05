@@ -194,6 +194,20 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                     ("Cached",) if type(version) is int else ("Centurion", "Rhiannon"),
                 )
 
+    def test_precancelled_import_does_not_start_a_process(self):
+        with TemporaryDirectory() as directory:
+            process_factory = Mock(return_value=RunningProcess())
+            importer = Reverse1999GameImporter(
+                command=("worker",),
+                output_root=directory,
+                popen_factory=process_factory,
+            )
+            cancelled = Event()
+            cancelled.set()
+            with self.assertRaises(GameContentImportCancelled):
+                importer.import_installed(cancelled)
+            process_factory.assert_not_called()
+
     def test_prepares_selected_stage_semantics_as_an_immutable_successor(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -508,9 +522,15 @@ class Reverse1999GameImporterTest(unittest.TestCase):
 
     def test_narrator_decoder_uses_cancellable_subprocess_runner(self):
         cancellation = Event()
-        cancellation.set()
         process = RunningProcess()
-        importer = Reverse1999GameImporter(popen_factory=Mock(return_value=process))
+
+        def start_process(*args, **kwargs):
+            cancellation.set()
+            return process
+
+        importer = Reverse1999GameImporter(
+            popen_factory=Mock(side_effect=start_process)
+        )
         with self.assertRaises(GameContentImportCancelled):
             importer._decode_narrator(
                 ["decoder", "-i", "source.wem"],
@@ -833,15 +853,18 @@ class Reverse1999GameImporterTest(unittest.TestCase):
 
     def test_cancellation_terminates_only_the_owned_importer_process(self):
         process = RunningProcess()
+        cancelled = Event()
+
+        def start_process(*args, **kwargs):
+            cancelled.set()
+            return process
+
         with TemporaryDirectory() as temporary_directory:
             importer = Reverse1999GameImporter(
                 command=("r1999-bootstrap",),
                 output_root=temporary_directory,
-                popen_factory=Mock(return_value=process),
+                popen_factory=Mock(side_effect=start_process),
             )
-            cancelled = Event()
-            cancelled.set()
-
             with self.assertRaises(GameContentImportCancelled):
                 importer.import_installed(cancelled)
 

@@ -710,11 +710,13 @@ class Reverse1999GameImporter:
             return Path(result["model_directory"])
 
     @staticmethod
-    def _raise_if_cancelled(cancel_event: Cancellation | None) -> None:
+    def _raise_if_cancelled(
+        cancel_event: Cancellation | None,
+        *,
+        message: str = "Source-audio semantic preparation cancelled",
+    ) -> None:
         if cancel_event is not None and cancel_event.is_set():
-            raise GameContentImportCancelled(
-                "Source-audio semantic preparation cancelled"
-            )
+            raise GameContentImportCancelled(message)
 
     @staticmethod
     def _publisher_command(executable: str, module: str) -> tuple[str, ...] | None:
@@ -1053,6 +1055,7 @@ class Reverse1999GameImporter:
         *,
         environment: dict[str, str] | None = None,
     ) -> tuple[str, str]:
+        self._raise_if_cancelled(cancel_event, message="Game import was cancelled")
         started = time.monotonic()
         self._record("process-start", executable=arguments[0])
         try:
