@@ -561,9 +561,3 @@ Planned implementation order after approval:
 ## Investigate intermittent macOS Qt test crash
 
 - [ ] A macOS changed-test run intermittently terminated with `shiboken6` `mainThreadDeletionHandler` SIGSEGV during pure-Python `test_player_session` after UI tests. The exact final 10-test sequence passed 10 times, the full onboarding/person/player sequence passed five times, and a later 2734-test selector passed. Reproduce and bisect an earlier Qt owner in the remainder shard with faulthandler before changing cleanup; retain the crash log in `.codex/investigations/` if it becomes repeatable. Gate: a narrowed failing sequence and a deterministic cleanup check.
-
-## Audit authoring reconciliation lifecycle
-
-- [ ] Inventory complete reconciliation builder, schema, CLI and exact-selected merge adapter; trace public/dynamic consumers, report versions/canonical identity, current authority snapshots and successor ownership. Build structural/complexity inventory and record configured-check coverage.
-- [ ] Inspect design/readability independently, then types, correctness, execution/resources, performance, tests and dependencies; qualify every candidate and search shared causes before editing. Preserve exact-ID selection, stale-authority rejection and no-replace successor publication.
-- [ ] Fix every evidenced finding, rescan scoped neighbors, obtain independent review and complete local-first/fresh-main changed-test selectors plus configured static/lock gates. Commit fixes separately, normal main push, remove only verified completed work. Existing model dependency/platform qualifications remain separate.
