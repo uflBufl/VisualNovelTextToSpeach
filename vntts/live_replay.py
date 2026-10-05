@@ -881,14 +881,15 @@ class LiveReplayRunner:
                         f"Live replay timed out after {self.timeout_seconds:g} seconds"
                     )
                 )
-            frame_source.stop()
-            reader.stop()
-            reader.wait()
         finally:
             frame_source.stop()
-            for executor in executors:
-                executor.shutdown(wait=True, cancel_futures=True)
-            router.stop()
+            reader.stop()
+            try:
+                reader.wait()
+            finally:
+                for executor in executors:
+                    executor.shutdown(wait=True, cancel_futures=True)
+                router.stop()
 
         frame_consumption = frame_source.snapshot()
         observed = _group_played_dialogue(played)

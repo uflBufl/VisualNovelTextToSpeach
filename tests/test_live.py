@@ -1,5 +1,5 @@
 import unittest
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from queue import Queue
 from threading import Event, Lock, Thread
@@ -1459,6 +1459,46 @@ class LiveDialogReaderTest(unittest.TestCase):
         }
         options.update(overrides)
         return LiveDialogReader(**options)
+
+    def test_failed_capture_submission_quiesces_ocr_and_allows_restart(self):
+        with ThreadPoolExecutor(max_workers=1) as ocr_executor:
+            capture_executor = Mock()
+            capture_executor.submit.side_effect = RuntimeError("capture unavailable")
+            reader = self.create_reader(
+                ocr_executor=ocr_executor, capture_executor=capture_executor
+            )
+            try:
+                with self.assertRaisesRegex(RuntimeError, "capture unavailable"):
+                    reader.start()
+                self.assertTrue(reader.stop_event.is_set())
+                reader.wait(timeout_seconds=1)
+                self.assertTrue(reader.ocr_future.done())
+                completed_capture = Future()
+                completed_capture.set_result(None)
+                capture_executor.submit.side_effect = None
+                capture_executor.submit.return_value = completed_capture
+                self.assertTrue(reader.start())
+                self.assertTrue(reader.stop())
+                reader.wait(timeout_seconds=1)
+            finally:
+                reader.stop_event.set()
+                with reader.pause_condition:
+                    reader.pause_condition.notify_all()
+
+    def test_stop_quiesces_ocr_after_capture_has_finished(self):
+        with ThreadPoolExecutor(max_workers=1) as ocr_executor:
+            reader = self.create_reader()
+            reader.capture_future = Future()
+            reader.capture_future.set_result(None)
+            reader.ocr_future = ocr_executor.submit(reader._run_ocr, reader.stop_event)
+            try:
+                self.assertTrue(reader.stop())
+                reader.wait(timeout_seconds=1)
+                self.assertTrue(reader.ocr_future.done())
+            finally:
+                reader.stop_event.set()
+                with reader.pause_condition:
+                    reader.pause_condition.notify_all()
 
     def test_runtime_control_snapshot_reports_actual_playback_capabilities(self):
         reader = self.create_reader()

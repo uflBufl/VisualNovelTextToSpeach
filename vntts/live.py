@@ -402,7 +402,7 @@ class LiveDialogReader:
         with self.state_lock:
             if self.capture_future is not None and not self.capture_future.done():
                 return False
-            restarting = self.capture_future is not None
+            restarting = self.capture_future is not None or self.ocr_future is not None
         self.clear_queue()
         if restarting:
             try:
@@ -445,6 +445,12 @@ class LiveDialogReader:
             self.processed_frame_version = 0
             self.next_capture_interval = self.interval_seconds
             self.pipeline_metrics = LivePipelineMetrics()
+            self._submit_capture_workers()
+        return True
+
+    def _submit_capture_workers(self) -> None:
+        """Signal the paired workers on partial submission; retain them for wait."""
+        try:
             self.ocr_future = self.ocr_executor.submit(
                 self._run_ocr,
                 self.stop_event,
@@ -453,11 +459,17 @@ class LiveDialogReader:
                 self._run_capture,
                 self.stop_event,
             )
-        return True
+        except BaseException:
+            self.stop_event.set()
+            self.pause_condition.notify_all()
+            raise
 
     def stop(self) -> bool:
         with self.state_lock:
-            if self.capture_future is None or self.capture_future.done():
+            if not any(
+                future is not None and not future.done()
+                for future in (self.capture_future, self.ocr_future)
+            ):
                 return False
             self.stop_event.set()
             self.paused = False

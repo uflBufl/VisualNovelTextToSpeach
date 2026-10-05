@@ -2,6 +2,7 @@ import hashlib
 import json
 import unittest
 import wave
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stderr
 from io import StringIO
 from pathlib import Path
@@ -18,6 +19,7 @@ from vntts_artifacts.live_sequence import write_live_sequence_plan
 from tests.symlink_support import symlink_or_skip
 from tests.test_chapter_voice_preload import write_verified_source_story
 from vntts.dialog_capture import CapturedDialogFrame
+from vntts.live import LiveDialogReader
 from vntts.live_replay import (
     LiveReplayRunner,
     LiveReplaySequenceBinding,
@@ -1424,6 +1426,55 @@ class LiveReplayTest(unittest.TestCase):
                 for event in consumed_events
             )
         )
+
+    def test_legacy_timeout_drains_pending_ocr_before_executor_cancellation(self):
+        release = Event()
+        entered = Event()
+        normal_wait = LiveDialogReader.wait
+        with ThreadPoolExecutor(max_workers=1) as ocr_executor:
+
+            def occupy_worker():
+                entered.set()
+                release.wait()
+
+            ocr_executor.submit(occupy_worker)
+            normal_shutdown = ocr_executor.shutdown
+
+            def shutdown(*, wait=True, cancel_futures=False):
+                normal_shutdown(wait=False, cancel_futures=cancel_futures)
+                release.set()
+                normal_shutdown(wait=wait)
+
+            def executor_factory(*args, **kwargs):
+                if kwargs.get("thread_name_prefix") == "replay-ocr":
+                    return ocr_executor
+                return ThreadPoolExecutor(*args, **kwargs)
+
+            def wait_for_reader(reader, **kwargs):
+                release.set()
+                return normal_wait(reader, **kwargs)
+
+            try:
+                self.assertTrue(entered.wait(timeout=2))
+                with (
+                    TemporaryDirectory() as temporary_directory,
+                    patch(
+                        "vntts.live_replay.ThreadPoolExecutor",
+                        side_effect=executor_factory,
+                    ),
+                    patch.object(ocr_executor, "shutdown", side_effect=shutdown),
+                    patch.object(LiveDialogReader, "wait", wait_for_reader),
+                ):
+                    path = self.create_corpus(temporary_directory)
+                    report = LiveReplayRunner(
+                        load_live_replay_corpus(path),
+                        interval_seconds=0.002,
+                        timeout_seconds=0.01,
+                    ).run()
+                self.assertFalse(report["successful"])
+                self.assertTrue(any("timed out" in error for error in report["errors"]))
+            finally:
+                release.set()
 
     def test_cli_reports_output_publication_failure(self):
         with TemporaryDirectory() as temporary_directory:
