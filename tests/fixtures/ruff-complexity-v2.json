@@ -304,13 +304,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/game_audio_decoder.py",
-      "scope": "ensure_game_decoder",
-      "count": 1,
-      "maximum": 19
-    },
-    {
-      "code": "C901",
       "path": "vntts/generated_audio.py",
       "scope": "GeneratedAudioFallbackBackend.has_resolved_route_in_live_mode",
       "count": 1,
@@ -871,13 +864,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/game_audio_decoder.py",
-      "scope": "ensure_game_decoder",
-      "count": 1,
-      "maximum": 18
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/generated_audio.py",
       "scope": "GeneratedAudioFallbackBackend.prepare_route",
       "count": 1,
@@ -1365,13 +1351,6 @@
       "scope": "DiagnosticsDialog.__init__",
       "count": 1,
       "maximum": 113
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/game_audio_decoder.py",
-      "scope": "ensure_game_decoder",
-      "count": 1,
-      "maximum": 68
     },
     {
       "code": "PLR0915",

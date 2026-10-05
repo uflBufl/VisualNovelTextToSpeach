@@ -76,6 +76,10 @@ def find_game_decoder() -> Path | None:
             if path.is_file() and path.resolve().is_relative_to(bundle.resolve())
             else None
         )
+    return _find_host_tool(name)
+
+
+def _find_host_tool(name: str) -> Path | None:
     installed = shutil.which(name)
     if installed:
         return Path(installed).absolute()
@@ -250,36 +254,7 @@ def ensure_game_decoder(
         root = Path(storage_root or get_local_data_directory() / "tools" / "vgmstream")
         with exclusive_advisory_lock(root / "setup.lock"):
             if sys.platform == "darwin":
-                if not allow_homebrew:
-                    raise DecoderSetupRequired(
-                        "Game references need vgmstream. Install it and its audio libraries using Homebrew? This changes your Homebrew installation and may take several minutes."
-                    )
-                brew = shutil.which("brew") or next(
-                    (
-                        str(p)
-                        for p in (
-                            Path("/opt/homebrew/bin/brew"),
-                            Path("/usr/local/bin/brew"),
-                        )
-                        if p.is_file()
-                    ),
-                    None,
-                )
-                if brew is None:
-                    raise DecoderSetupError(
-                        "Homebrew is not installed. Use the packaged VNTTS app (decoder included), or install Homebrew from brew.sh and retry. VNTTS will not install a system package manager silently."
-                    )
-                progress(
-                    "Installing game-audio decoder and libraries with Homebrew. This may take several minutes..."
-                )
-                _run([brew, "install", "vgmstream"], cancellation)
-                path = find_game_decoder()
-                if path is None:
-                    raise DecoderSetupError(
-                        "Homebrew finished but vgmstream-cli was not found. Check the Homebrew installation and retry."
-                    )
-                probe_game_decoder(path, cancellation)
-                return path
+                return _install_homebrew_decoder(allow_homebrew, progress, cancellation)
             if sys.platform not in ARCHIVES or platform.machine().casefold() not in {
                 "x86_64",
                 "amd64",
@@ -296,76 +271,11 @@ def ensure_game_decoder(
             executable = destination / (
                 "vgmstream-cli.exe" if sys.platform == "win32" else "vgmstream-cli"
             )
-            manifest = destination / "verified.json"
-            if (
-                manifest.is_file()
-                and not manifest.is_symlink()
-                and not manifest.is_junction()
-            ):
-                try:
-                    with manifest.open("rb") as source:
-                        payload = source.read(_VERIFICATION_RECORD_READ_LIMIT + 1)
-                    if len(payload) > _VERIFICATION_RECORD_READ_LIMIT:
-                        raise ValueError("verification record is too large")
-                    verified_files: object = json.loads(payload)
-                    if (
-                        isinstance(verified_files, dict)
-                        and executable.name in verified_files
-                        and all(
-                            isinstance(name, str)
-                            and Path(name).name == name
-                            and isinstance(checksum, str)
-                            and not (path := destination / name).is_symlink()
-                            and path.is_file()
-                            and sha256_file(path) == checksum
-                            for name, checksum in verified_files.items()
-                        )
-                    ):
-                        probe_game_decoder(executable, cancellation)
-                        return executable
-                except OSError, ValueError, TypeError, AttributeError:
-                    pass
-            progress("Preparing game-audio decoder download...")
-            with TemporaryDirectory(prefix="download-", dir=root) as temporary:
-                staging = Path(temporary)
-                archive = staging / "decoder.zip"
-                _download(
-                    f"https://github.com/vgmstream/vgmstream/releases/download/{VERSION}/{name}",
-                    digest,
-                    archive,
-                    progress,
-                    cancellation,
-                )
-                files: dict[str, str] = {}
-                with ZipFile(archive) as package:
-                    if (
-                        sum(info.file_size for info in package.infolist())
-                        > 64 * 1024 * 1024
-                    ):
-                        raise DecoderSetupError(
-                            "Decoder archive exceeded the size limit"
-                        )
-                    for info in package.infolist():
-                        _cancel(cancellation)
-                        if (
-                            Path(info.filename).name != info.filename
-                            or "\\" in info.filename
-                            or info.is_dir()
-                        ):
-                            raise DecoderSetupError(
-                                "Decoder archive contains an unexpected path"
-                            )
-                        path = staging / info.filename
-                        path.write_bytes(package.read(info))
-                        files[info.filename] = sha256_file(path)
-                candidate = staging / executable.name
-                candidate.chmod(0o755)
-                probe_game_decoder(candidate, cancellation)
-                destination.mkdir(parents=True, exist_ok=True)
-                for name in files:
-                    (staging / name).replace(destination / name)
-                atomic_write_json(manifest, files)
-            return executable
+            if _probe_cached_decoder(executable, cancellation):
+                return executable
+            return _install_managed_decoder(
+                executable, name, digest, progress, cancellation
+            )
     except AdvisoryLockBusyError as error:
         raise DecoderSetupError(
             "Another VNTTS window is preparing the game-audio decoder. Wait for it to finish, then retry."
@@ -374,6 +284,108 @@ def ensure_game_decoder(
         raise DecoderSetupError(
             f"Unable to prepare the game-audio decoder: {error}. Check your connection and retry."
         ) from error
+
+
+def _install_homebrew_decoder(
+    allow_homebrew: bool,
+    progress: ProgressCallback,
+    cancellation: Cancellation | None,
+) -> Path:
+    if not allow_homebrew:
+        raise DecoderSetupRequired(
+            "Game references need vgmstream. Install it and its audio libraries using Homebrew? This changes your Homebrew installation and may take several minutes."
+        )
+    brew = _find_host_tool("brew")
+    if brew is None:
+        raise DecoderSetupError(
+            "Homebrew is not installed. Use the packaged VNTTS app (decoder included), or install Homebrew from brew.sh and retry. VNTTS will not install a system package manager silently."
+        )
+    progress(
+        "Installing game-audio decoder and libraries with Homebrew. This may take several minutes..."
+    )
+    _run([str(brew), "install", "vgmstream"], cancellation)
+    path = find_game_decoder()
+    if path is None:
+        raise DecoderSetupError(
+            "Homebrew finished but vgmstream-cli was not found. Check the Homebrew installation and retry."
+        )
+    probe_game_decoder(path, cancellation)
+    return path
+
+
+def _probe_cached_decoder(executable: Path, cancellation: Cancellation | None) -> bool:
+    manifest = executable.parent / "verified.json"
+    if manifest.is_file() and not manifest.is_symlink() and not manifest.is_junction():
+        try:
+            with manifest.open("rb") as source:
+                payload = source.read(_VERIFICATION_RECORD_READ_LIMIT + 1)
+            if len(payload) > _VERIFICATION_RECORD_READ_LIMIT:
+                raise ValueError("verification record is too large")
+            verified_files: object = json.loads(payload)
+            if (
+                isinstance(verified_files, dict)
+                and executable.name in verified_files
+                and all(
+                    isinstance(name, str)
+                    and Path(name).name == name
+                    and isinstance(checksum, str)
+                    and not (path := executable.parent / name).is_symlink()
+                    and path.is_file()
+                    and sha256_file(path) == checksum
+                    for name, checksum in verified_files.items()
+                )
+            ):
+                probe_game_decoder(executable, cancellation)
+                return True
+        except OSError, ValueError, TypeError, AttributeError:
+            pass
+    return False
+
+
+def _install_managed_decoder(
+    executable: Path,
+    name: str,
+    digest: str,
+    progress: ProgressCallback,
+    cancellation: Cancellation | None,
+) -> Path:
+    destination = executable.parent
+    progress("Preparing game-audio decoder download...")
+    with TemporaryDirectory(prefix="download-", dir=destination.parent) as temporary:
+        staging = Path(temporary)
+        archive = staging / "decoder.zip"
+        _download(
+            f"https://github.com/vgmstream/vgmstream/releases/download/{VERSION}/{name}",
+            digest,
+            archive,
+            progress,
+            cancellation,
+        )
+        files: dict[str, str] = {}
+        with ZipFile(archive) as package:
+            if sum(info.file_size for info in package.infolist()) > 64 * 1024 * 1024:
+                raise DecoderSetupError("Decoder archive exceeded the size limit")
+            for info in package.infolist():
+                _cancel(cancellation)
+                if (
+                    Path(info.filename).name != info.filename
+                    or "\\" in info.filename
+                    or info.is_dir()
+                ):
+                    raise DecoderSetupError(
+                        "Decoder archive contains an unexpected path"
+                    )
+                path = staging / info.filename
+                path.write_bytes(package.read(info))
+                files[info.filename] = sha256_file(path)
+        candidate = staging / executable.name
+        candidate.chmod(0o755)
+        probe_game_decoder(candidate, cancellation)
+        destination.mkdir(parents=True, exist_ok=True)
+        for name in files:
+            (staging / name).replace(destination / name)
+        atomic_write_json(destination / "verified.json", files)
+    return executable
 
 
 def _stage_file(source: PathInput, target: PathInput) -> None:
