@@ -51,9 +51,18 @@ class SoundEffectCorpus(TypedDict):
 
 
 class SoundEffectPipeline(Protocol):
-    sample_rate: object
+    sample_rate: int
 
-    def __call__(self, **values: object) -> object: ...
+    def __call__(
+        self,
+        *,
+        prompt: str,
+        seconds: float,
+        num_inference_steps: int,
+        cfg_scale: float,
+        sigma_shift: float,
+        seed: int,
+    ) -> object: ...
 
 
 def load_sound_effect_corpus(path: str | Path) -> SoundEffectCorpus:
@@ -61,7 +70,7 @@ def load_sound_effect_corpus(path: str | Path) -> SoundEffectCorpus:
     try:
         payload = path.read_bytes()
         document = json.loads(payload)
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SoundEffectBenchmarkError(f"Unable to read corpus: {error}") from error
     if (
         not isinstance(document, dict)
@@ -144,7 +153,10 @@ def benchmark_sound_effects(
 ) -> dict[str, object]:
     corpus = load_sound_effect_corpus(corpus_path)
     seeds = _validate_controls(seeds, num_inference_steps, cfg_scale, sigma_shift)
-    if re.fullmatch(r"[0-9a-f]{40,64}", model_revision) is None:
+    if (
+        not isinstance(model_revision, str)
+        or re.fullmatch(r"[0-9a-f]{40,64}", model_revision) is None
+    ):
         raise SoundEffectBenchmarkError("Model revision must be an exact commit")
     cuda = inspect_cuda(torch_module)
     if cuda["bf16_supported"] is not True:
@@ -180,8 +192,9 @@ def benchmark_sound_effects(
         raise SoundEffectBenchmarkError(
             f"Unable to load MOSS-SoundEffect v2: {error}"
         ) from error
-    sample_rate = int(getattr(pipeline, "sample_rate", 0))
-    if sample_rate <= 0:
+    sample_rate = getattr(pipeline, "sample_rate", None)
+    # Mono PCM16 byte rate must also fit the unsigned 32-bit WAV header.
+    if type(sample_rate) is not int or not 0 < sample_rate <= 0xFFFFFFFF // 2:
         raise SoundEffectBenchmarkError(
             "MOSS-SoundEffect returned an invalid sample rate"
         )
@@ -244,7 +257,12 @@ def benchmark_sound_effects(
 def _validate_controls(
     seeds: Sequence[int], steps: int, cfg_scale: float, sigma_shift: float
 ) -> tuple[int, ...]:
-    seeds = tuple(seeds)
+    try:
+        seeds = tuple(seeds)
+    except TypeError as error:
+        raise SoundEffectBenchmarkError(
+            "At least one integer seed is required"
+        ) from error
     if not seeds or any(
         isinstance(seed, bool) or not isinstance(seed, int) for seed in seeds
     ):
@@ -253,9 +271,17 @@ def _validate_controls(
         raise SoundEffectBenchmarkError("Sound-effect seeds must be unique")
     if isinstance(steps, bool) or not isinstance(steps, int) or not 10 <= steps <= 150:
         raise SoundEffectBenchmarkError("Inference steps must be between 10 and 150")
-    if not 1 <= float(cfg_scale) <= 8:
+    if (
+        isinstance(cfg_scale, bool)
+        or not isinstance(cfg_scale, (int, float))
+        or not 1 <= cfg_scale <= 8
+    ):
         raise SoundEffectBenchmarkError("CFG scale must be between 1 and 8")
-    if not 0 <= float(sigma_shift) <= 10:
+    if (
+        isinstance(sigma_shift, bool)
+        or not isinstance(sigma_shift, (int, float))
+        or not 0 <= sigma_shift <= 10
+    ):
         raise SoundEffectBenchmarkError("Sigma shift must be between 0 and 10")
     return seeds
 

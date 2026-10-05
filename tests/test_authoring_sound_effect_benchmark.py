@@ -95,6 +95,77 @@ def write_corpus(path, *, samples=None):
 
 
 class SoundEffectBenchmarkTest(unittest.TestCase):
+    def test_invalid_numeric_controls_and_revision_fail_before_cuda(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = root / "corpus.json"
+            output = root / "output"
+            write_corpus(corpus)
+            cases = [
+                (field, value)
+                for field in ("cfg_scale", "sigma_shift")
+                for value in (True, "4", None, [], 10**400, float("nan"))
+            ] + [
+                ("seeds", None),
+                ("seeds", 1),
+                ("model_revision", None),
+                ("model_revision", ["a" * 40]),
+            ]
+            for field, value in cases:
+                with (
+                    self.subTest(field=field, value=value),
+                    patch(
+                        "vntts.authoring.sound_effect_benchmark.inspect_cuda",
+                        side_effect=AssertionError("CUDA must not be inspected"),
+                    ),
+                    self.assertRaises(SoundEffectBenchmarkError),
+                ):
+                    benchmark_sound_effects(corpus, output, **{field: value})
+                self.assertFalse(output.exists())
+
+    def test_invalid_pipeline_sample_rates_fail_before_render(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = root / "corpus.json"
+            write_corpus(corpus)
+
+            class InvalidRatePipeline(FakePipeline):
+                def __call__(self, **values):
+                    self.calls.append(values)
+                    return np.full((1, 1, 8), 0.25, dtype=np.float32)
+
+            for index, rate in enumerate(
+                (True, "8000", 8000.5, None, 0, -1, 2**31, 2**32, float("inf"))
+            ):
+                with self.subTest(rate=rate):
+                    output = root / f"output-{index}"
+                    pipeline = InvalidRatePipeline()
+                    pipeline.sample_rate = rate
+                    with self.assertRaisesRegex(
+                        SoundEffectBenchmarkError, "invalid sample rate"
+                    ):
+                        benchmark_sound_effects(
+                            corpus,
+                            output,
+                            seeds=(0,),
+                            torch_module=FakeTorch(),
+                            pipeline_factory=lambda *args, **kwargs: pipeline,
+                        )
+                    self.assertEqual(pipeline.calls, [])
+                    self.assertFalse(output.exists())
+                    self.assertEqual(list(root.glob(f".{output.name}-*")), [])
+
+    def test_invalid_corpus_byte_encoding_raises_benchmark_error(self):
+        with TemporaryDirectory() as directory:
+            corpus = Path(directory) / "corpus.json"
+            for payload in (b"\xff", b'{"name": "\xff"}'):
+                with self.subTest(payload=payload):
+                    corpus.write_bytes(payload)
+                    with self.assertRaisesRegex(
+                        SoundEffectBenchmarkError, "Unable to read corpus"
+                    ):
+                        load_sound_effect_corpus(corpus)
+
     def test_valid_integer_and_float_controls_reach_pipeline_unchanged(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
