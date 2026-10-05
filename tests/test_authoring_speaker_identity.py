@@ -15,6 +15,7 @@ from vntts.authoring.speaker_identity import (
     build_labelled_pairs,
     build_reference_inventory,
     build_speaker_identity_report,
+    load_labelled_pairs,
     load_reference_inventory,
     make_speechbrain_embedder,
 )
@@ -249,6 +250,40 @@ class SpeakerIdentityTest(unittest.TestCase):
                         build_speaker_identity_report(
                             inventory, labels, lambda payload: next(vectors), {}
                         )
+
+    def test_invalid_evidence_json_uses_the_domain_error(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            inventory = build_reference_inventory(_fixture(root))
+            left, right = [item["reference_id"] for item in inventory["references"][:2]]
+            labels = build_labelled_pairs(
+                inventory,
+                [
+                    {
+                        "left_reference_id": left,
+                        "right_reference_id": right,
+                        "partition": "fit",
+                        "relationship": "same-speaker",
+                    }
+                ],
+            )
+            for name, document, load in (
+                ("inventory", inventory, load_reference_inventory),
+                ("labels", labels, lambda path: load_labelled_pairs(path, inventory)),
+            ):
+                with self.subTest(document=name):
+                    path = root / f"{name}.json"
+                    path.write_text(
+                        json.dumps({**document, "unexpected": float("nan")}), "utf-8"
+                    )
+                    with self.assertRaisesRegex(
+                        SpeakerIdentityError, "canonically hashed"
+                    ):
+                        load(path)
+            with self.assertRaisesRegex(SpeakerIdentityError, "canonically hashed"):
+                build_speaker_identity_report(
+                    inventory, labels, lambda payload: (1.0, 0.0), {"invalid": object()}
+                )
 
     def test_runtime_rejects_non_cpu_before_loading_optional_dependency(self):
         with self.assertRaisesRegex(SpeakerIdentityError, "require CPU"):

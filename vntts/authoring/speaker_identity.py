@@ -126,7 +126,7 @@ def build_reference_inventory(manifest_path: str | Path) -> _Inventory:
             }
             references.append(
                 {
-                    "reference_id": canonical_document_sha256(identity),
+                    "reference_id": _document_sha256(identity),
                     "character": voice.character,
                     "speaker": voice.speaker,
                     "path": relative,
@@ -157,7 +157,7 @@ def build_reference_inventory(manifest_path: str | Path) -> _Inventory:
     }
     return {
         **body,
-        "inventory_id": canonical_document_sha256(body),
+        "inventory_id": _document_sha256(body),
     }
 
 
@@ -248,7 +248,7 @@ def build_labelled_pairs(inventory: _Inventory, pairs: Iterable[object]) -> _Lab
     }
     return {
         **body,
-        "labels_id": canonical_document_sha256(body),
+        "labels_id": _document_sha256(body),
     }
 
 
@@ -354,7 +354,7 @@ def build_speaker_identity_report(
         "authority": "diagnostic-only",
         "pairs": results,
     }
-    return {**body, "report_id": canonical_document_sha256(body)}
+    return {**body, "report_id": _document_sha256(body)}
 
 
 def write_speaker_identity_report(
@@ -510,7 +510,7 @@ def _validate_inventory_shape(document: Mapping[str, object]) -> None:
         or not isinstance(references, list)
         or document.get("reference_count") != len(references)
         or document.get("inventory_id")
-        != canonical_document_sha256(
+        != _document_sha256(
             {key: value for key, value in document.items() if key != "inventory_id"}
         )
     ):
@@ -542,7 +542,7 @@ def _validate_labels_shape(document: Mapping[str, object]) -> None:
         or document.get("schema_version") != SCHEMA_VERSION
         or not isinstance(pairs, list)
         or document.get("labels_id")
-        != canonical_document_sha256(
+        != _document_sha256(
             {key: value for key, value in document.items() if key != "labels_id"}
         )
     ):
@@ -586,6 +586,15 @@ def _pairs(value: object) -> list[object]:
     if not isinstance(value, list):
         raise SpeakerIdentityError("Speaker labels contain an invalid pair")
     return value
+
+
+def _document_sha256(document: object) -> str:
+    try:
+        return canonical_document_sha256(document)
+    except (TypeError, ValueError) as error:
+        raise SpeakerIdentityError(
+            f"Speaker evidence cannot be canonically hashed: {error}"
+        ) from error
 
 
 def _sha256_bytes(payload: bytes) -> str:
