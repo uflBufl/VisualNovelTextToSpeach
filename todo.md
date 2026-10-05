@@ -570,6 +570,5 @@ Planned implementation order after approval:
 
 
 
-- [ ] Give review thresholds one owner: the workbench facade repeats six constants already used by workspace inspection, while cohort review imports its pause threshold from the facade. Re-export the existing inspection constants through the facade, retaining every existing public name and policy value. Gate: facade compatibility/import graph and pace/cohort tests, configured checks and independent review; separate commit.
 - [ ] Reject boolean numeric WAV metrics at shared authority boundaries: real one-second PCM accepts `duration_seconds=True`, `channels=True`, and `longest_internal_silence_seconds=False` because Python numeric equality treats booleans as 0/1. Repair the shared manifest/audio and generation-state/speech quality validators, retaining accepted integer/float equivalence and both speech-analysis versions. Gate: public state load/review/manifest refusals without writes, each zero-valued speech field and legacy/current analysis, meaningful baseline-failing regression and local-first selector; separate commit.
 

@@ -57,6 +57,24 @@ from vntts.authoring.workspace_creation import (
     default_workspaces_root,
 )
 from vntts.authoring.workspace_inspection import (
+    PACE_MINIMUM_LENGTH_BUCKET_SAMPLES as PACE_MINIMUM_LENGTH_BUCKET_SAMPLES,
+)
+from vntts.authoring.workspace_inspection import (
+    PACE_MINIMUM_VOICE_SAMPLES as PACE_MINIMUM_VOICE_SAMPLES,
+)
+from vntts.authoring.workspace_inspection import (
+    PACE_MINIMUM_WORDS as PACE_MINIMUM_WORDS,
+)
+from vntts.authoring.workspace_inspection import (
+    PACE_SLOW_MINIMUM_DELTA_WPM as PACE_SLOW_MINIMUM_DELTA_WPM,
+)
+from vntts.authoring.workspace_inspection import (
+    PACE_SLOW_RELATIVE_RATIO as PACE_SLOW_RELATIVE_RATIO,
+)
+from vntts.authoring.workspace_inspection import (
+    REVIEW_NOTABLE_INTERNAL_PAUSE_SECONDS as REVIEW_NOTABLE_INTERNAL_PAUSE_SECONDS,
+)
+from vntts.authoring.workspace_inspection import (
     discover_imports,
     discover_workspaces,
     generation_command,
@@ -85,12 +103,6 @@ _canonical_sha256 = canonical_document_sha256
 
 REVIEW_ATTENTION_POLICY_VERSION = 3
 REVIEW_NOTABLE_SILENCE_RATIO = None
-REVIEW_NOTABLE_INTERNAL_PAUSE_SECONDS = 1.2
-PACE_MINIMUM_WORDS = 5
-PACE_MINIMUM_LENGTH_BUCKET_SAMPLES = 3
-PACE_MINIMUM_VOICE_SAMPLES = 5
-PACE_SLOW_RELATIVE_RATIO = 0.80
-PACE_SLOW_MINIMUM_DELTA_WPM = 20.0
 
 
 def review_technical_summary(item: ReviewItem) -> str:
