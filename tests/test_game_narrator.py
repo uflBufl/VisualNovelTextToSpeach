@@ -1695,6 +1695,10 @@ class GameNarratorTest(unittest.TestCase):
                 self.run_task(pool)
 
     def test_discovery_reuses_import_and_manual_folder_reimports(self):
+        from vntts.pregeneration_setup import _cached_story_index_document
+
+        _cached_story_index_document.cache_clear()
+        self.addCleanup(_cached_story_index_document.cache_clear)
         with TemporaryDirectory() as directory:
             root = Path(directory)
             importer = Reverse1999GameImporter(output_root=root)
@@ -1729,7 +1733,7 @@ class GameNarratorTest(unittest.TestCase):
                     importer, "import_installed", side_effect=importing_game
                 ) as importing,
                 patch(
-                    "vntts.game_content_importer.load_story_index_document",
+                    "vntts.pregeneration_setup.load_story_index_document",
                     wraps=load_story_index_document,
                 ) as parse_index,
             ):
@@ -1738,6 +1742,7 @@ class GameNarratorTest(unittest.TestCase):
                 cache = root / "reverse1999" / "narrator-characters.json"
                 self.assertTrue(cache.is_file())
                 Reverse1999GameImporter._cached_narrator_characters.cache_clear()
+                _cached_story_index_document.cache_clear()
                 self.assertEqual(
                     Reverse1999GameImporter(output_root=root).narrator_characters(),
                     ("Centurion",),
@@ -1754,7 +1759,7 @@ class GameNarratorTest(unittest.TestCase):
                 self.assertEqual(
                     importer.narrator_characters(), ("Centurion", "Rhiannon")
                 )
-                self.assertEqual(parse_index.call_count, 3)
+                self.assertEqual(parse_index.call_count, 2)
                 story = root / "reverse1999" / "story-index.jsonl"
                 (root / "reverse1999" / "narrator-index.jsonl").write_text(
                     story.read_text()
@@ -1762,7 +1767,7 @@ class GameNarratorTest(unittest.TestCase):
                 self.assertEqual(
                     importer.narrator_characters(), ("Centurion", "Rhiannon")
                 )
-                self.assertEqual(parse_index.call_count, 4)
+                self.assertEqual(parse_index.call_count, 3)
                 importer.narrator_characters(installation_root=root / "game")
                 self.assertEqual(importing.call_count, 2)
                 self.assertEqual(importing.call_args.args[1], root / "game")

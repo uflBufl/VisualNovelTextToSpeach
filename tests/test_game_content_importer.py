@@ -194,6 +194,35 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                     ("Cached",) if type(version) is int else ("Centurion", "Rhiannon"),
                 )
 
+    def test_narrator_cache_rejects_changed_inputs_before_publication(self):
+        for changed_source in ("story", "banks"):
+            with (
+                self.subTest(changed_source=changed_source),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                story = write_story_index(root)
+                banks = root / "narrator-banks.json"
+                banks.write_text('["Rhiannon"]', encoding="utf-8")
+                index_sha256 = sha256_file(story)
+                banks_sha256 = sha256_file(banks)
+                if changed_source == "story":
+                    story.write_text(
+                        story.read_text(encoding="utf-8").replace(
+                            "Centurion", "Changed"
+                        ),
+                        encoding="utf-8",
+                    )
+                else:
+                    banks.write_text('["Changed"]', encoding="utf-8")
+                with self.assertRaisesRegex(
+                    (GameContentImportError, ValueError), "changed"
+                ):
+                    Reverse1999GameImporter._cached_narrator_characters(
+                        story, banks, index_sha256, banks_sha256
+                    )
+                self.assertFalse((root / "narrator-characters.json").exists())
+
     def test_precancelled_import_does_not_start_a_process(self):
         with TemporaryDirectory() as directory:
             process_factory = Mock(return_value=RunningProcess())

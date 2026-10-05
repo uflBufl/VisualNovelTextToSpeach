@@ -866,7 +866,11 @@ class Reverse1999GameImporter:
             for name in json.loads(narrator_banks.read_text(encoding="utf-8"))
             if not is_narrator(name)
         }
-        for record in load_story_index_document(story_index).records:
+        if sha256_file(narrator_banks) != banks_sha256:
+            raise GameContentImportError("Narrator banks changed while being read")
+        for record in load_verified_story_index_document(
+            story_index, index_sha256
+        ).records:
             character = synthesis_character_for_line(
                 record.speaker, record.voice_character
             )
