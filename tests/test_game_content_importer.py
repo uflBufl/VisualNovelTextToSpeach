@@ -107,6 +107,20 @@ class Reverse1999GameImporterTest(unittest.TestCase):
             with patch.object(importer, "_bank_index_is_stale", return_value=True):
                 self.assertTrue(importer.installed_story_changed())
 
+    def test_story_change_check_handles_nonobject_source_metadata(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story = root / "reverse1999" / "story-index.jsonl"
+            story.parent.mkdir()
+            importer = Reverse1999GameImporter(output_root=root)
+            with patch.object(
+                importer, "_previous_installation", return_value=(root, root, root)
+            ):
+                for metadata in ([], None, True, 1, "metadata"):
+                    with self.subTest(metadata=metadata):
+                        story.write_text(json.dumps(metadata) + "\n", encoding="utf-8")
+                        self.assertFalse(importer.installed_story_changed())
+
     def test_prepares_selected_stage_semantics_as_an_immutable_successor(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

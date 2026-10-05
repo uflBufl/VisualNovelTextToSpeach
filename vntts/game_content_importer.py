@@ -338,8 +338,7 @@ class Reverse1999GameImporter:
     def _story_input_paths(
         story_index: Path, roots: InstallationRoots
     ) -> tuple[Path, Path, Path]:
-        with story_index.open(encoding="utf-8") as stream:
-            metadata = json.loads(stream.readline())
+        metadata = _read_story_metadata(story_index)
         source = metadata.get("source_bundle")
         if not isinstance(source, str) or not source:
             raise ValueError("Imported story source is missing")
@@ -433,8 +432,7 @@ class Reverse1999GameImporter:
         story_index = self.output_root / "reverse1999" / "story-index.jsonl"
         self._record("saved-source", index=story_index, exists=story_index.is_file())
         try:
-            with story_index.open(encoding="utf-8") as stream:
-                metadata = json.loads(stream.readline())
+            metadata = _read_story_metadata(story_index)
             source = metadata.get("source_bundle")
             if not isinstance(source, str) or not source:
                 self._record("saved-source", reason="source_bundle missing or invalid")
@@ -1114,6 +1112,14 @@ class Reverse1999GameImporter:
                 + (f": {detail}" if detail else ".")
             )
         return stdout, stderr
+
+
+def _read_story_metadata(story_index: Path) -> dict[str, object]:
+    with story_index.open(encoding="utf-8") as stream:
+        metadata = json.loads(stream.readline())
+    if not isinstance(metadata, dict):
+        raise ValueError("Imported story metadata must be a JSON object")
+    return metadata
 
 
 def _candidate_roles(
