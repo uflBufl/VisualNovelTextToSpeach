@@ -10,6 +10,7 @@ import subprocess
 import sys
 import wave
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from os import PathLike
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -98,14 +99,16 @@ def _run(
     timeout: float = 900,
 ) -> None:
     _cancel(cancellation)
-    with TemporaryDirectory(prefix="vntts-decoder-log-") as directory:
-        with (Path(directory) / "output").open("w+b") as output:
-            process = _start_decoder_process(command, output)
-            try:
-                _wait_for_decoder_process(process, cancellation, timeout)
-                _raise_decoder_failure(process, output)
-            finally:
-                _stop_decoder_process(process)
+    with (
+        TemporaryDirectory(prefix="vntts-decoder-log-") as directory,
+        (Path(directory) / "output").open("w+b") as output,
+    ):
+        process = _start_decoder_process(command, output)
+        try:
+            _wait_for_decoder_process(process, cancellation, timeout)
+            _raise_decoder_failure(process, output)
+        finally:
+            _stop_decoder_process(process)
 
 
 def _start_decoder_process(
@@ -165,15 +168,11 @@ def _stop_decoder_process(process: subprocess.Popen[bytes]) -> None:
     except subprocess.TimeoutExpired, ProcessLookupError:
         pass
     finally:
-        try:
+        with suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        try:
+        # ponytail: SIGKILL is the strongest local action; leave OS cleanup.
+        with suppress(subprocess.TimeoutExpired):
             process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            # ponytail: SIGKILL is the strongest local action; leave OS cleanup.
-            pass
 
 
 def probe_game_decoder(
