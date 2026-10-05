@@ -170,6 +170,41 @@ class AuthoringRobustnessCorpusTest(unittest.TestCase):
                     edits,
                 )
 
+    def test_asr_batch_results_match_single_results_and_reject_a_string(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state_path, queue_id = _pending_workspace(root / "reviewed")
+            _decision(workspace, queue_id)
+            corpus = root / "corpus"
+            publish_speech_robustness_corpus([workspace / "cohort-reviews"], [], corpus)
+            model = root / "model"
+            model.mkdir()
+            (model / "weights.bin").write_bytes(b"model")
+            single = build_speech_robustness_asr_report(
+                corpus, model, transcriber=lambda _: "text"
+            )
+
+            class Batch:
+                def __init__(self, result):
+                    self.result = result
+
+                def __call__(self, payload):
+                    raise AssertionError("batch fallback")
+
+                def transcribe_many(self, payloads):
+                    return self.result
+
+            batch = build_speech_robustness_asr_report(
+                corpus, model, transcriber=Batch(["text"])
+            )
+            self.assertEqual(batch.document, single.document)
+            for result in ("x", None, [], [1]):
+                with self.subTest(result=result):
+                    with self.assertRaisesRegex(SpeechRobustnessAsrError, "batch text"):
+                        build_speech_robustness_asr_report(
+                            corpus, model, transcriber=Batch(result)
+                        )
+
     def test_exact_active_pcm_repetition_is_diagnostic_only(self):
         rng = np.random.default_rng(42)
         segment = rng.integers(-8_000, 8_000, size=12 * 320, dtype=np.int16)

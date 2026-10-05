@@ -188,7 +188,7 @@
       "path": "vntts/authoring/robustness_asr.py",
       "scope": "build_speech_robustness_asr_report",
       "count": 1,
-      "maximum": 20
+      "maximum": 13
     },
     {
       "code": "C901",
@@ -787,13 +787,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/authoring/robustness_asr.py",
-      "scope": "build_speech_robustness_asr_report",
-      "count": 1,
-      "maximum": 20
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/authoring/terminal_conflict_workspace.py",
       "scope": "_publish_staged_terminal_conflict_workspace",
       "count": 1,
@@ -1300,13 +1293,6 @@
       "code": "PLR0915",
       "path": "vntts/authoring/reconciliation_schema.py",
       "scope": "_validated_report_actions",
-      "count": 1,
-      "maximum": 59
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/robustness_asr.py",
-      "scope": "build_speech_robustness_asr_report",
       "count": 1,
       "maximum": 59
     },

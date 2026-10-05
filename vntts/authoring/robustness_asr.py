@@ -487,6 +487,57 @@ def _load_progress(
     return records
 
 
+def _transcribe_batch(
+    corpus_directory: Path,
+    batch: Sequence[_RobustnessSample],
+    transcribe: _Transcriber | None,
+) -> list[_AsrRecord]:
+    payloads: list[bytes] = []
+    for sample in batch:
+        try:
+            audio = capture_authority_file(
+                corpus_directory / sample["audio"],
+                "robustness ASR audio",
+                root=corpus_directory,
+            )
+        except AuthoringAuthorityError as error:
+            raise SpeechRobustnessAsrError(str(error)) from error
+        if audio.sha256 != sample["audio_sha256"]:
+            raise SpeechRobustnessAsrError(
+                "Robustness ASR audio changed after corpus validation"
+            )
+        payloads.append(audio.payload)
+    if isinstance(transcribe, _BatchTranscriber):
+        observed_texts = transcribe.transcribe_many(payloads)
+    elif transcribe is not None:
+        observed_texts = [transcribe(payloads[0])]
+    else:
+        raise SpeechRobustnessAsrError("ASR transcriber is unavailable")
+    if (
+        not isinstance(observed_texts, Sequence)
+        or isinstance(observed_texts, (str, bytes))
+        or len(observed_texts) != len(batch)
+        or not all(isinstance(value, str) for value in observed_texts)
+    ):
+        raise SpeechRobustnessAsrError("ASR transcriber returned invalid batch text")
+    records: list[_AsrRecord] = []
+    for sample, observed in zip(batch, observed_texts, strict=True):
+        records.append(
+            {
+                "workspace_id": sample["workspace_id"],
+                "queue_id": sample["queue_id"],
+                "audio_sha256": sample["audio_sha256"],
+                "text_sha256": sample["text_sha256"],
+                "human_label": sample["human_label"],
+                "provider": str(sample["synthesis"].get("provider") or "unknown"),
+                "expected_text": sample["text"],
+                "observed_text": observed,
+                "comparison": compare_speech_transcript(sample["text"], observed),
+            }
+        )
+    return records
+
+
 def build_speech_robustness_asr_report(
     corpus_directory: str | Path,
     model_directory: str | Path,
@@ -537,47 +588,7 @@ def build_speech_robustness_asr_report(
     batch_size = 8 if isinstance(transcribe, _BatchTranscriber) else 1
     for offset in range(0, len(remaining), batch_size):
         batch = remaining[offset : offset + batch_size]
-        payloads: list[bytes] = []
-        for sample in batch:
-            try:
-                audio = capture_authority_file(
-                    corpus.directory / sample["audio"],
-                    "robustness ASR audio",
-                    root=corpus.directory,
-                )
-            except AuthoringAuthorityError as error:
-                raise SpeechRobustnessAsrError(str(error)) from error
-            if audio.sha256 != sample["audio_sha256"]:
-                raise SpeechRobustnessAsrError(
-                    "Robustness ASR audio changed after corpus validation"
-                )
-            payloads.append(audio.payload)
-        if isinstance(transcribe, _BatchTranscriber):
-            observed_texts = transcribe.transcribe_many(payloads)
-        elif transcribe is not None:
-            observed_texts = [transcribe(payloads[0])]
-        else:
-            raise SpeechRobustnessAsrError("ASR transcriber is unavailable")
-        if len(observed_texts) != len(batch) or not all(
-            isinstance(value, str) for value in observed_texts
-        ):
-            raise SpeechRobustnessAsrError(
-                "ASR transcriber returned invalid batch text"
-            )
-        for sample, observed in zip(batch, observed_texts, strict=True):
-            records.append(
-                {
-                    "workspace_id": sample["workspace_id"],
-                    "queue_id": sample["queue_id"],
-                    "audio_sha256": sample["audio_sha256"],
-                    "text_sha256": sample["text_sha256"],
-                    "human_label": sample["human_label"],
-                    "provider": str(sample["synthesis"].get("provider") or "unknown"),
-                    "expected_text": sample["text"],
-                    "observed_text": observed,
-                    "comparison": compare_speech_transcript(sample["text"], observed),
-                }
-            )
+        records.extend(_transcribe_batch(corpus.directory, batch, transcribe))
         if progress is not None:
             progress.parent.mkdir(parents=True, exist_ok=True)
             atomic_write_json(
@@ -633,11 +644,7 @@ def write_speech_robustness_asr_report(
             "ASR report publication requires validated corpus authority"
         )
     output = no_replace_destination(output_path)
-    try:
-        output.relative_to(report.corpus_directory)
-    except ValueError:
-        pass
-    else:
+    if output.is_relative_to(report.corpus_directory):
         raise SpeechRobustnessAsrError(
             "ASR report must be outside the immutable corpus directory"
         )
