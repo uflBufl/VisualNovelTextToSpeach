@@ -364,38 +364,34 @@ class OCRCorrectionsDialog(QDialog):
     def validate_rows(
         self, *, show_valid: bool = True, focus_first: bool = False
     ) -> tuple[str, ...]:
-        signal_blockers = (
-            QSignalBlocker(self.global_table),
-            QSignalBlocker(self.profile_table),
-        )
-        errors: list[str] = []
-        first_item: QTableWidgetItem | None = None
-        for scope, table in (
-            ("All games", self.global_table),
-            ("Profile", self.profile_table),
-        ):
-            table_errors, table_first_item = self._validate_table(scope, table)
-            errors.extend(table_errors)
-            first_item = first_item or table_first_item
-        if errors:
-            self.status.setText(
-                f"Fix {len(errors)} correction row error(s) before saving:\n"
-                + "\n".join(f"- {message}" for message in errors)
-            )
-            if focus_first and first_item is not None:
-                table = first_item.tableWidget()
-                if table is not None:
-                    page = table.parentWidget()
-                    if page is not None:
-                        self.tabs.setCurrentWidget(page)
-                    table.setCurrentItem(
-                        first_item, QItemSelectionModel.SelectionFlag.NoUpdate
-                    )
-        elif show_valid and not self._save_active:
-            self.status.setText("All correction rows are valid.")
-        elif not errors and not self._save_active:
-            self.status.clear()
-        del signal_blockers
+        with QSignalBlocker(self.global_table), QSignalBlocker(self.profile_table):
+            errors: list[str] = []
+            first_item: QTableWidgetItem | None = None
+            for scope, table in (
+                ("All games", self.global_table),
+                ("Profile", self.profile_table),
+            ):
+                table_errors, table_first_item = self._validate_table(scope, table)
+                errors.extend(table_errors)
+                first_item = first_item or table_first_item
+            if errors:
+                self.status.setText(
+                    f"Fix {len(errors)} correction row error(s) before saving:\n"
+                    + "\n".join(f"- {message}" for message in errors)
+                )
+                if focus_first and first_item is not None:
+                    table = first_item.tableWidget()
+                    if table is not None:
+                        page = table.parentWidget()
+                        if page is not None:
+                            self.tabs.setCurrentWidget(page)
+                        table.setCurrentItem(
+                            first_item, QItemSelectionModel.SelectionFlag.NoUpdate
+                        )
+            elif show_valid and not self._save_active:
+                self.status.setText("All correction rows are valid.")
+            elif not errors and not self._save_active:
+                self.status.clear()
         return tuple(errors)
 
     def _entries_from_table(self, table: QTableWidget) -> dict[str, str]:
