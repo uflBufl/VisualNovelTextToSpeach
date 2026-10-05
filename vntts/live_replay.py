@@ -1628,7 +1628,11 @@ def _read_replay_document(value: str | Path) -> tuple[Path, bytes, JsonObject]:
     )
     document = _decode_json_object(payload, "live replay corpus")
     version = document.get("schema_version")
-    if isinstance(version, bool) or version not in LIVE_REPLAY_CORPUS_VERSIONS:
+    if (
+        isinstance(version, bool)
+        or not isinstance(version, int)
+        or version not in LIVE_REPLAY_CORPUS_VERSIONS
+    ):
         raise ValueError(f"unsupported live replay corpus schema version: {version}")
     return path, payload, document
 

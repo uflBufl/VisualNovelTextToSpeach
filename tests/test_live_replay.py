@@ -1447,6 +1447,19 @@ class LiveReplayTest(unittest.TestCase):
             self.assertIn("output is read-only", errors.getvalue())
             self.assertEqual(output.read_text(encoding="utf-8"), "old report")
 
+    def test_corpus_rejects_noninteger_schema_versions_as_format_errors(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = self.create_corpus(temporary_directory)
+            document = json.loads(path.read_text(encoding="utf-8"))
+            for version in (True, 1.0, [], {}, None, "1"):
+                with self.subTest(version=version):
+                    document["schema_version"] = version
+                    path.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        ValueError, "schema version|schema_version"
+                    ):
+                        load_live_replay_corpus(path)
+
     def test_cli_rejects_an_empty_corpus(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "empty.json"
