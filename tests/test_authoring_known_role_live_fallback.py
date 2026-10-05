@@ -1,3 +1,4 @@
+import copy
 import json
 import unittest
 from pathlib import Path
@@ -193,6 +194,125 @@ class KnownRoleLiveFallbackTests(unittest.TestCase):
             fallback_module.validate_known_role_live_fallback_workspace(
                 created, original
             )
+
+    def test_ledger_map_validation_grows_linearly(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, evidence, queue_id = self._fixture(root)
+            created = create_known_role_live_fallback_workspace(
+                base, ((queue_id, evidence),), root / "workspaces"
+            ).directory
+            original_batch = json.loads((created / "workspace.json").read_text())[
+                "known_role_live_fallback"
+            ]
+            original_state = json.loads(
+                (created / "generated-audio/generation-state.json").read_text()
+            )
+            visits = {}
+            for count in (1, 8):
+                batch = copy.deepcopy(original_batch)
+                batch["items"] = []
+                state = {"items": {}}
+                overrides = {}
+                for index in range(count):
+                    key = f"queue-{index}"
+                    ledger = copy.deepcopy(original_batch["items"][0])
+                    ledger["queue_id"] = key
+                    result = copy.deepcopy(original_state["items"][queue_id])
+                    result["live_fallback"]["evidence"]["queue_id"] = key
+                    batch["items"].append(ledger)
+                    state["items"][key] = result
+                    overrides[key] = batch["synthesis_character"]
+                visited = []
+                original_items = fallback_module._generation_state_items
+
+                def count_items(value):
+                    items = original_items(value)
+                    visited.append(len(items))
+                    return items
+
+                with patch.object(
+                    fallback_module, "_generation_state_items", side_effect=count_items
+                ):
+                    fallback_module._validate_known_role_ledgers(
+                        batch, state, overrides, overrides
+                    )
+                visits[count] = sum(visited)
+            self.assertGreater(visits[1], 0)
+            self.assertLessEqual(visits[8], 8 * visits[1])
+
+    def test_evidence_capture_is_reused_only_within_one_selection(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, evidence, queue_id = self._fixture(root)
+            original_ledger = fallback_module._known_role_evidence_ledger
+            original_load = fallback_module.load_workspace_authority
+
+            def replay_ledger(*args, **kwargs):
+                first = original_ledger(*args, **kwargs)
+                self.assertEqual(original_ledger(*args, **kwargs), first)
+                return first
+
+            loads = []
+
+            def count_load(path):
+                if Path(path).resolve() == evidence:
+                    loads.append(path)
+                return original_load(path)
+
+            with (
+                patch.object(
+                    fallback_module,
+                    "_known_role_evidence_ledger",
+                    side_effect=replay_ledger,
+                ),
+                patch.object(
+                    fallback_module, "load_workspace_authority", side_effect=count_load
+                ),
+            ):
+                first = create_known_role_live_fallback_workspace(
+                    base, ((queue_id, evidence),), root / "workspaces"
+                )
+                self.assertEqual(len(loads), 1)
+                second = create_known_role_live_fallback_workspace(
+                    base, ((queue_id, evidence),), root / "workspaces"
+                )
+                self.assertEqual(len(loads), 2)
+            self.assertEqual(first.directory, second.directory)
+            self.assertFalse(second.created)
+
+    def test_changed_captured_evidence_refuses_publication(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, evidence, queue_id = self._fixture(root)
+            workspaces = root / "workspaces"
+            directories_before = set(workspaces.iterdir())
+            base_state = base / "generated-audio/generation-state.json"
+            base_before = base_state.read_bytes()
+            evidence_state = evidence / "generated-audio/generation-state.json"
+            changed_evidence = evidence_state.read_bytes() + b"\n"
+            original_validate = fallback_module._validate_staged_known_role_fallback
+
+            def change_evidence_after_staging(*args, **kwargs):
+                original_validate(*args, **kwargs)
+                evidence_state.write_bytes(changed_evidence)
+
+            with (
+                patch.object(
+                    fallback_module,
+                    "_validate_staged_known_role_fallback",
+                    side_effect=change_evidence_after_staging,
+                ),
+                self.assertRaisesRegex(
+                    AuthoringWorkbenchError, "authority changed before publication"
+                ),
+            ):
+                create_known_role_live_fallback_workspace(
+                    base, ((queue_id, evidence),), workspaces
+                )
+            self.assertEqual(set(workspaces.iterdir()), directories_before)
+            self.assertEqual(base_state.read_bytes(), base_before)
+            self.assertEqual(evidence_state.read_bytes(), changed_evidence)
 
     def test_exact_routed_fallback_is_valid_and_idempotent(self):
         with TemporaryDirectory() as directory:
