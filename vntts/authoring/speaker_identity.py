@@ -51,13 +51,16 @@ class _Reference(TypedDict):
     duration_seconds: float
 
 
-class _Inventory(TypedDict):
+class _InventoryBody(TypedDict):
     schema: str
     schema_version: int
     voice_manifest: str
     voice_manifest_sha256: str
     reference_count: int
     references: list[_Reference]
+
+
+class _Inventory(_InventoryBody):
     inventory_id: str
 
 
@@ -68,11 +71,18 @@ class _Pair(TypedDict):
     relationship: str
 
 
-class _Labels(TypedDict):
+class _ScoredPair(_Pair):
+    cosine_distance: float
+
+
+class _LabelsBody(TypedDict):
     schema: str
     schema_version: int
     inventory_id: str
     pairs: list[_Pair]
+
+
+class _Labels(_LabelsBody):
     labels_id: str
 
 
@@ -130,7 +140,7 @@ def build_reference_inventory(manifest_path: str | Path) -> _Inventory:
         raise SpeakerIdentityError("Voice manifest repeats a reference identity")
     if sha256_file(manifest_path) != manifest_sha256:
         raise SpeakerIdentityError("Voice manifest changed while inventory was built")
-    body: JsonDocument = {
+    body: _InventoryBody = {
         "schema": INVENTORY_SCHEMA,
         "schema_version": SCHEMA_VERSION,
         "voice_manifest": str(manifest_path),
@@ -139,12 +149,7 @@ def build_reference_inventory(manifest_path: str | Path) -> _Inventory:
         "references": references,
     }
     return {
-        "schema": INVENTORY_SCHEMA,
-        "schema_version": SCHEMA_VERSION,
-        "voice_manifest": str(manifest_path),
-        "voice_manifest_sha256": manifest_sha256,
-        "reference_count": len(references),
-        "references": references,
+        **body,
         "inventory_id": canonical_document_sha256(body),
     }
 
@@ -228,17 +233,14 @@ def build_labelled_pairs(inventory: _Inventory, pairs: Iterable[object]) -> _Lab
             item["right_reference_id"],
         )
     )
-    body: JsonDocument = {
+    body: _LabelsBody = {
         "schema": LABELS_SCHEMA,
         "schema_version": SCHEMA_VERSION,
         "inventory_id": inventory["inventory_id"],
         "pairs": normalized,
     }
     return {
-        "schema": LABELS_SCHEMA,
-        "schema_version": SCHEMA_VERSION,
-        "inventory_id": inventory["inventory_id"],
-        "pairs": normalized,
+        **body,
         "labels_id": canonical_document_sha256(body),
     }
 
@@ -299,7 +301,7 @@ def build_speaker_identity_report(
         if not math.isfinite(norm) or norm <= 0:
             raise SpeakerIdentityError(f"Zero embedding for {item['path']}")
         vectors[reference_id] = vector / norm
-    results = []
+    results: list[_ScoredPair] = []
     for pair in labels["pairs"]:
         distance = float(
             1.0
@@ -312,7 +314,7 @@ def build_speaker_identity_report(
                 1.0,
             )
         )
-        results.append({**copy.deepcopy(pair), "cosine_distance": distance})
+        results.append({**pair, "cosine_distance": distance})
     threshold, fit = _fit_threshold(results)
     held_out = _held_out_result(results, threshold)
     eligible = bool(
@@ -412,15 +414,15 @@ def installed_model_descriptor() -> JsonDocument:
     }
 
 
-def _fit_threshold(results: list[JsonDocument]) -> tuple[float | None, JsonDocument]:
+def _fit_threshold(results: list[_ScoredPair]) -> tuple[float | None, JsonDocument]:
     fit = [item for item in results if item["partition"] == "fit"]
     positives = [
-        _required_float(item.get("cosine_distance"), "cosine distance")
+        item["cosine_distance"]
         for item in fit
         if item["relationship"] == "same-speaker"
     ]
     negatives = [
-        _required_float(item.get("cosine_distance"), "cosine distance")
+        item["cosine_distance"]
         for item in fit
         if item["relationship"] != "same-speaker"
     ]
@@ -436,7 +438,7 @@ def _fit_threshold(results: list[JsonDocument]) -> tuple[float | None, JsonDocum
 
 
 def _held_out_result(
-    results: list[JsonDocument], threshold: float | None
+    results: list[_ScoredPair], threshold: float | None
 ) -> JsonDocument:
     held_out = [item for item in results if item["partition"] == "held-out"]
     counts = {
@@ -449,9 +451,7 @@ def _held_out_result(
     for item in held_out:
         actual_positive = item["relationship"] == "same-speaker"
         predicted_positive = (
-            threshold is not None
-            and _required_float(item.get("cosine_distance"), "cosine distance")
-            <= threshold
+            threshold is not None and item["cosine_distance"] <= threshold
         )
         key = (
             "true_positive"
@@ -564,12 +564,6 @@ def _required_text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise SpeakerIdentityError(f"{label.capitalize()} is required")
     return value.strip()
-
-
-def _required_float(value: object, label: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise SpeakerIdentityError(f"{label.capitalize()} is invalid")
-    return float(value)
 
 
 def _pairs(value: object) -> list[object]:
