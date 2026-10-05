@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -43,6 +41,7 @@ from vntts.chapter_voice_preload import (
     _source_audio_covers_full_line,
     _validated_source_audio_line_ids,
 )
+from vntts.document_identity import canonical_document_sha256
 from vntts.voices import synthesis_character_for_line
 
 
@@ -319,13 +318,13 @@ def plan_generation_queue(
             "unknown_action": unknown_action,
             "partial_source_audio_only": bool(partial_source_audio_only),
         },
-        "source_story_index_document_sha256": _json_sha256(
+        "source_story_index_document_sha256": canonical_document_sha256(
             {
                 "metadata": document.metadata,
                 "records": [record.to_record() for record in document.records],
             }
         ),
-        "source_voice_manifest_entries_sha256": _json_sha256(
+        "source_voice_manifest_entries_sha256": canonical_document_sha256(
             [
                 {
                     "character": entry.character,
@@ -516,14 +515,3 @@ def _queue_item(
 
 def _counts(values: Iterable[object]) -> dict[str, int]:
     return dict(sorted(Counter(str(value) for value in values).items()))
-
-
-def _json_sha256(value: object) -> str:
-    payload = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
