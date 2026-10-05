@@ -355,6 +355,37 @@ class GamePackImportTest(unittest.TestCase):
             with self.assertRaisesRegex(GamePackError, "checksum changed"):
                 import_game_pack(pack_path)
 
+    def test_semantic_evidence_requires_canonical_portable_relative_paths(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            pack_path, *_unused = write_synthetic_game_pack(
+                root, include_semantics=True
+            )
+            document = json.loads(pack_path.read_text(encoding="utf-8"))
+            extension = document["vntts.authoring"]["source_audio_semantic_evidence"]
+            payload = (root / extension["path"]).read_bytes()
+            unsafe_paths = (
+                "story\\evidence.json",
+                "./source-audio-semantic-evidence.json",
+                "story//evidence.json",
+                "C:evidence.json",
+                "../evidence.json",
+            )
+            for relative in unsafe_paths:
+                with self.subTest(path=relative):
+                    # Give aliases real bound bytes so a missing file cannot hide
+                    # acceptance of an invalid path. Windows forbids drive-like names.
+                    if relative not in {"C:evidence.json", "../evidence.json"}:
+                        alias = root / relative
+                        alias.parent.mkdir(parents=True, exist_ok=True)
+                        alias.write_bytes(payload)
+                    extension["path"] = relative
+                    atomic_write_json(pack_path, document)
+                    with self.assertRaisesRegex(
+                        GamePackError, "POSIX-relative|stay inside|leaves|unsafe"
+                    ):
+                        import_game_pack(pack_path)
+
     def test_import_rejects_boolean_semantic_evidence_entry_count(self):
         with TemporaryDirectory() as directory:
             pack_path, *_unused = write_synthetic_game_pack(

@@ -311,13 +311,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/game_pack.py",
-      "scope": "_source_audio_semantic_evidence",
-      "count": 1,
-      "maximum": 11
-    },
-    {
-      "code": "C901",
       "path": "vntts/generated_audio.py",
       "scope": "GeneratedAudioFallbackBackend.has_resolved_route_in_live_mode",
       "count": 1,

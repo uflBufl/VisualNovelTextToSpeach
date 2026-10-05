@@ -5,13 +5,14 @@ import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from time import perf_counter, process_time
 
 from durable_file import sha256_file
 from vntts_artifacts.game_pack import GamePack, GamePackError, load_game_pack
 from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
 
+from vntts.path_safety import contained_path, safe_relative_path
 from vntts.settings import AppSettings
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
@@ -144,22 +145,16 @@ def _source_audio_semantic_evidence(pack: GamePack) -> Path | None:
         "entry_count",
     }:
         raise GamePackError("Game pack semantic evidence extension is malformed")
-    relative = extension.get("path")
-    if not isinstance(relative, str) or not relative:
-        raise GamePackError("Game pack semantic evidence path is invalid")
-    pure = PurePosixPath(relative)
-    if (
-        pure.is_absolute()
-        or not pure.parts
-        or any(part in {"", ".", ".."} for part in pure.parts)
-    ):
-        raise GamePackError("Game pack semantic evidence path is unsafe")
-    root = Path(pack.manifest_path).parent.resolve()
-    evidence_path = (root / Path(*pure.parts)).resolve()
-    try:
-        evidence_path.relative_to(root)
-    except ValueError as error:
-        raise GamePackError("Game pack semantic evidence leaves its pack") from error
+    evidence_path = contained_path(
+        Path(pack.manifest_path).parent,
+        safe_relative_path(
+            extension.get("path"),
+            "Game pack semantic evidence path",
+            error_type=GamePackError,
+        ),
+        "Game pack semantic evidence",
+        error_type=GamePackError,
+    )
     evidence_sha256 = extension.get("sha256")
     if not evidence_path.is_file() or sha256_file(evidence_path) != evidence_sha256:
         raise GamePackError("Game pack semantic evidence checksum changed")
