@@ -326,8 +326,9 @@ def _candidate_for_path(
 ) -> str | None:
     if not path.is_absolute() and base is not None:
         path = base / path
+    resolved = path.resolve(strict=False)
     try:
-        relative = path.resolve(strict=False).relative_to(root)
+        relative = resolved.relative_to(root)
     except ValueError:
         return None
     return relative.parts[0] if relative.parts else None

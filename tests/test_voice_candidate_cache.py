@@ -303,6 +303,42 @@ class VoiceCandidateCacheTest(unittest.TestCase):
                 finally:
                     alias.unlink()
 
+    def test_invalid_path_defers_cleanup_but_outside_paths_do_not(self) -> None:
+        old = self._candidate("old")
+        job = self.jobs / ("a" * 24)
+        job.mkdir()
+        reference = job / "voice-plan.json"
+        invalid = str(old / "reference\x00.wav")
+        for location in ("protected", "saved"):
+            with self.subTest(location=location):
+                if not old.exists():
+                    old = self._candidate("old")
+                reference.write_text(
+                    json.dumps(
+                        {"voice_manifest": invalid if location == "saved" else ""}
+                    ),
+                    encoding="utf-8",
+                )
+                self.assertEqual(
+                    prune_obsolete_voice_candidate_caches(
+                        self.root,
+                        self.jobs,
+                        protected_paths=(invalid,) if location == "protected" else (),
+                    ),
+                    (),
+                )
+                self.assertTrue(old.exists())
+        if not old.exists():
+            old = self._candidate("old")
+        reference.write_text(
+            json.dumps({"voice_manifest": str(self.jobs / "outside.json")}),
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            prune_obsolete_voice_candidate_caches(self.root, self.jobs),
+            (old.resolve(),),
+        )
+
     def _candidate(self, name: str) -> Path:
         directory = self.root / hashlib.sha256(name.encode()).hexdigest()[:24]
         directory.mkdir()
