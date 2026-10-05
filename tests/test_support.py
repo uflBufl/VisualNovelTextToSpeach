@@ -127,6 +127,54 @@ class NativeSpeechLogTest(unittest.TestCase):
         self.assertNotIn("PRIVATE", json.dumps(report))
         self.assertNotIn(str(Path.home()), persisted)
 
+    def test_native_resource_gpu_boards_survive_persistence(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "native-speech.log"
+            log = NativeSpeechLog(path=path)
+            log.record(
+                {
+                    "operation": "fresh-generation",
+                    "sampling": {"one": {"two": {"three": {"four": 4}}}},
+                    "resources": {
+                        "complete": True,
+                        "gpu": {
+                            "status": "available",
+                            "sample_count": 1,
+                            "boards": [
+                                {
+                                    "logical_index": 0,
+                                    "driver_version": "555.42",
+                                    "utilization_percent_peak": 42.0,
+                                    "vram_used_bytes_peak": 1024,
+                                    "path": "/private/gpu.log",
+                                    "token": "PRIVATE-TOKEN",
+                                }
+                            ],
+                        },
+                        "nonfinite": float("nan"),
+                        "excess": {"one": {"two": {"three": {"four": 4}}}},
+                    },
+                }
+            )
+            restarted = NativeSpeechLog(path=path)
+            persisted = path.read_text(encoding="utf-8")
+
+        native = restarted.report()["events"][0]["native"]
+        resources = native["resources"]
+        self.assertEqual(resources["gpu"]["boards"][0]["path"], "<path>")
+        self.assertEqual(resources["gpu"]["boards"][0]["token"], "<redacted>")
+        self.assertNotIn("/private/gpu.log", persisted)
+        self.assertNotIn("PRIVATE-TOKEN", persisted)
+        self.assertEqual(native["sampling"], {"one": {"two": {}}})
+        self.assertEqual(resources["gpu"]["boards"][0]["logical_index"], 0)
+        self.assertEqual(
+            resources["gpu"]["boards"][0]["utilization_percent_peak"], 42.0
+        )
+        self.assertIsNone(resources["nonfinite"])
+        self.assertNotIn("three", resources["excess"]["one"]["two"])
+        json.loads(persisted)
+        json.dumps(restarted.report(), allow_nan=False)
+
     def test_rollover_preserves_session_counts_and_runtime(self):
         log = NativeSpeechLog(maximum_entries=2)
         with patch("vntts.support.native_speech_log", log):

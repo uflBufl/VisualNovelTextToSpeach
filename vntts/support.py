@@ -2015,11 +2015,18 @@ def _sanitize_native_details(details: object) -> SupportDocument:
         key: sanitized
         for key, value in details.items()
         if key in _native_fields
-        and (sanitized := _sanitize_native_value(value)) is not _NATIVE_DROP
+        and (
+            sanitized := _sanitize_native_value(
+                value, max_depth=4 if key == "resources" else 3
+            )
+        )
+        is not _NATIVE_DROP
     }
 
 
-def _sanitize_native_value(value: object, depth: int = 0) -> object:
+def _sanitize_native_value(
+    value: object, depth: int = 0, *, max_depth: int = 3
+) -> object:
     if value is None or isinstance(value, (bool, int)):
         return value
     if isinstance(value, float):
@@ -2028,19 +2035,26 @@ def _sanitize_native_value(value: object, depth: int = 0) -> object:
         if _looks_like_local_path(value):
             return "<path>"
         return _redact_game_import_text(value)[:1024]
-    if depth >= 3:
+    if depth >= max_depth:
         return _NATIVE_DROP
     if isinstance(value, (list, tuple)):
         return [
             item
-            for item in (_sanitize_native_value(item, depth + 1) for item in value[:32])
+            for item in (
+                _sanitize_native_value(item, depth + 1, max_depth=max_depth)
+                for item in value[:32]
+            )
             if item is not _NATIVE_DROP
         ]
     if isinstance(value, dict):
         return {
             str(key)[:80]: ("<redacted>" if _is_secret_name(key) else sanitized)
             for key, item in list(value.items())[:32]
-            if (sanitized := _sanitize_native_value(item, depth + 1))
+            if (
+                sanitized := _sanitize_native_value(
+                    item, depth + 1, max_depth=max_depth
+                )
+            )
             is not _NATIVE_DROP
         }
     return _NATIVE_DROP
