@@ -15,10 +15,10 @@ from typing import TypeAlias, TypedDict
 
 import numpy as np
 import soundfile as sf
-from durable_file import sha256_file
 
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
+    assert_authority_snapshot,
     canonical_document_sha256,
     capture_authority_file,
     write_json_document_no_replace,
@@ -95,10 +95,12 @@ class SpeakerIdentityError(RuntimeError):
 
 def build_reference_inventory(manifest_path: str | Path) -> _Inventory:
     """Capture every declared voice reference without changing its authority."""
-    manifest_path = Path(manifest_path).expanduser().resolve()
-    manifest_sha256 = sha256_file(manifest_path)
     try:
-        registry = CharacterVoiceRegistry.from_file(manifest_path)
+        manifest_path = Path(manifest_path).expanduser().resolve()
+        snapshot = capture_authority_file(manifest_path, "voice manifest")
+        registry = CharacterVoiceRegistry.from_document(
+            snapshot.json_document("voice manifest"), manifest_path
+        )
     except Exception as error:
         raise SpeakerIdentityError(f"Unable to load voice manifest: {error}") from error
     references: list[_Reference] = []
@@ -138,13 +140,17 @@ def build_reference_inventory(manifest_path: str | Path) -> _Inventory:
         raise SpeakerIdentityError("Voice manifest has no references")
     if len({item["reference_id"] for item in references}) != len(references):
         raise SpeakerIdentityError("Voice manifest repeats a reference identity")
-    if sha256_file(manifest_path) != manifest_sha256:
-        raise SpeakerIdentityError("Voice manifest changed while inventory was built")
+    try:
+        assert_authority_snapshot(snapshot, "voice manifest")
+    except AuthoringAuthorityError as error:
+        raise SpeakerIdentityError(
+            f"Voice manifest changed while inventory was built: {error}"
+        ) from error
     body: _InventoryBody = {
         "schema": INVENTORY_SCHEMA,
         "schema_version": SCHEMA_VERSION,
         "voice_manifest": str(manifest_path),
-        "voice_manifest_sha256": manifest_sha256,
+        "voice_manifest_sha256": snapshot.sha256,
         "reference_count": len(references),
         "references": references,
     }

@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import numpy as np
 
+from vntts.authoring import speaker_identity
 from vntts.authoring.cli import create_parser
 from vntts.authoring.speaker_identity import (
     SpeakerIdentityError,
@@ -191,6 +192,32 @@ class SpeakerIdentityTest(unittest.TestCase):
 
             with self.assertRaisesRegex(SpeakerIdentityError, "leaks"):
                 build_labelled_pairs(inventory, [fit, held_out])
+
+    def test_manifest_capture_failures_use_the_domain_error(self):
+        for removed_during_inspection in (False, True):
+            with (
+                self.subTest(late=removed_during_inspection),
+                TemporaryDirectory() as directory,
+            ):
+                manifest = _fixture(Path(directory))
+                original_read = speaker_identity.read_voice_reference_bytes
+
+                def inspect(voice, reference):
+                    payload = original_read(voice, reference)
+                    manifest.unlink(missing_ok=True)
+                    return payload
+
+                if not removed_during_inspection:
+                    manifest.unlink()
+                with (
+                    patch.object(
+                        speaker_identity,
+                        "read_voice_reference_bytes",
+                        side_effect=inspect,
+                    ),
+                    self.assertRaises(SpeakerIdentityError),
+                ):
+                    build_reference_inventory(manifest)
 
     def test_runtime_rejects_non_cpu_before_loading_optional_dependency(self):
         with self.assertRaisesRegex(SpeakerIdentityError, "require CPU"):
