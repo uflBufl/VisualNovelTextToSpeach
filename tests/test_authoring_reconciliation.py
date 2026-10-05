@@ -507,6 +507,30 @@ class AuthoringReconciliationTest(unittest.TestCase):
             publication.resolve(),
         )
 
+    def test_explicit_bundle_selection_fails_if_directory_disappears(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, workspace, _, _, bundles, _, publication = self.create_fixture(root)
+            inspect_bundles = reconciliation_module._inspect_review_bundles
+
+            def move_bundle_directory(*args, **kwargs):
+                bundles.rename(root / "moved-review-bundles")
+                return inspect_bundles(*args, **kwargs)
+
+            with (
+                patch.object(
+                    reconciliation_module,
+                    "_inspect_review_bundles",
+                    side_effect=move_bundle_directory,
+                ),
+                self.assertRaisesRegex(
+                    AuthoringReconciliationError, "Review bundle is unavailable"
+                ),
+            ):
+                build_authoring_reconciliation(
+                    workspace, bundles, bundle_publications=(publication,)
+                )
+
     def test_explicit_bundle_selection_rejects_selected_non_bundle(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

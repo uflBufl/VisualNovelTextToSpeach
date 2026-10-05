@@ -226,15 +226,6 @@ def _inspect_review_bundles(
     bundle_actions: BundleActions = {}
     bundle_workspace_queue_ids: WorkspaceQueueIds = {}
     bundle_queue_ids: set[str] = set()
-    if not bundle_root.is_dir():
-        return (
-            workspace_paths,
-            bundle_reports,
-            bundle_actions,
-            bundle_workspace_queue_ids,
-            bundle_queue_ids,
-        )
-
     paths = (
         sorted(bundle_root.glob("*.json"))
         if selected_publications is None
