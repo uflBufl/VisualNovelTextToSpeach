@@ -12,7 +12,6 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
-from functools import lru_cache
 from pathlib import Path
 from statistics import median
 from typing import SupportsIndex, SupportsInt
@@ -189,7 +188,6 @@ def _inspection_state_items(state: Mapping[str, object]) -> StateItems:
     return {queue_id: value for queue_id, value in items.items()}
 
 
-@lru_cache(maxsize=2048)
 def discover_imports(import_root: str | Path | None = None) -> tuple[Path, ...]:
     root = (
         Path(import_root or legacy_import.default_import_root()).expanduser().resolve()

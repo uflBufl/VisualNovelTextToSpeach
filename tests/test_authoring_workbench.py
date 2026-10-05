@@ -3299,6 +3299,27 @@ class AuthoringWorkbenchTest(unittest.TestCase):
 
             self.assertFalse((root / "escaped").exists())
 
+    def test_import_discovery_reflects_creation_removal_and_manifest_changes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            import_root = root / "imports"
+            self.assertEqual(discover_imports(import_root), ())
+            fixture = write_legacy_fixture(root / "legacy")
+            imported = import_legacy_job(
+                fixture["job_directory"], import_root
+            ).destination
+            self.assertEqual(discover_imports(import_root), (imported,))
+            manifest_path = imported / "import.json"
+            original = manifest_path.read_bytes()
+            manifest = json.loads(original)
+            manifest["schema"] = "invalid"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            self.assertEqual(discover_imports(import_root), ())
+            manifest_path.write_bytes(original)
+            self.assertEqual(discover_imports(import_root), (imported,))
+            shutil.rmtree(imported)
+            self.assertEqual(discover_imports(import_root), ())
+
     def test_discovery_rejects_symlinked_imports_and_workspaces(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -3732,11 +3753,16 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             wav = Path(directory) / "legacy.wav"
             write_pcm16_wav(wav, np.zeros(1_600, dtype=np.float32), 16_000)
 
+            digest = sha256_file(wav)
+            workspace_inspection_module._corrected_legacy_speech_quality(
+                str(wav), digest
+            )
+            write_pcm16_wav(wav, np.zeros(3_200, dtype=np.float32), 16_000)
             with self.assertRaisesRegex(
                 AuthoringWorkbenchError, "Generated WAV changed"
             ):
                 workspace_inspection_module._corrected_legacy_speech_quality(
-                    str(wav), "0" * 64
+                    str(wav), digest
                 )
 
     def test_review_decision_is_compare_and_swap_bound_to_displayed_state_and_wav(self):
