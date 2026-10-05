@@ -1572,7 +1572,7 @@ def _load_frame(
     if expected_sha256 is not None and expected_sha256 != digest:
         raise ValueError(f"Live replay frame checksum does not match: {path}")
     with Image.open(io.BytesIO(payload)) as source:
-        image = source.convert("RGB").copy()
+        image = source.convert("RGB")
     if region is not None:
         image = region.crop(image)
     if observation is not None:
