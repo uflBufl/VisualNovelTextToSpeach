@@ -313,17 +313,18 @@ class Reverse1999GameImporter:
                 raise ValueError("Invalid saved import inputs")
             inputs = saved.get("inputs")
             if (
-                saved.get("version") != 1
+                type(saved.get("version")) is not int
+                or saved.get("version") != 1
                 or not isinstance(inputs, dict)
                 or len(inputs) != 3
             ):
                 raise ValueError("Invalid saved import inputs")
-            if saved.get("story_index") != self._file_signature(story_index):
+            if not self._matches_file_signature(saved.get("story_index"), story_index):
                 return True
             for raw_path, signature in inputs.items():
                 if not isinstance(raw_path, str) or not raw_path:
                     raise ValueError("Invalid saved import input path")
-                if signature != self._file_signature(Path(raw_path)):
+                if not self._matches_file_signature(signature, Path(raw_path)):
                     return True
         except OSError, ValueError, TypeError:
             return True
@@ -333,6 +334,15 @@ class Reverse1999GameImporter:
     def _file_signature(path: Path) -> list[int]:
         stat = path.stat()
         return [stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
+
+    @classmethod
+    def _matches_file_signature(cls, value: object, path: Path) -> bool:
+        return (
+            isinstance(value, list)
+            and len(value) == 3
+            and all(type(component) is int for component in value)
+            and value == cls._file_signature(path)
+        )
 
     @staticmethod
     def _story_input_paths(
@@ -838,7 +848,8 @@ class Reverse1999GameImporter:
             saved = json.loads(cache.read_text(encoding="utf-8"))
             names = saved["characters"]
             if (
-                saved["version"] == 1
+                type(saved["version"]) is int
+                and saved["version"] == 1
                 and saved["story_index_sha256"] == index_sha256
                 and saved["narrator_banks_sha256"] == banks_sha256
                 and isinstance(names, list)
@@ -1192,7 +1203,8 @@ def _cached_playable_voice_roles(index: Path) -> set[str]:
         if isinstance(saved, dict):
             roles = saved.get("roles")
             if (
-                saved.get("version") == 1
+                type(saved.get("version")) is int
+                and saved.get("version") == 1
                 and saved.get("index_sha256") == checksum
                 and isinstance(roles, list)
                 and all(

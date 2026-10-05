@@ -21,6 +21,7 @@ from vntts.game_content_importer import (
     GameContentImportCancelled,
     GameContentImportError,
     Reverse1999GameImporter,
+    _cached_playable_voice_roles,
     resolve_reverse1999_installation,
 )
 from vntts.pregeneration_setup import PregenerationJobStore, inspect_story_index
@@ -120,6 +121,78 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                     with self.subTest(metadata=metadata):
                         story.write_text(json.dumps(metadata) + "\n", encoding="utf-8")
                         self.assertFalse(importer.installed_story_changed())
+
+    def test_source_signatures_reject_noninteger_versions_and_counts(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story = root / "story-index.jsonl"
+            story.write_bytes(b"x")
+            inputs = tuple(root / f"input-{index}" for index in range(3))
+            for path in inputs:
+                path.write_bytes(b"x")
+            importer = Reverse1999GameImporter(output_root=root)
+            saved = {
+                "version": 1,
+                "story_index": importer._file_signature(story),
+                "inputs": {
+                    str(path): importer._file_signature(path) for path in inputs
+                },
+            }
+            self.assertFalse(importer._saved_story_inputs_changed(story, saved))
+            for version in (True, 1.0):
+                with self.subTest(version=version):
+                    self.assertTrue(
+                        importer._saved_story_inputs_changed(
+                            story, saved | {"version": version}
+                        )
+                    )
+            for target in ("story_index", "inputs"):
+                for count in (True, 1.0):
+                    with self.subTest(target=target, count=count):
+                        malformed = json.loads(json.dumps(saved))
+                        signature = (
+                            malformed["story_index"]
+                            if target == "story_index"
+                            else malformed["inputs"][str(inputs[0])]
+                        )
+                        signature[0] = count
+                        self.assertTrue(
+                            importer._saved_story_inputs_changed(story, malformed)
+                        )
+
+    def test_optional_voice_caches_require_integer_versions(self):
+        for version in (1, True, 1.0):
+            with self.subTest(version=version), TemporaryDirectory() as directory:
+                root = Path(directory)
+                story = write_story_index(root)
+                banks = root / "narrator-banks.json"
+                banks.write_text('["Rhiannon"]', encoding="utf-8")
+                checksum = sha256_file(story)
+                atomic_write_json(
+                    root / "playable-voice-roles.json",
+                    {"version": version, "index_sha256": checksum, "roles": ["cached"]},
+                )
+                with self.subTest(cache="playable"):
+                    self.assertEqual(
+                        _cached_playable_voice_roles(story),
+                        {"cached"} if type(version) is int else {"centurion"},
+                    )
+                atomic_write_json(
+                    root / "narrator-characters.json",
+                    {
+                        "version": version,
+                        "story_index_sha256": checksum,
+                        "narrator_banks_sha256": sha256_file(banks),
+                        "characters": ["Cached"],
+                    },
+                )
+                names = Reverse1999GameImporter._cached_narrator_characters(
+                    story, banks, checksum, sha256_file(banks)
+                )
+                self.assertEqual(
+                    names,
+                    ("Cached",) if type(version) is int else ("Centurion", "Rhiannon"),
+                )
 
     def test_prepares_selected_stage_semantics_as_an_immutable_successor(self):
         with TemporaryDirectory() as directory:
