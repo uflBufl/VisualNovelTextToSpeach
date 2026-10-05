@@ -219,6 +219,37 @@ class SpeakerIdentityTest(unittest.TestCase):
                 ):
                     build_reference_inventory(manifest)
 
+    def test_invalid_model_embeddings_use_the_domain_error(self):
+        with TemporaryDirectory() as directory:
+            inventory = build_reference_inventory(_fixture(Path(directory)))
+            left, right = [item["reference_id"] for item in inventory["references"][:2]]
+            labels = build_labelled_pairs(
+                inventory,
+                [
+                    {
+                        "left_reference_id": left,
+                        "right_reference_id": right,
+                        "partition": "fit",
+                        "relationship": "same-speaker",
+                    }
+                ],
+            )
+            for name, first, second in (
+                ("nonnumeric", ("bad",), ("bad",)),
+                ("ragged", ((1.0,), (1.0, 2.0)), (1.0, 0.0)),
+                ("overflow", (10**1000,), (1.0, 0.0)),
+                ("dimensions", (1.0, 0.0), (1.0, 0.0, 0.0)),
+                ("empty", (), (1.0, 0.0)),
+                ("nonfinite", (float("inf"),), (1.0, 0.0)),
+                ("zero", (0.0, 0.0), (1.0, 0.0)),
+            ):
+                with self.subTest(embedding=name):
+                    vectors = iter((first, second))
+                    with self.assertRaisesRegex(SpeakerIdentityError, "embedding"):
+                        build_speaker_identity_report(
+                            inventory, labels, lambda payload: next(vectors), {}
+                        )
+
     def test_runtime_rejects_non_cpu_before_loading_optional_dependency(self):
         with self.assertRaisesRegex(SpeakerIdentityError, "require CPU"):
             make_speechbrain_embedder("missing", device="cuda")

@@ -15,6 +15,7 @@ from typing import TypeAlias, TypedDict
 
 import numpy as np
 import soundfile as sf
+from numpy.typing import NDArray
 
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
@@ -286,7 +287,7 @@ def build_speaker_identity_report(
             for field in ("left_reference_id", "right_reference_id")
         }
     )
-    vectors = {}
+    vectors: dict[str, NDArray[np.float64]] = {}
     for reference_id in required_ids:
         item = by_id[reference_id]
         path = Path(inventory["voice_manifest"]).parent / item["path"]
@@ -300,9 +301,18 @@ def build_speaker_identity_report(
             raise SpeakerIdentityError(str(error)) from error
         if _sha256_bytes(payload) != item["sha256"]:
             raise SpeakerIdentityError(f"Reference changed: {item['path']}")
-        vector = np.asarray(embed(payload), dtype=np.float64).reshape(-1)
+        try:
+            vector = np.asarray(embed(payload), dtype=np.float64).reshape(-1)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise SpeakerIdentityError(
+                f"Invalid embedding for {item['path']}: {error}"
+            ) from error
         if not vector.size or not np.all(np.isfinite(vector)):
             raise SpeakerIdentityError(f"Invalid embedding for {item['path']}")
+        if vectors and vector.size != next(iter(vectors.values())).size:
+            raise SpeakerIdentityError(
+                f"Inconsistent embedding dimensions for {item['path']}"
+            )
         norm = float(np.linalg.norm(vector))
         if not math.isfinite(norm) or norm <= 0:
             raise SpeakerIdentityError(f"Zero embedding for {item['path']}")
