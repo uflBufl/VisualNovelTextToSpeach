@@ -12,6 +12,7 @@ import sys
 import time
 import uuid
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from functools import lru_cache, partial
 from os import PathLike
@@ -872,7 +873,7 @@ class Reverse1999GameImporter:
             if record.source_audio_status == "available" and not is_narrator(character):
                 characters.setdefault(normalize_character_name(character), character)
         result = tuple(sorted(characters.values(), key=str.casefold))
-        try:
+        with suppress(OSError):
             atomic_write_json(
                 cache,
                 {
@@ -882,8 +883,6 @@ class Reverse1999GameImporter:
                     "characters": result,
                 },
             )
-        except OSError:
-            pass
         return result
 
     @staticmethod
@@ -1222,13 +1221,11 @@ def _cached_playable_voice_roles(index: Path) -> set[str]:
     available = _playable_voice_roles(load_story_index_document(index))
     if sha256_file(index) != checksum:
         raise GameContentImportError("Voice reference index changed while being read")
-    try:
+    with suppress(OSError):
         atomic_write_json(
             cache,
             {"version": 1, "index_sha256": checksum, "roles": sorted(available)},
         )
-    except OSError:
-        pass
     return available
 
 
