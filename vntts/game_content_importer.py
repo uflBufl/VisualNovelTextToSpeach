@@ -409,8 +409,7 @@ class Reverse1999GameImporter:
             if not (
                 all(path.is_absolute() for path in roots)
                 and (resources / "bundles").is_dir()
-                and (configs / "datacfg_1.dat").is_file()
-                and (configs / "language/json_language_en.json.dat").is_file()
+                and not _missing_config_files(configs)
                 and any(audio.glob("*.bnk"))
             ):
                 raise ValueError("Saved installation files are no longer available")
@@ -1259,6 +1258,14 @@ def resolve_reverse1999_installation(path: PathInput) -> InstallationRoots:
     return resource_root, config_directory, audio_directory
 
 
+def _missing_config_files(directory: Path) -> list[str]:
+    return [
+        name
+        for name in ("datacfg_1.dat", "language/json_language_en.json.dat")
+        if not (directory / name).is_file()
+    ]
+
+
 def _find_installation_parts(
     root: Path,
     search_roots: Sequence[Path],
@@ -1276,14 +1283,7 @@ def _find_installation_parts(
                 resource_root = current.resolve()
             if current.name == "configs":
                 checked_configs.add(current)
-                missing = [
-                    name
-                    for name in (
-                        "datacfg_1.dat",
-                        "language/json_language_en.json.dat",
-                    )
-                    if not (current / name).is_file()
-                ]
+                missing = _missing_config_files(current)
                 record("config-candidate", path=current, missing=missing)
                 if not missing:
                     config_directory = current.resolve()
@@ -1300,11 +1300,7 @@ def _find_installation_parts(
 
     direct_config = root / "configs"
     if config_directory is None and direct_config not in checked_configs:
-        missing = [
-            name
-            for name in ("datacfg_1.dat", "language/json_language_en.json.dat")
-            if not (direct_config / name).is_file()
-        ]
+        missing = _missing_config_files(direct_config)
         record("config-candidate", path=direct_config, missing=missing)
     return resource_root, config_directory, audio_directory
 
