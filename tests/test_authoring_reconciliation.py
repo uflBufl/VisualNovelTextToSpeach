@@ -124,6 +124,42 @@ class AuthoringReconciliationTest(unittest.TestCase):
             )
             bundle = projection.next_bundle
 
+    def test_final_actions_are_counted_once_across_workspaces(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            primary, secondary, _, bundles, publication = self.create_parallel_fixture(
+                root
+            )
+            project_actions = reconciliation_module._project_terminal_merge_actions
+            for decision in (None, "accepted"):
+                with self.subTest(decision=decision):
+                    if decision is not None:
+                        self.decide_parallel_bundle(
+                            publication, ((secondary.name, decision),)
+                        )
+                    expected = build_authoring_reconciliation(primary, bundles)
+                    before = _tree_hashes(root)
+                    traversals = []
+
+                    class CountedActions(list):
+                        def __iter__(self):
+                            traversals.append(1)
+                            return super().__iter__()
+
+                    def count_actions(*args):
+                        return CountedActions(project_actions(*args))
+
+                    with patch.object(
+                        reconciliation_module,
+                        "_project_terminal_merge_actions",
+                        side_effect=count_actions,
+                    ):
+                        actual = build_authoring_reconciliation(primary, bundles)
+                    self.assertEqual(actual, expected)
+                    self.assertEqual(before, _tree_hashes(root))
+                    self.assertEqual(len(traversals), 2)
+                    reconciliation_module._validated_report(actual)
+
     def test_report_traverses_state_map_once_per_snapshot(self):
         class CountedItems(dict):
             traversals = 0

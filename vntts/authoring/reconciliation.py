@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -556,7 +556,7 @@ def _pending_review_action(
     result: JsonObject,
     audio_authority: tuple[Path, str] | None,
     bundle_actions: BundleActions,
-) -> tuple[JsonObject, str]:
+) -> JsonObject:
     workspace_id = _required_text(workspace["workspace_id"], "Workspace ID")
     bundle = bundle_actions.get((workspace_id, item.queue_id))
     action = "human_cohort_review" if bundle is not None else "review_plan_required"
@@ -586,7 +586,7 @@ def _pending_review_action(
     if bundle is not None:
         record["cohort"] = bundle
     record["audio_sha256"] = expected_audio_sha256
-    return record, action
+    return record
 
 
 def _workspace_item_outcome(
@@ -595,7 +595,7 @@ def _workspace_item_outcome(
     item: VoiceGenerationQueueItem,
     bundle_actions: BundleActions,
     snapshots: SnapshotHashes,
-) -> tuple[None, None, str] | tuple[JsonObject, str, None]:
+) -> tuple[None, str] | tuple[JsonObject, None]:
     workspace = snapshot.configuration
     result = snapshot.state_items.get(item.queue_id)
     if isinstance(result, dict):
@@ -605,16 +605,18 @@ def _workspace_item_outcome(
             snapshot.summary.output, item, result, snapshots
         )
         if isinstance(result.get("live_fallback"), dict):
-            return None, None, "explicit_fallback"
+            return None, "explicit_fallback"
         if status == "approved" and review_status == "approved":
-            return None, None, "approved"
+            return None, "approved"
         if status == "generated" and review_status == "rejected":
-            return None, None, "rejected"
+            return None, "rejected"
         if status == "generated" and review_status == "pending_review":
-            record, action = _pending_review_action(
-                workspace, item, result, audio_authority, bundle_actions
+            return (
+                _pending_review_action(
+                    workspace, item, result, audio_authority, bundle_actions
+                ),
+                None,
             )
-            return record, action, None
         if status == "failed":
             action = "new_hypothesis_required"
             return (
@@ -626,7 +628,6 @@ def _workspace_item_outcome(
                     review_status=review_status,
                     reason=str(result.get("last_error") or "generation failed"),
                 ),
-                action,
                 None,
             )
         raise AuthoringReconciliationError(
@@ -658,7 +659,6 @@ def _workspace_item_outcome(
             review_status=None,
             reason=reason,
         ),
-        action,
         None,
     )
 
@@ -669,12 +669,11 @@ def _inspect_workspace_actions(
     bundle_actions: BundleActions,
     snapshots: SnapshotHashes,
     occurrence_index: OccurrenceIndex,
-) -> tuple[list[JsonObject], Counter[str], Counter[str]]:
+) -> tuple[list[JsonObject], Counter[str]]:
     actions: list[JsonObject] = []
-    action_counts: Counter[str] = Counter()
     terminal_counts: Counter[str] = Counter()
     for item in scope.reportable:
-        record, action, terminal = _workspace_item_outcome(
+        record, terminal = _workspace_item_outcome(
             snapshot, scope, item, bundle_actions, snapshots
         )
         if terminal is not None:
@@ -688,16 +687,14 @@ def _inspect_workspace_actions(
             )
             continue
         assert record is not None
-        assert action is not None
         actions.append(record)
-        action_counts[action] += 1
         _remember_occurrence(
             occurrence_index,
             snapshot.configuration,
             item,
-            action,
+            _required_text(record["action"], "Action"),
         )
-    return actions, action_counts, terminal_counts
+    return actions, terminal_counts
 
 
 def _inspect_workspaces(
@@ -745,7 +742,7 @@ def _inspect_workspaces(
         live_fallback_ids = scope.live_fallback_ids
         missing = scope.missing
         pending_ids = scope.pending_ids
-        workspace_actions, action_counts, terminal_counts = _inspect_workspace_actions(
+        workspace_actions, terminal_counts = _inspect_workspace_actions(
             snapshot,
             scope,
             bundle_actions,
@@ -780,7 +777,6 @@ def _inspect_workspaces(
                     "missing_voice": len(missing),
                 },
                 "terminal_counts": dict(sorted(terminal_counts.items())),
-                "action_counts": dict(sorted(action_counts.items())),
             }
         )
 
@@ -844,15 +840,17 @@ def build_authoring_reconciliation(
     )
 
     actions = _project_terminal_merge_actions(actions, occurrence_index)
+    workspace_action_counts: defaultdict[str, Counter[str]] = defaultdict(Counter)
+    action_counts: Counter[str] = Counter()
+    for action in actions:
+        workspace_id = _required_text(action["workspace_id"], "Workspace ID")
+        kind = _required_text(action["action"], "Action")
+        workspace_action_counts[workspace_id][kind] += 1
+        action_counts[kind] += 1
     for workspace_report in workspace_reports:
+        workspace_id = _required_text(workspace_report["workspace_id"], "Workspace ID")
         workspace_report["action_counts"] = dict(
-            sorted(
-                Counter(
-                    action["action"]
-                    for action in actions
-                    if action.get("workspace_id") == workspace_report["workspace_id"]
-                ).items()
-            )
+            sorted(workspace_action_counts[workspace_id].items())
         )
     conflicts = _terminal_conflicts(
         occurrence_index, resolved_queue_ids=resolved_terminal_conflicts
@@ -866,8 +864,9 @@ def build_authoring_reconciliation(
         raise AuthoringReconciliationError(
             "Review bundle directory changed during reconciliation"
         )
-    action_counts = Counter(value["action"] for value in actions)
-    action_counts.update(value["action"] for value in quality_actions)
+    action_counts.update(
+        _required_text(value["action"], "Action") for value in quality_actions
+    )
     body = {
         "schema": AUTHORING_RECONCILIATION_SCHEMA,
         "schema_version": AUTHORING_RECONCILIATION_VERSION,
