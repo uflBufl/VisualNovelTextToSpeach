@@ -52,6 +52,15 @@ class SourceAudioSemanticEvidenceError(RuntimeError):
     """Semantic source-audio evidence is missing, stale or malformed."""
 
 
+def _semantic_document_sha256(document: object) -> str:
+    try:
+        return canonical_document_sha256(document)
+    except (TypeError, ValueError) as error:
+        raise SourceAudioSemanticEvidenceError(
+            "Semantic evidence contains invalid JSON values"
+        ) from error
+
+
 def normalize_semantic_text(text: object) -> str:
     normalized = unicodedata.normalize("NFKC", str(text or ""))
     return " ".join(
@@ -133,7 +142,7 @@ def validate_source_audio_semantic_evidence(
         for key, value in document.items()
         if key not in {"evidence_id", "generated_at"}
     }
-    if document.get("evidence_id") != canonical_document_sha256(authority):
+    if document.get("evidence_id") != _semantic_document_sha256(authority):
         raise SourceAudioSemanticEvidenceError("Semantic evidence ID changed")
     if not isinstance(document.get("generated_at"), str):
         raise SourceAudioSemanticEvidenceError(
@@ -187,7 +196,7 @@ def _validate_semantic_evidence_entry(
         or source_line_ids != sorted(set(source_line_ids))
     ):
         raise SourceAudioSemanticEvidenceError("Semantic source line IDs are invalid")
-    expected_entry_id = canonical_document_sha256(
+    expected_entry_id = _semantic_document_sha256(
         {
             key: value
             for key, value in entry.items()
@@ -301,7 +310,7 @@ def project_source_audio_semantics(
         if key not in {"evidence_id", "generated_at", "entries"}
     }
     projected_evidence["entries"] = projected_entries
-    projected_evidence["evidence_id"] = canonical_document_sha256(projected_evidence)
+    projected_evidence["evidence_id"] = _semantic_document_sha256(projected_evidence)
     projected_evidence["generated_at"] = evidence["generated_at"]
     projected_records = deepcopy(records)
     for record in projected_records:
