@@ -113,6 +113,54 @@ class NativeResourceSamplerTest(unittest.TestCase):
         )
         json.dumps(summary)
 
+    def test_cpu_usage_tracks_only_valid_cpu_measurement_interval(self):
+        cases = (
+            ("missing-first", (None, 2.0, 4.0), 2.0, 1.0),
+            ("missing-last", (1.0, 3.0, None), 2.0, 1.0),
+            ("only-one-valid", (None, 2.0, None), None, None),
+            ("none-valid", (None, None, None), None, None),
+            ("zero-origin", (1.0, 3.0, 5.0), 4.0, 1.0),
+            ("overflow-first", (1e308, 2.0, 4.0), 2.0, 1.0),
+        )
+        for label, cpu_values, expected_delta, expected_cores in cases:
+            with self.subTest(case=label):
+                samples = tuple(
+                    (
+                        100,
+                        value,
+                        1e308 if label == "overflow-first" and index == 0 else 0,
+                        1,
+                    )
+                    for index, value in enumerate(cpu_values)
+                )
+                with (
+                    patch(
+                        "vntts.native_resources.psutil",
+                        self.fake_psutil(native_samples=samples),
+                    ),
+                    patch(
+                        "vntts.native_resources.subprocess.run",
+                        side_effect=FileNotFoundError(),
+                    ),
+                ):
+                    sampler = NativeResourceSampler(42)
+                    for now in (
+                        (0.0, 2.0, 4.0)
+                        if label == "zero-origin"
+                        else (10.0, 12.0, 14.0)
+                    ):
+                        sampler._sample(now)
+                    summary = sampler.finish()
+                self.assertEqual(summary["coverage_seconds"], 4.0)
+                self.assertEqual(summary["sample_count"], 3)
+                self.assertEqual(
+                    summary["native_process"]["cpu_seconds_delta"], expected_delta
+                )
+                self.assertEqual(
+                    summary["native_process"]["avg_cores_used"], expected_cores
+                )
+                json.dumps(summary, allow_nan=False)
+
     def test_marks_missing_or_timeout_gpu_once_and_keeps_na_values_null(self):
         for failure, expected in (
             (FileNotFoundError(), "missing"),

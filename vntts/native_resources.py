@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import sys
+from dataclasses import dataclass
 from tempfile import TemporaryFile
 from threading import Event, Lock, Thread, current_thread
 from time import monotonic
@@ -85,6 +86,33 @@ class SubprocessOptions(TypedDict, total=False):
     creationflags: int
 
 
+@dataclass(frozen=True)
+class _CpuSample:
+    at: float
+    seconds: float
+
+
+def _cpu_sample(cpu_times: object, at: float) -> _CpuSample | None:
+    user = _finite_number(getattr(cpu_times, "user", None))
+    system = _finite_number(getattr(cpu_times, "system", None))
+    if user is None or system is None:
+        return None
+    total = _finite_number(user + system)
+    return _CpuSample(at, total) if total is not None else None
+
+
+def _cpu_usage(
+    first: _CpuSample | None, last: _CpuSample | None
+) -> tuple[float | None, float | None]:
+    if first is None or last is None or last.at <= first.at:
+        return None, None
+    delta = _finite_number(last.seconds - first.seconds)
+    average = (
+        _finite_number(delta / (last.at - first.at)) if delta is not None else None
+    )
+    return delta, average
+
+
 class NativeResourceSampler:
     """Collect bounded, best-effort resource data for ``pid`` off the UI thread."""
 
@@ -111,8 +139,8 @@ class NativeResourceSampler:
         self._host_status = "unavailable"
         self._system_status = "unavailable"
         self._sample_count = 0
-        self._cpu_start: float | None = None
-        self._cpu_end: float | None = None
+        self._cpu_start: _CpuSample | None = None
+        self._cpu_end: _CpuSample | None = None
         self._native_rss_peak: int | None = None
         self._host_rss_peak: int | None = None
         self._ram_total: int | None = None
@@ -182,14 +210,14 @@ class NativeResourceSampler:
         else:
             self._process_status = "available"
             self._sample_count += 1
-            self._first_sample_at = self._first_sample_at or now
+            if self._first_sample_at is None:
+                self._first_sample_at = now
             self._last_sample_at = now
-            cpu_seconds = _finite_number(getattr(cpu, "user", None))
-            system_seconds = _finite_number(getattr(cpu, "system", None))
-            if cpu_seconds is not None and system_seconds is not None:
-                total = cpu_seconds + system_seconds
-                self._cpu_start = total if self._cpu_start is None else self._cpu_start
-                self._cpu_end = total
+            sample = _cpu_sample(cpu, now)
+            if sample is not None:
+                if self._cpu_start is None:
+                    self._cpu_start = sample
+                self._cpu_end = sample
             self._native_rss_peak = _peak(
                 self._native_rss_peak,
                 _nonnegative_integer(getattr(memory, "rss", None)),
@@ -341,12 +369,7 @@ class NativeResourceSampler:
             if self._first_sample_at is not None and self._last_sample_at is not None
             else None
         )
-        raw_cpu_delta = (
-            self._cpu_end - self._cpu_start
-            if self._cpu_start is not None and self._cpu_end is not None
-            else None
-        )
-        cpu_delta = raw_cpu_delta if coverage is not None and coverage > 0 else None
+        cpu_delta, average_cores = _cpu_usage(self._cpu_start, self._cpu_end)
         return {
             "complete": complete,
             "sample_count": self._sample_count,
@@ -354,12 +377,8 @@ class NativeResourceSampler:
             "coverage_seconds": _finite_number(coverage),
             "native_process": {
                 "status": self._process_status,
-                "cpu_seconds_delta": _finite_number(cpu_delta),
-                "avg_cores_used": (
-                    _finite_number(cpu_delta / coverage)
-                    if coverage and cpu_delta is not None
-                    else None
-                ),
+                "cpu_seconds_delta": cpu_delta,
+                "avg_cores_used": average_cores,
                 "rss_bytes_peak": self._native_rss_peak,
                 "thread_count_peak": self._thread_count_peak,
             },
