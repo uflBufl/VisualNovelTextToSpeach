@@ -209,6 +209,7 @@ def _download(
     progress: ProgressCallback,
     cancellation: Cancellation | None,
 ) -> None:
+    _cancel(cancellation)
     digest = hashlib.sha256()
     received = 0
     with (
@@ -381,6 +382,7 @@ def _install_managed_decoder(
         candidate = staging / executable.name
         candidate.chmod(0o755)
         probe_game_decoder(candidate, cancellation)
+        _cancel(cancellation)
         destination.mkdir(parents=True, exist_ok=True)
         for name in files:
             (staging / name).replace(destination / name)

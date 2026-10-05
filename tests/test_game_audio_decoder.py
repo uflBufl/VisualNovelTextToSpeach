@@ -98,6 +98,51 @@ class GameAudioDecoderTest(unittest.TestCase):
         download.assert_not_called()
         run.assert_not_called()
 
+    def test_precancelled_download_does_not_open_or_truncate(self):
+        output = self.root / "archive.zip"
+        output.write_bytes(b"keep existing file")
+        cancellation = Event()
+        cancellation.set()
+        with patch.object(
+            decoder, "urlopen", return_value=io.BytesIO(b"archive")
+        ) as opener:
+            with self.assertRaises(decoder.DecoderSetupCancelled):
+                decoder._download(
+                    "https://example.invalid/decoder",
+                    "0" * 64,
+                    output,
+                    Mock(),
+                    cancellation,
+                )
+        opener.assert_not_called()
+        self.assertEqual(output.read_bytes(), b"keep existing file")
+
+    def test_cancellation_after_native_probe_does_not_publish(self):
+        payload = archive_bytes()
+        cancellation = Event()
+        with (
+            patch.object(decoder, "find_game_decoder", return_value=None),
+            patch.object(decoder, "get_bundle_root", return_value=None),
+            patch.object(decoder.sys, "platform", "linux"),
+            patch.object(decoder.platform, "machine", return_value="x86_64"),
+            patch.dict(
+                decoder.ARCHIVES,
+                linux=("fixture.zip", hashlib.sha256(payload).hexdigest()),
+            ),
+            patch.object(decoder, "urlopen", return_value=io.BytesIO(payload)),
+            patch.object(
+                decoder,
+                "probe_game_decoder",
+                side_effect=lambda *_args: cancellation.set(),
+            ),
+            self.assertRaises(decoder.DecoderSetupCancelled),
+        ):
+            decoder.ensure_game_decoder(
+                cancellation=cancellation, storage_root=self.root
+            )
+        self.assertFalse((self.root / "r2117-linux").exists())
+        self.assertFalse(list(self.root.glob("download-*")))
+
     def test_staging_readonly_system_files_is_repeatable(self):
         source = self.root / "system-tool"
         source.write_bytes(b"tool")
