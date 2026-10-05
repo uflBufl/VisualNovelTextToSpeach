@@ -95,6 +95,32 @@ def write_corpus(path, *, samples=None):
 
 
 class SoundEffectBenchmarkTest(unittest.TestCase):
+    def test_valid_integer_and_float_controls_reach_pipeline_unchanged(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = root / "corpus.json"
+            write_corpus(corpus)
+            for index, (cfg, sigma) in enumerate(((1, 0), (4.5, 5.5), (8, 10))):
+                with self.subTest(cfg=cfg, sigma=sigma):
+                    pipeline = FakePipeline()
+                    ticks = iter((10.0, 11.0))
+                    report = benchmark_sound_effects(
+                        corpus,
+                        root / str(index),
+                        seeds=[0],
+                        cfg_scale=cfg,
+                        sigma_shift=sigma,
+                        torch_module=FakeTorch(),
+                        pipeline_factory=lambda *args, **kwargs: pipeline,
+                        clock=lambda: next(ticks),
+                    )
+                    for field, value in (("cfg_scale", cfg), ("sigma_shift", sigma)):
+                        self.assertEqual(report["controls"][field], value)
+                        self.assertIs(type(report["controls"][field]), type(value))
+                        self.assertEqual(pipeline.calls[0][field], value)
+                    self.assertEqual(report["samples"][0]["peak"], 0.25)
+                    self.assertEqual(report["samples"][0]["near_silence_ratio"], 0.0)
+
     def test_corpus_rejects_non_integer_schema_version(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "corpus.json"

@@ -76,9 +76,9 @@ def load_sound_effect_corpus(path: str | Path) -> SoundEffectCorpus:
     seen_ids: set[str] = set()
     for index, item in enumerate(document["samples"]):
         sample = _validate_sample(item, index)
-        if sample["id"].casefold() in seen_ids:
+        if sample["id"] in seen_ids:
             raise SoundEffectBenchmarkError("Sound-effect sample IDs must be unique")
-        seen_ids.add(sample["id"].casefold())
+        seen_ids.add(sample["id"])
         samples.append(sample)
     return {
         "path": path,
@@ -107,11 +107,11 @@ def _validate_sample(item: object, index: int) -> SoundEffectSample:
         raise SoundEffectBenchmarkError(
             f"Sound-effect sample {sample_id} prompt is invalid"
         )
-    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
-        raise SoundEffectBenchmarkError(
-            f"Sound-effect sample {sample_id} duration is invalid"
-        )
-    if not 0 < seconds <= 30:
+    if (
+        isinstance(seconds, bool)
+        or not isinstance(seconds, (int, float))
+        or not 0 < seconds <= 30
+    ):
         raise SoundEffectBenchmarkError(
             f"Sound-effect sample {sample_id} duration is invalid"
         )
@@ -302,6 +302,7 @@ def _render_sample(
         if callable(getattr(cuda, "max_memory_allocated", None))
         else None
     )
+    absolute = np.abs(pcm)
     return {
         **sample,
         "seed": seed,
@@ -313,8 +314,8 @@ def _render_sample(
         "actual_seconds": pcm.size / sample_rate,
         "render_seconds": elapsed,
         "realtime_factor": elapsed / (pcm.size / sample_rate),
-        "peak": float(np.max(np.abs(pcm))),
-        "near_silence_ratio": float(np.mean(np.abs(pcm) < 1e-4)),
+        "peak": float(np.max(absolute)),
+        "near_silence_ratio": float(np.mean(absolute < 1e-4)),
         "peak_cuda_memory_bytes": peak_memory,
         "human_review": {
             "adherence": "pending",
