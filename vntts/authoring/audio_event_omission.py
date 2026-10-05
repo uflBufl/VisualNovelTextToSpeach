@@ -12,7 +12,11 @@ from durable_file import atomic_write_json, sha256_file
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
 from vntts.authoring.audio_events import audio_event_plan_for_record
-from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.authority import (
+    assert_authority_snapshot,
+    canonical_document_sha256,
+    capture_successor_base_authority,
+)
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     load_generation_state,
@@ -38,16 +42,13 @@ from vntts.authoring.workbench import (
     load_workspace_authority,
     load_workspace_json,
     require_workspace_sha256,
-    safe_workspace_relative_path,
     validate_workspace_provenance_extensions,
 )
 from vntts.authoring.workspace_config import (
     workspace_id_for_config,
     workspace_successor_config_fingerprint,
 )
-from vntts.authoring.workspace_foundation import (
-    stage_single_base_successor,
-)
+from vntts.authoring.workspace_foundation import stage_single_base_successor
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 
 SCHEMA = "vntts.authoring-audio-event-omission-batch"
@@ -351,7 +352,9 @@ def validate_audio_event_omission_workspace(
     if batch is None:
         return
     root = Path(directory)
-    _validate_omission_authority_files(root, batch)
+    _base_state, snapshots = capture_successor_base_authority(
+        root, batch, "audio-event omission", error_type=AuthoringWorkbenchError
+    )
     queue, state, _payload, _state_sha256 = load_stable_workspace_generation_state(
         root,
         workspace,
@@ -361,6 +364,10 @@ def validate_audio_event_omission_workspace(
     if sha256_file(root / "queue.jsonl") != batch["queue_sha256"]:
         raise AuthoringWorkbenchError("Audio-event omission queue changed")
     _validate_omission_items(queue, state, batch)
+    for snapshot in snapshots:
+        assert_authority_snapshot(
+            snapshot, "audio-event omission base", error_type=AuthoringWorkbenchError
+        )
 
 
 def _validated_omission_batch(
@@ -408,23 +415,6 @@ def _validated_omission_batch(
     ):
         require_workspace_sha256(batch.get(field), f"Audio-event omission {field}")
     return batch
-
-
-def _validate_omission_authority_files(root: Path, batch: Mapping[str, object]) -> None:
-    for path_field, hash_field, label in (
-        ("base_workspace_path", "base_workspace_sha256", "base workspace"),
-        ("base_state_path", "base_state_sha256", "base state"),
-    ):
-        relative = safe_workspace_relative_path(
-            batch.get(path_field), f"Audio-event omission {label}"
-        )
-        source = contained_workspace_path(
-            root, relative, f"Audio-event omission {label}"
-        )
-        if not source.is_file() or sha256_file(source) != batch[hash_field]:
-            raise AuthoringWorkbenchError(
-                f"Audio-event omission {label} authority changed"
-            )
 
 
 def _validate_omission_items(

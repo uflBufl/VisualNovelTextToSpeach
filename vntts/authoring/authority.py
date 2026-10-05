@@ -6,11 +6,13 @@ import hashlib
 import json
 import os
 import tempfile
+from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
 from vntts.document_identity import canonical_document_sha256
+from vntts.path_safety import contained_regular_file
 
 
 class AuthoringAuthorityError(RuntimeError):
@@ -93,6 +95,45 @@ def assert_authority_snapshot(
         raise error_type(f"{label.capitalize()} changed: {path}")
 
 
+def capture_successor_base_authority(
+    directory: Path,
+    binding: Mapping[str, object],
+    label: str,
+    *,
+    error_type: type[Exception] = ValueError,
+) -> tuple[dict[str, object], tuple[AuthoritySnapshot, AuthoritySnapshot]]:
+    """Capture the two copied base inputs and validate their batch bindings."""
+    snapshots = []
+    documents = []
+    try:
+        for path_field, hash_field, kind in (
+            ("base_workspace_path", "base_workspace_sha256", "base workspace"),
+            ("base_state_path", "base_state_sha256", "base state"),
+        ):
+            description = f"{label} {kind}"
+            source = contained_regular_file(
+                directory, binding.get(path_field), description, error_type=error_type
+            )
+            snapshot = capture_authority_file(source, description, root=directory)
+            if snapshot.sha256 != binding.get(hash_field):
+                raise error_type(f"{description.capitalize()} authority changed")
+            snapshots.append(snapshot)
+            documents.append(snapshot.json_document(description))
+    except AuthoringAuthorityError as error:
+        raise error_type(str(error)) from error
+    workspace, state = documents
+    workspace_id = workspace.get("workspace_id")
+    if (
+        not isinstance(workspace_id, str)
+        or not workspace_id
+        or workspace_id != binding.get("base_workspace_id")
+        or state.get("queue_sha256") != binding.get("queue_sha256")
+        or state.get("active") is not None
+    ):
+        raise error_type(f"{label.capitalize()} base authority changed")
+    return state, (snapshots[0], snapshots[1])
+
+
 def write_json_document_no_replace(
     output: str | Path,
     document: object,
@@ -135,5 +176,6 @@ __all__ = [
     "assert_authority_snapshot",
     "canonical_document_sha256",
     "capture_authority_file",
+    "capture_successor_base_authority",
     "write_json_document_no_replace",
 ]

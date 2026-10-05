@@ -9,10 +9,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from durable_file import atomic_write_json, sha256_file
-from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
+from vntts_artifacts.voice_generation_queue import (
+    VoiceGenerationQueue,
+    VoiceGenerationQueueItem,
+)
 
 from vntts.authoring.audio_events import audio_event_plan_for_record
-from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.authority import (
+    assert_authority_snapshot,
+    canonical_document_sha256,
+    capture_successor_base_authority,
+)
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     load_generation_state,
@@ -38,7 +45,6 @@ from vntts.authoring.workbench import (
     load_workspace_authority,
     load_workspace_json,
     require_workspace_sha256,
-    safe_workspace_relative_path,
     validate_workspace_provenance_extensions,
 )
 from vntts.authoring.workspace_config import (
@@ -46,9 +52,7 @@ from vntts.authoring.workspace_config import (
     workspace_missing_voice_policy,
     workspace_successor_config_fingerprint,
 )
-from vntts.authoring.workspace_foundation import (
-    stage_single_base_successor,
-)
+from vntts.authoring.workspace_foundation import stage_single_base_successor
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 
 SCHEMA = "vntts.authoring-audio-event-projection-fallback-batch"
@@ -404,9 +408,8 @@ def validate_audio_event_projection_fallback_workspace(
         return
     batch = _validated_projection_batch(batch)
     root = Path(directory)
-    snapshots = _projection_authority_snapshots(root, batch)
-    base_state = load_workspace_json(
-        snapshots["base_state_path"], "audio-event projection base state"
+    base_state, snapshots = capture_successor_base_authority(
+        root, batch, "audio-event projection", error_type=AuthoringWorkbenchError
     )
     base_state_items = base_state.get("items")
     queue, state, _payload, _state_sha256 = load_stable_workspace_generation_state(
@@ -430,6 +433,10 @@ def validate_audio_event_projection_fallback_workspace(
     ]
     if observed != sorted(set(observed)):
         raise AuthoringWorkbenchError("Audio-event projection items are not canonical")
+    for snapshot in snapshots:
+        assert_authority_snapshot(
+            snapshot, "audio-event projection base", error_type=AuthoringWorkbenchError
+        )
 
 
 def _validated_projection_batch(value: object) -> dict[str, object]:
@@ -485,32 +492,10 @@ def _validated_projection_batch(value: object) -> dict[str, object]:
     return batch
 
 
-def _projection_authority_snapshots(
-    root: Path, batch: dict[str, object]
-) -> dict[str, Path]:
-    snapshots = {}
-    for path_field, hash_field, label in (
-        ("base_workspace_path", "base_workspace_sha256", "base workspace"),
-        ("base_state_path", "base_state_sha256", "base state"),
-    ):
-        relative = safe_workspace_relative_path(
-            batch.get(path_field), f"Audio-event projection {label}"
-        )
-        source = contained_workspace_path(
-            root, relative, f"Audio-event projection {label}"
-        )
-        if not source.is_file() or sha256_file(source) != batch[hash_field]:
-            raise AuthoringWorkbenchError(
-                f"Audio-event projection {label} authority changed"
-            )
-        snapshots[path_field] = source
-    return snapshots
-
-
 def _validate_projection_ledger(
     ledger: object,
     batch: dict[str, object],
-    queue_by_id: Mapping[str, object],
+    queue_by_id: Mapping[str, VoiceGenerationQueueItem],
     base_state_items: object,
     state_items: Mapping[str, dict[str, object]],
 ) -> str:
@@ -539,6 +524,8 @@ def _validate_projection_ledger(
     if (
         not isinstance(queue_id, str)
         or queue_item is None
+        or (ledger["line_id"], ledger["text_sha256"], ledger["speaker"])
+        != (queue_item.line_id, queue_item.text_sha256, queue_item.speaker)
         or not isinstance(base_result, dict)
         or canonical_document_sha256(base_result) != ledger["base_result_sha256"]
         or not isinstance(decision, dict)

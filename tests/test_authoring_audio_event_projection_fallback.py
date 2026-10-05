@@ -2,7 +2,7 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import (
@@ -15,6 +15,8 @@ from vntts_artifacts.voice_generation_queue import (
     write_voice_generation_queue,
 )
 
+import vntts.authoring.audio_event_projection_fallback as successor_module
+from tests.symlink_support import symlink_or_skip
 from tests.test_authoring_legacy_import import write_legacy_fixture
 from tests.test_generated_audio import FakeAudioOutput
 from vntts.authoring.audio_event_projection_fallback import (
@@ -182,6 +184,129 @@ class AudioEventProjectionFallbackTests(unittest.TestCase):
                     workspace = json.loads(original)
                     workspace["audio_event_projection_fallback"]["items"] = value
                     with self.assertRaisesRegex(AuthoringWorkbenchError, "malformed"):
+                        validate_audio_event_projection_fallback_workspace(
+                            created.directory, workspace
+                        )
+
+    def test_bound_base_files_are_rechecked_after_state_validation(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, item = self._base(root / "source")
+            created = create_audio_event_projection_fallback_workspace(
+                base, [item.queue_id], root / "successors"
+            )
+            workspace = json.loads((created.directory / "workspace.json").read_text())
+            original = successor_module.load_stable_workspace_generation_state
+            for field in ("base_workspace_path", "base_state_path"):
+                target = (
+                    created.directory
+                    / workspace["audio_event_projection_fallback"][field]
+                )
+                payload = target.read_bytes()
+                for removed in (False, True):
+                    with self.subTest(field=field, removed=removed):
+
+                        def load_then_mutate(*args, **kwargs):
+                            value = original(*args, **kwargs)
+                            if removed:
+                                target.unlink()
+                            else:
+                                target.write_bytes(payload + b" ")
+                            return value
+
+                        try:
+                            with patch.object(
+                                successor_module,
+                                "load_stable_workspace_generation_state",
+                                load_then_mutate,
+                            ):
+                                with self.assertRaisesRegex(
+                                    AuthoringWorkbenchError, "changed"
+                                ):
+                                    validate_audio_event_projection_fallback_workspace(
+                                        created.directory, workspace
+                                    )
+                        finally:
+                            target.write_bytes(payload)
+
+    def test_base_authority_identity_and_symlinks_are_not_accepted(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, item = self._base(root / "source")
+            created = create_audio_event_projection_fallback_workspace(
+                base, [item.queue_id], root / "successors"
+            )
+            original = (created.directory / "workspace.json").read_text()
+            with self.subTest(field="base_workspace_id"):
+                workspace = json.loads(original)
+                workspace["audio_event_projection_fallback"]["base_workspace_id"] = (
+                    "wrong-workspace"
+                )
+                self._rebind_batch(created.directory, workspace, item.queue_id)
+                with self.assertRaisesRegex(AuthoringWorkbenchError, "base.*authority"):
+                    validate_audio_event_projection_fallback_workspace(
+                        created.directory, workspace
+                    )
+            for field, value in (
+                ("queue_sha256", "0" * 64),
+                ("active", {"unexpected": True}),
+            ):
+                with self.subTest(field=field):
+                    workspace = json.loads(original)
+                    batch = workspace["audio_event_projection_fallback"]
+                    target = created.directory / batch["base_state_path"]
+                    payload = target.read_bytes()
+                    document = json.loads(payload)
+                    document[field] = value
+                    target.write_text(json.dumps(document, sort_keys=True))
+                    batch["base_state_sha256"] = successor_module.sha256_file(target)
+                    self._rebind_batch(created.directory, workspace, item.queue_id)
+                    try:
+                        with self.assertRaisesRegex(
+                            AuthoringWorkbenchError, "base.*authority"
+                        ):
+                            validate_audio_event_projection_fallback_workspace(
+                                created.directory, workspace
+                            )
+                    finally:
+                        target.write_bytes(payload)
+            workspace = json.loads(original)
+            self._rebind_batch(created.directory, workspace, item.queue_id)
+            target = (
+                created.directory
+                / workspace["audio_event_projection_fallback"]["base_workspace_path"]
+            )
+            alias = target.with_name("alias.json")
+            alias.write_bytes(target.read_bytes())
+            target.unlink()
+            symlink_or_skip(target, alias)
+            with self.assertRaisesRegex(AuthoringWorkbenchError, "unsafe|symlink"):
+                validate_audio_event_projection_fallback_workspace(
+                    created.directory, workspace
+                )
+
+    def test_projection_ledger_metadata_is_bound_to_the_queue(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, item = self._base(root / "source")
+            created = create_audio_event_projection_fallback_workspace(
+                base, [item.queue_id], root / "successors"
+            )
+            original = (created.directory / "workspace.json").read_text()
+            for field, value in (
+                ("line_id", "wrong-line"),
+                ("text_sha256", "0" * 64),
+                ("speaker", "Wrong speaker"),
+            ):
+                with self.subTest(field=field):
+                    workspace = json.loads(original)
+                    workspace["audio_event_projection_fallback"]["items"][0][field] = (
+                        value
+                    )
+                    self._rebind_batch(created.directory, workspace, item.queue_id)
+                    with self.assertRaisesRegex(
+                        AuthoringWorkbenchError, "result changed"
+                    ):
                         validate_audio_event_projection_fallback_workspace(
                             created.directory, workspace
                         )
