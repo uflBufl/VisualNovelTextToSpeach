@@ -118,6 +118,7 @@ def validate_authoring_reconciliation_document(report: object) -> dict[str, obje
     bundles = _validated_report_bundles(document.get("review_bundles"))
     quality_reviews = _validated_report_quality_reviews(document.get("quality_reviews"))
     actions = _validated_report_actions(document.get("actions"), workspace_ids)
+    _validate_workspace_action_counts(workspaces, actions)
     conflicts = _validated_report_conflicts(
         document.get("terminal_conflicts"), workspace_ids
     )
@@ -158,6 +159,32 @@ def validate_authoring_reconciliation_document(report: object) -> dict[str, obje
             "Reconciliation summary action counts are inconsistent"
         )
     return document
+
+
+def _validate_workspace_action_counts(
+    workspaces: list[dict[str, object]], actions: list[dict[str, object]]
+) -> None:
+    expected: dict[str, Counter[str]] = {
+        _required_text(workspace.get("workspace_id"), "Workspace ID"): Counter()
+        for workspace in workspaces
+    }
+    for action in actions:
+        if action.get("action") == "human_source_quality_review":
+            continue
+        workspace_id = _required_text(action.get("workspace_id"), "Action workspace ID")
+        kind = _required_text(action.get("action"), "Action")
+        expected[workspace_id][kind] += 1
+    for workspace in workspaces:
+        workspace_id = _required_text(workspace.get("workspace_id"), "Workspace ID")
+        declared = _validated_count_map(
+            workspace.get("action_counts"),
+            "Workspace action counts",
+            RECONCILIATION_ACTIONS,
+        )
+        if Counter(declared) != expected[workspace_id]:
+            raise AuthoringReconciliationSchemaError(
+                "Workspace action counts are inconsistent"
+            )
 
 
 def _validated_report_workspaces(value: object) -> list[dict[str, object]]:

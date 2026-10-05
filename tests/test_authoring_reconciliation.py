@@ -1001,6 +1001,66 @@ class AuthoringReconciliationTest(unittest.TestCase):
             ):
                 reconciliation_module._validated_report(document)
 
+    def test_workspace_action_counts_match_projected_actions(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            primary, secondary, _, bundles, publication = self.create_parallel_fixture(
+                root
+            )
+            for decision in (None, "accepted"):
+                with self.subTest(decision=decision):
+                    if decision is not None:
+                        self.decide_parallel_bundle(
+                            publication, ((secondary.name, decision),)
+                        )
+                    document = deepcopy(
+                        build_authoring_reconciliation(primary, bundles).document
+                    )
+                    for workspace in document["workspaces"]:
+                        workspace["action_counts"]["workspace_blocked"] = 0
+                        if workspace["workspace_id"] != primary.name:
+                            workspace["report_scope"] = "current_bundle_items_only"
+                    document["report_id"] = (
+                        reconciliation_module.canonical_document_sha256(
+                            {k: v for k, v in document.items() if k != "report_id"}
+                        )
+                    )
+                    source = root / "workspace-counts.json"
+                    source.write_text(json.dumps(document), encoding="utf-8")
+                    self.assertEqual(
+                        load_authoring_reconciliation(source).document, document
+                    )
+                    workspace = next(
+                        value
+                        for value in document["workspaces"]
+                        if value["workspace_id"] == primary.name
+                    )
+                    kind = next(
+                        key
+                        for key, count in workspace["action_counts"].items()
+                        if count
+                    )
+                    count = workspace["action_counts"].pop(kind)
+                    workspace["action_counts"]["workspace_blocked"] = count
+                    document["report_id"] = (
+                        reconciliation_module.canonical_document_sha256(
+                            {k: v for k, v in document.items() if k != "report_id"}
+                        )
+                    )
+                    source.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        AuthoringReconciliationError,
+                        "Workspace action counts are inconsistent",
+                    ):
+                        load_authoring_reconciliation(source)
+                    output = root / f"rejected-{decision}.json"
+                    with self.assertRaisesRegex(
+                        AuthoringReconciliationError,
+                        "Workspace action counts are inconsistent",
+                    ):
+                        write_authoring_reconciliation(document, output)
+                    self.assertFalse(output.exists())
+
     def test_legacy_current_bundle_scope_report_remains_loadable(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
