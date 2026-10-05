@@ -561,13 +561,3 @@ Planned implementation order after approval:
 ## Investigate intermittent macOS Qt test crash
 
 - [ ] A macOS changed-test run intermittently terminated with `shiboken6` `mainThreadDeletionHandler` SIGSEGV during pure-Python `test_player_session` after UI tests. The exact final 10-test sequence passed 10 times, the full onboarding/person/player sequence passed five times, and a later 2734-test selector passed. Reproduce and bisect an earlier Qt owner in the remainder shard with faulthandler before changing cleanup; retain the crash log in `.codex/investigations/` if it becomes repeatable. Gate: a narrowed failing sequence and a deterministic cleanup check.
-
-## Audit authoring workspace lifecycle
-
-- [ ] Inspect creation, authority and inspection owners with the workbench facade: record entrypoints, persistence versions, public/dynamic consumers and supported compatibility from history. Gate: structural/complexity inventory and explicit check coverage, without treating module size as a defect.
-- [ ] Complete independent design/readability and typing passes: qualify repeated setup/publication rules, wrappers, duplicated representations and misleading annotations. Record concrete findings before edits; migrate shared causes through their existing owner.
-- [ ] Complete correctness, execution/resources, performance, tests/observability and dependency/tooling passes; compare validation/staging/publication/read/recovery lifecycles. Retain compatibility and atomic authority guarantees. Gate: evidenced findings fixed or qualified with exact external gates, local-first selector after code edits, configured checks, independent review, final neighbor rescan and fresh-main branch selector; separate commits and normal main push for each verified repair.
-
-
-
-
