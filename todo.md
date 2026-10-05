@@ -561,9 +561,3 @@ Planned implementation order after approval:
 ## Investigate intermittent macOS Qt test crash
 
 - [ ] A macOS changed-test run intermittently terminated with `shiboken6` `mainThreadDeletionHandler` SIGSEGV during pure-Python `test_player_session` after UI tests. The exact final 10-test sequence passed 10 times, the full onboarding/person/player sequence passed five times, and a later 2734-test selector passed. Reproduce and bisect an earlier Qt owner in the remainder shard with faulthandler before changing cleanup; retain the crash log in `.codex/investigations/` if it becomes repeatable. Gate: a narrowed failing sequence and a deterministic cleanup check.
-
-## Audit final pack lifecycle
-
-- [ ] Inventory authoring final-pack publisher/CLI, player pregeneration pack assembly and runtime pack preflight: full selected files, actual public/dynamic consumers, persisted versions, validation/staging/publication/recovery phases. Record structural/complexity inventory and configured-check scope; preserve transaction-local verified WAV reuse and final staged boundary.
-- [ ] Inspect design/readability and types independently, tracing repeated helpers, multi-phase owners, misleading contracts and retained compatibility exports. Qualify every candidate before edits and investigate shared causes; use existing pack/state/publication owners. Gate: concrete quality gain with caller/history/compatibility evidence and independent audit.
-- [ ] Complete correctness, execution/resources, performance, tests and dependency/tooling passes, fix every evidenced finding, and rescan neighbors. Gate: meaningful baseline or behavior-preservation checks, local-first and fresh-main selectors, root static/lock/complexity gates, independent final review; separate commits and normal main push. Remove only completed tasks.
