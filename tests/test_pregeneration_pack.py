@@ -220,6 +220,98 @@ def fixture(
 
 
 class OfflinePackPublisherTest(unittest.TestCase):
+    def test_saved_and_reused_packs_reject_noninteger_counts(self):
+        with TemporaryDirectory() as directory:
+            job, prepared, generated, _items = fixture(Path(directory))
+            publisher = OfflinePackPublisher()
+            published = publisher.publish(job, prepared, generated)
+            manifest_before = published.manifest.read_bytes()
+            document = json.loads(manifest_before)
+            extension = document["vntts.self-service"]
+            state_before = generated.state.read_bytes()
+            loaders = (
+                ("saved", lambda: load_saved_pack(published.manifest)),
+                ("reuse", lambda: publisher.publish(job, prepared, generated)),
+            )
+            for field in (
+                "approved_count",
+                "live_fallback_count",
+                "omission_count",
+                "story_line_count",
+            ):
+                original = extension[field]
+                for malformed in (bool(original), float(original)):
+                    extension[field] = malformed
+                    atomic_write_json(published.manifest, document)
+                    for route, loader in loaders:
+                        with (
+                            self.subTest(field=field, value=malformed, route=route),
+                            self.assertRaisesRegex(
+                                OfflinePackError, "(coverage|route counts) changed"
+                            ),
+                        ):
+                            loader()
+                extension[field] = original
+            published.manifest.write_bytes(manifest_before)
+            loaded = load_saved_pack(published.manifest)
+            self.assertEqual(loaded.identity, published.identity)
+            self.assertEqual(loaded.directory, published.directory.resolve())
+            self.assertEqual(
+                (
+                    loaded.approved,
+                    loaded.live_fallbacks,
+                    loaded.story_lines,
+                    loaded.omissions,
+                ),
+                (
+                    published.approved,
+                    published.live_fallbacks,
+                    published.story_lines,
+                    published.omissions,
+                ),
+            )
+            self.assertEqual(generated.state.read_bytes(), state_before)
+
+    def test_saved_pack_preserves_legacy_optional_count_defaults(self):
+        with TemporaryDirectory() as directory:
+            job, prepared, generated, _items = fixture(Path(directory))
+            published = OfflinePackPublisher().publish(job, prepared, generated)
+            document = json.loads(published.manifest.read_text())
+            extension = document["vntts.self-service"]
+            del extension["story_line_count"]
+            del extension["omission_count"]
+            atomic_write_json(published.manifest, document)
+            loaded = load_saved_pack(published.manifest)
+            self.assertEqual(loaded.identity, published.identity)
+            self.assertEqual(loaded.directory, published.directory.resolve())
+            self.assertEqual(
+                (
+                    loaded.approved,
+                    loaded.live_fallbacks,
+                    loaded.story_lines,
+                    loaded.omissions,
+                ),
+                (
+                    published.approved,
+                    published.live_fallbacks,
+                    published.story_lines,
+                    published.omissions,
+                ),
+            )
+            for count in (
+                loaded.approved,
+                loaded.live_fallbacks,
+                loaded.story_lines,
+                loaded.omissions,
+            ):
+                self.assertIs(type(count), int)
+            for required in ("approved_count", "live_fallback_count"):
+                value = extension.pop(required)
+                atomic_write_json(published.manifest, document)
+                with self.subTest(field=required), self.assertRaises(OfflinePackError):
+                    load_saved_pack(published.manifest)
+                extension[required] = value
+
     def test_branch_sequence_is_left_out_of_the_staged_pack(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

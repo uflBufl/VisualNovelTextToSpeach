@@ -1526,19 +1526,21 @@ def _load_existing(
     if not isinstance(extension, dict) or extension.get("identity") != identity:
         raise OfflinePackError("Existing offline pack identity changed")
     story_lines = len(load_story_index_document(imported.story_index).records)
-    if extension.get("story_line_count", story_lines) != story_lines:
+    declared_story_lines = extension.get("story_line_count", story_lines)
+    if type(declared_story_lines) is not int or declared_story_lines != story_lines:
         raise OfflinePackError("Existing offline pack coverage changed")
     generated = load_generated_audio_document(imported.generated_audio_manifest)
     library = GeneratedAudioLibrary(generated)
-    approved = extension.get("approved_count")
-    live_fallbacks = extension.get("live_fallback_count")
-    omissions = extension.get("omission_count", 0)
-    if (
-        approved != len(generated.records)
-        or live_fallbacks != len(library.live_fallbacks)
-        or omissions != len(library.audio_event_omissions)
+    approved = len(generated.records)
+    live_fallbacks = len(library.live_fallbacks)
+    omissions = len(library.audio_event_omissions)
+    for declared, actual in (
+        (extension.get("approved_count"), approved),
+        (extension.get("live_fallback_count"), live_fallbacks),
+        (extension.get("omission_count", 0), omissions),
     ):
-        raise OfflinePackError("Existing offline pack route counts changed")
+        if type(declared) is not int or declared != actual:
+            raise OfflinePackError("Existing offline pack route counts changed")
     return OfflinePackResult(
         identity=identity,
         directory=destination,
