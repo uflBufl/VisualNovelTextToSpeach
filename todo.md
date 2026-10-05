@@ -570,5 +570,4 @@ Planned implementation order after approval:
 
 
 
-- [ ] Reject boolean numeric WAV metrics at shared authority boundaries: real one-second PCM accepts `duration_seconds=True`, `channels=True`, and `longest_internal_silence_seconds=False` because Python numeric equality treats booleans as 0/1. Repair the shared manifest/audio and generation-state/speech quality validators, retaining accepted integer/float equivalence and both speech-analysis versions. Gate: public state load/review/manifest refusals without writes, each zero-valued speech field and legacy/current analysis, meaningful baseline-failing regression and local-first selector; separate commit.
 

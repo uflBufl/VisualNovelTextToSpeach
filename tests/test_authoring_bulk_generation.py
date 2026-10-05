@@ -2860,6 +2860,70 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertEqual(after, before)
         self.assertEqual(list((output / "audio").rglob("*.wav")), [])
 
+    def test_generated_quality_rejects_booleans_without_rewriting_authority(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            result = self.run_generation(
+                queue,
+                root / "output",
+                SyntheticRenderer(pcm=np.tile(audio_samples(), 4)),
+            )
+            original = json.loads(result.state.read_text(encoding="utf-8"))
+            manifest_before = result.manifest.read_bytes()
+            generated = original["items"][item["queue_id"]]
+            audio = result.state.parent / generated["path"]
+            for version in (1, 2):
+                measured = bulk_module.inspect_generated_speech(
+                    audio, analysis_version=version
+                )
+                generated["speech_quality"] = {
+                    "silence_ratio": int(measured.silence_ratio),
+                    "leading_silence_seconds": int(measured.leading_silence_seconds),
+                    "trailing_silence_seconds": int(measured.trailing_silence_seconds),
+                    "longest_internal_silence_seconds": int(
+                        measured.longest_internal_silence_seconds
+                    ),
+                }
+                if version == 2:
+                    generated["speech_quality"]["analysis_version"] = version
+                generated["quality"]["duration_seconds"] = 1
+                generated["quality"]["channels"] = 1.0
+                result.state.write_text(json.dumps(original), encoding="utf-8")
+                load_generation_state(result.state, queue)
+                cases = [
+                    ("quality", "duration_seconds", True),
+                    ("quality", "channels", True),
+                ]
+                cases.extend(
+                    ("speech_quality", field, False)
+                    for field in generated["speech_quality"]
+                    if field != "analysis_version"
+                )
+                for category, field, value in cases:
+                    with self.subTest(version=version, category=category, field=field):
+                        state = json.loads(json.dumps(original))
+                        state["items"][item["queue_id"]][category][field] = value
+                        result.state.write_text(json.dumps(state), encoding="utf-8")
+                        state_before = result.state.read_bytes()
+                        with self.assertRaisesRegex(
+                            BulkGenerationError, "quality.*mismatch"
+                        ):
+                            load_generation_state(result.state, queue)
+                        with self.assertRaisesRegex(
+                            BulkGenerationError, "quality.*mismatch"
+                        ):
+                            review_generation_item(
+                                result.state, item["queue_id"], "approved"
+                            )
+                        with self.assertRaisesRegex(
+                            BulkGenerationError, "quality.*mismatch"
+                        ):
+                            publish_generated_manifest(result.state)
+                        self.assertEqual(result.state.read_bytes(), state_before)
+                        self.assertEqual(result.manifest.read_bytes(), manifest_before)
+
     def test_current_state_records_v2_speech_quality_and_loads_legacy_metrics(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

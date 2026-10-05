@@ -2578,7 +2578,7 @@ def _validate_success_speech_quality(
     )
     if version == LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION:
         actual.pop("analysis_version")
-    if stored != actual:
+    if stored != actual or any(isinstance(value, bool) for value in stored.values()):
         raise BulkGenerationError(
             f"Generated WAV speech quality mismatch for {queue_id!r}"
         )

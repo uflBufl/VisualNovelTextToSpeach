@@ -452,7 +452,8 @@ def validate_success_file_with_samples(
         raise BulkGenerationError(f"Generated WAV quality is missing for {queue_id!r}")
     expected = asdict(quality)
     for field, value in expected.items():
-        if stored.get(field) != value:
+        stored_value = stored.get(field)
+        if isinstance(stored_value, bool) or stored_value != value:
             raise BulkGenerationError(
                 f"Generated WAV quality {field} mismatch for {queue_id!r}"
             )
