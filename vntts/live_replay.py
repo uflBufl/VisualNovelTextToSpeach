@@ -2266,10 +2266,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             timeout_seconds=arguments.timeout,
             audio_source_policy=arguments.audio_source_policy,
         ).run()
+        output = arguments.output or arguments.corpus.with_suffix(".report.json")
+        atomic_write_json(output, report)
     except (OSError, TypeError, ValueError) as error:
         return int(cli_error(error))
-    output = arguments.output or arguments.corpus.with_suffix(".report.json")
-    atomic_write_json(output, report)
     return int(
         cli_messages(
             (

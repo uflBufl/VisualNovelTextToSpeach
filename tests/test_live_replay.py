@@ -1425,6 +1425,28 @@ class LiveReplayTest(unittest.TestCase):
             )
         )
 
+    def test_cli_reports_output_publication_failure(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = self.create_corpus(temporary_directory)
+            output = Path(temporary_directory) / "report.json"
+            output.write_text("old report", encoding="utf-8")
+            errors = StringIO()
+            with (
+                patch(
+                    "vntts.live_replay.LiveReplayRunner.run",
+                    return_value={"successful": True},
+                ),
+                patch(
+                    "vntts.live_replay.atomic_write_json",
+                    side_effect=PermissionError("output is read-only"),
+                ),
+                redirect_stderr(errors),
+            ):
+                result = main([str(path), "--output", str(output)])
+            self.assertEqual(result, 1)
+            self.assertIn("output is read-only", errors.getvalue())
+            self.assertEqual(output.read_text(encoding="utf-8"), "old report")
+
     def test_cli_rejects_an_empty_corpus(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "empty.json"
