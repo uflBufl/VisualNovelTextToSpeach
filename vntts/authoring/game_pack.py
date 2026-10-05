@@ -93,7 +93,7 @@ VoiceControlPaths: TypeAlias = dict[Path, tuple[str, RoleMatcher]]
 
 class _QueueItem(Protocol):
     queue_id: str
-    speaker: str
+    speaker: str | None
     voice_character: str | None
 
 
