@@ -223,11 +223,10 @@ def apply_game_pack(
     if not configured_path:
         return settings
     imported = import_game_pack(configured_path)
-    result = imported.apply_to(
+    return imported.apply_to(
         settings,
         preserve_external_sequence=path is None,
     )
-    return result
 
 
 def main(argv: Sequence[str] | None = None) -> int:
