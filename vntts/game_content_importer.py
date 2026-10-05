@@ -22,6 +22,7 @@ from durable_file import atomic_write_json, sha256_file
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
+    StoryIndexRecord,
     load_story_index_document,
 )
 from vntts_artifacts.voice_manifest import normalize_character_name
@@ -762,8 +763,8 @@ class Reverse1999GameImporter:
         )
 
     @staticmethod
-    def _has_exact_source_audio_timing(record: object) -> bool:
-        document = getattr(record, "document", {})
+    def _has_exact_source_audio_timing(record: StoryIndexRecord) -> bool:
+        document = record.document
         media_id = document.get("source_audio_duration_media_id")
         media_sha256 = document.get("source_audio_duration_media_sha256")
         return (
