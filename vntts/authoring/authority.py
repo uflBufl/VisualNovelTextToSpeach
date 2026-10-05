@@ -76,18 +76,21 @@ def capture_authority_file(
 
 
 def assert_authority_snapshot(
-    snapshot: AuthoritySnapshot, label: str = "authority"
+    snapshot: AuthoritySnapshot,
+    label: str = "authority",
+    *,
+    error_type: type[Exception] = AuthoringAuthorityError,
 ) -> None:
-    """Require one captured path to remain the same regular-file payload."""
+    """Require unchanged bytes, using the caller's error boundary when supplied."""
     path = snapshot.path
     if path.is_symlink() or not path.is_file():
-        raise AuthoringAuthorityError(f"{label.capitalize()} changed: {path}")
+        raise error_type(f"{label.capitalize()} changed: {path}")
     try:
         payload = path.read_bytes()
     except OSError as error:
-        raise AuthoringAuthorityError(f"Unable to recheck {label}: {error}") from error
+        raise error_type(f"Unable to recheck {label}: {error}") from error
     if hashlib.sha256(payload).hexdigest() != snapshot.sha256:
-        raise AuthoringAuthorityError(f"{label.capitalize()} changed: {path}")
+        raise error_type(f"{label.capitalize()} changed: {path}")
 
 
 def write_json_document_no_replace(

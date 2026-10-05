@@ -4,7 +4,9 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
+import vntts.authoring.audio_event_composition as composition_module
 from tests.test_authoring_audio_event_review import publish
 from vntts.authoring.audio_event_composition import (
     AudioEventCompositionError,
@@ -188,6 +190,68 @@ class AudioEventCompositionTest(unittest.TestCase):
                     path.write_text(json.dumps(document, sort_keys=True))
                     with self.assertRaisesRegex(
                         AudioEventCompositionError, "metadata|ledger"
+                    ):
+                        load_audio_event_composition(output)
+
+    def test_loader_and_publisher_races_raise_composition_errors(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            review, _queue, _audio = publish(root)
+            record_audio_event_review_decision(review.directory, "accept")
+            output = root / "composition"
+            publish_audio_event_composition(review.directory, output)
+            original = composition_module._validate_composition_document
+
+            def validate_then_mutate(*args):
+                original(*args)
+                path = output / "composition.json"
+                path.write_bytes(path.read_bytes() + b" ")
+
+            with patch.object(
+                composition_module,
+                "_validate_composition_document",
+                validate_then_mutate,
+            ):
+                with self.assertRaisesRegex(AudioEventCompositionError, "changed"):
+                    load_audio_event_composition(output)
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            review, _queue, _audio = publish(root)
+            record_audio_event_review_decision(review.directory, "accept")
+            original = load_audio_event_composition
+
+            def load_then_mutate(path):
+                loaded = original(path)
+                queue = review.directory / "queue.jsonl"
+                queue.write_bytes(queue.read_bytes() + b"\n")
+                return loaded
+
+            with patch.object(
+                composition_module, "load_audio_event_composition", load_then_mutate
+            ):
+                with self.assertRaisesRegex(AudioEventCompositionError, "changed"):
+                    publish_audio_event_composition(
+                        review.directory, root / "composition"
+                    )
+            self.assertFalse((root / "composition").exists())
+            self.assertFalse(list(root.glob(".composition.staging-*")))
+
+    def test_persisted_decision_rejects_non_strings_with_composition_errors(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            review, _queue, _audio = publish(root)
+            record_audio_event_review_decision(review.directory, "accept")
+            output = root / "composition"
+            publish_audio_event_composition(review.directory, output)
+            record_audio_event_composition_decision(output, "approved")
+            path = output / "composition-decision.json"
+            document = json.loads(path.read_text())
+            for decision in ([], {}, None, True, 1):
+                with self.subTest(decision=decision):
+                    document["decision"] = decision
+                    path.write_text(json.dumps(document, sort_keys=True))
+                    with self.assertRaisesRegex(
+                        AudioEventCompositionError, "decision changed"
                     ):
                         load_audio_event_composition(output)
 

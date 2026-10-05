@@ -185,9 +185,15 @@ def publish_source_audio_event_review(
         }
         atomic_write_json(staging / "review.json", review, sort_keys=True)
         load_audio_event_review(staging)
-        assert_authority_snapshot(queue_snapshot, "generation queue")
-        assert_authority_snapshot(story_snapshot, "source story index")
-        assert_authority_snapshot(audio_snapshot, "source event audio")
+        assert_authority_snapshot(
+            queue_snapshot, "generation queue", error_type=AudioEventReviewError
+        )
+        assert_authority_snapshot(
+            story_snapshot, "source story index", error_type=AudioEventReviewError
+        )
+        assert_authority_snapshot(
+            audio_snapshot, "source event audio", error_type=AudioEventReviewError
+        )
         try:
             rename_directory_no_replace(staging, output)
         except (AtomicPublicationError, OSError) as error:
@@ -242,10 +248,18 @@ def load_audio_event_review(directory: str | Path) -> AudioEventReview:
             review_snapshot.sha256,
         )
         decision = _required_text(decision_document.get("decision"), "decision")
-        assert_authority_snapshot(decision_snapshot, "audio-event decision")
-    assert_authority_snapshot(review_snapshot, "audio-event review")
-    assert_authority_snapshot(queue_snapshot, "review queue")
-    assert_authority_snapshot(audio_snapshot, "review candidate audio")
+        assert_authority_snapshot(
+            decision_snapshot, "audio-event decision", error_type=AudioEventReviewError
+        )
+    assert_authority_snapshot(
+        review_snapshot, "audio-event review", error_type=AudioEventReviewError
+    )
+    assert_authority_snapshot(
+        queue_snapshot, "review queue", error_type=AudioEventReviewError
+    )
+    assert_authority_snapshot(
+        audio_snapshot, "review candidate audio", error_type=AudioEventReviewError
+    )
     return AudioEventReview(
         directory=directory,
         review_id=_required_text(review.get("review_id"), "review ID"),
@@ -574,7 +588,10 @@ def _validate_decision_document(
     candidate = _review_candidate(review)
     if value.get("candidate_audio_sha256") != candidate.get("audio_sha256"):
         raise AudioEventReviewError("Audio-event decision audio authority changed")
-    if value.get("decision") not in AUDIO_EVENT_DECISIONS:
+    if (
+        not isinstance(value.get("decision"), str)
+        or value.get("decision") not in AUDIO_EVENT_DECISIONS
+    ):
         raise AudioEventReviewError("Audio-event decision is invalid")
     _aware_timestamp(value.get("reviewed_at"), "audio-event reviewed_at")
     return value

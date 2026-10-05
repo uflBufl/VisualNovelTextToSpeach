@@ -15,6 +15,7 @@ from vntts.authoring.audio_event_composition import (
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
     AuthoritySnapshot,
+    assert_authority_snapshot,
     canonical_document_sha256,
     capture_authority_file,
 )
@@ -114,6 +115,18 @@ def validate_audio_event_composition_workspace(
     _validate_composition_authority(authority, config)
     base_item = _validate_base_workspace_authority(authority, config)
     _validate_outcome_merge_authority(workspace, config, base_item)
+    for snapshot, label in (
+        (authority.composition_snapshot, "composition"),
+        (authority.decision_snapshot, "decision"),
+        (authority.base_workspace_snapshot, "base workspace"),
+        (authority.base_state_snapshot, "base state"),
+        (authority.base_audio_snapshot, "base audio"),
+    ):
+        assert_authority_snapshot(
+            snapshot,
+            f"workspace audio-event {label}",
+            error_type=AudioEventWorkspaceError,
+        )
     return config
 
 
@@ -251,10 +264,15 @@ def _validate_outcome_merge_authority(
 ) -> None:
     outcome_merge = workspace.get("outcome_merge")
     if isinstance(outcome_merge, dict):
+        items = outcome_merge.get("items", [])
+        if not isinstance(items, list):
+            raise AudioEventWorkspaceError(
+                "Workspace audio-event outcome items are malformed"
+            )
         source_item = next(
             (
                 item
-                for item in outcome_merge.get("items", [])
+                for item in items
                 if isinstance(item, dict) and item.get("queue_id") == config["queue_id"]
             ),
             None,
@@ -309,6 +327,9 @@ def validate_audio_event_composition_state_item(
         raise AudioEventWorkspaceError(
             "Generated audio-event synthesis identity changed"
         )
+    assert_authority_snapshot(
+        snapshot, "audio-event workspace", error_type=AudioEventWorkspaceError
+    )
     return ledger
 
 

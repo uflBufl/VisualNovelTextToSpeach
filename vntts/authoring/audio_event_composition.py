@@ -169,7 +169,9 @@ def publish_audio_event_composition(
             (queue_snapshot, "audio-event queue"),
             (audio_snapshot, "accepted audio-event WAV"),
         ):
-            assert_authority_snapshot(snapshot, label)
+            assert_authority_snapshot(
+                snapshot, label, error_type=AudioEventCompositionError
+            )
         try:
             rename_directory_no_replace(staging, output)
         except (AtomicPublicationError, OSError) as error:
@@ -241,7 +243,11 @@ def load_audio_event_composition(directory: str | Path) -> AudioEventComposition
         decision = _validate_composition_decision(
             terminal_document, document, composition_snapshot.sha256
         )
-        assert_authority_snapshot(terminal_snapshot, "audio-event composition decision")
+        assert_authority_snapshot(
+            terminal_snapshot,
+            "audio-event composition decision",
+            error_type=AudioEventCompositionError,
+        )
     for snapshot, label in (
         (composition_snapshot, "audio-event composition"),
         (review_snapshot, "copied audio-event review"),
@@ -249,7 +255,9 @@ def load_audio_event_composition(directory: str | Path) -> AudioEventComposition
         (queue_snapshot, "copied audio-event queue"),
         (audio_snapshot, "final event audio"),
     ):
-        assert_authority_snapshot(snapshot, label)
+        assert_authority_snapshot(
+            snapshot, label, error_type=AudioEventCompositionError
+        )
     composition_id = document.get("composition_id")
     review_id = document.get("review_id")
     queue_id = document.get("queue_id")
@@ -274,7 +282,10 @@ def record_audio_event_composition_decision(
     directory: str | Path, decision: str
 ) -> AudioEventComposition:
     """Record the final exact production-composition approval or rejection."""
-    if decision not in AUDIO_EVENT_COMPOSITION_DECISIONS:
+    if (
+        not isinstance(decision, str)
+        or decision not in AUDIO_EVENT_COMPOSITION_DECISIONS
+    ):
         raise AudioEventCompositionError(
             "Audio-event composition decision must be approved or rejected"
         )
@@ -451,6 +462,7 @@ def _validate_composition_document(
 def _validate_composition_decision(
     value: dict[str, object], composition: dict[str, object], composition_sha256: str
 ) -> str:
+    decision = value.get("decision")
     if (
         not isinstance(value, dict)
         or set(value)
@@ -469,7 +481,8 @@ def _validate_composition_decision(
         or value.get("composition_id") != composition.get("composition_id")
         or value.get("composition_sha256") != composition_sha256
         or value.get("final_audio_sha256") != composition.get("final_audio_sha256")
-        or value.get("decision") not in AUDIO_EVENT_COMPOSITION_DECISIONS
+        or not isinstance(decision, str)
+        or decision not in AUDIO_EVENT_COMPOSITION_DECISIONS
     ):
         raise AudioEventCompositionError("Audio-event composition decision changed")
     reviewed_at = value.get("reviewed_at")
@@ -487,9 +500,6 @@ def _validate_composition_decision(
         raise AudioEventCompositionError(
             "Audio-event composition decision timestamp needs a timezone"
         )
-    decision = value.get("decision")
-    if not isinstance(decision, str):
-        raise AudioEventCompositionError("Audio-event composition decision changed")
     return decision
 
 

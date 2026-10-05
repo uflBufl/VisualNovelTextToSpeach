@@ -11,6 +11,7 @@ import numpy as np
 from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 
+import vntts.authoring.audio_event_review as review_module
 from tests.symlink_support import symlink_or_skip
 from vntts.authoring.audio_event_review import (
     AudioEventReviewError,
@@ -92,6 +93,56 @@ def publish(root, *, text="Tsk!", sample_count=1_200):
 
 
 class AudioEventReviewTest(unittest.TestCase):
+    def test_loader_and_publisher_races_raise_review_errors(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            result, _queue, _audio = publish(root)
+            original = review_module._validate_review_document
+
+            def validate_then_mutate(*args):
+                original(*args)
+                path = result.directory / "review.json"
+                path.write_bytes(path.read_bytes() + b" ")
+
+            with patch.object(
+                review_module, "_validate_review_document", validate_then_mutate
+            ):
+                with self.assertRaisesRegex(AudioEventReviewError, "changed"):
+                    load_audio_event_review(result.directory)
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = load_audio_event_review
+
+            def load_then_mutate(path):
+                loaded = original(path)
+                queue = root / "queue.jsonl"
+                queue.write_bytes(queue.read_bytes() + b"\n")
+                return loaded
+
+            with patch.object(
+                review_module, "load_audio_event_review", load_then_mutate
+            ):
+                with self.assertRaisesRegex(AudioEventReviewError, "changed"):
+                    publish(root)
+            self.assertFalse((root / "review").exists())
+            self.assertFalse(list(root.glob(".review.staging-*")))
+
+    def test_persisted_decision_rejects_non_strings_with_review_errors(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            result, _queue, _audio = publish(root)
+            record_audio_event_review_decision(result.directory, "accept")
+            path = result.directory / "decision.json"
+            document = json.loads(path.read_text())
+            for decision in ([], {}, None, True, 1):
+                with self.subTest(decision=decision):
+                    document["decision"] = decision
+                    path.write_text(json.dumps(document, sort_keys=True))
+                    with self.assertRaisesRegex(
+                        AudioEventReviewError, "decision is invalid"
+                    ):
+                        load_audio_event_review(result.directory)
+
     def test_publication_rejects_symlinked_authority_inputs(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

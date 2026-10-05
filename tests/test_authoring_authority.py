@@ -8,6 +8,7 @@ from unittest.mock import patch
 from tests.symlink_support import symlink_or_skip
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
+    assert_authority_snapshot,
     capture_authority_file,
     write_json_document_no_replace,
 )
@@ -27,6 +28,36 @@ class AuthoringAuthorityTest(unittest.TestCase):
                     capture_authority_file("alias.json", "test authority")
             finally:
                 os.chdir(previous_directory)
+
+    def test_snapshot_recheck_preserves_default_and_custom_error_boundaries(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "authority.json"
+            for error_type in (AuthoringAuthorityError, ValueError):
+                with self.subTest(error_type=error_type):
+                    path.write_bytes(b"{}")
+                    snapshot = capture_authority_file(path, "test authority")
+                    kwargs = (
+                        {}
+                        if error_type is AuthoringAuthorityError
+                        else {"error_type": error_type}
+                    )
+                    assert_authority_snapshot(snapshot, "test authority", **kwargs)
+                    path.write_bytes(b"{ }")
+                    with self.assertRaisesRegex(error_type, "Test authority changed"):
+                        assert_authority_snapshot(snapshot, "test authority", **kwargs)
+                    path.unlink()
+                    with self.assertRaisesRegex(error_type, "Test authority changed"):
+                        assert_authority_snapshot(snapshot, "test authority", **kwargs)
+                    path.write_bytes(b"{}")
+                    with patch.object(
+                        Path, "read_bytes", side_effect=PermissionError("denied")
+                    ):
+                        with self.assertRaisesRegex(
+                            error_type, "Unable to recheck test authority"
+                        ):
+                            assert_authority_snapshot(
+                                snapshot, "test authority", **kwargs
+                            )
 
     def test_temp_cleanup_failure_preserves_publication_outcome(self):
         with TemporaryDirectory() as directory:
