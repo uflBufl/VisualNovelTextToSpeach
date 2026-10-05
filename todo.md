@@ -561,7 +561,3 @@ Planned implementation order after approval:
 ## Investigate intermittent macOS Qt test crash
 
 - [ ] A macOS changed-test run intermittently terminated with `shiboken6` `mainThreadDeletionHandler` SIGSEGV during pure-Python `test_player_session` after UI tests. The exact final 10-test sequence passed 10 times, the full onboarding/person/player sequence passed five times, and a later 2734-test selector passed. Reproduce and bisect an earlier Qt owner in the remainder shard with faulthandler before changing cleanup; retain the crash log in `.codex/investigations/` if it becomes repeatable. Gate: a narrowed failing sequence and a deterministic cleanup check.
-
-## Correct the shared PCM16 WAV sample-rate boundary
-
-- [ ] In the `vntts-artifacts` dependency, make `write_pcm16_wav` reject a rate whose mono PCM16 byte rate exceeds uint32 with `Pcm16MonoWavError` before opening output. The currently pinned writer allows sample_rate=2**31 and then raises raw `struct.error` because byte_rate=2*sample_rate; reproduced with eight float32 samples. The isolated SoundEffect path has its own corrected guard. Next gate: fix/test in the library owner, cover 2**31 rejection and 2**31-1 header validity, preserve ordinary WAV bytes, then adopt a verified released dependency revision. Do not add the artifact dependency to the isolated SoundEffect runtime for this fix.
