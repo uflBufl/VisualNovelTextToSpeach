@@ -1965,24 +1965,27 @@ def _validate_failed_carry_forward_kind(
     )
 
 
+@dataclass(frozen=True)
+class _CarryForwardFailure:
+    result: JsonDocument
+    failure: JsonDocument
+    attempts: int
+    source_model: str
+    source_profile: str
+    strategy: str
+    fallback_authority: OfflineFallbackAuthority | None
+    source_provider_attempts: object
+    source_repair_strategy: object
+    provider_attempts: int | None
+
+
 def _validate_failed_carry_forward_source(
     source: _CarryForwardSource,
     selection: _CarryForwardSelection,
     queue_by_id: Mapping[str, VoiceGenerationQueueItem],
     authority_by_queue_id: Mapping[str, OfflineFallbackAuthority],
     queue_id: str,
-) -> tuple[
-    JsonDocument,
-    JsonDocument,
-    int,
-    str,
-    str,
-    str,
-    OfflineFallbackAuthority | None,
-    object,
-    object,
-    int | None,
-]:
+) -> _CarryForwardFailure:
     if queue_id not in queue_by_id:
         raise AuthoringWorkbenchError(
             f"Failure repair references unknown queue item {queue_id!r}"
@@ -2050,11 +2053,7 @@ def _validate_failed_carry_forward_source(
         )
     provider_attempts: int | None = None
     if strategy in {BOUNDED_SEED_RETRY, INLINE_PAUSE_MARKER}:
-        provider_attempts_value = (
-            attempts_by_provider.get(provider, attempts)
-            if _is_json_document(attempts_by_provider) and isinstance(provider, str)
-            else attempts
-        )
+        provider_attempts_value = source_provider_attempts
         if (
             not isinstance(provider_attempts_value, int)
             or isinstance(provider_attempts_value, bool)
@@ -2064,17 +2063,17 @@ def _validate_failed_carry_forward_source(
                 f"Bounded repair source attempts are exhausted for {queue_id!r}"
             )
         provider_attempts = provider_attempts_value
-    return (
-        result,
-        failure,
-        attempts,
-        source_model,
-        source_profile,
-        strategy,
-        fallback_authority,
-        source_provider_attempts,
-        source_repair_strategy,
-        provider_attempts,
+    return _CarryForwardFailure(
+        result=result,
+        failure=failure,
+        attempts=attempts,
+        source_model=source_model,
+        source_profile=source_profile,
+        strategy=strategy,
+        fallback_authority=fallback_authority,
+        source_provider_attempts=source_provider_attempts,
+        source_repair_strategy=source_repair_strategy,
+        provider_attempts=provider_attempts,
     )
 
 
@@ -2090,20 +2089,10 @@ def _carry_forward_failed_items(
     target_items = _state_items(target_state)
     carried = []
     for queue_id in selection.failed_queue_ids:
-        (
-            result,
-            failure,
-            attempts,
-            source_model,
-            source_profile,
-            strategy,
-            fallback_authority,
-            source_provider_attempts,
-            source_repair_strategy,
-            provider_attempts,
-        ) = _validate_failed_carry_forward_source(
+        failed = _validate_failed_carry_forward_source(
             source, selection, queue_by_id, authority_by_queue_id, queue_id
         )
+        result = failed.result
         queue_item = queue_by_id[queue_id]
         requested_character = synthesis_character_for_line(
             queue_item.speaker, queue_item.voice_character
@@ -2127,25 +2116,25 @@ def _carry_forward_failed_items(
             "source_item_sha256": canonical_document_sha256(result),
             "character": effective_character,
             "source_provider": result["provider"],
-            "source_model": source_model,
-            "source_generation_profile": source_profile,
-            "source_attempts": attempts,
+            "source_model": failed.source_model,
+            "source_generation_profile": failed.source_profile,
+            "source_attempts": failed.attempts,
             "source_seed": result.get("seed"),
-            "source_failure_kind": failure["kind"],
+            "source_failure_kind": failed.failure["kind"],
             "source_voice_reference": _voice_reference_identity(
                 source_registry, reference_character
             ),
         }
-        if source_repair_strategy is not None:
-            carry_record["source_repair_strategy"] = source_repair_strategy
-        if strategy == OFFLINE_FALLBACK_BACKEND:
-            carry_record["source_provider_attempts"] = source_provider_attempts
-            if fallback_authority is not None:
+        if failed.source_repair_strategy is not None:
+            carry_record["source_repair_strategy"] = failed.source_repair_strategy
+        if failed.strategy == OFFLINE_FALLBACK_BACKEND:
+            carry_record["source_provider_attempts"] = failed.source_provider_attempts
+            if failed.fallback_authority is not None:
                 carry_record["source_unresolved_authority"] = (
-                    fallback_authority.reference_record(queue_id)
+                    failed.fallback_authority.reference_record(queue_id)
                 )
-        if strategy == BOUNDED_SEED_RETRY:
-            carry_record["source_provider_attempts"] = provider_attempts
+        if failed.strategy == BOUNDED_SEED_RETRY:
+            carry_record["source_provider_attempts"] = failed.provider_attempts
         parent_carry = result.get("carry_forward")
         if isinstance(parent_carry, dict):
             carry_record["source_parent_carry_forward"] = copy.deepcopy(parent_carry)
