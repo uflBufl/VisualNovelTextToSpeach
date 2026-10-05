@@ -80,13 +80,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/failed_control_carry.py",
-      "scope": "carry_failed_controls",
-      "count": 1,
-      "maximum": 16
-    },
-    {
-      "code": "C901",
       "path": "vntts/authoring/failed_prompt_hypothesis.py",
       "scope": "publish_failed_prompt_hypothesis_selection",
       "count": 1,
@@ -710,13 +703,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/authoring/failed_control_carry.py",
-      "scope": "carry_failed_controls",
-      "count": 1,
-      "maximum": 15
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/authoring/failure_repair.py",
       "scope": "compress_single_sentence_boundary_silence",
       "count": 1,
@@ -1225,13 +1211,6 @@
       "scope": "TrayApplication.shutdown",
       "count": 1,
       "maximum": 58
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/failed_control_carry.py",
-      "scope": "carry_failed_controls",
-      "count": 1,
-      "maximum": 84
     },
     {
       "code": "PLR0915",

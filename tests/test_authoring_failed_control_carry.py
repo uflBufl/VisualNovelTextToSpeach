@@ -206,10 +206,18 @@ class AuthoringFailedControlCarryTest(unittest.TestCase):
             fixture, source, target = self.create_source_and_target(
                 Path(directory), target_narrator="Adult Aderyn"
             )
+            state_path = target / "generated-audio/generation-state.json"
+            before = state_path.read_bytes()
             with self.assertRaisesRegex(
                 FailedControlCarryError, "changes the effective reference"
             ):
                 carry_failed_controls(source, target, (fixture["queue_id"],))
+            self.assertEqual(state_path.read_bytes(), before)
+            self.assertFalse(
+                (
+                    state_path.parent / carry_module.FAILED_CONTROL_CARRY_FILENAME
+                ).exists()
+            )
 
     def test_rejects_different_existing_target_item(self):
         with TemporaryDirectory() as directory:
