@@ -607,10 +607,11 @@ def _validate_generated_story_records(
     omissions: Sequence[DecisionRecord],
     reviewed: Sequence[DecisionRecord],
 ) -> None:
-    _validate_story_records(generated, story, "Approved generated item")
-    _validate_story_records(fallback, story, "Live fallback item")
-    _validate_story_records(omissions, story, "Audio-event omission")
-    _validate_story_records(reviewed, story, "Reviewed waveform")
+    lines = {record.line_id: record for record in story.records}
+    _validate_story_records(generated, lines, "Approved generated item")
+    _validate_story_records(fallback, lines, "Live fallback item")
+    _validate_story_records(omissions, lines, "Audio-event omission")
+    _validate_story_records(reviewed, lines, "Reviewed waveform")
 
 
 def _copy_generated_audio(
@@ -1951,9 +1952,8 @@ def _resolved_narrator_selection(
 
 
 def _validate_story_records(
-    records: Sequence[DecisionRecord], story: _Story, label: str
+    records: Sequence[DecisionRecord], lines: Mapping[str, _StoryRecord], label: str
 ) -> None:
-    lines = {record.line_id: record for record in story.records}
     for record in records:
         line_id = record.get("line_id")
         if not isinstance(line_id, str):

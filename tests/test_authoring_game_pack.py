@@ -398,6 +398,33 @@ def write_fixture_live_sequence(fixture, path, *, story_path=None):
 
 
 class AuthoringGamePackTest(unittest.TestCase):
+    def test_publication_indexes_story_once_for_all_route_groups(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = prepare_authoring_fixture(root / "source", names=("one", "two"))
+            for item in fixture["items"]:
+                review_generation_item(fixture["state"], item["queue_id"], "approved")
+            reads = []
+            original_validate = game_pack_module._validate_generated_story_records
+
+            def count_story_reads(story, *groups):
+                class CountedStory:
+                    @property
+                    def records(self):
+                        reads.append(story)
+                        return story.records
+
+                return original_validate(CountedStory(), *groups)
+
+            with patch.object(
+                game_pack_module,
+                "_validate_generated_story_records",
+                side_effect=count_story_reads,
+            ):
+                result = publish(fixture, root / "pack")
+            self.assertEqual(len(reads), 1)
+            self.assertEqual(result.approved_count, 2)
+
     def test_self_service_preset_inputs_record_actual_narrator_and_character_voices(
         self,
     ):
