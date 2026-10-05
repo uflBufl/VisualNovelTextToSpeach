@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib
-import re
 from pathlib import Path
 
 from durable_file import sha256_file as sha256_file
@@ -92,7 +91,6 @@ PACE_MINIMUM_LENGTH_BUCKET_SAMPLES = 3
 PACE_MINIMUM_VOICE_SAMPLES = 5
 PACE_SLOW_RELATIVE_RATIO = 0.80
 PACE_SLOW_MINIMUM_DELTA_WPM = 20.0
-_IMPORT_ID_PATTERN = re.compile(r"legacy-[0-9a-f]{24}")
 
 
 def review_technical_summary(item: ReviewItem) -> str:

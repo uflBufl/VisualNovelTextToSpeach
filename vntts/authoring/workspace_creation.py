@@ -555,7 +555,6 @@ def _resume_identity_and_document(
 def _publish_resume_workspace(
     staging: Path,
     destination: Path,
-    workspace: WorkspaceDocument,
     source: _ResumeSource,
 ) -> WorkspaceCreationResult:
     if destination.exists():
@@ -602,7 +601,7 @@ def _assert_failure_reference_workspace_base(base_document: WorkspaceDocument) -
 
 
 def _assert_failure_reference_generation_available(
-    base_directory: Path, state: GenerationState
+    state: GenerationState,
 ) -> None:
     if state.get("active") is not None:
         raise AuthoringWorkbenchError(
@@ -855,7 +854,7 @@ def _stage_resume_workspace(
         source.directory, source.copied, source.import_path, source.import_sha256
     )
     _verify_selected_sources(selected_sources)
-    return _publish_resume_workspace(staging, destination, workspace, source)
+    return _publish_resume_workspace(staging, destination, source)
 
 
 def create_failure_reference_workspace(
@@ -871,7 +870,7 @@ def create_failure_reference_workspace(
     queue, state, _state_payload, state_sha256 = _stable_workspace_state(
         base_directory, base_document, "failure-reference base"
     )
-    _assert_failure_reference_generation_available(base_directory, state)
+    _assert_failure_reference_generation_available(state)
     binding, binding_document = _failure_reference_workspace_binding(binding_directory)
     queue_sha256 = sha256_file(base_directory / "queue.jsonl")
     _assert_failure_reference_binding_authority(
@@ -1148,7 +1147,6 @@ def create_audio_event_composition_workspace(
                 )
         except BulkGenerationError as error:
             raise AuthoringWorkbenchError(str(error)) from error
-    return WorkspaceCreationResult(destination, True)
 
 
 def _install_audio_event_composition(
