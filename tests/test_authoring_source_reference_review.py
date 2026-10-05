@@ -1073,7 +1073,15 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
             loaded_decision = load_portrait_alias_decision(decision_path, loaded_plan)
             identities = portrait_identity_by_variant(loaded_decision)
 
-            forged_decision = json.loads(decision_path.read_text(encoding="utf-8"))
+            for count in (True, 1.0):
+                with self.subTest(identity_count=count):
+                    forged = decision.to_dict()
+                    forged["identity_count"] = count
+                    decision_path.write_text(json.dumps(forged), encoding="utf-8")
+                    with self.assertRaisesRegex(PortraitAliasError, "Unsupported"):
+                        load_portrait_alias_decision(decision_path, loaded_plan)
+
+            forged_decision = decision.to_dict()
             forged_decision["schema_version"] = True
             decision_path.write_text(json.dumps(forged_decision), encoding="utf-8")
             with self.assertRaisesRegex(PortraitAliasError, "Unsupported"):

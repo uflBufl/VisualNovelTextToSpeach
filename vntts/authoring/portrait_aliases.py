@@ -333,6 +333,7 @@ def load_portrait_alias_decision(
         or document.get("schema") != PORTRAIT_ALIAS_DECISION_SCHEMA
         or type(document.get("schema_version")) is not int
         or document.get("schema_version") != PORTRAIT_ALIAS_DECISION_VERSION
+        or type(document.get("identity_count")) is not int
         or document.get("plan_id") != plan.plan_id
     ):
         raise PortraitAliasError("Unsupported portrait alias decision")
