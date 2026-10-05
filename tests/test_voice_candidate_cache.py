@@ -276,6 +276,33 @@ class VoiceCandidateCacheTest(unittest.TestCase):
         self.assertTrue(old.exists())
         self.assertEqual((child / "reference.wav").read_bytes(), b"audio")
 
+    def test_dangling_saved_reference_alias_defers_cleanup(self) -> None:
+        old = self._candidate("old")
+        job = self.jobs / ("a" * 24)
+        job.mkdir()
+        pack = job / "game-packs" / ("pack-" + "b" * 24)
+        for location in ("voice-plan.json", "game-packs", "game-pack.json"):
+            with self.subTest(location=location):
+                if not old.exists():
+                    old = self._candidate("old")
+                alias = (
+                    pack / location if location == "game-pack.json" else job / location
+                )
+                alias.parent.mkdir(parents=True, exist_ok=True)
+                symlink_or_skip(
+                    alias,
+                    job / "absent-reference",
+                    target_is_directory=location == "game-packs",
+                )
+                try:
+                    self.assertEqual(
+                        prune_obsolete_voice_candidate_caches(self.root, self.jobs),
+                        (),
+                    )
+                    self.assertTrue(old.exists())
+                finally:
+                    alias.unlink()
+
     def _candidate(self, name: str) -> Path:
         directory = self.root / hashlib.sha256(name.encode()).hexdigest()[:24]
         directory.mkdir()

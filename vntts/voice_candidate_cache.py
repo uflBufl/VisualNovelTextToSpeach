@@ -248,7 +248,7 @@ def _references_in_jobs(root: Path, jobs: Path) -> set[str] | None:
 def _references_in_job(root: Path, directory: Path) -> set[str] | None:
     references: set[str] = set()
     for path in (directory / "voice-plan.json", *_pack_manifests(directory)):
-        if path is None:
+        if path is None or _unsafe(path):
             return None
         if not path.exists():
             continue
@@ -261,9 +261,12 @@ def _references_in_job(root: Path, directory: Path) -> set[str] | None:
 
 def _pack_manifests(job_directory: Path) -> Iterator[Path | None]:
     packs = job_directory / "game-packs"
+    if _unsafe(packs):
+        yield None
+        return
     if not packs.exists():
         return
-    if _unsafe(packs) or not packs.is_dir():
+    if not packs.is_dir():
         yield None
         return
     directories = tuple(packs.iterdir())
