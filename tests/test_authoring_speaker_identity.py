@@ -1,5 +1,6 @@
 import hashlib
 import json
+import tomllib
 import unittest
 import wave
 from pathlib import Path
@@ -18,6 +19,7 @@ from vntts.authoring.speaker_identity import (
     load_labelled_pairs,
     load_reference_inventory,
     make_speechbrain_embedder,
+    require_speechbrain_runtime,
 )
 from vntts.authoring.speaker_identity_model import (
     MODEL_FILES,
@@ -285,6 +287,25 @@ class SpeakerIdentityTest(unittest.TestCase):
                     inventory, labels, lambda payload: (1.0, 0.0), {"invalid": object()}
                 )
 
+    def test_runtime_matches_the_declared_optional_dependency(self):
+        project = tomllib.loads(
+            (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text("utf-8")
+        )
+        declared = project["project"]["optional-dependencies"]["speaker-identity"]
+        self.assertEqual(len(declared), 1)
+        package, separator, expected = declared[0].partition("==")
+        self.assertEqual((package, separator), ("speechbrain", "=="))
+        with patch.object(speaker_identity, "find_spec", return_value=object()):
+            with patch.object(speaker_identity, "version", return_value=expected):
+                require_speechbrain_runtime()
+            for unsupported in ("1.0.3", "0.0.0"):
+                with (
+                    self.subTest(version=unsupported),
+                    patch.object(speaker_identity, "version", return_value=unsupported),
+                ):
+                    with self.assertRaisesRegex(SpeakerIdentityError, "required"):
+                        require_speechbrain_runtime()
+
     def test_runtime_rejects_non_cpu_before_loading_optional_dependency(self):
         with self.assertRaisesRegex(SpeakerIdentityError, "require CPU"):
             make_speechbrain_embedder("missing", device="cuda")
@@ -301,6 +322,40 @@ class SpeakerIdentityTest(unittest.TestCase):
                     root=root / "managed", source=source
                 )
                 self.assertEqual(installed["status"], "installed")
+                metadata = Path(
+                    installed["installation"], "managed-model.json"
+                ).read_bytes()
+                notice = Path(
+                    installed["installation"], "THIRD_PARTY_NOTICES.txt"
+                ).read_bytes()
+                self.assertEqual(
+                    json.loads(metadata)["implementation"]["version"], "1.0.3"
+                )
+                with patch.object(
+                    speaker_identity,
+                    "managed_speaker_identity_status",
+                    return_value=installed,
+                ):
+                    self.assertEqual(
+                        speaker_identity.installed_model_descriptor()[
+                            "implementation_version"
+                        ],
+                        "1.1.1",
+                    )
+                repeated = install_managed_speaker_identity_model(
+                    root=root / "managed", source=source
+                )
+                self.assertEqual(repeated["status"], "installed")
+                self.assertEqual(
+                    Path(installed["installation"], "managed-model.json").read_bytes(),
+                    metadata,
+                )
+                self.assertEqual(
+                    Path(
+                        installed["installation"], "THIRD_PARTY_NOTICES.txt"
+                    ).read_bytes(),
+                    notice,
+                )
                 self.assertEqual(
                     resolve_managed_speaker_identity_model(root=root / "managed"),
                     Path(installed["model_directory"]),

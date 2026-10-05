@@ -25,7 +25,7 @@ from vntts.authoring.authority import (
     write_json_document_no_replace,
 )
 from vntts.authoring.speaker_identity_model import (
-    IMPLEMENTATION_VERSION,
+    RUNTIME_VERSION,
     managed_speaker_identity_status,
 )
 from vntts.voices import CharacterVoiceRegistry, read_voice_reference_bytes
@@ -411,8 +411,8 @@ def require_speechbrain_runtime(*, device: str = "cpu") -> None:
             "Speaker-identity runtime is unavailable. Run "
             "'uv sync --extra speaker-identity'."
         )
-    if version("speechbrain") != IMPLEMENTATION_VERSION:
-        raise SpeakerIdentityError(f"SpeechBrain {IMPLEMENTATION_VERSION} is required")
+    if version("speechbrain") != RUNTIME_VERSION:
+        raise SpeakerIdentityError(f"SpeechBrain {RUNTIME_VERSION} is required")
 
 
 def installed_model_descriptor() -> JsonDocument:
@@ -426,7 +426,7 @@ def installed_model_descriptor() -> JsonDocument:
         "file_sha256s": status["actual_files"],
         "licenses": status["licenses"],
         "runtime": status["runtime"],
-        "implementation_version": IMPLEMENTATION_VERSION,
+        "implementation_version": RUNTIME_VERSION,
     }
 
 
