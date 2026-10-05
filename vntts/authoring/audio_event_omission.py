@@ -59,13 +59,11 @@ class _OmissionSelection:
     base_directory: Path
     base_document: dict[str, object]
     base_workspace_sha256: str
-    queue: VoiceGenerationQueue
     state: dict[str, object]
     state_sha256: str
     queue_path: Path
     queue_sha256: str
     import_id: str
-    narrator_character: str
     items: list[dict[str, object]]
 
 
@@ -174,13 +172,11 @@ def _select_omission_items(
         base_directory=base_directory,
         base_document=base_document,
         base_workspace_sha256=base_workspace_sha256,
-        queue=queue,
         state=state,
         state_sha256=state_sha256,
         queue_path=queue_path,
         queue_sha256=queue_sha256,
         import_id=import_id,
-        narrator_character=narrator_character,
         items=items,
     )
 

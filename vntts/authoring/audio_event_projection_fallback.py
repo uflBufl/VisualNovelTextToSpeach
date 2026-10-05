@@ -68,7 +68,6 @@ class _ProjectionSelection:
     queue_path: Path
     queue_sha256: str
     import_id: str
-    narrator_character: str
     ledgers: list[dict[str, object]]
 
 
@@ -214,7 +213,6 @@ def _select_projection(
         queue_path,
         queue_sha256,
         import_id,
-        narrator_character,
         ledgers,
     )
 
