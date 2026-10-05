@@ -970,8 +970,7 @@ def write_authoring_reconciliation(
 
 
 def load_authoring_reconciliation(path: str | Path) -> AuthoringReconciliation:
-    payload, document = _read_json_snapshot(path, "authoring reconciliation")
-    del payload
+    _, document = _read_json_snapshot(path, "authoring reconciliation")
     validated = _validated_report(document)
     return AuthoringReconciliation(
         _required_text(validated["report_id"], "Authoring reconciliation ID"),
@@ -984,8 +983,7 @@ def _validated_report(report: AuthoringReconciliation | object) -> JsonObject:
         report.document if isinstance(report, AuthoringReconciliation) else report
     )
     try:
-        validated: JsonObject = _validate_schema_document(document)
-        return validated
+        return _validate_schema_document(document)
     except AuthoringReconciliationSchemaError as error:
         raise AuthoringReconciliationError(str(error)) from error
 
