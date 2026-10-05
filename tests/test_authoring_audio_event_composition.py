@@ -93,6 +93,104 @@ class AudioEventCompositionTest(unittest.TestCase):
             ):
                 load_audio_event_composition(output)
 
+    def test_composition_and_decision_versions_require_integers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            review, _queue, _audio = publish(root)
+            record_audio_event_review_decision(review.directory, "accept")
+            output = root / "composition"
+            publish_audio_event_composition(review.directory, output)
+            path = output / "composition.json"
+            payload = path.read_bytes()
+            for version in (True, 1.0):
+                with self.subTest(composition_version=version):
+                    document = json.loads(payload)
+                    document["schema_version"] = version
+                    identity = {
+                        key: value
+                        for key, value in document.items()
+                        if key
+                        not in {
+                            "composition_id",
+                            "created_at",
+                            "review",
+                            "review_decision",
+                            "queue",
+                            "final_audio",
+                            "sample_rate",
+                            "sample_count",
+                            "duration_seconds",
+                            "peak",
+                        }
+                    }
+                    document["composition_id"] = canonical_document_sha256(identity)
+                    path.write_text(json.dumps(document, sort_keys=True))
+                    with self.assertRaisesRegex(
+                        AudioEventCompositionError, "authority changed"
+                    ):
+                        load_audio_event_composition(output)
+            path.write_bytes(payload)
+            record_audio_event_composition_decision(output, "approved")
+            terminal = output / "composition-decision.json"
+            decision = json.loads(terminal.read_text())
+            for version in (True, 1.0):
+                with self.subTest(decision_version=version):
+                    decision["schema_version"] = version
+                    terminal.write_text(json.dumps(decision, sort_keys=True))
+                    with self.assertRaisesRegex(
+                        AudioEventCompositionError, "decision changed"
+                    ):
+                        load_audio_event_composition(output)
+
+    def test_composition_metadata_and_recipe_keep_their_field_types(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            review, _queue, _audio = publish(root)
+            record_audio_event_review_decision(review.directory, "accept")
+            output = root / "composition"
+            publish_audio_event_composition(review.directory, output)
+            path = output / "composition.json"
+            payload = path.read_bytes()
+            cases = (
+                ("sample_rate", 24_000.0),
+                ("sample_count", 1_200.0),
+                ("sample_offset", False),
+                ("fade_in_samples", False),
+                ("fade_out_samples", False),
+                ("gain", True),
+                ("speaker_identity_claim", 0),
+            )
+            for field, value in cases:
+                with self.subTest(field=field):
+                    document = json.loads(payload)
+                    if field in document:
+                        document[field] = value
+                    else:
+                        document["composition"][field] = value
+                    identity = {
+                        key: value
+                        for key, value in document.items()
+                        if key
+                        not in {
+                            "composition_id",
+                            "created_at",
+                            "review",
+                            "review_decision",
+                            "queue",
+                            "final_audio",
+                            "sample_rate",
+                            "sample_count",
+                            "duration_seconds",
+                            "peak",
+                        }
+                    }
+                    document["composition_id"] = canonical_document_sha256(identity)
+                    path.write_text(json.dumps(document, sort_keys=True))
+                    with self.assertRaisesRegex(
+                        AudioEventCompositionError, "metadata|ledger"
+                    ):
+                        load_audio_event_composition(output)
+
     def test_final_decision_is_exact_idempotent_and_cli_visible(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

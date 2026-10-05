@@ -23,6 +23,11 @@ from vntts.authoring.audio_event_review import (
     publish_source_audio_event_review,
     record_audio_event_review_decision,
 )
+from vntts.authoring.audio_event_workspace import (
+    AudioEventWorkspaceError,
+    validate_audio_event_composition_state_item,
+    validate_audio_event_composition_workspace,
+)
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
@@ -348,6 +353,62 @@ class AudioEventWorkspaceTest(unittest.TestCase):
                         base, composition.directory, root / "successors"
                     )
             self.assertFalse(any((root / "successors").glob("resume-*")))
+
+    def test_workspace_and_item_versions_have_exact_types(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, queue_item, composition = self._base_and_composition(root)
+            created = create_audio_event_composition_workspace(
+                base, composition.directory, root / "successors"
+            )
+            workspace = json.loads((created.directory / "workspace.json").read_text())
+            config = workspace["audio_event_composition"]
+            config["schema_version"] = 2.0
+            with self.assertRaisesRegex(AudioEventWorkspaceError, "malformed"):
+                validate_audio_event_composition_workspace(created.directory, workspace)
+            config["schema_version"] = 2
+            base_path = created.directory / config["base_workspace_path"]
+            document = json.loads(base_path.read_text())
+            for version in (True, 1.0):
+                with self.subTest(base_version=version):
+                    document["schema_version"] = version
+                    base_path.write_text(json.dumps(document, sort_keys=True))
+                    config["base_workspace_sha256"] = sha256_file(base_path)
+                    with self.assertRaisesRegex(
+                        AudioEventWorkspaceError, "base authority changed"
+                    ):
+                        validate_audio_event_composition_workspace(
+                            created.directory, workspace
+                        )
+            document["schema_version"] = 1
+            base_path.write_text(json.dumps(document, sort_keys=True))
+            # Restore the original copied workspace bytes and its config hash.
+            base_path.write_bytes((base / "workspace.json").read_bytes())
+            state = json.loads(
+                (
+                    created.directory / "generated-audio/generation-state.json"
+                ).read_text()
+            )
+            result = state["items"][queue_item.queue_id]
+            for field, value in (
+                ("schema_version", True),
+                ("schema_version", 1.0),
+                ("speaker_identity_claim", 0),
+            ):
+                with self.subTest(field=field, value=value):
+                    tampered = {
+                        **result,
+                        "audio_event_composition": {
+                            **result["audio_event_composition"],
+                            field: value,
+                        },
+                    }
+                    with self.assertRaisesRegex(
+                        AudioEventWorkspaceError, "ledger changed"
+                    ):
+                        validate_audio_event_composition_state_item(
+                            created.directory, queue_item.queue_id, tampered
+                        )
 
     def test_cli_creates_successor(self):
         with TemporaryDirectory() as directory:

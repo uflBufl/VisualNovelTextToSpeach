@@ -357,6 +357,7 @@ def _validate_composition_document(
         not isinstance(document, dict)
         or set(document) != required
         or document.get("schema") != AUDIO_EVENT_COMPOSITION_SCHEMA
+        or type(document.get("schema_version")) is not int
         or document.get("schema_version") != AUDIO_EVENT_COMPOSITION_VERSION
         or review.decision != "accept"
         or not isinstance(candidate, dict)
@@ -384,29 +385,45 @@ def _validate_composition_document(
     ):
         raise AudioEventCompositionError("Audio-event composition authority changed")
     composition = document.get("composition")
-    if composition != {
-        "kind": "source-event-only",
-        "sample_offset": 0,
-        "gain": 1.0,
-        "fade_in_samples": 0,
-        "fade_out_samples": 0,
-        "byte_transform": "exact-copy",
-        "speaker_identity_claim": False,
-        "synthesis_provider": None,
-        "synthesis_voice_character": None,
-    }:
+    if (
+        not isinstance(composition, dict)
+        or any(
+            type(composition.get(field)) is not int
+            for field in ("sample_offset", "fade_in_samples", "fade_out_samples")
+        )
+        or isinstance(composition.get("gain"), bool)
+        or composition.get("speaker_identity_claim") is not False
+        or composition
+        != {
+            "kind": "source-event-only",
+            "sample_offset": 0,
+            "gain": 1.0,
+            "fade_in_samples": 0,
+            "fade_out_samples": 0,
+            "byte_transform": "exact-copy",
+            "speaker_identity_claim": False,
+            "synthesis_provider": None,
+            "synthesis_voice_character": None,
+        }
+    ):
         raise AudioEventCompositionError("Audio-event composition ledger changed")
     try:
         info = probe_pcm16_mono_wav(audio_snapshot.path)
     except (OSError, Pcm16MonoWavError) as error:
         raise AudioEventCompositionError(str(error)) from error
-    if any(
-        document.get(field) != value
-        for field, value in (
-            ("sample_rate", info.sample_rate),
-            ("sample_count", info.sample_count),
-            ("duration_seconds", info.duration_seconds),
-            ("peak", info.peak),
+    if (
+        type(document.get("sample_rate")) is not int
+        or type(document.get("sample_count")) is not int
+        or isinstance(document.get("duration_seconds"), bool)
+        or isinstance(document.get("peak"), bool)
+        or any(
+            document.get(field) != value
+            for field, value in (
+                ("sample_rate", info.sample_rate),
+                ("sample_count", info.sample_count),
+                ("duration_seconds", info.duration_seconds),
+                ("peak", info.peak),
+            )
         )
     ):
         raise AudioEventCompositionError("Final event audio metadata changed")
@@ -447,6 +464,7 @@ def _validate_composition_decision(
             "reviewed_at",
         }
         or value.get("schema") != AUDIO_EVENT_COMPOSITION_DECISION_SCHEMA
+        or type(value.get("schema_version")) is not int
         or value.get("schema_version") != AUDIO_EVENT_COMPOSITION_DECISION_VERSION
         or value.get("composition_id") != composition.get("composition_id")
         or value.get("composition_sha256") != composition_sha256
