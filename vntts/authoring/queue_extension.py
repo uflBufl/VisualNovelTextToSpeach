@@ -169,11 +169,11 @@ def validate_additive_generation_queue(
         raise QueueExtensionError("Generation queue extension counts changed")
     if base_queue is not None:
         base_path = Path(base_queue).expanduser().resolve()
-        if sha256_file(base_path) != base_sha256:
-            raise QueueExtensionError("Generation queue extension base changed")
         try:
+            if sha256_file(base_path) != base_sha256:
+                raise QueueExtensionError("Generation queue extension base changed")
             base = VoiceGenerationQueue.load(base_path)
-        except VoiceGenerationQueueError as error:
+        except (OSError, VoiceGenerationQueueError) as error:
             raise QueueExtensionError(str(error)) from error
         expected = {item.queue_id: item.document for item in base.items}
         if expected != {queue_id: observed[queue_id] for queue_id in base_ids}:

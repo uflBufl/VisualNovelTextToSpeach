@@ -37,6 +37,26 @@ def item(sequence, text=None):
 
 
 class QueueExtensionTest(unittest.TestCase):
+    def test_missing_base_uses_domain_error_and_preserves_output(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            metadata = {"game": "Reverse: 1999", "language": "en"}
+            base = write_voice_generation_queue(
+                root / "base.jsonl", metadata, [item(1)]
+            )
+            extension = write_voice_generation_queue(
+                root / "extension.jsonl", metadata, [item(2)]
+            )
+            output = publish_additive_generation_queue(
+                base, extension, root / "combined.jsonl"
+            )
+            original = output.read_bytes()
+            base.unlink()
+            with self.assertRaises(QueueExtensionError) as caught:
+                validate_additive_generation_queue(output, base_queue=base)
+            self.assertIsInstance(caught.exception.__cause__, FileNotFoundError)
+            self.assertEqual(output.read_bytes(), original)
+
     def test_ledger_versions_and_counts_require_real_integers(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
