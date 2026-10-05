@@ -688,11 +688,12 @@ def _list_review_items_from_read(
         for collection in story.collections
         for record in story.records_for_collection(collection.collection_id)
     }
+    state_items = _inspection_state_items(state)
     records: list[ReviewItem] = []
     for item in queue.items:
         if selected_queue_ids is not None and item.queue_id not in selected_queue_ids:
             continue
-        result = _inspection_state_items(state).get(item.queue_id)
+        result = state_items.get(item.queue_id)
         if not isinstance(result, dict):
             continue
         status = str(result.get("status") or "unknown")

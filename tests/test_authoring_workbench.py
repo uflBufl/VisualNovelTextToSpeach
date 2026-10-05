@@ -506,6 +506,41 @@ class AuthoringWorkbenchTest(unittest.TestCase):
 
             validation.assert_called_once()
 
+    def test_review_projection_state_validation_grows_linearly(self):
+        visits_by_size = {}
+        for item_count in (1, 8):
+            with self.subTest(item_count=item_count), TemporaryDirectory() as directory:
+                _, _, source = create_carry_source_workspace(
+                    Path(directory), item_count=item_count
+                )
+                visited = []
+                state_items = workspace_inspection_module._inspection_state_items
+
+                def count_validation(state):
+                    items = state_items(state)
+                    visited.append(len(items))
+                    return items
+
+                with patch.object(
+                    workspace_inspection_module,
+                    "_inspection_state_items",
+                    side_effect=count_validation,
+                ):
+                    reviews = list_review_items(source.directory)
+                self.assertEqual(len(reviews), item_count)
+                self.assertEqual(
+                    {review.queue_id for review in reviews},
+                    {
+                        item.queue_id
+                        for item in VoiceGenerationQueue.load(
+                            source.directory / "queue.jsonl"
+                        ).items
+                    },
+                )
+                visits_by_size[item_count] = sum(visited)
+        self.assertGreater(visits_by_size[1], 0)
+        self.assertLessEqual(visits_by_size[8], 8 * visits_by_size[1])
+
     def test_batch_review_state_validation_grows_linearly(self):
         visits_by_size = {}
         for item_count in (1, 8):
