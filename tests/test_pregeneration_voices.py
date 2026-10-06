@@ -2216,6 +2216,75 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(library.binding("Concurrent").route, "live-fallback")
             self.assertFalse(decisions.path.exists())
 
+    def test_decision_write_failure_preserves_primary_when_rollback_is_fatal(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            library = VoiceLibrary(root / "library")
+            plan = VoicePlanStore(jobs, voice_library=library).create(
+                job,
+                AppSettings(pocket_gated_model_accepted=True),
+                manifest_path=write_manifest(root / "voices"),
+            )
+            decisions = VoiceDecisionStore(
+                root / "decisions.json",
+                voice_library=library,
+            )
+            decision_error = OSError("decision write failed")
+            rollback_error = SystemExit("fatal rollback failure")
+            rollback_error.add_note("rollback detail")
+
+            with (
+                patch(
+                    "vntts.pregeneration_voices.write_versioned_json",
+                    side_effect=decision_error,
+                ),
+                patch.object(
+                    library,
+                    "rollback_bindings",
+                    side_effect=rollback_error,
+                ),
+                self.assertRaisesRegex(OSError, "decision write failed") as caught,
+            ):
+                decisions.remember_many(
+                    tuple((group, "default") for group in plan.groups[:2])
+                )
+
+            self.assertIs(caught.exception, decision_error)
+            notes = " ".join(caught.exception.__notes__)
+            self.assertIn("fatal rollback failure", notes)
+            self.assertIn("rollback detail", notes)
+
+    def test_plan_failure_preserves_primary_when_rollback_is_fatal(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            library = VoiceLibrary(root / "library")
+            planner = VoicePlanStore(jobs, voice_library=library)
+            plan_error = OSError("plan creation failed")
+            rollback_error = SystemExit("fatal rollback failure")
+            rollback_error.add_note("rollback detail")
+
+            def failed_create(*_args, rollback, **_kwargs):
+                library.select("Temporary", route="live-fallback", rollback=rollback)
+                raise plan_error
+
+            with (
+                patch.object(planner, "_create", side_effect=failed_create),
+                patch.object(
+                    library,
+                    "rollback_bindings",
+                    side_effect=rollback_error,
+                ),
+                self.assertRaisesRegex(OSError, "plan creation failed") as caught,
+            ):
+                planner.create(job, AppSettings())
+
+            self.assertIs(caught.exception, plan_error)
+            notes = " ".join(caught.exception.__notes__)
+            self.assertIn("fatal rollback failure", notes)
+            self.assertIn("rollback detail", notes)
+
     def test_simultaneous_decisions_preserve_both_voice_groups(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

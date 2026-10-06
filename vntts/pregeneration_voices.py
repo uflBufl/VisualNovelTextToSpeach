@@ -44,6 +44,7 @@ from vntts.chapter_voice_preload import (
     _has_authoritative_source_audio,
     _validated_source_audio_line_ids,
 )
+from vntts.cleanup import attempt_cleanup
 from vntts.document_identity import canonical_document_sha256
 from vntts.person_link_suggestions import (
     PersonLinkSuggestion,
@@ -136,6 +137,27 @@ class PregenerationVoiceError(RuntimeError):
 
 class PregenerationVoiceCancelled(PregenerationVoiceError):
     """The player cancelled voice planning before publication."""
+
+
+def _rollback_voice_bindings(
+    library: VoiceLibrary,
+    rollback: VoiceBindingRollback,
+    *,
+    primary_error: Exception,
+) -> None:
+    """Restore unchanged bindings while preserving the failed owner operation."""
+
+    def restore() -> None:
+        if not library.rollback_bindings(rollback):
+            primary_error.add_note(
+                "Voice bindings changed concurrently; rollback was skipped"
+            )
+
+    attempt_cleanup(
+        restore,
+        description="Unable to restore the previous voice bindings",
+        primary_error=primary_error,
+    )
 
 
 def resolve_pregeneration_settings(settings: AppSettings) -> AppSettings:
@@ -377,18 +399,9 @@ class VoiceDecisionStore:
                 )
             except Exception as error:
                 if self.voice_library is not None and rollback is not None:
-                    try:
-                        restored = self.voice_library.rollback_bindings(rollback)
-                    except Exception as rollback_error:
-                        error.add_note(
-                            "Unable to restore the previous voice bindings: "
-                            f"{rollback_error}"
-                        )
-                    else:
-                        if not restored:
-                            error.add_note(
-                                "Voice bindings changed concurrently; rollback was skipped"
-                            )
+                    _rollback_voice_bindings(
+                        self.voice_library, rollback, primary_error=error
+                    )
                 raise
         _record_plan_phase("save-decision", started, cpu_started)
 
@@ -547,18 +560,9 @@ class VoicePlanStore:
             )
         except Exception as error:
             if self.voice_library is not None and rollback is not None:
-                try:
-                    restored = self.voice_library.rollback_bindings(rollback)
-                except Exception as rollback_error:
-                    error.add_note(
-                        "Unable to restore the previous voice bindings: "
-                        f"{rollback_error}"
-                    )
-                else:
-                    if not restored:
-                        error.add_note(
-                            "Voice bindings changed concurrently; rollback was skipped"
-                        )
+                _rollback_voice_bindings(
+                    self.voice_library, rollback, primary_error=error
+                )
             raise
 
     def validate_saved_voice_access(
