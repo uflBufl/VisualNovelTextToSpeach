@@ -6,6 +6,7 @@ from collections.abc import Callable
 from threading import Event, Lock
 from typing import TYPE_CHECKING, TypeVar
 
+from vntts.cleanup import attempt_cleanup
 from vntts.pregeneration_activation import (
     OfflinePackActivationCancelled,
     OfflinePackActivationResult,
@@ -101,12 +102,11 @@ class PlayerSessionOwner:
                     self._shutdown_after_operation(error)
 
     def _shutdown_after_operation(self, error: BaseException | None = None) -> None:
-        try:
-            self.controller.shutdown()
-        except Exception as shutdown_error:
-            if error is None:
-                raise
-            error.add_note(f"Player session shutdown failed: {shutdown_error}")
+        attempt_cleanup(
+            self.controller.shutdown,
+            description="Player session shutdown",
+            primary_error=error,
+        )
 
     def start(self, generation: int) -> bool:
         return self.run(
