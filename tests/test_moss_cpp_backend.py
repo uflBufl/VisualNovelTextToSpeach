@@ -169,6 +169,47 @@ LoopbackServer(('127.0.0.1', port), Handler).serve_forever()
 
 
 class WindowsOwnedServerTest(unittest.TestCase):
+    def test_resource_cleanup_failure_preserves_stop_error_and_releases_directory(self):
+        for process_error in (False, True):
+            with self.subTest(process_error=process_error):
+                server = Mock()
+                server.poll.return_value = None
+                if process_error:
+                    server.wait.side_effect = RuntimeError("process stop failed")
+                job = Mock()
+                log = Mock()
+                log.close.side_effect = OSError("log close failed")
+                directory = Mock()
+                directory.cleanup.side_effect = OSError("directory cleanup failed")
+                backend = object.__new__(MossCppVoiceRouterBackend)
+                backend.server_lock = Lock()
+                backend.server = server
+                backend.server_job = job
+                backend.server_log = log
+                backend.server_directory = directory
+                backend.server_info = {}
+                backend._runtime_status = None
+                backend._registered_references = {}
+
+                expected = RuntimeError if process_error else OSError
+                expected_message = (
+                    "process stop failed" if process_error else "log close failed"
+                )
+                with self.assertRaisesRegex(expected, expected_message) as raised:
+                    backend._stop_server()
+
+                server.terminate.assert_called_once_with()
+                server.wait.assert_called_once_with(timeout=2)
+                job.close.assert_called_once_with()
+                log.close.assert_called_once_with()
+                directory.cleanup.assert_called_once_with()
+                notes = raised.exception.__notes__
+                if process_error:
+                    self.assertTrue(any("log cleanup failed" in note for note in notes))
+                self.assertTrue(
+                    any("directory cleanup failed" in note for note in notes)
+                )
+
     def test_forced_server_shutdown_stays_bounded_when_wait_never_finishes(self):
         server = Mock()
         server.poll.return_value = None
@@ -365,14 +406,66 @@ class MossCppBackendTest(unittest.TestCase):
         self.assertIsNotNone(self.children[0].poll())
 
     def test_interrupted_startup_stops_owned_server(self):
-        with patch(
-            "vntts.moss_cpp_backend.MossTTSVoiceRouterBackend.__init__",
-            side_effect=KeyboardInterrupt,
+        original_stop = MossCppVoiceRouterBackend._stop_server
+
+        def stop_then_fail(instance, reason="shutdown"):
+            original_stop(instance, reason)
+            if reason == "initialization-failed":
+                raise OSError("initialization cleanup failed")
+
+        with (
+            patch(
+                "vntts.moss_cpp_backend.MossTTSVoiceRouterBackend.__init__",
+                side_effect=KeyboardInterrupt,
+            ),
+            patch.object(
+                MossCppVoiceRouterBackend,
+                "_stop_server",
+                autospec=True,
+                side_effect=stop_then_fail,
+            ),
         ):
-            with self.assertRaises(KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt) as raised:
                 self.backend()
         self.assertEqual(len(self.children), 1)
         self.assertIsNotNone(self.children[0].poll())
+        self.assertTrue(
+            any(
+                "Native speech server initialization cleanup failed" in note
+                for note in raised.exception.__notes__
+            )
+        )
+
+    def test_interrupted_restart_startup_cleanup_keeps_keyboard_interrupt(self):
+        backend = self.backend()
+        backend._stop_server()
+        original_stop = MossCppVoiceRouterBackend._stop_server
+
+        def stop_restart_then_fail(instance, reason="shutdown"):
+            original_stop(instance, reason)
+            if reason == "startup-failed":
+                raise OSError("startup cleanup failed")
+
+        with (
+            patch.object(backend, "_http", side_effect=KeyboardInterrupt),
+            patch.object(
+                MossCppVoiceRouterBackend,
+                "_stop_server",
+                autospec=True,
+                side_effect=stop_restart_then_fail,
+            ),
+        ):
+            with self.assertRaises(KeyboardInterrupt) as raised:
+                backend.load()
+
+        self.assertEqual(len(self.children), 2)
+        self.assertIsNotNone(self.children[-1].poll())
+        self.assertTrue(
+            any(
+                "Native speech server startup cleanup failed" in note
+                for note in raised.exception.__notes__
+            )
+        )
 
     def test_locked_log_does_not_mask_original_synthesis_error(self):
         backend = self.backend()

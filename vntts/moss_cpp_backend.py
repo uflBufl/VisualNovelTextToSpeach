@@ -31,6 +31,7 @@ import numpy as np
 import soundfile as sf
 
 from vntts.audio_output import AudioOutput
+from vntts.cleanup import attempt_cleanup, cleanup_on_exit
 from vntts.native_resources import NativeResourceSampler, NativeResourceSnapshot
 from vntts.playback import PreparedPlayback
 from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
@@ -921,8 +922,12 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 ),
                 **base_options,
             )
-        except BaseException:
-            self._stop_server("initialization-failed")
+        except BaseException as error:
+            attempt_cleanup(
+                lambda: self._stop_server("initialization-failed"),
+                description="Native speech server initialization cleanup",
+                primary_error=error,
+            )
             raise
 
     def _startup_cancelled(self) -> bool:
@@ -1184,8 +1189,12 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                         "files; automatic hardware fallback was not applicable."
                     )
                 controls = fallback
-        except BaseException:
-            self._stop_server("startup-failed")
+        except BaseException as error:
+            attempt_cleanup(
+                lambda: self._stop_server("startup-failed"),
+                description="Native speech server startup cleanup",
+                primary_error=error,
+            )
             raise
 
     def _startup_fallback(self, category: str | None) -> NativeControls | None:
@@ -1759,7 +1768,28 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             self.server_info = None
             self._runtime_status = None
             self._registered_references.clear()
-            try:
+            with ExitStack() as resources:
+                if directory is not None:
+                    resources.enter_context(
+                        cleanup_on_exit(
+                            directory.cleanup,
+                            description="Native speech server directory cleanup",
+                        )
+                    )
+                if log is not None:
+                    resources.enter_context(
+                        cleanup_on_exit(
+                            log.close,
+                            description="Native speech server log cleanup",
+                        )
+                    )
+                if job is not None:
+                    resources.enter_context(
+                        cleanup_on_exit(
+                            job.close,
+                            description="Native speech server job cleanup",
+                        )
+                    )
                 if server is not None:
                     exit_code = server.poll()
                     record_native_speech(
@@ -1779,15 +1809,6 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                             server.wait(timeout=2)
                         except subprocess.TimeoutExpired:
                             pass  # Kill is final; do not turn shutdown into another hang.
-            finally:
-                if job is not None:
-                    job.close()
-                if log is not None:
-                    log.close()
-                if directory is not None:
-                    # Windows scanners and log viewers may briefly retain the
-                    # closed log. Temporary cleanup must not replace speech.
-                    directory.cleanup()
 
     def shutdown(self) -> None:
         try:
