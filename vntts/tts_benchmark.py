@@ -6,6 +6,7 @@ import re
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import perf_counter, process_time
@@ -15,6 +16,8 @@ import numpy as np
 from durable_file import atomic_write_json, sha256_file
 from vntts_artifacts.audio import write_pcm16_wav
 
+from vntts.authoring.publication import staged_directory
+from vntts.cleanup import attempt_cleanup, cleanup_on_exit
 from vntts.cli import cli_error, cli_messages
 from vntts.services.tts_engine import TTSEngine
 from vntts.settings import get_local_data_directory
@@ -546,10 +549,12 @@ def benchmark_backend(
         created_backend = backend_factory(name, registry, cache)
         return created_backend
 
-    with TemporaryDirectory(
-        prefix=".tts-benchmark-", dir=output_directory.parent
+    with staged_directory(
+        output_directory.parent, prefix=".tts-benchmark-"
     ) as staging_directory:
-        with TemporaryDirectory() as cache_directory:
+        cache = TemporaryDirectory()
+        with cleanup_on_exit(cache.cleanup, description="TTS benchmark cache cleanup"):
+            cache_directory = cache.name
             primary_error: BaseException | None = None
             try:
                 report = _benchmark_backend_staged(
@@ -601,9 +606,13 @@ def benchmark_backend(
                 published.append(destination)
                 staged.unlink()
                 sample["audio"] = str(destination)
-        except Exception:
+        except BaseException as error:
             for destination in published:
-                destination.unlink(missing_ok=True)
+                attempt_cleanup(
+                    partial(destination.unlink, missing_ok=True),
+                    description="benchmark WAV rollback",
+                    primary_error=error,
+                )
             raise
     return report
 

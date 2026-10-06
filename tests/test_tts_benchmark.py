@@ -488,6 +488,106 @@ class TTSBenchmarkTest(unittest.TestCase):
 
             self.assertEqual(list(output.glob("*.wav")), [])
 
+    def test_temporary_cleanup_keeps_benchmark_failure_for_cache_and_staging(self):
+        for fail_staging in (False, True):
+            with (
+                self.subTest(fail_staging=fail_staging),
+                TemporaryDirectory() as directory,
+            ):
+                output = Path(directory).resolve() / "output"
+                primary = ValueError("benchmark rendering failed")
+                original_cleanup = TemporaryDirectory.cleanup
+
+                def cleanup_then_fail(temporary):
+                    original_cleanup(temporary)
+                    is_staging = Path(temporary.name).name.startswith(".tts-benchmark-")
+                    if is_staging == fail_staging:
+                        raise OSError("temporary cleanup failed")
+
+                def fail_backend(*_args):
+                    raise primary
+
+                with (
+                    patch.object(
+                        TemporaryDirectory,
+                        "cleanup",
+                        autospec=True,
+                        side_effect=cleanup_then_fail,
+                    ),
+                    self.assertRaises(ValueError) as raised,
+                ):
+                    benchmark_backend(
+                        "fake",
+                        CharacterVoiceRegistry(),
+                        ["Narrator"],
+                        "A line.",
+                        output,
+                        backend_factory=fail_backend,
+                    )
+                self.assertIs(raised.exception, primary)
+                self.assertTrue(
+                    any(
+                        "temporary cleanup failed" in note for note in primary.__notes__
+                    )
+                )
+                self.assertFalse(tuple(output.glob("*.wav")))
+
+    def test_publication_rollback_failures_keep_staging_error_and_attempt_all_wavs(
+        self,
+    ):
+        registry = CharacterVoiceRegistry(
+            [CharacterVoice("Kamuta", "kamuta", references=(Path("voice.wav"),))]
+        )
+        with TemporaryDirectory() as directory:
+            output = Path(directory).resolve() / "output"
+            original_unlink = type(output).unlink
+            staged_unlinks = 0
+            rollback_attempts = []
+
+            def fail_cleanup(path, *args, **kwargs):
+                nonlocal staged_unlinks
+                if path.parent == output:
+                    rollback_attempts.append(path)
+                    raise OSError("published cleanup failed")
+                if path.parent.name.startswith(".tts-benchmark-"):
+                    staged_unlinks += 1
+                    if staged_unlinks == 2:
+                        raise OSError("staging cleanup failed")
+                return original_unlink(path, *args, **kwargs)
+
+            with (
+                patch.object(
+                    type(output),
+                    "unlink",
+                    autospec=True,
+                    side_effect=fail_cleanup,
+                ),
+                self.assertRaisesRegex(OSError, "staging cleanup failed") as raised,
+            ):
+                benchmark_backend(
+                    "fake",
+                    registry,
+                    [],
+                    "unused",
+                    output,
+                    benchmark_samples=[
+                        {"id": "one", "character": "Kamuta", "text": "One"},
+                        {"id": "two", "character": "Kamuta", "text": "Two"},
+                    ],
+                    backend_factory=lambda _name, _registry, _cache: (
+                        FakeRenderingBackend()
+                    ),
+                )
+
+            self.assertEqual(len(rollback_attempts), 2)
+            self.assertEqual(
+                sum(
+                    "published cleanup failed" in note
+                    for note in raised.exception.__notes__
+                ),
+                2,
+            )
+
     def test_uses_typed_render_sample_rate_for_published_wav(self):
         registry = CharacterVoiceRegistry(
             [CharacterVoice("Kamuta", "kamuta", references=(Path("voice.wav"),))]
