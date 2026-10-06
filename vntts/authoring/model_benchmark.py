@@ -13,7 +13,6 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import TypeAlias, TypeGuard
 
 import numpy as np
@@ -36,6 +35,7 @@ from vntts.authoring.publication import (
 )
 from vntts.authoring.speech_quality import measure_generated_speech_bytes
 from vntts.authoring.workspace_foundation import load_json_object_snapshot
+from vntts.cleanup import temporary_directory
 from vntts.cli import cli_error, cli_messages
 from vntts.document_identity import canonical_document_sha256
 from vntts.settings import get_local_data_directory
@@ -893,7 +893,7 @@ def benchmark_model_variants(
     output_directory = _benchmark_output_directory(output_directory)
     output_directory.parent.mkdir(parents=True, exist_ok=True)
     with (
-        TemporaryDirectory() as cache,
+        temporary_directory(description="Model benchmark cache cleanup") as cache,
         staged_directory(
             output_directory.parent, prefix=f".{output_directory.name}-"
         ) as staging_root,
@@ -1456,7 +1456,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if manifest is None:
         return cli_error("No complete voice manifest is available")
     try:
-        with TemporaryDirectory(prefix="vntts-model-corpus-") as temporary_corpus:
+        with temporary_directory(prefix="vntts-model-corpus-") as temporary_corpus:
             corpus = arguments.corpus
             if corpus is None:
                 corpus = Path(temporary_corpus) / "benchmark-corpus.json"

@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import shutil
-import tempfile
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -40,6 +39,7 @@ from vntts.authoring.publication import (
     staged_directory,
 )
 from vntts.authoring.workspace_foundation import load_json_object
+from vntts.cleanup import temporary_directory
 from vntts.document_identity import canonical_document_sha256
 
 LEGACY_JOB_SCHEMA = "r1999.pregeneration-job"
@@ -1481,7 +1481,7 @@ def _load_json_snapshot(path: str | Path, description: str) -> tuple[JsonDocumen
 def _load_queue_snapshot(path: str | Path) -> tuple[VoiceGenerationQueue, str]:
     path = Path(path).expanduser().resolve()
     payload, digest = _read_snapshot(path, "generation queue")
-    with tempfile.TemporaryDirectory(prefix="vntts-legacy-queue-") as directory:
+    with temporary_directory(prefix="vntts-legacy-queue-") as directory:
         snapshot = Path(directory) / "queue.jsonl"
         snapshot.write_bytes(payload)
         try:
@@ -1505,7 +1505,7 @@ def _load_generated_index_snapshot(
         raise LegacyAuthoringImportError(
             f"Unable to read generated-audio manifest {path}: {error}"
         ) from error
-    with tempfile.TemporaryDirectory(prefix="vntts-legacy-manifest-") as directory:
+    with temporary_directory(prefix="vntts-legacy-manifest-") as directory:
         snapshot = Path(directory) / "manifest.json"
         snapshot.write_bytes(payload)
         try:

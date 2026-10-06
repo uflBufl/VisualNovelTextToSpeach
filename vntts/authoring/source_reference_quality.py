@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import tempfile
 from collections.abc import MutableSequence
 from dataclasses import dataclass
 from functools import partial
@@ -56,6 +55,7 @@ from vntts.authoring.source_reference_review import (
     _variant_evaluation_queue_ids,
     load_source_reference_plan,
 )
+from vntts.cleanup import temporary_directory
 from vntts.cli import cli_error, cli_success
 from vntts.document_identity import file_sha256
 
@@ -188,7 +188,7 @@ def _load_quality_review_generation(
     state_payload, state = _read_json(state_path, "generation state")
     state_sha256 = hashlib.sha256(state_payload).hexdigest()
     try:
-        with tempfile.TemporaryDirectory(prefix="vntts-quality-queue-") as directory:
+        with temporary_directory(prefix="vntts-quality-queue-") as directory:
             queue_snapshot = Path(directory) / "queue.jsonl"
             queue_snapshot.write_bytes(evaluation.queue_payload)
             queue = VoiceGenerationQueue.load(queue_snapshot)

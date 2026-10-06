@@ -7,7 +7,6 @@ import hashlib
 import json
 from contextlib import nullcontext
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Callable
 
 from vntts_artifacts import (
@@ -45,6 +44,7 @@ from vntts.authoring.source_reference_bindings import (
     SourceReferenceBindingError,
     queue_voice_overrides_from_manifest,
 )
+from vntts.cleanup import temporary_directory
 from vntts.speech_backend_runtime import shutdown_speech_backend
 from vntts.synthesis import SynthesisCancellation
 from vntts.tts_benchmark import create_backend
@@ -308,7 +308,7 @@ def _load_stable_voice_registry(
             f"Unable to read voice manifest {manifest_path}: {error}"
         ) from error
     digest = hashlib.sha256(payload).hexdigest()
-    with TemporaryDirectory() as directory:
+    with temporary_directory() as directory:
         snapshot = Path(directory) / "manifest.json"
         snapshot.write_bytes(payload)
         document, entries = load_voice_manifest(snapshot)
@@ -613,7 +613,7 @@ def _run_bulk_generation(
     cache_context = (
         nullcontext(arguments.cache_directory.expanduser().resolve())
         if arguments.cache_directory is not None
-        else TemporaryDirectory()
+        else temporary_directory()
     )
     with cache_context as cache_directory:
         Path(cache_directory).mkdir(parents=True, exist_ok=True)

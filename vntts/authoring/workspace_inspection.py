@@ -7,7 +7,6 @@ import json
 import re
 import socket
 import sys
-import tempfile
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, replace
@@ -118,6 +117,7 @@ from vntts.authoring.workspace_state import (
     cached_workspace_generation_state,
     shared_workspace_state_reads,
 )
+from vntts.cleanup import temporary_directory
 from vntts.document_identity import canonical_document_sha256
 from vntts.voices import (
     CharacterVoice,
@@ -1120,7 +1120,7 @@ def _load_bound_story_document(
         _require_sha256(story.get("sha256"), "Story index snapshot SHA-256"),
         "Story index snapshot",
     )
-    with tempfile.TemporaryDirectory(prefix="vntts-story-snapshot-") as temporary:
+    with temporary_directory(prefix="vntts-story-snapshot-") as temporary:
         snapshot = Path(temporary) / "story-index.jsonl"
         snapshot.write_bytes(payload)
         try:

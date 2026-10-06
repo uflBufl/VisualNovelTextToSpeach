@@ -7,7 +7,6 @@ import hashlib
 import importlib
 from dataclasses import asdict
 from pathlib import Path, PurePosixPath
-from tempfile import TemporaryDirectory
 from typing import Callable, TypeAlias
 
 import numpy as np
@@ -55,6 +54,7 @@ from vntts.authoring.terminal_conflict_records import (
     validate_terminal_conflict_item_provenance,
 )
 from vntts.authoring.workspace_foundation import load_json_object
+from vntts.cleanup import temporary_directory
 from vntts.document_identity import is_lowercase_sha256
 from vntts.synthesis import SynthesisCompletion
 from vntts.voices import synthesis_character_for_line
@@ -136,7 +136,7 @@ def load_stable_generation_queue(
         raise BulkGenerationError(str(error)) from error
     digest = hashlib.sha256(payload).hexdigest()
     try:
-        with TemporaryDirectory() as directory:
+        with temporary_directory() as directory:
             snapshot = Path(directory) / "queue.jsonl"
             snapshot.write_bytes(payload)
             queue = VoiceGenerationQueue.load(snapshot)

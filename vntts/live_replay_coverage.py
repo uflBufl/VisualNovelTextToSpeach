@@ -7,9 +7,9 @@ import hashlib
 from collections.abc import Iterable, Sequence
 from itertools import pairwise
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 from vntts.authoring.authority import write_json_document_no_replace
+from vntts.cleanup import temporary_directory
 from vntts.cli import cli_error, cli_messages
 from vntts.live_replay_sequence_seal import (
     _decode_json,
@@ -184,7 +184,7 @@ def _load_snapshot_plan(
     plan_payload: bytes,
 ) -> LiveSequencePlan:
     try:
-        with TemporaryDirectory(prefix=".live-replay-coverage-") as directory:
+        with temporary_directory(prefix=".live-replay-coverage-") as directory:
             snapshot = Path(directory)
             snapshot_story = snapshot / "story-index.jsonl"
             snapshot_plan = snapshot / "sequence-plan.json"

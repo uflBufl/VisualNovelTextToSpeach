@@ -10,9 +10,10 @@ import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 from durable_file import sha256_file
+
+from vntts.cleanup import temporary_directory
 
 BACKEND = "pocket-tts"
 PYTHON_VERSION = "3.14"
@@ -248,7 +249,7 @@ def _probe_relocated_runtime(
     backend: str = BACKEND,
     probe_modules: tuple[str, ...] = PROBE_MODULES,
 ) -> dict[str, object]:
-    with TemporaryDirectory(prefix="vntts-runtime-relocation-") as directory:
+    with temporary_directory(prefix="vntts-runtime-relocation-") as directory:
         relocated = Path(directory) / "speech-runtimes"
         shutil.copytree(speech_runtimes, relocated, symlinks=True)
         runtime_root = relocated / backend
@@ -350,7 +351,7 @@ def stage_speech_runtime(
             managed_interpreter,
             runtime_root,
         )
-        with TemporaryDirectory(prefix=f"vntts-{backend}-lock-") as directory:
+        with temporary_directory(prefix=f"vntts-{backend}-lock-") as directory:
             requirements = Path(directory) / "requirements.txt"
             _run_checked(
                 run,

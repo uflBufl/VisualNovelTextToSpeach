@@ -6,7 +6,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path, PurePosixPath
-from tempfile import TemporaryDirectory
 from typing import Literal, Protocol
 
 from vntts_artifacts.voice_manifest import (
@@ -22,6 +21,7 @@ from vntts_artifacts.voice_manifest import (
 )
 
 from vntts.application_directories import get_local_data_directory
+from vntts.cleanup import temporary_directory
 from vntts.voice_library import VoiceBinding, VoiceBindingRollback, VoiceLibrary
 
 default_voice_choice_id = "default"
@@ -742,7 +742,7 @@ def _immutable_voice_reference_snapshots(
         yield voice.references
         return
 
-    with TemporaryDirectory(prefix="vntts-voice-reference-") as directory:
+    with temporary_directory(prefix="vntts-voice-reference-") as directory:
         snapshots: list[Path] = []
         for index, reference in enumerate(voice.references):
             payload = _read_owned_voice_reference(voice.reference_root, reference)

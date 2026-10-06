@@ -3,6 +3,7 @@ import io
 import json
 import math
 import shutil
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -398,6 +399,47 @@ def write_fixture_live_sequence(fixture, path, *, story_path=None):
 
 
 class AuthoringGamePackTest(unittest.TestCase):
+    def test_publication_preserves_primary_when_staging_cleanup_fails(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = prepare_authoring_fixture(root / "source", names=("one",))
+            for item in fixture["items"]:
+                review_generation_item(fixture["state"], item["queue_id"], "approved")
+            cleanup_error = OSError("staging cleanup failed")
+            real_temporary_directory = tempfile.TemporaryDirectory
+
+            def temporary_directory(*args, **kwargs):
+                staging = real_temporary_directory(*args, **kwargs)
+                if kwargs.get("prefix") == ".pack.staging-":
+                    cleanup = staging.cleanup
+
+                    def failing_cleanup():
+                        cleanup()
+                        raise cleanup_error
+
+                    staging.cleanup = failing_cleanup
+                return staging
+
+            with (
+                patch(
+                    "vntts.cleanup.TemporaryDirectory", side_effect=temporary_directory
+                ),
+                patch.object(
+                    game_pack_module,
+                    "_write_staged_game_pack",
+                    side_effect=RuntimeError("staging operation failed"),
+                ),
+                self.assertRaisesRegex(
+                    RuntimeError, "staging operation failed"
+                ) as caught,
+            ):
+                publish(fixture, root / "pack")
+
+            self.assertIn(
+                "staging cleanup failed", " ".join(caught.exception.__notes__)
+            )
+            self.assertFalse((root / "pack").exists())
+
     def test_publication_indexes_story_once_for_all_route_groups(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

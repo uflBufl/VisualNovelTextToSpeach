@@ -1,6 +1,7 @@
 import hashlib
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -287,6 +288,47 @@ class PreparedSequenceTest(unittest.TestCase):
                     arguments, publish
                 ),
             )
+        self.assertFalse(self.output.exists())
+
+    def test_malformed_output_preserves_primary_when_staging_cleanup_fails(self):
+        real_temporary_directory = tempfile.TemporaryDirectory
+        cleanup_error = OSError("staging cleanup failed")
+
+        def temporary_directory(*args, **kwargs):
+            directory = real_temporary_directory(*args, **kwargs)
+            if kwargs.get("prefix") == f".{self.output.name}-":
+                cleanup = directory.cleanup
+
+                def failing_cleanup():
+                    cleanup()
+                    raise cleanup_error
+
+                directory.cleanup = failing_cleanup
+            return directory
+
+        def publish(arguments):
+            Path(arguments[arguments.index("--output") + 1]).write_text(
+                "{}", encoding="utf-8"
+            )
+
+        with (
+            patch("vntts.cleanup.TemporaryDirectory", side_effect=temporary_directory),
+            self.assertRaisesRegex(
+                PreparedSequenceError, "Invalid live-sequence plan"
+            ) as caught,
+        ):
+            prepare_reverse1999_sequence(
+                self.story,
+                self.bundle,
+                ("314501",),
+                self.output,
+                command=("publisher",),
+                popen_factory=lambda arguments, **_kwargs: FinishedPublisher(
+                    arguments, publish
+                ),
+            )
+
+        self.assertIn("staging cleanup failed", " ".join(caught.exception.__notes__))
         self.assertFalse(self.output.exists())
 
     def test_cancellation_terminates_publisher_without_publishing_output(self):

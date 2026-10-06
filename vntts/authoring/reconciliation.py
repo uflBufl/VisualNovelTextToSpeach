@@ -8,7 +8,6 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import TypeAlias
 
 from durable_file import sha256_file
@@ -72,6 +71,7 @@ from vntts.authoring.workbench import (
 from vntts.authoring.workspace_config import (
     workspace_audio_event_spoken_projection_queue_ids,
 )
+from vntts.cleanup import temporary_directory
 
 
 class AuthoringReconciliationError(RuntimeError):
@@ -1171,7 +1171,7 @@ def _snapshot_quality_card(
 
 def _load_queue_snapshot(payload: bytes) -> VoiceGenerationQueue:
     try:
-        with TemporaryDirectory(prefix="vntts-reconciliation-queue-") as directory:
+        with temporary_directory(prefix="vntts-reconciliation-queue-") as directory:
             path = Path(directory) / "queue.jsonl"
             path.write_bytes(payload)
             return VoiceGenerationQueue.load(path)

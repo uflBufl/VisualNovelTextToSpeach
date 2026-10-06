@@ -1,7 +1,9 @@
 import unittest
-from unittest.mock import Mock
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import Mock, patch
 
-from vntts.cleanup import attempt_cleanup, cleanup_on_exit
+from vntts.cleanup import attempt_cleanup, cleanup_on_exit, temporary_directory
 
 
 class CleanupTest(unittest.TestCase):
@@ -47,6 +49,44 @@ class CleanupTest(unittest.TestCase):
             ],
         )
         cleanup.assert_called_once_with()
+
+    def test_temporary_directory_preserves_path_contract_and_cleanup_errors(self):
+        for operation_failed in (False, True):
+            with self.subTest(operation_failed=operation_failed):
+                primary = ValueError("operation failed")
+                cleanup_error = OSError("directory removal failed")
+                original_cleanup = TemporaryDirectory.cleanup
+
+                def remove_then_fail(directory):
+                    original_cleanup(directory)
+                    raise cleanup_error
+
+                with TemporaryDirectory() as parent:
+                    with patch.object(TemporaryDirectory, "cleanup", remove_then_fail):
+                        expected = ValueError if operation_failed else OSError
+                        with self.assertRaises(expected) as raised:
+                            with temporary_directory(
+                                dir=parent, prefix="owned-"
+                            ) as directory:
+                                self.assertIsInstance(directory, str)
+                                self.assertEqual(Path(directory).parent, Path(parent))
+                                self.assertTrue(
+                                    Path(directory).name.startswith("owned-")
+                                )
+                                self.assertTrue(Path(directory).is_dir())
+                                if operation_failed:
+                                    raise primary
+                    self.assertIs(
+                        raised.exception, primary if operation_failed else cleanup_error
+                    )
+                    self.assertFalse(Path(directory).exists())
+                    if operation_failed:
+                        self.assertEqual(
+                            primary.__notes__,
+                            [
+                                "Temporary directory cleanup failed: directory removal failed"
+                            ],
+                        )
 
     def test_attempt_reports_success_and_failure_without_owning_another_cleanup(self):
         cleanup = Mock()

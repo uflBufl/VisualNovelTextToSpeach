@@ -10,7 +10,6 @@ import sys
 from collections.abc import Callable, Sequence
 from os import PathLike
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Protocol, TypeAlias
 
 from durable_file import sha256_file
@@ -21,6 +20,7 @@ from vntts_artifacts.live_sequence import (
 )
 from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
 
+from vntts.authoring.publication import staged_directory
 from vntts.subprocess_utils import last_output_line, terminate_process
 
 PathInput: TypeAlias = str | PathLike[str]
@@ -87,7 +87,7 @@ def prepare_reverse1999_sequence(
             "Reverse: 1999 live-sequence publisher is not installed."
         )
     output.parent.mkdir(parents=True, exist_ok=True)
-    with TemporaryDirectory(prefix=f".{output.name}-", dir=output.parent) as directory:
+    with staged_directory(output.parent, prefix=f".{output.name}-") as directory:
         candidate = Path(directory) / output.name
         arguments = [
             *publisher,

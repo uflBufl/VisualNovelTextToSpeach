@@ -2,13 +2,13 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Literal, Protocol
 
 from vntts_artifacts.generated_audio import load_generated_audio_document
 from vntts_artifacts.story_index import StoryIndexRecord, load_story_index_document
 
 from vntts.chapter_voice_preload import _validated_source_audio_line_ids
+from vntts.cleanup import temporary_directory
 from vntts.game_pack import import_game_pack
 from vntts.generated_audio import GeneratedAudioLibrary
 from vntts.pregeneration_setup import (
@@ -282,7 +282,7 @@ def inspect_voice_default_impact(
     selected = _compatible_packs(content, job_store, settings, records, cancellation)
     if not selected:
         return ()
-    with TemporaryDirectory(prefix="vntts-voice-impact-") as temporary:
+    with temporary_directory(prefix="vntts-voice-impact-") as temporary:
         root = Path(temporary)
         preview_jobs = PregenerationJobStore(root / "jobs")
         job = preview_jobs.create_or_resume(

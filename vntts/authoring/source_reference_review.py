@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
-import tempfile
 from collections.abc import Iterable, Mapping, MutableSequence, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -65,6 +64,7 @@ from vntts.chapter_voice_preload import (
     _source_audio_covers_full_line,
     _validated_source_audio_line_ids,
 )
+from vntts.cleanup import temporary_directory as owned_temporary_directory
 from vntts.document_identity import (
     canonical_document_sha256,
     file_sha256,
@@ -1068,7 +1068,7 @@ def publish_source_reference_binding_successor(
             "Base voice manifest has no source-reference binding authority"
         )
     output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
+    with owned_temporary_directory(
         prefix=f".{output.name}.addition-", dir=output.parent
     ) as temporary_directory:
         addition_directory = Path(temporary_directory) / "binding"

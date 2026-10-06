@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -1324,6 +1325,47 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
 
             self.assertEqual(backend.shutdown_calls, 1)
             self.assertFalse(output.exists())
+
+    def test_benchmark_preserves_primary_when_cache_cleanup_fails(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = self._write_strict_corpus(root)
+            cleanup_error = OSError("benchmark cache cleanup failed")
+            real_temporary_directory = tempfile.TemporaryDirectory
+            backend = FakeRenderBackend(backend_name="different")
+
+            def temporary_directory(*args, **kwargs):
+                cache = real_temporary_directory(*args, **kwargs)
+                if kwargs.get("prefix") is None:
+                    cleanup = cache.cleanup
+
+                    def failing_cleanup():
+                        cleanup()
+                        raise cleanup_error
+
+                    cache.cleanup = failing_cleanup
+                return cache
+
+            with (
+                patch(
+                    "vntts.cleanup.TemporaryDirectory", side_effect=temporary_directory
+                ),
+                self.assertRaisesRegex(
+                    ModelBenchmarkError, "different request"
+                ) as caught,
+            ):
+                benchmark_model_variants(
+                    corpus,
+                    (ModelVariant("managed", "fake"),),
+                    CharacterVoiceRegistry(),
+                    root / "output",
+                    backend_factory=lambda *_arguments, **_keywords: backend,
+                )
+
+            self.assertIn(
+                "benchmark cache cleanup failed", " ".join(caught.exception.__notes__)
+            )
+            self.assertFalse((root / "output").exists())
 
     def test_multi_model_benchmark_publishes_its_validated_corpus(self):
         with TemporaryDirectory() as directory:

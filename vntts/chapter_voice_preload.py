@@ -9,7 +9,6 @@ from difflib import SequenceMatcher
 from hashlib import sha256
 from os.path import commonprefix
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import TypeAlias
 
 from vntts_artifacts.story_index import (
@@ -20,6 +19,7 @@ from vntts_artifacts.story_index import (
     load_story_index_document,
 )
 
+from vntts.cleanup import temporary_directory
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
     load_source_audio_semantic_evidence,
@@ -169,7 +169,7 @@ class ChapterVoicePreloader:
         cls, path: str | Path, payload: bytes, *, lookahead_rows: int = 80
     ) -> ChapterVoicePreloader:
         """Load captured story bytes with their optional checksum-bound evidence."""
-        with TemporaryDirectory(prefix="vntts-story-snapshot-") as directory:
+        with temporary_directory(prefix="vntts-story-snapshot-") as directory:
             snapshot = Path(directory) / "story-index.jsonl"
             snapshot.write_bytes(payload)
             evidence = Path(path).with_name("source-audio-semantic-evidence.json")

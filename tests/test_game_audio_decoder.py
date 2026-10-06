@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Timer
-from unittest.mock import Mock, call, patch
+from unittest.mock import MagicMock, Mock, call, patch
 from zipfile import ZipFile
 
 from tests.symlink_support import symlink_or_skip
@@ -208,6 +208,43 @@ class GameAudioDecoderTest(unittest.TestCase):
         )
 
     @unittest.skipIf(sys.platform == "win32", "POSIX process groups require POSIX")
+    def test_decoder_failure_survives_process_log_and_directory_cleanup(self):
+        primary = decoder.DecoderSetupCancelled("cancelled operation")
+        log = MagicMock()
+        log.__enter__.return_value = log
+        log.__exit__.side_effect = lambda *_args: log.close()
+        log.close.side_effect = OSError("log close failed")
+        original_cleanup = TemporaryDirectory.cleanup
+
+        def remove_then_fail(directory):
+            original_cleanup(directory)
+            raise OSError("scratch removal failed")
+
+        with (
+            patch.object(decoder, "_start_decoder_process", return_value=Mock()),
+            patch.object(decoder, "_wait_for_decoder_process", side_effect=primary),
+            patch.object(
+                decoder,
+                "_stop_decoder_process",
+                side_effect=KeyboardInterrupt("process stop failed"),
+            ) as stop,
+            patch.object(Path, "open", return_value=log),
+            patch.object(TemporaryDirectory, "cleanup", remove_then_fail),
+            self.assertRaises(decoder.DecoderSetupCancelled) as raised,
+        ):
+            decoder._run(["decoder"])
+        self.assertIs(raised.exception, primary)
+        stop.assert_called_once()
+        log.close.assert_called_once_with()
+        self.assertEqual(
+            primary.__notes__,
+            [
+                "Game-audio decoder process cleanup failed: process stop failed",
+                "Game-audio decoder log cleanup failed: log close failed",
+                "Temporary directory cleanup failed: scratch removal failed",
+            ],
+        )
+
     def test_posix_cleanup_stays_bounded_after_sigkill(self):
         process = Mock(pid=42)
         process.poll.return_value = None

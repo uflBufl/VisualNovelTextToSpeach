@@ -2,6 +2,8 @@
 
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 
 def attempt_cleanup(
@@ -37,3 +39,16 @@ def cleanup_on_exit(
         raise
     finally:
         attempt_cleanup(cleanup, description=description, primary_error=primary_error)
+
+
+@contextmanager
+def temporary_directory(
+    *,
+    prefix: str | None = None,
+    dir: str | Path | None = None,
+    description: str = "Temporary directory cleanup",
+) -> Iterator[str]:
+    """Own a temporary directory without replacing the operation's failure."""
+    directory = TemporaryDirectory(prefix=prefix, dir=dir)
+    with cleanup_on_exit(directory.cleanup, description=description):
+        yield directory.name

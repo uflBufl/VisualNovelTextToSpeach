@@ -7,7 +7,6 @@ import hashlib
 import importlib
 import json
 import re
-import tempfile
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from datetime import datetime
@@ -91,6 +90,7 @@ from vntts.authoring.workspace_state import (
     share_workspace_generation_state,
     shared_workspace_state_reads,
 )
+from vntts.cleanup import temporary_directory
 
 WorkspaceDocument: TypeAlias = JsonDocument
 ImportSnapshot: TypeAlias = JsonDocument
@@ -129,7 +129,7 @@ def _load_bound_workspace_queue(
         queue_digest,
         "Workspace queue",
     )
-    with tempfile.TemporaryDirectory(prefix="vntts-queue-snapshot-") as temporary:
+    with temporary_directory(prefix="vntts-queue-snapshot-") as temporary:
         snapshot = Path(temporary) / "queue.jsonl"
         snapshot.write_bytes(payload)
         try:

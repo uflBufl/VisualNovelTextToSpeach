@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -38,6 +37,7 @@ from vntts.authoring.publication import (
     staged_directory,
 )
 from vntts.authoring.workspace_foundation import contained_regular_file
+from vntts.cleanup import temporary_directory
 
 AUDIO_EVENT_REVIEW_SCHEMA = "vntts.authoring-audio-event-review"
 AUDIO_EVENT_REVIEW_VERSION = 1
@@ -622,7 +622,7 @@ def _required_single_tongue_click_plan(
 
 
 def _load_queue_snapshot(payload: bytes) -> VoiceGenerationQueue:
-    with tempfile.TemporaryDirectory(prefix="vntts-audio-event-queue-") as directory:
+    with temporary_directory(prefix="vntts-audio-event-queue-") as directory:
         path = Path(directory) / "queue.jsonl"
         path.write_bytes(payload)
         return VoiceGenerationQueue.load(path)

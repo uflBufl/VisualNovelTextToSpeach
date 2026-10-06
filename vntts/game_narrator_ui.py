@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from functools import partial
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from threading import Event
 from traceback import format_exception
 from typing import TypeGuard
@@ -36,6 +35,7 @@ from PySide6.QtWidgets import (
 from vntts_artifacts.voice_manifest import VoiceManifestError
 
 from vntts.async_ui import LatestTaskRunner
+from vntts.cleanup import temporary_directory
 from vntts.game_audio_decoder import DecoderSetupRequired, confirm_decoder_setup
 from vntts.game_content_importer import Reverse1999GameImporter
 from vntts.game_narrator import (
@@ -1257,7 +1257,7 @@ class GameNarratorDialog(QDialog):
         if self._impact_context is None:
             raise RuntimeError("Prepared-story context is unavailable")
         content, jobs, decisions = self._impact_context
-        with TemporaryDirectory(prefix="vntts-voice-choice-") as temporary:
+        with temporary_directory(prefix="vntts-voice-choice-") as temporary:
             proposed_library = self.voice_library.copy_to(
                 Path(temporary) / "proposed-voices"
             )

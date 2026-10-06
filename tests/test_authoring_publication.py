@@ -37,7 +37,7 @@ class StagedDirectoryTest(unittest.TestCase):
                 primary = primary_type("publication failed") if primary_type else None
                 cleanup_error = OSError("staging cleanup failed")
                 with patch(
-                    "vntts.authoring.publication.TemporaryDirectory.cleanup",
+                    "vntts.cleanup.TemporaryDirectory.cleanup",
                     side_effect=cleanup_error,
                 ) as cleanup:
                     with self.assertRaises(type(primary or cleanup_error)) as raised:

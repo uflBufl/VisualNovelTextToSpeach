@@ -7,7 +7,6 @@ import hashlib
 import io
 import math
 import re
-import tempfile
 import wave
 from collections import Counter
 from collections.abc import Iterable, Sequence
@@ -56,6 +55,7 @@ from vntts.authoring.workbench import (
     safe_workspace_relative_path,
 )
 from vntts.authoring.workspace_foundation import require_sha256
+from vntts.cleanup import temporary_directory
 
 SPEECH_ROBUSTNESS_CORPUS_SCHEMA = "vntts.speech-robustness-corpus"
 SPEECH_ROBUSTNESS_CORPUS_VERSION = 3
@@ -301,7 +301,7 @@ def _workspace_snapshot(
         queue_snapshot = capture_authority_file(
             queue_path, "robustness source queue", root=directory
         )
-        with tempfile.TemporaryDirectory(prefix="vntts-robustness-queue-") as temporary:
+        with temporary_directory(prefix="vntts-robustness-queue-") as temporary:
             snapshot_path = Path(temporary) / "queue.jsonl"
             snapshot_path.write_bytes(queue_snapshot.payload)
             queue = VoiceGenerationQueue.load(snapshot_path)

@@ -12,7 +12,6 @@ from collections.abc import Callable, Mapping, Sequence, Set
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from tempfile import TemporaryDirectory
 from types import TracebackType
 from typing import Literal, Protocol, TypeAlias
 from uuid import uuid4
@@ -66,6 +65,7 @@ from vntts.authoring.generation_state import (
 from vntts.authoring.publication import (
     AtomicPublicationError,
     generation_publication_leases,
+    staged_directory,
 )
 from vntts.authoring.publication import (
     rename_directory_no_replace as _rename_directory_no_replace,
@@ -271,8 +271,8 @@ def publish_final_game_pack(
         queue, queue_sha256, state, state_sha256 = _select_stable_publication_state(
             request.paths
         )
-        with TemporaryDirectory(
-            dir=request.paths.destination.parent,
+        with staged_directory(
+            request.paths.destination.parent,
             prefix=f".{request.paths.destination.name}.staging-",
         ) as staging_directory:
             controls = _stage_publication_controls(

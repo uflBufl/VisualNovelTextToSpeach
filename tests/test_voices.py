@@ -55,8 +55,8 @@ class CharacterVoiceRegistryTest(unittest.TestCase):
 
             with (
                 patch(
-                    "vntts.voices.TemporaryDirectory",
-                    side_effect=lambda *, prefix: TemporaryDirectory(
+                    "vntts.cleanup.TemporaryDirectory",
+                    side_effect=lambda *, prefix, dir=None: TemporaryDirectory(
                         prefix=prefix, dir=staging_root
                     ),
                 ),

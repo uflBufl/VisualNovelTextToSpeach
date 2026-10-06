@@ -13,7 +13,6 @@ from collections.abc import Callable, Sequence
 from contextlib import suppress
 from os import PathLike
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, BinaryIO, Protocol, TypeAlias
 from urllib.request import Request, urlopen
 from zipfile import ZipFile
@@ -22,7 +21,7 @@ from durable_file import atomic_write_json, sha256_file
 
 from vntts.application_directories import get_local_data_directory
 from vntts.authoring.advisory_lock import AdvisoryLockBusyError, exclusive_advisory_lock
-from vntts.cleanup import attempt_cleanup
+from vntts.cleanup import cleanup_on_exit, temporary_directory
 from vntts.runtime_paths import get_bundle_root
 from vntts.subprocess_utils import terminate_process
 
@@ -100,24 +99,18 @@ def _run(
     timeout: float = 900,
 ) -> None:
     _cancel(cancellation)
-    with (
-        TemporaryDirectory(prefix="vntts-decoder-log-") as directory,
-        (Path(directory) / "output").open("w+b") as output,
-    ):
-        process = _start_decoder_process(command, output)
-        primary_error: BaseException | None = None
-        try:
-            _wait_for_decoder_process(process, cancellation, timeout)
-            _raise_decoder_failure(process, output)
-        except BaseException as error:
-            primary_error = error
-            raise
-        finally:
-            attempt_cleanup(
+    with temporary_directory(prefix="vntts-decoder-log-") as directory:
+        output = (Path(directory) / "output").open("w+b")
+        with cleanup_on_exit(
+            output.close, description="Game-audio decoder log cleanup"
+        ):
+            process = _start_decoder_process(command, output)
+            with cleanup_on_exit(
                 lambda: _stop_decoder_process(process),
                 description="Game-audio decoder process cleanup",
-                primary_error=primary_error,
-            )
+            ):
+                _wait_for_decoder_process(process, cancellation, timeout)
+                _raise_decoder_failure(process, output)
 
 
 def _start_decoder_process(
@@ -188,7 +181,7 @@ def probe_game_decoder(
     path: PathInput, cancellation: Cancellation | None = None
 ) -> str:
     """Exercise real native loading and PCM decoding, not just file existence."""
-    with TemporaryDirectory(prefix="vntts-decoder-probe-") as directory:
+    with temporary_directory(prefix="vntts-decoder-probe-") as directory:
         source, output = Path(directory) / "input.wav", Path(directory) / "output.wav"
         pcm = b"\x34\x12" * 240
         with wave.open(str(source), "wb") as wav:
@@ -365,7 +358,7 @@ def _install_managed_decoder(
 ) -> Path:
     destination = executable.parent
     progress("Preparing game-audio decoder download...")
-    with TemporaryDirectory(prefix="download-", dir=destination.parent) as temporary:
+    with temporary_directory(prefix="download-", dir=destination.parent) as temporary:
         staging = Path(temporary)
         archive = staging / "decoder.zip"
         _download(
@@ -407,7 +400,7 @@ def _stage_file(source: PathInput, target: PathInput) -> None:
     source = Path(source)
     target = Path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
-    with TemporaryDirectory(prefix="copy-", dir=target.parent) as directory:
+    with temporary_directory(prefix="copy-", dir=target.parent) as directory:
         temporary = Path(directory) / target.name
         shutil.copyfile(source, temporary)
         temporary.chmod(0o755 if os.access(source, os.X_OK) else 0o644)
@@ -446,7 +439,7 @@ def stage_game_decoder(destination: PathInput) -> Path:
                         target = destination / "licenses" / keg.parent.name
                         target.mkdir(parents=True, exist_ok=True)
                         _stage_file(notice, target / notice.name)
-    with TemporaryDirectory(prefix="vntts-decoder-licenses-") as temporary:
+    with temporary_directory(prefix="vntts-decoder-licenses-") as temporary:
         archive = Path(temporary) / "source.zip"
         _download(SOURCE_URL, SOURCE_SHA256, archive, print, None)
         with ZipFile(archive) as source:

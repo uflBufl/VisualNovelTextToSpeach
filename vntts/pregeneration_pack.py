@@ -11,7 +11,6 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from tempfile import TemporaryDirectory
 from time import perf_counter, process_time
 from typing import Protocol, cast
 
@@ -68,6 +67,7 @@ from vntts.chapter_voice_preload import (
     _source_audio_covers_full_line,
     _validated_source_audio_line_ids,
 )
+from vntts.cleanup import temporary_directory
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 from vntts.game_pack import GamePackImport, import_game_pack
 from vntts.generated_audio import GeneratedAudioLibrary
@@ -1022,7 +1022,7 @@ def _safe_sequence_document(
     document = json.loads(payload)
     if not isinstance(document, dict) or not isinstance(document.get("chapters"), list):
         raise LiveSequencePlanError("Live sequence plan document is malformed")
-    with TemporaryDirectory(prefix="vntts-sequence-") as directory:
+    with temporary_directory(prefix="vntts-sequence-") as directory:
         snapshot = Path(directory) / "live-sequence.json"
         snapshot.write_bytes(payload)
         plan = load_live_sequence_plan(snapshot, story_index)

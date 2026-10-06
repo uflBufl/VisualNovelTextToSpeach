@@ -7,9 +7,9 @@ import platform
 import sys
 from importlib.metadata import version
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
+from vntts.cleanup import temporary_directory
 from vntts.runtime_paths import RUNTIME_ENVIRONMENT_VARIABLES
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -97,7 +97,7 @@ def check_runtime(backend, *, allow_unavailable_metal=False):
             from vntts.authoring.sound_effect_benchmark import benchmark_sound_effects
             from vntts.cuda_probe import CudaProbeError
 
-            with TemporaryDirectory(prefix="vntts-runtime-smoke-") as directory:
+            with temporary_directory(prefix="vntts-runtime-smoke-") as directory:
                 try:
                     benchmark_sound_effects(
                         ROOT / "samples/moss-soundeffect-v2-corpus.json",
