@@ -546,6 +546,20 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
             ):
                 inspect_generation_queue(story_path, manifest_path)
 
+    def test_non_integer_manifest_version_is_rejected_before_planning(self):
+        for version in (2.0, True, "2", [], {}):
+            with self.subTest(version=version), TemporaryDirectory() as directory:
+                story_path, manifest_path = write_inputs(
+                    Path(directory), [story_record("line-1", "absent")]
+                )
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest["version"] = version
+                manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                with self.assertRaisesRegex(
+                    GenerationQueueBuildError, "Unsupported voice manifest version"
+                ):
+                    inspect_generation_queue(story_path, manifest_path)
+
     def test_unsafe_voice_reference_cannot_escape_preflight_or_publish_output(self):
         for reference in ("../outside.wav", "/absolute.wav", "..\\outside.wav"):
             with self.subTest(reference=reference), TemporaryDirectory() as directory:
