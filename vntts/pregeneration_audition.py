@@ -42,6 +42,7 @@ from vntts.authoring.speech_quality import (
     SpeechSilenceValidationError,
     inspect_generated_speech,
 )
+from vntts.cleanup import attempt_cleanup, cleanup_on_exit
 from vntts.document_identity import canonical_document_sha256
 from vntts.pregeneration_voices import VoiceCandidate, VoiceGroup, VoicePlan
 from vntts.reference_quality import analyze_reference
@@ -448,7 +449,10 @@ class VoiceAuditionPreviewService:
         if not len(samples):
             raise VoiceAuditionError("Voice preview generation produced no audio")
         staging = _staging_path(target)
-        try:
+        with cleanup_on_exit(
+            lambda: staging.unlink(missing_ok=True),
+            description="voice preview staging cleanup",
+        ):
             try:
                 write_pcm16_wav(staging, samples, result.sample_rate)
             except Pcm16MonoWavError as error:
@@ -474,14 +478,20 @@ class VoiceAuditionPreviewService:
                 audio_sha256 = sha256_file(staging)
                 _write_preview_manifest(target, identity, telemetry.seed, audio_sha256)
                 os.replace(staging, target)
-            except Exception:
-                target.unlink(missing_ok=True)
-                _preview_manifest_path(target).unlink(missing_ok=True)
+            except BaseException as error:
+                attempt_cleanup(
+                    lambda: target.unlink(missing_ok=True),
+                    description="voice preview target cleanup",
+                    primary_error=error,
+                )
+                attempt_cleanup(
+                    lambda: _preview_manifest_path(target).unlink(missing_ok=True),
+                    description="voice preview manifest cleanup",
+                    primary_error=error,
+                )
                 raise
             telemetry.cache_source = result.diagnostics.cache_source
             return audio_sha256
-        finally:
-            staging.unlink(missing_ok=True)
 
     def cancel(self) -> None:
         self._cancel.set()

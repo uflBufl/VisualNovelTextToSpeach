@@ -621,6 +621,44 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
 
             self.assertFalse(tuple((root / "auditions").glob("*.wav")))
 
+    def test_preview_cleanup_failures_keep_publish_error_and_attempt_all_owners(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            plan, group, _manifest = ambiguous_fixture(root)
+            service = VoiceAuditionPreviewService(
+                root / "auditions",
+                backend_factory=lambda *_args, **_kwargs: FakeBackend("moss-tts"),
+            )
+            self.addCleanup(service.close)
+            original_unlink = type(root).unlink
+            cleanup_attempts = []
+
+            def fail_audition_cleanup(path, *args, **kwargs):
+                if path.parent == root / "auditions":
+                    cleanup_attempts.append(path)
+                    raise OSError(f"cleanup failed for {path.name}")
+                return original_unlink(path, *args, **kwargs)
+
+            with (
+                patch(
+                    "vntts.pregeneration_audition._write_preview_manifest",
+                    side_effect=OSError("manifest failed"),
+                ),
+                patch.object(
+                    type(root / "auditions"),
+                    "unlink",
+                    autospec=True,
+                    side_effect=fail_audition_cleanup,
+                ),
+            ):
+                with self.assertRaisesRegex(OSError, "manifest failed") as raised:
+                    service.generate(plan, group, group.candidates[0].source_id)
+
+            self.assertEqual(len(cleanup_attempts), 3)
+            self.assertGreaterEqual(
+                sum("cleanup failed" in note for note in raised.exception.__notes__), 3
+            )
+
     def test_competing_service_cannot_publish_the_same_preview(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
