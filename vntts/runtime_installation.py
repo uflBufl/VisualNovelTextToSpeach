@@ -5,12 +5,9 @@ from __future__ import annotations
 import os
 import platform
 import shutil
-import subprocess
 import sys
-from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from time import monotonic
-from typing import Literal, Protocol, TypeAlias, runtime_checkable
+from typing import Literal, TypeAlias
 from uuid import uuid4
 
 from durable_file import atomic_write_json
@@ -32,33 +29,16 @@ from vntts.runtime_paths import (
     managed_runtime_location,
     source_runtime_project,
 )
-from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
-from vntts.subprocess_utils import terminate_process
+from vntts.runtime_preparation import (
+    Cancellation,
+    ProgressCallback,
+    check_runtime_cancelled,
+    run_runtime_command,
+)
+from vntts.services.tts_engine import TTSConfigurationError
 
 PathInput: TypeAlias = str | Path
 RuntimePaths: TypeAlias = tuple[Path, Path, Path]
-ProgressCallback: TypeAlias = Callable[[str], None]
-
-
-@runtime_checkable
-class CancellationToken(Protocol):
-    def is_set(self) -> bool: ...
-
-
-Cancellation: TypeAlias = CancellationToken | Callable[[], bool] | None
-
-
-def _check_cancelled(cancellation: Cancellation) -> None:
-    if cancellation is not None:
-        cancelled = (
-            cancellation.is_set()
-            if isinstance(cancellation, CancellationToken)
-            else cancellation()
-        )
-        if cancelled:
-            raise TTSSynthesisError(
-                "Speech runtime preparation cancelled. Retry when ready."
-            )
 
 
 def runtime_installation_available(backend: str) -> bool:
@@ -96,64 +76,6 @@ def runtime_installation_available(backend: str) -> bool:
     )
 
 
-def _run(
-    command: Sequence[str],
-    *,
-    cancellation: Cancellation,
-    environment: Mapping[str, str] | None = None,
-    input_bytes: bytes | None = None,
-    timeout: float = 1800,
-    runtime_use: RuntimeUse | None = None,
-    include_stderr: bool = False,
-) -> bytes:
-    """Drain child output while keeping cancellation and shutdown bounded."""
-    _check_cancelled(cancellation)
-    if runtime_use is not None:
-        runtime_use.begin_launch()
-    try:
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=environment,
-            creationflags=(
-                getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                if sys.platform == "win32"
-                else 0
-            ),
-        )
-    except Exception:
-        if runtime_use is not None:
-            runtime_use.launched(None)
-        raise
-    deadline = monotonic() + timeout
-    try:
-        if runtime_use is not None:
-            runtime_use.launched(process)
-        while True:
-            _check_cancelled(cancellation)
-            if monotonic() >= deadline:
-                raise TTSConfigurationError(
-                    "Speech runtime preparation timed out. Retry when ready."
-                )
-            try:
-                output, error = process.communicate(input_bytes, timeout=0.1)
-                break
-            except subprocess.TimeoutExpired:
-                input_bytes = None
-        if process.returncode:
-            details = error.decode("utf-8", errors="replace")[-4000:].strip()
-            raise TTSConfigurationError(
-                f"Speech runtime preparation failed. Retry when ready. {details}"
-            )
-        _check_cancelled(cancellation)
-        return output + error if include_stderr else output
-    finally:
-        if process.poll() is None:
-            terminate_process(process)
-
-
 def _nvidia_driver_status(
     cancellation: Cancellation,
 ) -> Literal["not-applicable", "unknown", "detected", "not-detected"]:
@@ -164,7 +86,7 @@ def _nvidia_driver_status(
     if executable is None:
         return "unknown"
     try:
-        output = _run(
+        output = run_runtime_command(
             [executable, "--query-gpu=driver_version", "--format=csv,noheader"],
             cancellation=cancellation,
             timeout=5,
@@ -211,7 +133,7 @@ def _ensure_speech_runtime(
     from vntts.speech_worker import probe_speech_runtime, resolve_speech_runtime_paths
 
     report: ProgressCallback = progress or (lambda _message: None)
-    _check_cancelled(cancellation)
+    check_runtime_cancelled(cancellation)
     try:
         paths = resolve_speech_runtime_paths(backend, runtime_directory)
         if owned_generation(backend, paths[0]) is not None:
@@ -230,7 +152,7 @@ def _ensure_speech_runtime(
         )
     try:
         with exclusive_advisory_lock(location / "installation.lock"):
-            _check_cancelled(cancellation)
+            check_runtime_cancelled(cancellation)
             report("Checking hardware before preparing the speech runtime...")
             hardware = {
                 "platform": sys.platform,
@@ -279,7 +201,7 @@ def _ensure_speech_runtime(
             published = False
             environment["UV_PROJECT_ENVIRONMENT"] = str(generation / "environment")
             try:
-                _run(
+                run_runtime_command(
                     [
                         uv,
                         "sync",
@@ -302,7 +224,7 @@ def _ensure_speech_runtime(
                 health = probe_speech_runtime(
                     backend, paths, cancellation=cancellation, runtime_use=use
                 )
-                _check_cancelled(cancellation)
+                check_runtime_cancelled(cancellation)
                 if managed_runtime_location(backend) != location:
                     raise TTSConfigurationError(
                         "Runtime recipe changed during installation. Retry to use the new version."

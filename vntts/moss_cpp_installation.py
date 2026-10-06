@@ -9,13 +9,17 @@ import sys
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from time import monotonic
-from typing import Protocol, TypeAlias
+from typing import TypeAlias
 from urllib.request import Request, urlopen
 from zipfile import ZipFile
 
 from vntts.application_directories import get_local_data_directory
 from vntts.authoring.advisory_lock import AdvisoryLockBusyError, exclusive_advisory_lock
-from vntts.runtime_installation import _check_cancelled, _run
+from vntts.runtime_preparation import (
+    Cancellation,
+    check_runtime_cancelled,
+    run_runtime_command,
+)
 from vntts.services.tts_engine import TTSConfigurationError
 
 RELEASE = "v0.3.0-vntts-timing-2"
@@ -42,13 +46,6 @@ DOWNLOAD_HEADROOM_BYTES = 128 * 1024 * 1024
 
 PathInput: TypeAlias = str | Path
 ProgressCallback: TypeAlias = Callable[[str], object]
-
-
-class CancellationSignal(Protocol):
-    def is_set(self) -> bool: ...
-
-
-Cancellation: TypeAlias = Callable[[], bool] | CancellationSignal | None
 
 
 class MossCppInstallRequired(TTSConfigurationError):
@@ -122,7 +119,7 @@ def _hash(path: Path, cancellation: Cancellation) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
         while chunk := source.read(1024 * 1024):
-            _check_cancelled(cancellation)
+            check_runtime_cancelled(cancellation)
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -137,7 +134,7 @@ def _download(
     *,
     allow_download: bool = False,
 ) -> None:
-    _check_cancelled(cancellation)
+    check_runtime_cancelled(cancellation)
     if output.is_symlink():
         raise TTSConfigurationError(f"Unsafe MOSS download path: {output}")
     if output.is_file() and output.stat().st_size == size:
@@ -187,7 +184,7 @@ def _download(
         last_progress = monotonic()
         with partial.open("ab" if resume else "wb") as target:
             while True:
-                _check_cancelled(cancellation)
+                check_runtime_cancelled(cancellation)
                 chunk = response.read(1024 * 1024)
                 if not chunk:
                     break
@@ -202,7 +199,7 @@ def _download(
                         f"Downloading {output.name}: {received / 1e9:.2f} / {size / 1e9:.2f} GB..."
                     )
                     last_progress = monotonic()
-    _check_cancelled(cancellation)
+    check_runtime_cancelled(cancellation)
     if received != size:
         raise TTSConfigurationError(
             "MOSS download was interrupted; restart setup to resume it."
@@ -233,7 +230,7 @@ def _extract_runtime(
             raise TTSConfigurationError("MOSS runtime archive is too large")
         destination.mkdir(parents=True, exist_ok=True)
         for entry in entries:
-            _check_cancelled(cancellation)
+            check_runtime_cancelled(cancellation)
             if entry.is_dir():
                 continue
             target = destination / entry.filename
@@ -304,7 +301,9 @@ def _repair_runtime_probe(
     )
     _extract_runtime(archive, paths[0].parent, cancellation)
     try:
-        _run([str(paths[0]), "--help"], cancellation=cancellation, timeout=30)
+        run_runtime_command(
+            [str(paths[0]), "--help"], cancellation=cancellation, timeout=30
+        )
     except TTSConfigurationError as repaired_error:
         return repaired_error
     return None
@@ -321,7 +320,9 @@ def _check_runtime(
 ) -> None:
     report("Checking MOSS native runtime...")
     try:
-        _run([str(paths[0]), "--help"], cancellation=cancellation, timeout=30)
+        run_runtime_command(
+            [str(paths[0]), "--help"], cancellation=cancellation, timeout=30
+        )
     except TTSConfigurationError as error:
         repair_error = _repair_runtime_probe(
             root,
@@ -374,7 +375,7 @@ def ensure_moss_cpp(
         )
     try:
         with exclusive_advisory_lock(root / "setup.lock"):
-            _check_cancelled(cancellation)
+            check_runtime_cancelled(cancellation)
             _download_runtime_if_needed(
                 root,
                 paths,

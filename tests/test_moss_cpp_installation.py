@@ -66,7 +66,7 @@ class MossCppInstallationTest(unittest.TestCase):
             ),
             patch.object(setup, "MODELS", models),
             patch.object(setup, "urlopen", side_effect=open_url),
-            patch.object(setup, "_run") as probe,
+            patch.object(setup, "run_runtime_command") as probe,
         ):
             root = Path(directory)
             paths = setup.ensure_moss_cpp(root=root, allow_download=True)
@@ -257,7 +257,9 @@ class MossCppInstallationTest(unittest.TestCase):
             patch.object(setup, "_download", side_effect=publish_download) as download,
             patch.object(setup, "_extract_runtime"),
             patch.object(
-                setup, "_run", side_effect=TTSConfigurationError("missing DLL")
+                setup,
+                "run_runtime_command",
+                side_effect=TTSConfigurationError("missing DLL"),
             ),
             self.assertRaisesRegex(TTSConfigurationError, "missing DLL") as raised,
         ):
@@ -285,7 +287,7 @@ class MossCppInstallationTest(unittest.TestCase):
             patch.object(setup, "urlopen", return_value=Response(runtime)) as download,
             patch.object(
                 setup,
-                "_run",
+                "run_runtime_command",
                 side_effect=[
                     TTSConfigurationError("missing DLL"),
                     TTSConfigurationError("missing DLL"),

@@ -14,7 +14,6 @@ from tests.symlink_support import symlink_or_skip
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.runtime_installation import (
     _nvidia_driver_status,
-    _run,
     ensure_speech_runtime,
     runtime_installation_available,
 )
@@ -78,7 +77,10 @@ class RuntimeInstallationTest(unittest.TestCase):
 
     def prepared_runtime(self):
         with (
-            patch("vntts.runtime_installation._run", side_effect=self.install),
+            patch(
+                "vntts.runtime_installation.run_runtime_command",
+                side_effect=self.install,
+            ),
             patch("vntts.speech_worker.probe_speech_runtime", return_value={}),
         ):
             return ensure_speech_runtime("pocket-tts")
@@ -153,7 +155,10 @@ class RuntimeInstallationTest(unittest.TestCase):
         selected = old[0].parents[2] / "verified.json"
         original = selected.read_bytes()
         with (
-            patch("vntts.runtime_installation._run", side_effect=self.install),
+            patch(
+                "vntts.runtime_installation.run_runtime_command",
+                side_effect=self.install,
+            ),
             patch(
                 "vntts.speech_worker.probe_speech_runtime",
                 side_effect=TTSConfigurationError("dependency import failed"),
@@ -176,7 +181,10 @@ class RuntimeInstallationTest(unittest.TestCase):
             return {}
 
         with (
-            patch("vntts.runtime_installation._run", side_effect=self.install),
+            patch(
+                "vntts.runtime_installation.run_runtime_command",
+                side_effect=self.install,
+            ),
             patch("vntts.speech_worker.probe_speech_runtime", side_effect=probe),
         ):
             new = ensure_speech_runtime("pocket-tts")
@@ -210,7 +218,10 @@ class RuntimeInstallationTest(unittest.TestCase):
                     atomic_write_json(path, document)
 
                 with (
-                    patch("vntts.runtime_installation._run", side_effect=self.install),
+                    patch(
+                        "vntts.runtime_installation.run_runtime_command",
+                        side_effect=self.install,
+                    ),
                     patch(
                         "vntts.speech_worker.probe_speech_runtime", side_effect=probe
                     ),
@@ -278,7 +289,10 @@ class RuntimeInstallationTest(unittest.TestCase):
         with (
             patch("sys.platform", "darwin"),
             patch("platform.machine", return_value="arm64"),
-            patch("vntts.runtime_installation._run", side_effect=self.install),
+            patch(
+                "vntts.runtime_installation.run_runtime_command",
+                side_effect=self.install,
+            ),
             patch("vntts.speech_worker.probe_speech_runtime", return_value={}),
         ):
             old = ensure_speech_runtime("moss-tts")
@@ -328,7 +342,10 @@ class RuntimeInstallationTest(unittest.TestCase):
         old[1].unlink()
         messages = []
         with (
-            patch("vntts.runtime_installation._run", side_effect=self.install),
+            patch(
+                "vntts.runtime_installation.run_runtime_command",
+                side_effect=self.install,
+            ),
             patch("vntts.speech_worker.probe_speech_runtime", return_value={}),
             patch(
                 "vntts.runtime_ownership.shutil.rmtree",
@@ -444,7 +461,10 @@ class RuntimeInstallationTest(unittest.TestCase):
     def test_install_probe_remember_reuse_and_recipe_change(self):
         progress = []
         with (
-            patch("vntts.runtime_installation._run", side_effect=self.install) as run,
+            patch(
+                "vntts.runtime_installation.run_runtime_command",
+                side_effect=self.install,
+            ) as run,
             patch(
                 "vntts.speech_worker.probe_speech_runtime", return_value={"modules": {}}
             ) as probe,
@@ -533,7 +553,10 @@ class RuntimeInstallationTest(unittest.TestCase):
 
     def test_failed_probe_is_not_discovered_and_retry_can_finish(self):
         with (
-            patch("vntts.runtime_installation._run", side_effect=self.install),
+            patch(
+                "vntts.runtime_installation.run_runtime_command",
+                side_effect=self.install,
+            ),
             patch(
                 "vntts.speech_worker.probe_speech_runtime",
                 side_effect=TTSConfigurationError("bad import"),
@@ -557,7 +580,9 @@ class RuntimeInstallationTest(unittest.TestCase):
             cancellation.set()
 
         with (
-            patch("vntts.runtime_installation._run", side_effect=cancelled),
+            patch(
+                "vntts.runtime_installation.run_runtime_command", side_effect=cancelled
+            ),
             patch("vntts.speech_worker.probe_speech_runtime", return_value={}),
             self.assertRaisesRegex(TTSSynthesisError, "cancelled"),
         ):
@@ -571,7 +596,9 @@ class RuntimeInstallationTest(unittest.TestCase):
 
         location = managed_runtime_location("pocket-tts")
         with (
-            patch("vntts.runtime_installation._run", side_effect=changed),
+            patch(
+                "vntts.runtime_installation.run_runtime_command", side_effect=changed
+            ),
             patch("vntts.speech_worker.probe_speech_runtime", return_value={}),
             self.assertRaisesRegex(TTSConfigurationError, "recipe changed"),
         ):
@@ -584,7 +611,10 @@ class RuntimeInstallationTest(unittest.TestCase):
         legacy = self.make_environment(location / "environment")
         (location / "verified.json").write_text("{}", encoding="utf-8")
         with (
-            patch("vntts.runtime_installation._run", side_effect=self.install),
+            patch(
+                "vntts.runtime_installation.run_runtime_command",
+                side_effect=self.install,
+            ),
             patch("vntts.speech_worker.probe_speech_runtime", return_value={}),
         ):
             replacement = ensure_speech_runtime("pocket-tts")
@@ -594,13 +624,13 @@ class RuntimeInstallationTest(unittest.TestCase):
     def test_already_cancelled_preparation_never_launches_a_child(self):
         cancellation = Event()
         cancellation.set()
-        with patch("vntts.runtime_installation.subprocess.Popen") as popen:
+        with patch("vntts.runtime_preparation.subprocess.Popen") as popen:
             with self.assertRaisesRegex(TTSSynthesisError, "cancelled"):
                 ensure_speech_runtime("pocket-tts", cancellation=cancellation)
             popen.assert_not_called()
 
     def test_user_source_explicit_and_packaged_environments_are_not_modified(self):
-        with patch("vntts.runtime_installation._run") as run:
+        with patch("vntts.runtime_installation.run_runtime_command") as run:
             source = self.make_environment(self.project / ".venv")
             self.assertEqual(ensure_speech_runtime("pocket-tts"), source)
             explicit = self.make_environment(self.root / "explicit")
@@ -667,45 +697,19 @@ class RuntimeInstallationTest(unittest.TestCase):
         location = managed_runtime_location("pocket-tts")
         with (
             exclusive_advisory_lock(location / "installation.lock"),
-            patch("vntts.runtime_installation._run") as run,
+            patch("vntts.runtime_installation.run_runtime_command") as run,
             self.assertRaisesRegex(TTSConfigurationError, "Another window"),
         ):
             ensure_speech_runtime("pocket-tts")
         run.assert_not_called()
 
-    def test_subprocess_cancellation_drains_and_terminates_child(self):
-        cancellation = Event()
-        process = Mock(returncode=None)
-        process.poll.return_value = None
-
-        def wait(*_args, **_kwargs):
-            cancellation.set()
-            raise subprocess.TimeoutExpired("uv", 0.1)
-
-        process.communicate.side_effect = wait
-        with (
-            patch("vntts.runtime_installation.subprocess.Popen", return_value=process),
-            patch("vntts.runtime_installation.terminate_process") as terminate,
-            self.assertRaisesRegex(TTSSynthesisError, "cancelled"),
-        ):
-            _run(["uv"], cancellation=cancellation)
-        terminate.assert_called_once_with(process)
-
-    def test_subprocess_stderr_is_only_included_when_requested(self):
-        process = Mock(returncode=0)
-        process.poll.return_value = 0
-        process.communicate.return_value = (b"stdout\n", b"stderr\n")
-        with patch("vntts.runtime_installation.subprocess.Popen", return_value=process):
-            self.assertEqual(_run(["tool"], cancellation=None), b"stdout\n")
-            self.assertEqual(
-                _run(["tool"], cancellation=None, include_stderr=True),
-                b"stdout\nstderr\n",
-            )
-
     def test_nvidia_discovery_is_bounded_and_never_swallows_cancellation(self):
         with (
             patch("vntts.runtime_installation.sys.platform", "win32"),
-            patch("vntts.runtime_installation._run", return_value=b"580.88\n") as run,
+            patch(
+                "vntts.runtime_installation.run_runtime_command",
+                return_value=b"580.88\n",
+            ) as run,
         ):
             self.assertEqual(_nvidia_driver_status(None), "detected")
             self.assertEqual(run.call_args.kwargs["timeout"], 5)
@@ -755,7 +759,10 @@ class RuntimeInstallationTest(unittest.TestCase):
             },
         )
         with (
-            patch("vntts.runtime_installation._run", return_value=output.getvalue()),
+            patch(
+                "vntts.runtime_preparation.run_runtime_command",
+                return_value=output.getvalue(),
+            ),
             self.assertRaisesRegex(TTSConfigurationError, "verification failed"),
         ):
             probe_speech_runtime("pocket-tts", paths)

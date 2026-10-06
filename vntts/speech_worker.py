@@ -40,6 +40,7 @@ from vntts.runtime_paths import (
     get_bundle_root,
     resolve_speech_runtime_root,
 )
+from vntts.runtime_preparation import Cancellation
 from vntts.speech_backend import (
     ChatterboxNanoVoiceRouterBackend,
     MossTTSVoiceRouterBackend,
@@ -139,11 +140,6 @@ _CAPABILITIES = {
 WorkerFrame: TypeAlias = tuple[FrameDocument, bytes]
 
 
-class _CancellationToken(Protocol):
-    def is_set(self) -> bool: ...
-
-
-Cancellation: TypeAlias = Callable[[], bool] | _CancellationToken | None
 WorkerOptions: TypeAlias = dict[str, object]
 RuntimePaths: TypeAlias = tuple[Path, Path, Path]
 ProcessFactory: TypeAlias = Callable[..., object]
@@ -542,8 +538,8 @@ def probe_speech_runtime(
     runtime_use: RuntimeUse | None = None,
 ) -> FrameDocument:
     """Use the real worker import/provenance gate without loading model weights."""
-    from vntts.runtime_installation import _run
     from vntts.runtime_ownership import claim_runtime
+    from vntts.runtime_preparation import run_runtime_command
 
     root, interpreter, site = paths
     request = BytesIO()
@@ -557,7 +553,7 @@ def probe_speech_runtime(
     )
     use: RuntimeUse | None = runtime_use or claim_runtime(backend, root)
     try:
-        output = _run(
+        output = run_runtime_command(
             [
                 str(interpreter),
                 "-I",

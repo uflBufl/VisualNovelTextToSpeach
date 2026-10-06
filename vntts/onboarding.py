@@ -10,7 +10,11 @@ from vntts.auto_advance_policy import auto_advance_allowed
 from vntts.hotkeys import HotkeyValidationError, validate_hotkey_assignments
 from vntts.macos import get_macos_permission_status
 from vntts.release_backends import packaged_speech_backend_available
-from vntts.runtime_installation import Cancellation, ProgressCallback, _check_cancelled
+from vntts.runtime_preparation import (
+    Cancellation,
+    ProgressCallback,
+    check_runtime_cancelled,
+)
 from vntts.settings import AppSettings
 from vntts.speech_worker import resolve_speech_runtime_paths
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
@@ -98,7 +102,7 @@ class OnboardingDiagnostics:
         from vntts.moss_cpp_backend import moss_cpp_requested
         from vntts.runtime_installation import ensure_speech_runtime
 
-        _check_cancelled(cancellation)
+        check_runtime_cancelled(cancellation)
         if settings.speech_backend == "moss-tts" and moss_cpp_requested(
             settings.tts_model
         ):
@@ -121,7 +125,7 @@ class OnboardingDiagnostics:
                 progress=progress,
             )
         progress("Checking OCR, audio, permissions, and speech assets...")
-        _check_cancelled(cancellation)
+        check_runtime_cancelled(cancellation)
         return self.run(settings)
 
     def _check_platform_permissions(

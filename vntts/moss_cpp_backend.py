@@ -887,9 +887,9 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             self._source_identity.encode()
         ).hexdigest()[:24]
         try:
-            from vntts.runtime_installation import _run
+            from vntts.runtime_preparation import run_runtime_command
 
-            help_output = _run(
+            help_output = run_runtime_command(
                 [str(self.executable), "--help"],
                 cancellation=self._startup_cancelled,
                 timeout=min(30, self.startup_timeout),
@@ -902,7 +902,9 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 re.search(rb"(?:^|\s)--voice-cache-key(?:\s|$)", help_output)
             )
             if self._managed_runtime:
-                capabilities = self._managed_capabilities(_run, help_output)
+                capabilities = self._managed_capabilities(
+                    run_runtime_command, help_output
+                )
                 self._native_capabilities = capabilities
                 self._adaptive_managed_runtime = capabilities is not None
                 self._managed_local_gpu = bool(
