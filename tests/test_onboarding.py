@@ -696,6 +696,28 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertEqual(wizard.step_label.text(), "Step 2 of 5")
         wizard.deleteLater()
 
+    def test_configuration_shortcut_errors_identify_each_empty_recorder(self):
+        wizard = OnboardingWizard(AppSettings())
+        page = wizard.configuration_page
+        page.capture_mode.setCurrentIndex(page.capture_mode.findData("screen"))
+        page.live_hotkey.clear()
+
+        self.assertEqual(
+            page.validation_errors(),
+            (
+                (
+                    page.live_hotkey,
+                    "Keyboard shortcuts: Live reading: press a shortcut.",
+                ),
+            ),
+        )
+        page.read_hotkey.clear()
+        self.assertEqual(
+            [widget for widget, _ in page.validation_errors()],
+            [page.read_hotkey, page.live_hotkey],
+        )
+        wizard.deleteLater()
+
     def test_configuration_validation_lists_all_errors_and_focuses_first(self):
         wizard = OnboardingWizard(AppSettings())
         page = wizard.configuration_page

@@ -46,12 +46,8 @@ from vntts.auto_advance_policy import (
 from vntts.calibration import DialogRegionOverlay, show_calibration_overlay
 from vntts.game_narrator_ui import GameNarratorDialog
 from vntts.game_pack import GamePackError, apply_game_pack
-from vntts.hotkey_ui import HotkeyRecorder
-from vntts.hotkeys import (
-    HotkeyValidationError,
-    macos_hotkey_limitation,
-    validate_hotkey_assignments,
-)
+from vntts.hotkey_ui import HotkeyRecorder, hotkey_recording_errors
+from vntts.hotkeys import macos_hotkey_limitation
 from vntts.macos_ui import MacOSPermissionsDialog
 from vntts.ocr import DialogRegion
 from vntts.onboarding import (
@@ -733,10 +729,10 @@ class ConfigurationPage(QWizardPage):
                 add(self.terms, "Accept the XTTS license before the reading check.")
             return tuple(errors)
 
-        try:
-            validate_hotkey_assignments(self.hotkey_assignments())
-        except HotkeyValidationError as error:
-            add(self.read_hotkey, f"Keyboard shortcuts: {error}.")
+        for recorder, message in hotkey_recording_errors(
+            {"Read once": self.read_hotkey, "Live reading": self.live_hotkey}
+        ):
+            add(recorder, message)
         if (
             self.capture_mode.currentData() == "window"
             and not self.game_window.currentText().strip()

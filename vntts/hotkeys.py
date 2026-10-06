@@ -10,7 +10,9 @@ macos_hotkey_limitation = (
 
 
 class HotkeyValidationError(ValueError):
-    pass
+    def __init__(self, message: str, *, label: str | None = None) -> None:
+        super().__init__(message)
+        self.label = label
 
 
 _modifier_keys: set[keyboard.Key] = {
@@ -45,11 +47,11 @@ def validate_hotkey_assignments(
         try:
             parsed = keyboard.HotKey.parse(hotkey)
         except (TypeError, ValueError) as error:
-            raise HotkeyValidationError(f"{label}: {error}") from error
+            raise HotkeyValidationError(f"{label}: {error}", label=label) from error
         regular_keys = [key for key in parsed if key not in _modifier_keys]
         if len(regular_keys) != 1 or len(parsed) == 1:
             raise HotkeyValidationError(
-                f"{label}: press modifiers together with one regular key"
+                f"{label}: press modifiers together with one regular key", label=label
             )
         parsed_assignments[label] = frozenset(parsed)
 
@@ -57,7 +59,7 @@ def validate_hotkey_assignments(
     for label, parsed in parsed_assignments.items():
         if parsed in seen:
             raise HotkeyValidationError(
-                f"{label} duplicates the shortcut used by {seen[parsed]}"
+                f"{label} duplicates the shortcut used by {seen[parsed]}", label=label
             )
         seen[parsed] = label
 
@@ -68,7 +70,8 @@ def validate_hotkey_assignments(
     for label, parsed in parsed_assignments.items():
         if parsed in reserved:
             raise HotkeyValidationError(
-                f"{label}: this shortcut is reserved by the operating system"
+                f"{label}: this shortcut is reserved by the operating system",
+                label=label,
             )
 
 

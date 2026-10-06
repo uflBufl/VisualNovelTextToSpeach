@@ -1,11 +1,12 @@
 import sys
+from collections.abc import Mapping
 from typing import Protocol, runtime_checkable
 
 from PySide6.QtCore import QKeyCombination, Qt
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import QKeySequenceEdit, QWidget
 
-from vntts.hotkeys import HotkeyValidationError
+from vntts.hotkeys import HotkeyValidationError, validate_hotkey_assignments
 
 
 @runtime_checkable
@@ -70,6 +71,29 @@ class HotkeyRecorder(QKeySequenceEdit):
 
     def set_hotkey(self, hotkey: str) -> None:
         self.setKeySequence(qt_sequence_from_hotkey(hotkey, platform=self.platform))
+
+
+def hotkey_recording_errors(
+    recorders: Mapping[str, HotkeyRecorder],
+) -> tuple[tuple[HotkeyRecorder, str], ...]:
+    assignments: dict[str, str] = {}
+    errors: list[tuple[HotkeyRecorder, str]] = []
+    for label, recorder in recorders.items():
+        try:
+            assignments[label] = recorder.hotkey()
+        except HotkeyValidationError as error:
+            errors.append((recorder, f"Keyboard shortcuts: {label}: {error}."))
+    if not errors:
+        try:
+            validate_hotkey_assignments(assignments)
+        except HotkeyValidationError as error:
+            recorder = (
+                recorders[error.label]
+                if error.label is not None
+                else next(iter(recorders.values()))
+            )
+            errors.append((recorder, f"Keyboard shortcuts: {error}."))
+    return tuple(errors)
 
 
 def _qt_modifier_tokens(platform: str) -> dict[Qt.KeyboardModifier, str]:

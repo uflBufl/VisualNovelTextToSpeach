@@ -87,12 +87,8 @@ from vntts.game_narrator_ui import GameNarratorDialog
 from vntts.game_pack import GamePackError, apply_game_pack
 from vntts.generated_audio import AudioRouteTrace
 from vntts.history_ui import DialogueHistoryDialog
-from vntts.hotkey_ui import HotkeyRecorder
-from vntts.hotkeys import (
-    HotkeyValidationError,
-    macos_hotkey_limitation,
-    validate_hotkey_assignments,
-)
+from vntts.hotkey_ui import HotkeyRecorder, hotkey_recording_errors
+from vntts.hotkeys import macos_hotkey_limitation, validate_hotkey_assignments
 from vntts.live import LiveDialogReader
 from vntts.macos import (
     configure_macos_launch_at_login,
@@ -1107,10 +1103,10 @@ class SettingsDialog(QDialog):
             if message:
                 errors.append((section, widget, message))
 
-        try:
-            validate_hotkey_assignments(self.hotkey_assignments())
-        except HotkeyValidationError as error:
-            add(0, self.read_hotkey, f"Keyboard shortcuts: {error}.")
+        for recorder, message in hotkey_recording_errors(
+            {"Read once": self.read_hotkey, "Live reading": self.live_hotkey}
+        ):
+            add(0, recorder, message)
         add(
             1,
             self.screenshot_directory,

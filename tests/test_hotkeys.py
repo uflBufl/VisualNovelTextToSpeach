@@ -1,4 +1,5 @@
 import os
+import sys
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -11,6 +12,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 from vntts.hotkey_ui import (  # noqa: E402
     HotkeyRecorder,
     hotkey_from_qt_sequence,
+    hotkey_recording_errors,
     qt_sequence_from_hotkey,
 )
 from vntts.hotkeys import (  # noqa: E402
@@ -34,6 +36,16 @@ class HotkeyValidationTest(unittest.TestCase):
                 },
                 platform="win32",
             )
+
+    def test_assignment_errors_identify_the_failing_shortcut(self):
+        for hotkey in ("<unknown>", "h", "<alt>+<f4>", "<ctrl>+h"):
+            with self.subTest(hotkey=hotkey):
+                with self.assertRaises(HotkeyValidationError) as raised:
+                    validate_hotkey_assignments(
+                        {"Read once": "<ctrl>+h", "Live reading": hotkey},
+                        platform="win32",
+                    )
+                self.assertEqual(raised.exception.label, "Live reading")
 
     def test_modifier_only_shortcut_is_rejected(self):
         with self.assertRaisesRegex(HotkeyValidationError, "regular key"):
@@ -61,6 +73,20 @@ class HotkeyRecorderTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
+
+    def test_assignment_validation_targets_the_second_recorder(self):
+        read = HotkeyRecorder("<ctrl>+h", platform="win32")
+        live = HotkeyRecorder("<ctrl>+l", platform="win32")
+        reserved = "<cmd>+<space>" if sys.platform == "darwin" else "<alt>+<f4>"
+        for hotkey in ("h", "<ctrl>+h", reserved):
+            with self.subTest(hotkey=hotkey):
+                live.set_hotkey(hotkey)
+                errors = hotkey_recording_errors(
+                    {"Read once": read, "Live reading": live}
+                )
+                self.assertEqual(len(errors), 1)
+                self.assertIs(errors[0][0], live)
+                self.assertIn("Live reading", errors[0][1])
 
     def test_macos_recorder_round_trips_command_shortcut(self):
         recorder = HotkeyRecorder("<cmd>+<shift>+h", platform="darwin")

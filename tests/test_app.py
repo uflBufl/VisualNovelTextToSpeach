@@ -3607,6 +3607,27 @@ class TrayApplicationTest(unittest.TestCase):
             )
             tray.shutdown()
 
+    def test_settings_shortcut_errors_identify_each_empty_recorder(self):
+        dialog = SettingsDialog(AppSettings())
+        dialog.live_hotkey.clear()
+
+        errors = dialog.validation_errors()
+        self.assertEqual(
+            [(widget, message) for _, widget, message in errors],
+            [
+                (
+                    dialog.live_hotkey,
+                    "Keyboard shortcuts: Live reading: press a shortcut.",
+                )
+            ],
+        )
+        dialog.read_hotkey.clear()
+        self.assertEqual(
+            [widget for _, widget, _ in dialog.validation_errors()],
+            [dialog.read_hotkey, dialog.live_hotkey],
+        )
+        delete_dialog(dialog)
+
     def test_settings_reject_duplicate_recorded_hotkeys(self):
         dialog = SettingsDialog(AppSettings())
         dialog.live_hotkey.set_hotkey(dialog.read_hotkey.hotkey())
