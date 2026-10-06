@@ -8,6 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from time import monotonic
 from typing import TYPE_CHECKING, Protocol, TypeAlias, runtime_checkable
 
+from vntts.cleanup import attempt_cleanup
 from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
 from vntts.subprocess_utils import terminate_process
 
@@ -65,9 +66,13 @@ def run_runtime_command(
                 else 0
             ),
         )
-    except Exception:
+    except Exception as launch_error:
         if runtime_use is not None:
-            runtime_use.launched(None)
+            attempt_cleanup(
+                lambda: runtime_use.launched(None),
+                description="Speech runtime launch reset",
+                primary_error=launch_error,
+            )
         raise
     deadline = monotonic() + timeout
     try:

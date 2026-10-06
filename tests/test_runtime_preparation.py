@@ -85,6 +85,25 @@ class RuntimePreparationTest(unittest.TestCase):
         use.begin_launch.assert_called_once_with()
         use.launched.assert_called_once_with(None)
 
+    def test_failed_launch_preserves_spawn_error_when_reset_fails(self):
+        use = Mock()
+        use.launched.side_effect = OSError("launch marker unavailable")
+        with (
+            patch(
+                "vntts.runtime_preparation.subprocess.Popen",
+                side_effect=OSError("missing executable"),
+            ),
+            self.assertRaisesRegex(OSError, "missing executable") as raised,
+        ):
+            run_runtime_command(["tool"], cancellation=None, runtime_use=use)
+
+        self.assertTrue(
+            any(
+                "Speech runtime launch reset failed" in note
+                for note in raised.exception.__notes__
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
