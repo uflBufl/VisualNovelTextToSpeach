@@ -38,6 +38,7 @@ from vntts.chapter_voice_preload import (
     _has_authoritative_source_audio,
     _validated_source_audio_line_ids,
 )
+from vntts.cleanup import attempt_cleanup
 from vntts.document_identity import file_sha256
 from vntts.game_audio_decoder import Cancellation, ProgressCallback, ensure_game_decoder
 from vntts.path_safety import contained_regular_file
@@ -266,11 +267,19 @@ class Reverse1999GameImporter:
                     "The game importer finished without producing story content."
                 )
             result = inspect_story_index(story_index, provider_id=self.provider_id)
-        except Exception:
+        except BaseException as error:
             if backup.is_file():
-                os.replace(backup, story_index)
+                attempt_cleanup(
+                    lambda: os.replace(backup, story_index),
+                    description="story catalog rollback",
+                    primary_error=error,
+                )
             else:
-                story_index.unlink(missing_ok=True)
+                attempt_cleanup(
+                    lambda: story_index.unlink(missing_ok=True),
+                    description="story catalog rollback",
+                    primary_error=error,
+                )
             raise
         try:
             backup.unlink(missing_ok=True)

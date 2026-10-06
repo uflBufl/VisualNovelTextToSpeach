@@ -69,6 +69,30 @@ class Reverse1999GameImporterTest(unittest.TestCase):
         override.start()
         self.addCleanup(override.stop)
 
+    def test_story_catalog_rollback_failure_keeps_extractor_error(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story = write_story_index(root / "reverse1999")
+            importer = Reverse1999GameImporter(output_root=root)
+            with (
+                patch.object(
+                    importer, "_run", side_effect=RuntimeError("extractor failed")
+                ),
+                patch(
+                    "vntts.game_content_importer.os.replace",
+                    side_effect=OSError("rollback failed"),
+                ),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "extractor failed") as raised:
+                    importer._replace_story_catalog(("extractor",), None)
+            self.assertTrue(story.is_file())
+            self.assertTrue(
+                any(
+                    "story catalog rollback failed" in note
+                    for note in raised.exception.__notes__
+                )
+            )
+
     def test_installed_story_change_check_reuses_saved_file_signatures(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
