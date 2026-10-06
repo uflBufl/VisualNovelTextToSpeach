@@ -184,6 +184,7 @@ def publish_composite_quality_review(
             sources.composite_source,
             sources.composite_sha256,
             staging / reference_relative,
+            error_type=ReferenceCompositeError,
         )
         reference["audio"] = reference_relative.as_posix()
         generated, excluded = capture_quality_outcomes(

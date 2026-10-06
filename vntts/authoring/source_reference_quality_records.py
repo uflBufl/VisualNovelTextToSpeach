@@ -413,22 +413,29 @@ def capture_quality_outcomes(
         if file_sha256(source, error_type=error_type) != digest:
             raise error_type(f"{generated_label} changed: {queue_id}")
         snapshots.append((source, digest))
-        audio = _copy_audio(source, digest, staging / relative)
+        audio = _copy_audio(source, digest, staging / relative, error_type=error_type)
         generated.append({**common, "audio": relative.as_posix(), **audio})
     return generated, excluded
 
 
-def _copy_audio(source: Path, digest: str, destination: Path) -> JsonObject:
+def _copy_audio(
+    source: Path,
+    digest: str,
+    destination: Path,
+    *,
+    error_type: type[Exception] = SourceReferenceQualityError,
+) -> JsonObject:
     try:
         info = probe_pcm16_mono_wav(source)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+        copied_sha256 = sha256_file(destination)
     except Pcm16MonoWavError as error:
-        raise SourceReferenceQualityError(
-            f"Invalid review WAV {source}: {error}"
-        ) from error
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, destination)
-    if sha256_file(destination) != digest:
-        raise SourceReferenceQualityError(f"Review WAV changed while copied: {source}")
+        raise error_type(f"Invalid review WAV {source}: {error}") from error
+    except OSError as error:
+        raise error_type(f"Unable to copy review WAV {source}: {error}") from error
+    if copied_sha256 != digest:
+        raise error_type(f"Review WAV changed while copied: {source}")
     return {
         "audio_sha256": digest,
         "sample_rate": info.sample_rate,

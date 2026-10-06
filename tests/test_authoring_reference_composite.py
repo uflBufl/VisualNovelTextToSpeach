@@ -6,11 +6,13 @@ import unittest
 import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import numpy as np
 from vntts_artifacts import VoiceGenerationQueue
 from vntts_artifacts.voice_manifest import load_voice_manifest
 
+from vntts.authoring import source_reference_quality_records as quality_records
 from vntts.authoring.bulk_generation import run_bulk_generation
 from vntts.authoring.reference_composite import (
     COMPOSITE_SCHEMA,
@@ -336,6 +338,47 @@ class AuthoringReferenceCompositeTest(unittest.TestCase):
                     error_type=ReferenceCompositeError,
                     generated_label="Generated composite sample",
                 )
+
+    def test_quality_audio_capture_preserves_the_composite_error_type(self):
+        for failure in ("probe", "copy", "checksum"):
+            with self.subTest(failure=failure), TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "generation" / "sample.wav"
+                self.write_wav(source, frequency=250)
+                if failure == "probe":
+                    source.write_bytes(b"invalid WAV")
+                digest = hashlib.sha256(source.read_bytes()).hexdigest()
+                copy_audio = quality_records.shutil.copyfile
+
+                def copy_with_failure(src, dest):
+                    if failure == "copy":
+                        raise PermissionError("Destination became unwritable")
+                    result = copy_audio(src, dest)
+                    if failure == "checksum":
+                        Path(dest).write_bytes(b"changed after copy")
+                    return result
+
+                with patch.object(
+                    quality_records.shutil, "copyfile", side_effect=copy_with_failure
+                ):
+                    with self.assertRaises(ReferenceCompositeError):
+                        capture_quality_outcomes(
+                            [
+                                (
+                                    {"queue_id": "sample"},
+                                    {
+                                        "status": "generated",
+                                        "path": "sample.wav",
+                                        "file_sha256": digest,
+                                    },
+                                    Path("audio/generated.wav"),
+                                )
+                            ],
+                            source.parent,
+                            root / "staging",
+                            [],
+                            error_type=ReferenceCompositeError,
+                        )
 
     def test_rejects_changed_reference_and_existing_output(self):
         with TemporaryDirectory() as directory:
