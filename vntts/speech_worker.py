@@ -1022,13 +1022,21 @@ class IsolatedSpeechBackend:
                 self._runtime_use = claim_runtime("moss-tts", self.runtime_root)
         try:
             self._launch_worker()
-        except BaseException:
+        except BaseException as error:
             try:
                 self._terminate_process(self.process)
+            except BaseException as cleanup_error:
+                error.add_note(f"Speech worker termination failed: {cleanup_error}")
             finally:
                 if self._runtime_use is not None:
-                    self._runtime_use.close()
-                    self._runtime_use = None
+                    try:
+                        self._runtime_use.close()
+                    except BaseException as cleanup_error:
+                        error.add_note(
+                            f"Speech runtime claim cleanup failed: {cleanup_error}"
+                        )
+                    finally:
+                        self._runtime_use = None
             raise
 
     def _launch_worker(self) -> None:
@@ -1059,27 +1067,7 @@ class IsolatedSpeechBackend:
                 environment.pop("HUGGING_FACE_HUB_TOKEN", None)
         if self._runtime_use is not None:
             self._runtime_use.begin_launch()
-        try:
-            candidate = self.process_factory(
-                command,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                cwd=str(self.worker_working_directory),
-                env=environment,
-                bufsize=0,
-            )
-        except Exception:
-            if self._runtime_use is not None:
-                self._runtime_use.launched(None)
-            raise
-        if not _is_worker_process(candidate):
-            if _has_process_controls(candidate):
-                self._terminate_process(candidate)
-                if self._runtime_use is not None and candidate.poll() is not None:
-                    self._runtime_use.launched(None)
-            raise TTSConfigurationError("Speech worker process factory is malformed")
-        process = candidate
+        process = self._create_worker_process(command, environment)
         self.process = process
         if self._runtime_use is not None:
             self._runtime_use.launched(process)
@@ -1095,45 +1083,38 @@ class IsolatedSpeechBackend:
             name=f"vntts-{self.name}-worker-stderr",
             daemon=True,
         ).start()
-        try:
-            self._send(
-                process,
-                {
-                    "type": "initialize",
-                    "backend": self.name,
-                    "runtime_site": str(self.runtime_site),
-                    "registry": _serialize_registry(self.registry),
-                    "options": self._json_worker_options(),
-                },
-            )
-            deadline = monotonic() + self.startup_timeout
-            while True:
-                if self._startup_cancelled():
-                    self._terminate_process(process)
-                    raise TTSSynthesisError(
-                        f"{self.name} isolated worker startup was cancelled"
-                    )
-                remaining = deadline - monotonic()
-                if remaining <= 0:
-                    self._terminate_process(process)
-                    details = "\n".join(self._stderr)
-                    raise TTSConfigurationError(
-                        f"{self.name} isolated worker health check timed out after "
-                        f"{self.startup_timeout:g} seconds"
-                        + (f": {details}" if details else "")
-                    )
-                try:
-                    message, _payload = self._next_frame(
-                        process, timeout=min(0.1, remaining)
-                    )
-                except queue.Empty:
-                    continue
-                break
-        except Exception:
-            self._terminate_process(process)
-            raise
+        self._send(
+            process,
+            {
+                "type": "initialize",
+                "backend": self.name,
+                "runtime_site": str(self.runtime_site),
+                "registry": _serialize_registry(self.registry),
+                "options": self._json_worker_options(),
+            },
+        )
+        deadline = monotonic() + self.startup_timeout
+        while True:
+            if self._startup_cancelled():
+                raise TTSSynthesisError(
+                    f"{self.name} isolated worker startup was cancelled"
+                )
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                details = "\n".join(self._stderr)
+                raise TTSConfigurationError(
+                    f"{self.name} isolated worker health check timed out after "
+                    f"{self.startup_timeout:g} seconds"
+                    + (f": {details}" if details else "")
+                )
+            try:
+                message, _payload = self._next_frame(
+                    process, timeout=min(0.1, remaining)
+                )
+            except queue.Empty:
+                continue
+            break
         if message.get("type") != "health":
-            self._terminate_process(process)
             details = "\n".join(self._stderr)
             reason = message.get("error") or details or str(message)
             raise TTSConfigurationError(
@@ -1143,13 +1124,50 @@ class IsolatedSpeechBackend:
             Path(_required_text(message, "interpreter")).resolve()
             != self.interpreter.resolve()
         ):
-            self._terminate_process(process)
             raise TTSConfigurationError("Speech worker used an unexpected interpreter")
         if Path(_required_text(message, "prefix")).resolve() != self.runtime_root:
-            self._terminate_process(process)
             raise TTSConfigurationError("Speech worker used an unexpected environment")
         self.health = message
         self.sample_rate = _required_integer(message, "sample_rate")
+
+    def _create_worker_process(
+        self, command: list[str], environment: dict[str, str]
+    ) -> WorkerProcess:
+        """Validate a factory result before handing it to the startup owner."""
+        try:
+            candidate = self.process_factory(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=str(self.worker_working_directory),
+                env=environment,
+                bufsize=0,
+            )
+        except Exception as error:
+            if self._runtime_use is not None:
+                try:
+                    self._runtime_use.launched(None)
+                except BaseException as cleanup_error:
+                    error.add_note(
+                        f"Speech runtime launch reset failed: {cleanup_error}"
+                    )
+            raise
+        if not _is_worker_process(candidate):
+            configuration_error = TTSConfigurationError(
+                "Speech worker process factory is malformed"
+            )
+            if _has_process_controls(candidate):
+                try:
+                    self._terminate_process(candidate)
+                    if self._runtime_use is not None and candidate.poll() is not None:
+                        self._runtime_use.launched(None)
+                except BaseException as cleanup_error:
+                    configuration_error.add_note(
+                        f"Malformed speech worker cleanup failed: {cleanup_error}"
+                    )
+            raise configuration_error
+        return candidate
 
     def _startup_cancelled(self) -> bool:
         cancellation = self.startup_cancellation

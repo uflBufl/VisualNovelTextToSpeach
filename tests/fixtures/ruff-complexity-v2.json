@@ -608,7 +608,7 @@
       "path": "vntts/speech_worker.py",
       "scope": "IsolatedSpeechBackend._launch_worker",
       "count": 1,
-      "maximum": 20
+      "maximum": 14
     },
     {
       "code": "C901",
@@ -979,7 +979,7 @@
       "path": "vntts/speech_worker.py",
       "scope": "IsolatedSpeechBackend._launch_worker",
       "count": 1,
-      "maximum": 19
+      "maximum": 13
     },
     {
       "code": "PLR0912",
@@ -1463,13 +1463,6 @@
       "scope": "PocketTTSVoiceRouterBackend._render_chunks",
       "count": 1,
       "maximum": 60
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/speech_worker.py",
-      "scope": "IsolatedSpeechBackend._launch_worker",
-      "count": 1,
-      "maximum": 65
     },
     {
       "code": "PLR0915",

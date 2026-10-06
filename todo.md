@@ -567,3 +567,9 @@ Planned implementation order after approval:
 ## Investigate calibration OCR test startup after full discovery
 
 - [ ] Reproduce/bisect the full remainder prefix preceding `tests.test_calibration.DialogRegionOverlayTest.test_cancelled_review_releases_stalled_ocr_subprocess`: one October 6 full run timed out before the fixture start marker, while the isolated case and all17 calibration tests passed. Preserve `.codex/investigations/backend-cleanup-calibration-oct06.log`; capture worker/Qt/subprocess state before changing timeout or cancellation.
+
+## Active - Preserve failures across publication rollback
+
+- [ ] Qualify and repair story-catalog backup restore (`game_content_importer.py`), voice-pack manifest/checksum restore and copied-reference cleanup (`assets.py`), audition WAV/manifest/staging cleanup (`pregeneration_audition.py`), and benchmark WAV rollback (`tts_benchmark.py`). Inject concrete filesystem failures; preserve the primary exception, attempt independent cleanup, and expose rollback failures instead of claiming recovery succeeded.
+- [ ] Inspect every shared `authoring.publication.staged_directory` consumer before changing temporary-directory error precedence. Preserve cleanup failure visibility after successful publication; keep no-replace and existing-directory compatibility contracts.
+- [ ] Inspect native-server teardown's sequential job/log/directory release and initialization/generation error boundaries. Qualify actual resource failures and use stdlib ownership before adding a shared cleanup abstraction. Gate each distinct repair with affected tests and configured checks; commit separately.
