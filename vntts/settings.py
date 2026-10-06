@@ -364,7 +364,10 @@ class AppSettings:
             parsed["speech_backend"] = defaults.speech_backend
 
         offline_backend = values.get("offline_speech_backend", parsed["speech_backend"])
-        if isinstance(offline_backend, str) and offline_backend in speech_backends:
+        if (
+            isinstance(offline_backend, str)
+            and (offline_backend := offline_backend.strip()) in speech_backends
+        ):
             parsed["offline_speech_backend"] = offline_backend
         else:
             report("Invalid 'offline_speech_backend' setting; using live engine")
@@ -497,14 +500,13 @@ class AppSettings:
             ("VNTTS_TTS_MODEL", "tts_model", "offline_tts_model"),
             ("VNTTS_TTS_PROFILE", "tts_profile", "offline_tts_profile"),
         ):
-            configured = environment.get(live_name)
+            configured = environment.get(live_name, "").strip()
             if (
                 configured
-                and configured.strip()
                 and (live_field != "speech_backend" or configured in speech_backends)
                 and getattr(self, live_field) == getattr(self, offline_field)
             ):
-                values[offline_field] = values[live_field]
+                values[offline_field] = configured
 
         for environment_name, setting_name in numeric_overrides.items():
             configured = environment.get(environment_name)
