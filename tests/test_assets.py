@@ -1206,6 +1206,90 @@ class VoicePackManagerTest(unittest.TestCase):
                     )
                     self.assertEqual(manager.validate(manifest), manifest)
 
+    def test_partial_voice_pack_rollback_retains_backups_and_referenced_audio(self):
+        for failed_name in ("manifest.json", "vntts-asset.json"):
+            with (
+                self.subTest(failed_name=failed_name),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                old = root / "old.wav"
+                new = root / "new.wav"
+                old.write_bytes(b"old voice")
+                new.write_bytes(b"new voice")
+                manager = VoicePackManager(root / "managed")
+                manifest = manager.import_voice("Ada", [old])
+                original_manifest = manifest.read_bytes()
+                primary = OSError("checksum failed")
+                original_replace = os.replace
+                restores = []
+
+                def fail_one_restore(source, destination):
+                    source = Path(source)
+                    if source.parent.name.startswith(".voice-pack-backup-"):
+                        restores.append(Path(destination).name)
+                        if Path(destination).name == failed_name:
+                            raise PermissionError("restore denied")
+                    return original_replace(source, destination)
+
+                with (
+                    patch.object(
+                        manager, "_write_voice_checksums", side_effect=primary
+                    ),
+                    patch("vntts.assets.os.replace", side_effect=fail_one_restore),
+                    self.assertRaises(OSError) as raised,
+                ):
+                    manager.import_voice("Ada", [new])
+                self.assertIs(raised.exception, primary)
+                self.assertEqual(restores, ["manifest.json", "vntts-asset.json"])
+                backups = tuple(manifest.parent.glob(".voice-pack-backup-*"))
+                self.assertEqual(len(backups), 1)
+                self.assertTrue((backups[0] / failed_name).is_file())
+                if failed_name == "manifest.json":
+                    self.assertEqual(
+                        (backups[0] / failed_name).read_bytes(), original_manifest
+                    )
+                self.assertIn(str(backups[0]), "\n".join(primary.__notes__))
+                references = (
+                    CharacterVoiceRegistry.from_file(manifest).resolve("Ada").references
+                )
+                self.assertTrue(all(reference.is_file() for reference in references))
+                self.assertEqual(
+                    len(tuple((manifest.parent / "references").iterdir())), 2
+                )
+
+    def test_failed_copy_cleanup_keeps_copy_error_and_attempts_all_references(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = [root / "one.wav", root / "two.wav"]
+            for source in sources:
+                source.write_bytes(b"voice")
+            manager = VoicePackManager(root / "managed")
+            primary = OSError("copy failed")
+            original_unlink = type(root).unlink
+            cleanup_attempts = []
+
+            def fail_reference_unlink(path, *args, **kwargs):
+                if path.parent.name == "references":
+                    cleanup_attempts.append(path)
+                    raise PermissionError("reference cleanup denied")
+                return original_unlink(path, *args, **kwargs)
+
+            with (
+                patch("vntts.assets.shutil.copy2", side_effect=primary),
+                patch.object(
+                    type(root),
+                    "unlink",
+                    autospec=True,
+                    side_effect=fail_reference_unlink,
+                ),
+                self.assertRaises(OSError) as raised,
+            ):
+                manager.import_voice("Ada", sources)
+            self.assertIs(raised.exception, primary)
+            self.assertEqual(len(cleanup_attempts), 2)
+            self.assertEqual(len(primary.__notes__), 2)
+
     def test_import_manifest_removes_replaced_managed_references(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

@@ -5,9 +5,10 @@ import shutil
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
+from functools import partial
 from ntpath import isreserved
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from tempfile import TemporaryDirectory
+from tempfile import mkdtemp
 from threading import Event
 from typing import Protocol
 from urllib.error import HTTPError
@@ -20,6 +21,7 @@ from vntts_artifacts.text_utils import slugify
 from vntts_artifacts.voice_manifest import validate_voice_manifest
 
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
+from vntts.cleanup import attempt_cleanup, cleanup_on_exit
 from vntts.settings import get_local_data_directory
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
 
@@ -588,9 +590,8 @@ class VoicePackManager:
             try:
                 for source, output in zip(references, copied, strict=True):
                     shutil.copy2(source, output)
-            except Exception:
-                for output in copied:
-                    output.unlink(missing_ok=True)
+            except BaseException as error:
+                self._remove_failed_copies(copied, error)
                 raise
             registry = self._publish_pack(
                 pack_path, manifest_path, updated_manifest, copied
@@ -641,9 +642,8 @@ class VoicePackManager:
                     if voice.reference_transcript:
                         entry["vntts.reference_transcript"] = voice.reference_transcript
                     entries.append(entry)
-            except Exception:
-                for output in copied:
-                    output.unlink(missing_ok=True)
+            except BaseException as error:
+                self._remove_failed_copies(copied, error)
                 raise
             entries.sort(key=lambda item: str(item["character"]).casefold())
             output_manifest: Path = pack_path / "manifest.json"
@@ -652,6 +652,36 @@ class VoicePackManager:
             )
             self._remove_unreferenced_files(pack_path, imported_registry)
             return output_manifest
+
+    @staticmethod
+    def _remove_failed_copies(copied: Sequence[Path], error: BaseException) -> None:
+        for output in copied:
+            attempt_cleanup(
+                partial(output.unlink, missing_ok=True),
+                description="Voice reference rollback",
+                primary_error=error,
+            )
+
+    @staticmethod
+    def _restore_pack_files(
+        backups: Sequence[tuple[Path, Path]], error: BaseException
+    ) -> bool:
+        restored = True
+        for destination, backup in backups:
+
+            def restore() -> None:
+                if backup.exists():
+                    os.replace(backup, destination)
+                else:
+                    destination.unlink(missing_ok=True)
+
+            if not attempt_cleanup(
+                restore,
+                description=f"Voice pack rollback for {destination.name}",
+                primary_error=error,
+            ):
+                restored = False
+        return restored
 
     def _publish_pack(
         self,
@@ -662,18 +692,28 @@ class VoicePackManager:
     ) -> CharacterVoiceRegistry:
         checksum_path = pack_path / asset_manifest_name
         replacement_started = False
+        rollback_incomplete = False
+        backup_directory: Path | None = None
+
+        def cleanup_backup() -> None:
+            if backup_directory is not None and not rollback_incomplete:
+                shutil.rmtree(backup_directory)
+
         try:
             if checksum_path.is_symlink() or checksum_path.is_junction():
                 raise ModelIntegrityError(
                     "Voice checksum manifest must not be an alias"
                 )
             # ponytail: rollback handles exceptions; crash-atomic publication needs a versioned pack directory.
-            with TemporaryDirectory(
-                dir=pack_path, prefix=".voice-pack-backup-"
-            ) as temp:
+            backup_directory = Path(
+                mkdtemp(dir=pack_path, prefix=".voice-pack-backup-")
+            )
+            with cleanup_on_exit(
+                cleanup_backup, description="Voice pack backup cleanup"
+            ):
                 backups = []
                 for destination in (manifest_path, checksum_path):
-                    backup = Path(temp) / destination.name
+                    backup = backup_directory / destination.name
                     if destination.exists():
                         backup.write_bytes(destination.read_bytes())
                     backups.append((destination, backup))
@@ -682,18 +722,18 @@ class VoicePackManager:
                     atomic_write_json(manifest_path, document)
                     registry = CharacterVoiceRegistry.from_file(manifest_path)
                     self._write_voice_checksums(pack_path, manifest_path, registry)
-                except Exception:
-                    for destination, backup in backups:
-                        if backup.exists():
-                            os.replace(backup, destination)
-                        else:
-                            destination.unlink(missing_ok=True)
-                    replacement_started = False
+                except BaseException as error:
+                    rollback_incomplete = not self._restore_pack_files(backups, error)
+                    if rollback_incomplete:
+                        error.add_note(
+                            f"Voice pack recovery backups retained at {backup_directory}"
+                        )
+                    else:
+                        replacement_started = False
                     raise
-        except Exception:
+        except BaseException as error:
             if not replacement_started:
-                for output in copied:
-                    output.unlink(missing_ok=True)
+                self._remove_failed_copies(copied, error)
             raise
         return registry
 
