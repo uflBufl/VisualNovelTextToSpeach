@@ -3,13 +3,15 @@ import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from tests.symlink_support import symlink_or_skip
 from vntts.audio_cache import BoundedCache
 from vntts.services.tts_engine import TTSConfigurationError
 from vntts.speech_backend_runtime import (
     activate_backend_runtime,
+    shutdown_speech_backend,
     validate_speed,
     validate_volume,
     voice_artifact_cache_path,
@@ -18,6 +20,32 @@ from vntts.speech_backend_runtime import (
 
 
 class SpeechBackendRuntimeTest(unittest.TestCase):
+    def test_shutdown_preserves_failure_identity_and_fallback_contract(self):
+        for method in ("shutdown", "stop"):
+            for primary in (None, ValueError("render failed"), KeyboardInterrupt()):
+                for failure in (RuntimeError("cleanup failed"), SystemExit(3)):
+                    with self.subTest(method=method, primary=primary, failure=failure):
+                        cleanup = Mock(side_effect=failure)
+                        backend = SimpleNamespace(**{method: cleanup})
+                        if primary is None:
+                            with self.assertRaises(type(failure)) as raised:
+                                shutdown_speech_backend(backend)
+                            self.assertIs(raised.exception, failure)
+                        else:
+                            shutdown_speech_backend(backend, primary_error=primary)
+                            self.assertIn(
+                                f"Speech backend shutdown failed: {failure}",
+                                primary.__notes__,
+                            )
+                        cleanup.assert_called_once_with()
+
+    def test_shutdown_prefers_release_to_interrupt_and_accepts_no_backend(self):
+        backend = SimpleNamespace(shutdown=Mock(), stop=Mock())
+        shutdown_speech_backend(backend)
+        backend.shutdown.assert_called_once_with()
+        backend.stop.assert_not_called()
+        shutdown_speech_backend(None)
+
     def test_activation_uses_runtime_from_frozen_bundle(self):
         with TemporaryDirectory() as directory:
             bundle_root = Path(directory)

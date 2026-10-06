@@ -1135,6 +1135,7 @@ def _render_benchmark_variant(
         )
     except (TypeError, ValueError) as error:
         raise ModelBenchmarkError(str(error)) from error
+    primary_error: BaseException | None = None
     try:
         report = benchmark_renderer(
             variant,
@@ -1146,13 +1147,11 @@ def _render_benchmark_variant(
             voice_controls_sha256=voice_controls_sha256,
             voice_controls_content_sha256=voice_controls_content_sha256,
         )
-    except BaseException:
-        try:
-            shutdown_speech_backend(backend)
-        except BaseException:
-            pass
+    except BaseException as error:
+        primary_error = error
         raise
-    shutdown_speech_backend(backend)
+    finally:
+        shutdown_speech_backend(backend, primary_error=primary_error)
     return report
 
 

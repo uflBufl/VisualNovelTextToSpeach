@@ -873,6 +873,26 @@ class TTSBenchmarkTest(unittest.TestCase):
                 self.assertEqual(backend.shutdown_calls, 1)
                 self.assertEqual(len(list(output.glob("*.wav"))), 0 if error else 1)
 
+    def test_unrelated_outer_error_cannot_hide_shutdown_failure_or_publish_audio(self):
+        with TemporaryDirectory() as directory:
+            backend = FakeRenderingBackend()
+            backend.shutdown = Mock(side_effect=RuntimeError("shutdown failed"))
+            output = Path(directory) / "output"
+            try:
+                raise ValueError("unrelated outer error")
+            except ValueError:
+                with self.assertRaisesRegex(RuntimeError, "shutdown failed"):
+                    benchmark_backend(
+                        "fake",
+                        CharacterVoiceRegistry(),
+                        ["Kamuta"],
+                        "Text",
+                        output,
+                        backend_factory=lambda *_arguments: backend,
+                    )
+            backend.shutdown.assert_called_once_with()
+            self.assertFalse(output.exists())
+
     def test_rejects_invalid_samples_before_starting_backend(self):
         for text, digest in (("Text", "0" * 64), ("  ", None)):
             with self.subTest(text=text), TemporaryDirectory() as directory:

@@ -630,6 +630,7 @@ def _run_bulk_generation(
             startup_cancellation=cancellation,
             startup_progress=startup_progress,
         )
+        primary_error: BaseException | None = None
         try:
             profile = arguments.generation_profile or getattr(
                 backend, "generation_profile", "stable"
@@ -688,8 +689,11 @@ def _run_bulk_generation(
                 approve_validated_audio=arguments.approve_validated_audio,
                 progress_callback=progress_callback,
             )
+        except BaseException as error:
+            primary_error = error
+            raise
         finally:
-            shutdown_speech_backend(backend)
+            shutdown_speech_backend(backend, primary_error=primary_error)
 
 
 def run_generation(

@@ -23,15 +23,22 @@ PathInput: TypeAlias = str | Path
 _managed_runtime_uses: dict[str, RuntimeUse] = {}
 
 
-def shutdown_speech_backend(backend: object) -> None:
-    """Shut down a supplied backend, falling back to stop when necessary."""
-    shutdown = getattr(backend, "shutdown", None)
-    if callable(shutdown):
-        shutdown()
-    else:
-        stop = getattr(backend, "stop", None)
-        if callable(stop):
-            stop()
+def shutdown_speech_backend(
+    backend: object, *, primary_error: BaseException | None = None
+) -> None:
+    """Release a backend without replacing an earlier operation failure."""
+    try:
+        shutdown = getattr(backend, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
+        else:
+            stop = getattr(backend, "stop", None)
+            if callable(stop):
+                stop()
+    except BaseException as error:
+        if primary_error is None:
+            raise
+        primary_error.add_note(f"Speech backend shutdown failed: {error}")
 
 
 def activate_backend_runtime(

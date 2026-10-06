@@ -550,6 +550,7 @@ def benchmark_backend(
         prefix=".tts-benchmark-", dir=output_directory.parent
     ) as staging_directory:
         with TemporaryDirectory() as cache_directory:
+            primary_error: BaseException | None = None
             try:
                 report = _benchmark_backend_staged(
                     backend_name,
@@ -566,13 +567,11 @@ def benchmark_backend(
                     clock=clock,
                     cpu_clock=cpu_clock,
                 )
+            except BaseException as error:
+                primary_error = error
+                raise
             finally:
-                failed = sys.exc_info()[0] is not None
-                try:
-                    shutdown_speech_backend(created_backend)
-                except Exception:
-                    if not failed:
-                        raise
+                shutdown_speech_backend(created_backend, primary_error=primary_error)
 
         staging_root = Path(staging_directory).resolve()
         publications: list[tuple[BenchmarkSampleReport, Path, Path]] = []
