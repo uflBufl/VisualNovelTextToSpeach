@@ -21,7 +21,7 @@ from vntts.authoring.advisory_lock import (
     AdvisoryLockBusyError,
     exclusive_advisory_lock,
 )
-from vntts.document_identity import is_lowercase_sha256
+from vntts.document_identity import file_sha256, is_lowercase_sha256
 from vntts.path_safety import contained_regular_file
 
 QUALITY_REVIEW_SCHEMA = "vntts.authoring-source-reference-quality-review"
@@ -410,7 +410,7 @@ def capture_quality_outcomes(
             f"{generated_label} {queue_id} hash",
             error_type,
         )
-        if sha256_file(source) != digest:
+        if file_sha256(source, error_type=error_type) != digest:
             raise error_type(f"{generated_label} changed: {queue_id}")
         snapshots.append((source, digest))
         audio = _copy_audio(source, digest, staging / relative)
@@ -498,7 +498,7 @@ def _validate_audio_record(root: Path, value: object, label: str) -> Path:
         raise SourceReferenceQualityError(f"Quality audio {label} must be an object")
     path = _contained_file(root, value.get("audio"), f"quality audio {label}")
     digest = _required_sha256(value.get("audio_sha256"), f"quality audio {label} hash")
-    if sha256_file(path) != digest:
+    if file_sha256(path, error_type=SourceReferenceQualityError) != digest:
         raise SourceReferenceQualityError(f"Quality audio changed: {label}")
     try:
         info = probe_pcm16_mono_wav(path)

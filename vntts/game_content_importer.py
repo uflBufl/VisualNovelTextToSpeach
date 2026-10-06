@@ -38,6 +38,7 @@ from vntts.chapter_voice_preload import (
     _has_authoritative_source_audio,
     _validated_source_audio_line_ids,
 )
+from vntts.document_identity import file_sha256
 from vntts.game_audio_decoder import Cancellation, ProgressCallback, ensure_game_decoder
 from vntts.path_safety import contained_regular_file
 from vntts.pregeneration_setup import (
@@ -828,8 +829,8 @@ class Reverse1999GameImporter:
         result = self._cached_narrator_characters(
             story_index,
             narrator_banks,
-            sha256_file(story_index),
-            sha256_file(narrator_banks),
+            file_sha256(story_index, error_type=GameContentImportError),
+            file_sha256(narrator_banks, error_type=GameContentImportError),
         )
         self._record(
             "narrator-result",

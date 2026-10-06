@@ -223,6 +223,29 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                     )
                 self.assertFalse((root / "narrator-characters.json").exists())
 
+    def test_narrator_checksum_disappearance_uses_import_error_boundary(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "reverse1999"
+            story = write_story_index(output)
+            (output / "narrator-index.jsonl").write_bytes(story.read_bytes())
+            (output / "narrator-banks.json").write_text("[]", encoding="utf-8")
+            (output / "english-bank-index.json").write_text("{}", encoding="utf-8")
+            importer = Reverse1999GameImporter(output_root=root)
+            with (
+                patch.object(
+                    importer,
+                    "_bank_index_is_stale",
+                    side_effect=lambda _path: (
+                        (output / "narrator-index.jsonl").unlink(),
+                        False,
+                    )[1],
+                ),
+            ):
+                with self.assertRaises(GameContentImportError) as raised:
+                    importer.narrator_characters()
+            self.assertIsInstance(raised.exception.__cause__, FileNotFoundError)
+
     def test_precancelled_import_does_not_start_a_process(self):
         with TemporaryDirectory() as directory:
             process_factory = Mock(return_value=RunningProcess())

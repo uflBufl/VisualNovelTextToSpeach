@@ -53,6 +53,7 @@ from vntts.qt_audio import QtPcmPlayer  # noqa: E402
 from vntts.runtime_config import initialize_voice_registry  # noqa: E402
 from vntts.settings import AppSettings, load_app_settings  # noqa: E402
 from vntts.voice_library import VoiceLibrary  # noqa: E402
+from vntts.voices import CharacterVoiceRegistry  # noqa: E402
 
 
 class GameNarratorTest(unittest.TestCase):
@@ -133,6 +134,26 @@ class GameNarratorTest(unittest.TestCase):
             self.assertNotEqual(original.sha256, sha256_file(original.path))
             self.assertEqual(original.duration_seconds, 1.2)
             self.assertEqual(original.rejection_reasons, ())
+
+    def test_preview_checksum_disappearance_uses_value_error_boundary(self):
+        with TemporaryDirectory() as directory:
+            manifest = self.narrator_manifest(Path(directory))
+            original_loader = CharacterVoiceRegistry.from_file
+
+            def load_then_disappear(path):
+                registry = original_loader(path)
+                manifest.unlink()
+                return registry
+
+            with patch(
+                "vntts.game_narrator.CharacterVoiceRegistry.from_file",
+                side_effect=load_then_disappear,
+            ):
+                with self.assertRaises(ValueError) as raised:
+                    narrator_preview_plan(
+                        AppSettings(), manifest, "character:centurion", "Line."
+                    )
+            self.assertIsInstance(raised.exception.__cause__, FileNotFoundError)
 
     def test_original_and_preview_report_device_failures(self):
         with TemporaryDirectory() as directory:

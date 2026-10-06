@@ -11,6 +11,7 @@ from tests import (
 from tests import (
     test_authoring_failed_prompt_hypothesis as prompt_fixtures,
 )
+from tests import test_authoring_queue_builder as builder_fixtures
 from tests import (
     test_authoring_queue_extension as queue_fixtures,
 )
@@ -20,6 +21,7 @@ from tests import (
 from tests import (
     test_authoring_source_reference_review as reference_fixtures,
 )
+from tests import test_authoring_voice_quality_gate as gate_fixtures
 from tests.test_authoring_missing_voice_live_fallback import (
     create_missing_voice_live_fallback_fixture,
 )
@@ -31,9 +33,12 @@ from vntts.authoring import (
     failed_prompt_hypothesis,
     missing_voice_live_fallback,
     missing_voice_reuse_binding,
+    queue_builder,
     queue_extension,
     reviewed_waveform_publication,
+    source_reference_quality,
     source_reference_review,
+    voice_quality_gate,
 )
 from vntts.authoring.workbench import AuthoringWorkbenchError
 
@@ -177,6 +182,96 @@ class ChecksumBoundaryTest(unittest.TestCase):
                     )
             self.assertIsInstance(caught.exception.__cause__, FileNotFoundError)
             self.assertFalse((root / "output.jsonl").exists())
+
+    def test_queue_source_disappearance_stays_a_planning_error(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story, manifest = builder_fixtures.write_inputs(
+                root, [builder_fixtures.story_record("line-1", "absent")]
+            )
+            metadata = queue_builder._source_queue_metadata
+
+            def remove_then_snapshot(*args, **kwargs):
+                manifest.unlink()
+                return metadata(*args, **kwargs)
+
+            with patch.object(
+                queue_builder,
+                "_source_queue_metadata",
+                side_effect=remove_then_snapshot,
+            ):
+                with self.assertRaises(
+                    queue_builder.GenerationQueueBuildError
+                ) as caught:
+                    queue_builder.inspect_generation_queue(story, manifest)
+            self.assertIsInstance(caught.exception.__cause__, FileNotFoundError)
+            self.assertTrue(story.is_file())
+
+    def test_quality_publication_missing_plan_stays_a_quality_error(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, evaluation, generation, _quality = (
+                reference_fixtures.AuthoringSourceReferenceReviewTest().publish_quality_fixture(
+                    root
+                )
+            )
+            self._disappear_after(
+                source_reference_quality,
+                "load_source_reference_plan",
+                plan.directory / "plan.json",
+                lambda: (
+                    source_reference_quality.publish_source_reference_quality_review(
+                        plan.directory,
+                        evaluation.directory,
+                        generation.state,
+                        root / "outputs",
+                    )
+                ),
+                source_reference_quality.SourceReferenceQualityError,
+                root / "outputs",
+            )
+
+    def test_voice_reference_read_failure_stays_a_gate_error(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state, queue_id, plan, decision = (
+                gate_fixtures.AuthoringVoiceQualityGateTest().create_review(root)
+            )
+            gate = voice_quality_gate.build_voice_quality_gate(
+                workspace, plan, decision
+            )
+            loader = voice_quality_gate.load_workspace_authority
+            original_open = Path.open
+            authority_loaded = False
+
+            def load_then_arm(*args, **kwargs):
+                nonlocal authority_loaded
+                result = loader(*args, **kwargs)
+                authority_loaded = True
+                return result
+
+            def open_unless_reference(path, *args, **kwargs):
+                if authority_loaded and path.suffix == ".wav":
+                    raise PermissionError("Reference became unreadable")
+                return original_open(path, *args, **kwargs)
+
+            with (
+                patch.object(
+                    voice_quality_gate,
+                    "load_workspace_authority",
+                    side_effect=load_then_arm,
+                ),
+                patch.object(
+                    Path, "open", autospec=True, side_effect=open_unless_reference
+                ),
+            ):
+                with self.assertRaises(
+                    voice_quality_gate.VoiceQualityGateError
+                ) as caught:
+                    voice_quality_gate.inspect_voice_quality_gate(
+                        gate, workspace, queue_id
+                    )
+            self.assertIsInstance(caught.exception.__cause__, PermissionError)
 
     def test_reference_evaluation_missing_plan_stays_a_review_error(self):
         with TemporaryDirectory() as directory:

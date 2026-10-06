@@ -11,11 +11,12 @@ import wave
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import TypeAlias
 
 import numpy as np
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 from numpy.typing import NDArray
 from vntts_artifacts import (
     VoiceGenerationQueue,
@@ -50,7 +51,7 @@ from vntts.authoring.workspace_foundation import (
     load_json_object_snapshot,
 )
 from vntts.cli import cli_error, cli_success
-from vntts.document_identity import is_lowercase_sha256
+from vntts.document_identity import file_sha256, is_lowercase_sha256
 from vntts.reference_quality import ReferenceQualityReport, analyze_reference_bytes
 
 COMPOSITE_SCHEMA = "vntts.authoring-exact-bank-reference-composite"
@@ -133,6 +134,9 @@ class _CompositeClipInput:
     expected_sha256: str
     sample_rate: int
     samples: NDArray[np.float32]
+
+
+_file_sha256 = partial(file_sha256, error_type=ReferenceCompositeError)
 
 
 def publish_composite_quality_review(
@@ -243,7 +247,7 @@ def _load_composite_review_inputs(directory: Path) -> _CompositeReviewInputs:
         or type(evaluation.get("schema_version")) is not int
         or evaluation.get("schema_version") != COMPOSITE_EVALUATION_VERSION
         or evaluation.get("source_composite_sha256") != ledger_sha256
-        or evaluation.get("queue_sha256") != sha256_file(queue_path)
+        or evaluation.get("queue_sha256") != _file_sha256(queue_path)
     ):
         raise ReferenceCompositeError("Composite evaluation identity is invalid")
     return _CompositeReviewInputs(
@@ -285,7 +289,7 @@ def _load_composite_review_sources(
         raise ReferenceCompositeError("Composite ledger inventory is invalid")
     composite_source = _contained_file(directory, composite_record.get("path"))
     composite_sha256 = _sha256(composite_record.get("sha256"), "Composite WAV hash")
-    if sha256_file(composite_source) != composite_sha256:
+    if _file_sha256(composite_source) != composite_sha256:
         raise ReferenceCompositeError("Composite WAV changed")
     report_path = (
         Path(
@@ -406,7 +410,11 @@ def _matching_group(
 
 def _verify_snapshots(snapshots: list[Snapshot], error_prefix: str) -> None:
     for source, digest in snapshots:
-        if source.is_symlink() or not source.is_file() or sha256_file(source) != digest:
+        if (
+            source.is_symlink()
+            or not source.is_file()
+            or _file_sha256(source) != digest
+        ):
             raise ReferenceCompositeError(f"{error_prefix}: {source.name}")
 
 
@@ -801,7 +809,7 @@ def _write_composite_evaluation_inputs(
     character: str,
     composite_sha256: str,
 ) -> None:
-    ledger_sha256 = sha256_file(ledger_path)
+    ledger_sha256 = _file_sha256(ledger_path)
     voice_character = f"Exact bank composite {character} {composite_sha256[:12]}"
     manifest_path = staging / "voice-manifest.json"
     write_voice_manifest(
@@ -832,9 +840,9 @@ def _write_composite_evaluation_inputs(
             "source_composite": ledger_path.name,
             "source_composite_sha256": ledger_sha256,
             "voice_manifest": manifest_path.name,
-            "voice_manifest_sha256": sha256_file(manifest_path),
+            "voice_manifest_sha256": _file_sha256(manifest_path),
             "queue": queue_path.name,
-            "queue_sha256": sha256_file(queue_path),
+            "queue_sha256": _file_sha256(queue_path),
             "voice_character": voice_character,
             "fixed_queue_ids": queue_ids,
             "authority": (

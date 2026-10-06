@@ -6,10 +6,9 @@ from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from functools import cache
+from functools import cache, partial
 from pathlib import Path, PurePosixPath
 
-from durable_file import sha256_file
 from vntts_artifacts import (
     VOICE_GENERATION_QUEUE_SCHEMA,
     VOICE_GENERATION_QUEUE_SCHEMA_VERSION,
@@ -42,7 +41,7 @@ from vntts.chapter_voice_preload import (
     _source_audio_covers_full_line,
     _validated_source_audio_line_ids,
 )
-from vntts.document_identity import canonical_document_sha256
+from vntts.document_identity import canonical_document_sha256, file_sha256
 from vntts.voices import synthesis_character_for_line
 
 
@@ -122,6 +121,9 @@ _QUEUE_OWNED_FIELDS = frozenset(
         AUDIO_EVENT_PLAN_FIELD,
     }
 )
+
+
+_file_sha256 = partial(file_sha256, error_type=GenerationQueueBuildError)
 
 
 def plan_generation_queue(
@@ -376,9 +378,9 @@ def _source_queue_metadata(
     if document.language is not None:
         metadata["language"] = document.language
     metadata["source_story_index"] = str(document_path)
-    metadata["source_story_index_sha256"] = sha256_file(document_path)
+    metadata["source_story_index_sha256"] = _file_sha256(document_path)
     metadata["source_voice_manifest"] = str(voice_manifest_path)
-    metadata["source_voice_manifest_sha256"] = sha256_file(voice_manifest_path)
+    metadata["source_voice_manifest_sha256"] = _file_sha256(voice_manifest_path)
     return metadata
 
 

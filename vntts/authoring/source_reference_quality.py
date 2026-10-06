@@ -8,9 +8,10 @@ import json
 import tempfile
 from collections.abc import MutableSequence
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path, PurePosixPath
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts import (
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
@@ -56,6 +57,7 @@ from vntts.authoring.source_reference_review import (
     load_source_reference_plan,
 )
 from vntts.cli import cli_error, cli_success
+from vntts.document_identity import file_sha256
 
 
 @dataclass(frozen=True)
@@ -93,6 +95,9 @@ class _QualityReviewInputs:
     evaluation_variants: list[object]
 
 
+_file_sha256 = partial(file_sha256, error_type=SourceReferenceQualityError)
+
+
 def publish_source_reference_quality_review(
     plan_directory: str | Path,
     evaluation_directory: str | Path,
@@ -127,7 +132,7 @@ def _load_quality_review_plan(directory: Path) -> _QualityReviewPlan:
     payload, snapshot = _read_json(path, "source-reference plan")
     digest = hashlib.sha256(payload).hexdigest()
     document = load_source_reference_plan(directory)
-    if document != snapshot or sha256_file(path) != digest:
+    if document != snapshot or _file_sha256(path) != digest:
         raise SourceReferenceQualityError(
             "Source-reference plan changed while it was loaded"
         )
@@ -156,7 +161,7 @@ def _load_quality_review_evaluation(
     queue_sha256 = _required_sha256(
         document.get("queue_sha256"), "evaluation queue hash"
     )
-    if sha256_file(queue_path) != queue_sha256:
+    if _file_sha256(queue_path) != queue_sha256:
         raise SourceReferenceQualityError("Evaluation queue changed")
     try:
         queue_payload = queue_path.read_bytes()
@@ -354,7 +359,7 @@ def _stage_reference_audio(
         variant.get("source_audio_sha256"),
         f"variant {variant_id} source audio hash",
     )
-    if sha256_file(source) != source_sha256:
+    if _file_sha256(source) != source_sha256:
         raise SourceReferenceQualityError(
             f"Evaluation source audio changed: {variant_id}"
         )
@@ -446,7 +451,7 @@ def _verify_quality_review_snapshots(
     snapshots: MutableSequence[tuple[Path, str]],
 ) -> None:
     for source, digest in snapshots:
-        if sha256_file(source) != digest:
+        if _file_sha256(source) != digest:
             raise SourceReferenceQualityError(
                 f"Source changed during quality review publication: {source.name}"
             )

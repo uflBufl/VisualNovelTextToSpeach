@@ -4,8 +4,7 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
-from durable_file import sha256_file
-
+from vntts.document_identity import file_sha256
 from vntts.pregeneration_voices import VoiceCandidate, VoiceGroup, VoicePlan
 from vntts.reference_quality import analyze_reference_bytes
 from vntts.settings import AppSettings
@@ -84,7 +83,7 @@ def narrator_preview_plan(
         if manifest is None:
             raise ValueError("The selected game reference is unavailable")
         registry = CharacterVoiceRegistry.from_file(manifest)
-        identity = sha256_file(manifest)
+        identity = file_sha256(manifest)
     voice = registry.resolve_source(source_id)
     if voice is None or (not preset and not voice.references):
         raise ValueError("The selected game reference is unavailable")
@@ -92,7 +91,7 @@ def narrator_preview_plan(
         source_id=source_id,
         source_character=voice.character,
         source_speaker=voice.speaker,
-        reference_sha256s=tuple(sha256_file(path) for path in voice.references),
+        reference_sha256s=tuple(file_sha256(path) for path in voice.references),
         reference_transcript=reference_transcript or voice.reference_transcript,
     )
     controls = hashlib.sha256(

@@ -5,10 +5,10 @@ from __future__ import annotations
 import copy
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import TypeAlias, TypedDict, TypeIs
 
-from durable_file import sha256_file
 from vntts_artifacts.voice_manifest import (
     VoiceManifestError,
     load_voice_manifest,
@@ -37,7 +37,7 @@ from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     load_workspace_authority,
 )
-from vntts.document_identity import is_lowercase_sha256
+from vntts.document_identity import file_sha256, is_lowercase_sha256
 
 VOICE_QUALITY_GATE_SCHEMA = "vntts.authoring-voice-quality-gate"
 VOICE_QUALITY_GATE_VERSION = 1
@@ -121,6 +121,9 @@ class VoiceQualityCohortCompatibility:
             "differences": list(self.differences),
             "story_sample_required": self.story_sample_required,
         }
+
+
+_file_sha256 = partial(file_sha256, error_type=VoiceQualityGateError)
 
 
 def build_voice_quality_gate(
@@ -413,7 +416,7 @@ def _voice_references(
             ) from error
         if not path.is_file():
             raise VoiceQualityGateError("Voice reference is missing or unsafe")
-        reference_hashes.append(sha256_file(path))
+        reference_hashes.append(_file_sha256(path))
     return matches[0].speaker, reference_hashes
 
 
