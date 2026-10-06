@@ -14,6 +14,8 @@ import soundfile as sf
 from numpy.typing import NDArray
 from scipy.signal import resample_poly
 
+from vntts.cleanup import attempt_cleanup, cleanup_on_exit
+
 
 class PcmPlaybackError(RuntimeError):
     pass
@@ -122,10 +124,11 @@ class PersistentPcmPlayer:
             stream.start()
         except Exception as error:
             if stream is not None:
-                try:
-                    stream.close()
-                except Exception as cleanup_error:
-                    error.add_note(f"Output stream cleanup failed: {cleanup_error}")
+                attempt_cleanup(
+                    stream.close,
+                    description="Output stream cleanup",
+                    primary_error=error,
+                )
             raise PcmPlaybackError(
                 f"Unable to open the output stream: {error}"
             ) from error
@@ -270,11 +273,11 @@ class PersistentPcmPlayer:
         if self._closed:
             return
         self._closed = True
-        self.stop()
-        try:
-            self.stream.abort()
-        finally:
-            self.stream.close()
+        with (
+            cleanup_on_exit(self.stream.close, description="Output stream cleanup"),
+            cleanup_on_exit(self.stream.abort, description="Output stream abort"),
+        ):
+            self.stop()
 
     def _callback(
         self,

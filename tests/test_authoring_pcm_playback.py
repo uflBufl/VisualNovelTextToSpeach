@@ -179,8 +179,55 @@ class PersistentPcmPlayerTest(unittest.TestCase):
         self.assertTrue(audio.stream.aborted)
         self.assertTrue(audio.stream.closed)
 
+    def test_close_attempts_each_release_once_and_preserves_first_failure(self):
+        for failed_phase in ("stop", "abort", "close"):
+            with self.subTest(failed_phase=failed_phase):
+                audio = FakeAudioModule()
+                player = PersistentPcmPlayer(audio)
+                primary = RuntimeError(f"{failed_phase} failed")
+                failures = {failed_phase: primary}
+                if failed_phase == "stop":
+                    failures["abort"] = KeyboardInterrupt("abort cleanup failed")
+                if failed_phase != "close":
+                    failures["close"] = SystemExit("close cleanup failed")
+                released = []
+
+                def release(phase):
+                    released.append(phase)
+                    if phase in failures:
+                        raise failures[phase]
+
+                with (
+                    patch.object(player, "stop", side_effect=lambda: release("stop")),
+                    patch.object(
+                        audio.stream, "abort", side_effect=lambda: release("abort")
+                    ),
+                    patch.object(
+                        audio.stream, "close", side_effect=lambda: release("close")
+                    ),
+                ):
+                    with self.assertRaises(RuntimeError) as caught:
+                        player.close()
+                    player.close()
+                self.assertIs(caught.exception, primary)
+                self.assertEqual(released, ["stop", "abort", "close"])
+                expected_notes = []
+                if failed_phase == "stop":
+                    expected_notes.append(
+                        "Output stream abort failed: abort cleanup failed"
+                    )
+                if failed_phase != "close":
+                    expected_notes.append(
+                        "Output stream cleanup failed: close cleanup failed"
+                    )
+                self.assertEqual(getattr(primary, "__notes__", []), expected_notes)
+
     def test_startup_failure_survives_a_stream_cleanup_failure(self):
-        for cleanup_error in (None, RuntimeError("device refused cleanup")):
+        for cleanup_error in (
+            None,
+            RuntimeError("device refused cleanup"),
+            SystemExit("device refused cleanup"),
+        ):
             with self.subTest(cleanup_error=cleanup_error):
                 audio = FakeAudioModule()
                 startup_error = RuntimeError("device refused startup")
