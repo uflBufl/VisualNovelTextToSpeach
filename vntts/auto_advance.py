@@ -5,6 +5,8 @@ from typing import Protocol, runtime_checkable
 
 from pynput import keyboard
 
+from vntts.cleanup import attempt_cleanup
+
 advance_keys = {
     "space": keyboard.Key.space,
     "enter": keyboard.Key.enter,
@@ -113,10 +115,11 @@ def _send_key_pair(press: Callable[[], object], release: Callable[[], object]) -
     try:
         press()
     except BaseException as error:
-        try:
-            release()
-        except Exception as release_error:
-            error.add_note(f"Auto-advance key release failed: {release_error}")
+        attempt_cleanup(
+            release,
+            description="Auto-advance key release",
+            primary_error=error,
+        )
         raise
     else:
         release()

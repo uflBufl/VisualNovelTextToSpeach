@@ -4534,6 +4534,29 @@ class TrayApplicationTest(unittest.TestCase):
         finally:
             tray.shutdown()
 
+    def test_hotkey_start_preserves_fatal_start_error_when_cleanup_is_fatal(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        candidate = Mock()
+        start_error = KeyboardInterrupt()
+        candidate.start.side_effect = start_error
+        candidate.stop.side_effect = SystemExit("cleanup interrupted")
+        try:
+            with (
+                patch("vntts.app.sys.platform", "win32"),
+                patch("vntts.app.keyboard.GlobalHotKeys", return_value=candidate),
+                self.assertRaises(KeyboardInterrupt) as raised,
+            ):
+                tray.start_hotkeys()
+            self.assertIs(raised.exception, start_error)
+            self.assertIn("Hotkey listener cleanup failed", start_error.__notes__[0])
+            candidate.stop.assert_called_once_with()
+        finally:
+            tray.shutdown()
+
     def test_hotkey_registration_is_deferred_on_the_qt_thread(self):
         controller = Mock()
         controller.start.return_value = True

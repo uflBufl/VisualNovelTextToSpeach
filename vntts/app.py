@@ -66,6 +66,7 @@ from vntts.calibration import (
     capture_calibration_background,
     show_calibration_overlay,
 )
+from vntts.cleanup import attempt_cleanup
 from vntts.configuration_apply import ConfigurationApplyMixin
 from vntts.controller import AppController, LiveSequenceStatus
 from vntts.dashboard_ui import (
@@ -2300,10 +2301,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         try:
             listener.start()
         except BaseException as error:
-            try:
-                listener.stop()
-            except Exception as cleanup_error:
-                error.add_note(f"Hotkey listener cleanup failed: {cleanup_error}")
+            attempt_cleanup(
+                listener.stop,
+                description="Hotkey listener cleanup",
+                primary_error=error,
+            )
             raise
         previous = self.hotkey_listener
         self.hotkey_listener = listener

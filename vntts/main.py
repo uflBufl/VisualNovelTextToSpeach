@@ -7,6 +7,7 @@ from collections.abc import Callable
 
 from pynput import keyboard
 
+from vntts.cleanup import attempt_cleanup
 from vntts.cli import cli_error
 from vntts.controller import (
     AppController,
@@ -74,10 +75,11 @@ def listen_for_hotkeys(
         listener.wait()
         listener.join()
     except BaseException as error:
-        try:
-            listener.stop()
-        except Exception as cleanup_error:
-            error.add_note(f"Hotkey listener cleanup failed: {cleanup_error}")
+        attempt_cleanup(
+            listener.stop,
+            description="Hotkey listener cleanup",
+            primary_error=error,
+        )
         raise
     else:
         listener.stop()

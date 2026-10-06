@@ -1855,7 +1855,11 @@ class MainTest(unittest.TestCase):
 
     def test_listener_is_stopped_when_acquisition_or_waiting_is_interrupted(self):
         for stage in ("start", "wait", "join"):
-            for cleanup_error in (None, RuntimeError("cleanup unavailable")):
+            for cleanup_error in (
+                None,
+                RuntimeError("cleanup unavailable"),
+                SystemExit("cleanup interrupted"),
+            ):
                 listener = Mock()
                 interruption = KeyboardInterrupt()
                 getattr(listener, stage).side_effect = interruption
