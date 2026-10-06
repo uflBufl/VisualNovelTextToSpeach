@@ -23,6 +23,7 @@ from vntts.authoring.publication import (
     staged_directory,
 )
 from vntts.authoring.workspace_foundation import load_json_object, require_sha256
+from vntts.document_identity import canonical_document_sha256
 from vntts.path_safety import safe_relative_path
 
 SESSION_SCHEMA = "r1999.model-listening-session"
@@ -142,20 +143,19 @@ def inspect_listening_session(
         "source_sha256": session.get("source_sha256"),
         "blind_key_sha256": session.get("blind_key_sha256"),
     }
-    logical_identity = hashlib.sha256(_canonical(logical_payload)).hexdigest()
-    fingerprint = hashlib.sha256(
-        _canonical(
-            [
-                (
-                    role,
-                    destination.as_posix(),
-                    digest,
-                    key_mode if role == "blind_listening_key" else None,
-                )
-                for role, source, destination, digest in artifacts
-            ]
-        )
-    ).hexdigest()
+    logical_identity = canonical_document_sha256(logical_payload, allow_nan=True)
+    fingerprint = canonical_document_sha256(
+        [
+            (
+                role,
+                destination.as_posix(),
+                digest,
+                key_mode if role == "blind_listening_key" else None,
+            )
+            for role, source, destination, digest in artifacts
+        ],
+        allow_nan=True,
+    )
     inspection = ListeningImportInspection(
         session_directory=root,
         logical_identity=logical_identity,

@@ -118,6 +118,7 @@ from vntts.authoring.workspace_state import (
     cached_workspace_generation_state,
     shared_workspace_state_reads,
 )
+from vntts.document_identity import canonical_document_sha256
 from vntts.voices import (
     CharacterVoice,
     CharacterVoiceRegistry,
@@ -743,14 +744,7 @@ def _list_review_items_from_read(
                             _required_text(state.get("queue_sha256"), "Queue SHA-256")
                         ),
                         state_sha256=state_sha256,
-                        item_sha256=hashlib.sha256(
-                            json.dumps(
-                                result,
-                                ensure_ascii=False,
-                                sort_keys=True,
-                                separators=(",", ":"),
-                            ).encode("utf-8")
-                        ).hexdigest(),
+                        item_sha256=canonical_document_sha256(result, allow_nan=True),
                         audio_sha256=str(result["file_sha256"]),
                     )
                     if status in {"generated", "approved"}

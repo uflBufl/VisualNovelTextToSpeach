@@ -402,14 +402,9 @@ def _failure_comparison_samples(
                     if isinstance(failure, dict) and failure.get("kind")
                     else None
                 ),
-                "source_state_item_sha256": hashlib.sha256(
-                    json.dumps(
-                        result,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                        sort_keys=True,
-                    ).encode("utf-8")
-                ).hexdigest(),
+                "source_state_item_sha256": canonical_document_sha256(
+                    result, allow_nan=True
+                ),
             }
         )
     return samples

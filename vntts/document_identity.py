@@ -5,13 +5,14 @@ import json
 from typing import TypeGuard
 
 
-def canonical_document_sha256(document: object) -> str:
+def canonical_document_sha256(document: object, *, allow_nan: bool = False) -> str:
+    """Hash canonical JSON; strict finite JSON is default, legacy NaN is opt-in."""
     payload = json.dumps(
         document,
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
-        allow_nan=False,
+        allow_nan=allow_nan,
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 

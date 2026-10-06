@@ -44,6 +44,7 @@ from vntts.chapter_voice_preload import (
     _has_authoritative_source_audio,
     _validated_source_audio_line_ids,
 )
+from vntts.document_identity import canonical_document_sha256
 from vntts.person_link_suggestions import (
     PersonLinkSuggestion,
     suggest_person_links,
@@ -2383,13 +2384,7 @@ def _decision_key(group_id: str, decision_context_sha256: str) -> str:
 
 
 def _digest(value: object) -> str:
-    payload = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+    return canonical_document_sha256(value, allow_nan=True)
 
 
 def _is_sha256(value: object) -> bool:

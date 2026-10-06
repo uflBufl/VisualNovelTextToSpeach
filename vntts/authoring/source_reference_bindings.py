@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Iterable, Mapping
 
 from vntts_artifacts.voice_manifest import VoiceManifestEntry, normalize_character_name
 
-from vntts.document_identity import is_lowercase_sha256
+from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 
 SOURCE_REFERENCE_BINDINGS_FIELD = "vntts.authoring.source_reference_bindings"
 SOURCE_REFERENCE_BINDINGS_SCHEMA = "vntts.authoring-source-reference-bindings"
@@ -1034,13 +1032,7 @@ def retired_source_reference_variants_from_manifest(
 
 
 def queue_voice_overrides_sha256(overrides: Mapping[str, str]) -> str:
-    rendered = json.dumps(
-        dict(sorted(overrides.items())),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(rendered).hexdigest()
+    return canonical_document_sha256(dict(sorted(overrides.items())), allow_nan=True)
 
 
 def _text(value: object, label: str) -> str:

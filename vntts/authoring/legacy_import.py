@@ -40,6 +40,7 @@ from vntts.authoring.publication import (
     staged_directory,
 )
 from vntts.authoring.workspace_foundation import load_json_object
+from vntts.document_identity import canonical_document_sha256
 
 LEGACY_JOB_SCHEMA = "r1999.pregeneration-job"
 LEGACY_JOB_SCHEMA_VERSION = 1
@@ -1141,14 +1142,9 @@ def _import_identities(plan: _ImportPlan) -> list[JsonDocument]:
                 "queue_id": queue_item.queue_id,
                 "line_id": queue_item.line_id,
                 "text_sha256": queue_item.text_sha256,
-                "queue_item_sha256": hashlib.sha256(
-                    json.dumps(
-                        queue_item.document,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                        sort_keys=True,
-                    ).encode("utf-8")
-                ).hexdigest(),
+                "queue_item_sha256": canonical_document_sha256(
+                    queue_item.document, allow_nan=True
+                ),
                 "attempts": state.get("attempts"),
                 "seed": state.get("seed"),
                 "status": state.get("status", "pending"),

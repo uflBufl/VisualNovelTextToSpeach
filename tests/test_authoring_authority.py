@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import unittest
@@ -12,9 +13,19 @@ from vntts.authoring.authority import (
     capture_authority_file,
     write_json_document_no_replace,
 )
+from vntts.document_identity import canonical_document_sha256
 
 
 class AuthoringAuthorityTest(unittest.TestCase):
+    def test_canonical_document_hash_is_strict_with_explicit_legacy_nan(self):
+        document = {"value": float("nan")}
+        with self.assertRaises(ValueError):
+            canonical_document_sha256(document)
+        self.assertEqual(
+            canonical_document_sha256(document, allow_nan=True),
+            hashlib.sha256(b'{"value":NaN}').hexdigest(),
+        )
+
     def test_capture_rejects_relative_symlink(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -64,7 +64,7 @@ from vntts.chapter_voice_preload import (
     _source_audio_covers_full_line,
     _validated_source_audio_line_ids,
 )
-from vntts.document_identity import is_lowercase_sha256
+from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 
 SOURCE_REPORT_SCHEMA = "r1999.story-voice-reference-candidates"
 SOURCE_REPORT_VERSIONS = frozenset({1, 2})
@@ -2214,14 +2214,7 @@ def _load_candidate(
     candidate_key = _candidate_key(
         character, portrait, bank, media_id, reference_sha256
     )
-    evidence_sha256 = hashlib.sha256(
-        json.dumps(
-            value,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-    ).hexdigest()
+    evidence_sha256 = canonical_document_sha256(value, allow_nan=True)
     return {
         "candidate_key": candidate_key,
         "evidence_sha256": evidence_sha256,
@@ -2344,12 +2337,9 @@ def _candidate_key(
     media_id: int,
     reference_sha256: str,
 ) -> str:
-    identity = json.dumps(
-        [character, portrait, bank, media_id, reference_sha256],
-        ensure_ascii=False,
-        separators=(",", ":"),
+    return canonical_document_sha256(
+        [character, portrait, bank, media_id, reference_sha256], allow_nan=True
     )
-    return hashlib.sha256(identity.encode()).hexdigest()
 
 
 def _candidate_transcripts(
@@ -2375,10 +2365,10 @@ def _candidate_transcripts(
 
 
 def _cluster_id(character: str, portrait: str | None, bank: str) -> str:
-    identity = json.dumps(
-        [character, portrait, bank], ensure_ascii=False, separators=(",", ":")
+    return (
+        "cluster-"
+        + canonical_document_sha256([character, portrait, bank], allow_nan=True)[:24]
     )
-    return f"cluster-{hashlib.sha256(identity.encode()).hexdigest()[:24]}"
 
 
 def _read_json(path: str | Path, label: str) -> tuple[Path, bytes, JsonObject]:
