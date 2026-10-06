@@ -14,8 +14,7 @@ from vntts_artifacts.voice_generation_queue import (
 )
 
 from vntts.authoring.authority import canonical_document_sha256
-from vntts.authoring.workspace_foundation import file_sha256
-from vntts.document_identity import is_lowercase_sha256
+from vntts.document_identity import file_sha256, is_lowercase_sha256
 
 SCHEMA = "vntts.authoring-generation-queue-extension"
 SCHEMA_VERSION = 1

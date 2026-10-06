@@ -52,7 +52,7 @@ from vntts.authoring.workbench import (
     contained_workspace_path,
     safe_workspace_relative_path,
 )
-from vntts.authoring.workspace_foundation import file_sha256
+from vntts.document_identity import file_sha256
 from vntts.voices import voice_manifest_entries_at_path
 
 MISSING_VOICE_REUSE_DECISION_SCHEMA = "vntts.authoring-missing-voice-reuse-decision"

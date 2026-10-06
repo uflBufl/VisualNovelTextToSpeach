@@ -46,7 +46,8 @@ from vntts.authoring.missing_voice_reuse_binding import (
     _validate_binding_bundle,
 )
 from vntts.authoring.workbench import inspect_workspace
-from vntts.authoring.workspace_foundation import file_sha256, load_json_object
+from vntts.authoring.workspace_foundation import load_json_object
+from vntts.document_identity import file_sha256
 from vntts.voices import synthesis_character_for_line
 
 AUTOMATIC_UNRESOLVED_ORIGIN = "automatic_no_complete_candidate"

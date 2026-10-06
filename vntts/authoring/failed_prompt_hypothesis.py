@@ -26,7 +26,7 @@ from vntts.authoring.missing_voice_reuse_review import (
     load_missing_voice_reuse_review,
 )
 from vntts.authoring.publication import no_replace_destination
-from vntts.authoring.workspace_foundation import file_sha256
+from vntts.document_identity import file_sha256
 
 FAILED_PROMPT_SELECTION_SCHEMA = "vntts.authoring-failed-prompt-selection"
 FAILED_PROMPT_SELECTION_VERSION = 1

@@ -5,22 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, MutableSequence
-from os import PathLike
 from pathlib import Path
 
-from durable_file import sha256_file
-
 from vntts.path_safety import contained_path, contained_regular_file, safe_relative_path
-
-
-def file_sha256(
-    path: str | PathLike[str], *, error_type: type[Exception] = ValueError
-) -> str:
-    """Stream one file checksum through the caller's domain error boundary."""
-    try:
-        return sha256_file(path)
-    except OSError as error:
-        raise error_type(str(error)) from error
 
 
 def read_regular_file(
@@ -233,7 +220,6 @@ __all__ = [
     "contained_regular_file",
     "copy_generation_wavs",
     "copy_workspace_tree_snapshot",
-    "file_sha256",
     "load_json_object",
     "load_json_object_snapshot",
     "read_regular_file",

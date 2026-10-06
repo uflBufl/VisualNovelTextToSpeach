@@ -1,8 +1,21 @@
-"""Runtime-neutral identity for JSON-compatible documents."""
+"""Runtime-neutral checksums for documents and files."""
 
 import hashlib
 import json
+from os import PathLike
 from typing import TypeGuard
+
+from durable_file import sha256_file
+
+
+def file_sha256(
+    path: str | PathLike[str], *, error_type: type[Exception] = ValueError
+) -> str:
+    """Stream one file checksum through the caller's domain error boundary."""
+    try:
+        return sha256_file(path)
+    except OSError as error:
+        raise error_type(str(error)) from error
 
 
 def canonical_document_sha256(document: object, *, allow_nan: bool = False) -> str:
@@ -25,4 +38,4 @@ def is_lowercase_sha256(value: object) -> TypeGuard[str]:
     )
 
 
-__all__ = ["canonical_document_sha256", "is_lowercase_sha256"]
+__all__ = ["canonical_document_sha256", "file_sha256", "is_lowercase_sha256"]

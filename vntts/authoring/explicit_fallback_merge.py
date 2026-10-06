@@ -52,9 +52,9 @@ from vntts.authoring.workspace_config import (
 from vntts.authoring.workspace_foundation import (
     copy_generation_wavs,
     copy_workspace_tree_snapshot,
-    file_sha256,
 )
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
+from vntts.document_identity import file_sha256
 
 _copy_base_wavs = partial(
     copy_generation_wavs,

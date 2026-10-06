@@ -46,11 +46,9 @@ from vntts.authoring.workspace_config import (
     workspace_id_for_config,
     workspace_successor_config_fingerprint,
 )
-from vntts.authoring.workspace_foundation import (
-    file_sha256,
-    stage_single_base_successor,
-)
+from vntts.authoring.workspace_foundation import stage_single_base_successor
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
+from vntts.document_identity import file_sha256
 
 _file_sha256 = partial(file_sha256, error_type=AuthoringWorkbenchError)
 
