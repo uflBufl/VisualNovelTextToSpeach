@@ -31,6 +31,8 @@ _modifier_keys: set[keyboard.Key] = {
     keyboard.Key.shift_r,
 }
 
+_modifier_key_codes = {keyboard.KeyCode.from_vk(key.value.vk) for key in _modifier_keys}
+
 
 def default_hotkey(key: str, *, platform: str | None = None) -> str:
     platform = sys.platform if platform is None else platform
@@ -48,6 +50,11 @@ def validate_hotkey_assignments(
             parsed = keyboard.HotKey.parse(hotkey)
         except (TypeError, ValueError) as error:
             raise HotkeyValidationError(f"{label}: {error}", label=label) from error
+        if any(key in _modifier_key_codes for key in parsed):
+            raise HotkeyValidationError(
+                f"{label}: use canonical modifier names, such as <ctrl> or <shift>",
+                label=label,
+            )
         regular_keys = [key for key in parsed if key not in _modifier_keys]
         if len(regular_keys) != 1 or len(parsed) == 1:
             raise HotkeyValidationError(

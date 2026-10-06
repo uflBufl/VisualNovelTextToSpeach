@@ -4,6 +4,7 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from pynput import keyboard  # noqa: E402
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QKeySequence  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
@@ -53,6 +54,30 @@ class HotkeyValidationTest(unittest.TestCase):
                 {"Read once": "<ctrl>+<shift>"},
                 platform="win32",
             )
+
+    def test_modifier_virtual_key_codes_cannot_be_registered_as_regular_keys(self):
+        for modifier in (keyboard.Key.ctrl_r, keyboard.Key.shift_r, keyboard.Key.alt_r):
+            code = f"<{modifier.value.vk}>"
+            for hotkey in (f"<ctrl>+{code}", f"<ctrl>+{code}+h"):
+                with self.subTest(hotkey=hotkey):
+                    with self.assertRaisesRegex(
+                        HotkeyValidationError, "canonical modifier"
+                    ):
+                        validate_hotkey_assignments({"Read once": hotkey})
+
+    def test_side_modifier_aliases_follow_the_listener_canonicalization(self):
+        canonical = {keyboard.Key.ctrl, keyboard.Key.shift, keyboard.Key.alt}
+        for name in ("ctrl_l", "ctrl_r", "shift_l", "shift_r", "alt_l", "alt_r"):
+            hotkey = f"<{name}>+h"
+            parsed = keyboard.HotKey.parse(hotkey)
+            with self.subTest(hotkey=hotkey):
+                if parsed[0] in canonical:
+                    validate_hotkey_assignments({"Read once": hotkey})
+                else:
+                    with self.assertRaisesRegex(
+                        HotkeyValidationError, "canonical modifier"
+                    ):
+                        validate_hotkey_assignments({"Read once": hotkey})
 
     def test_unmodified_shortcut_is_rejected(self):
         with self.assertRaisesRegex(HotkeyValidationError, "modifiers"):
