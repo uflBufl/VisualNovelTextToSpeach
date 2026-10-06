@@ -561,8 +561,3 @@ Planned implementation order after approval:
 ## Investigate intermittent macOS Qt test crash
 
 - [ ] A macOS changed-test run intermittently terminated with `shiboken6` `mainThreadDeletionHandler` SIGSEGV during pure-Python `test_player_session` after UI tests. The exact final 10-test sequence passed 10 times, the full onboarding/person/player sequence passed five times, and a later 2734-test selector passed. Reproduce and bisect an earlier Qt owner in the remainder shard with faulthandler before changing cleanup; retain the crash log in `.codex/investigations/` if it becomes repeatable. Gate: a narrowed failing sequence and a deterministic cleanup check.
-
-## Shared voice-manifest version contract
-
-- [ ] In vntts-artifacts, update validate_voice_manifest to require an actual integer for explicit non-legacy versions before comparing with VOICE_MANIFEST_VERSION. Current pinned0.7.2 and owner origin/main accept JSON version2.0; preserve the supported missing-version legacy path. Add owner contract cases rejecting 2.0, True and "2" while accepting integer2 and supported legacy documents; run shared contract and package checks.
-- [ ] Release the verified shared-library fix and update only VNTTS's vntts-artifacts pin/lock through the shared release workflow. Keep local manifest/reference-selection callers on the shared validator. Gate: required local-first and fresh-main changed-test selectors, voice/reference-selection/import tests, root typing/complexity/lock checks and supported package imports. Do not add per-caller duplicate version guards.
