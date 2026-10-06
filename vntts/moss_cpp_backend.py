@@ -740,6 +740,25 @@ def _integer_setting(name: str, default: int, minimum: int, maximum: int) -> int
     )
 
 
+def _decode_response_audio(data: bytes) -> np.ndarray:
+    with wave.open(io.BytesIO(data), "rb") as output:
+        if (
+            output.getframerate() != 48000
+            or output.getnchannels() != 2
+            or output.getsampwidth() != 2
+            or output.getcomptype() != "NONE"
+        ):
+            raise TTSSynthesisError("MOSS C++ returned an unexpected audio format")
+        samples = output.getnframes()
+        raw = output.readframes(samples)
+        if len(raw) != samples * 4:
+            raise TTSSynthesisError("MOSS C++ returned a truncated WAV")
+        pcm = np.frombuffer(raw, dtype="<i2").reshape(-1, 2).astype(np.float32) / 32768
+    if not pcm.size or not np.isfinite(pcm).all():
+        raise TTSSynthesisError("MOSS C++ returned empty or invalid audio")
+    return pcm
+
+
 class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
     # Qualified with the Windows native Centurion probe and listening approval.
     # Keep Delay defaults independent; its shared stable profile remains 0.8.
@@ -1460,6 +1479,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         offset = 0
         headers: NativeHeaders = {}
         worker: Thread | None = None
+        primary_error: BaseException | None = None
         server_pid = None
         request_s = None
         reference_prepare_s = http_round_trip_s = response_pcm_decode_s = None
@@ -1671,26 +1691,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 raise TTSSynthesisError(
                     "MOSS C++ response is missing its audio-frame count"
                 )
-            with wave.open(io.BytesIO(data), "rb") as output:
-                if (
-                    output.getframerate() != 48000
-                    or output.getnchannels() != 2
-                    or output.getsampwidth() != 2
-                    or output.getcomptype() != "NONE"
-                ):
-                    raise TTSSynthesisError(
-                        "MOSS C++ returned an unexpected audio format"
-                    )
-                samples = output.getnframes()
-                raw = output.readframes(samples)
-                if len(raw) != samples * 4:
-                    raise TTSSynthesisError("MOSS C++ returned a truncated WAV")
-                pcm = (
-                    np.frombuffer(raw, dtype="<i2").reshape(-1, 2).astype(np.float32)
-                    / 32768
-                )
-            if not pcm.size or not np.isfinite(pcm).all():
-                raise TTSSynthesisError("MOSS C++ returned empty or invalid audio")
+            pcm = _decode_response_audio(data)
             response_pcm_decode_s = round(monotonic() - response_started, 6)
             outcome = "limited" if frames >= frame_limit else "complete"
             reason = "frame-limit" if frames >= frame_limit else None
@@ -1698,10 +1699,14 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             audio_s = round(len(pcm) / self.sample_rate, 6)
             request_s = round(monotonic() - started, 3)
             yield SimpleNamespace(audio=pcm, generation_limited=frames >= frame_limit)
-        except Exception:
+        except Exception as error:
             reason = reason or f"{stage}-failed"
             if cancelled():
                 return
+            primary_error = error
+            raise
+        except BaseException as error:
+            primary_error = error
             raise
         finally:
             if cancelled():
@@ -1755,9 +1760,22 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 **stages,
             )
             if outcome in {"failed", "cancelled"}:
-                self._stop_server(f"generation-{outcome}")
-                if worker is not None:
-                    worker.join(timeout=2)
+                attempt_cleanup(
+                    lambda: self._stop_generation(f"generation-{outcome}", worker),
+                    description="Native speech generation cleanup",
+                    primary_error=primary_error,
+                )
+
+    def _stop_generation(self, reason: str, worker: Thread | None) -> None:
+        with ExitStack() as resources:
+            if worker is not None:
+                resources.enter_context(
+                    cleanup_on_exit(
+                        lambda: worker.join(timeout=2),
+                        description="Native speech request thread cleanup",
+                    )
+                )
+            self._stop_server(reason)
 
     def _stop_server(self, reason: str = "shutdown") -> None:
         with self.server_lock:
@@ -1811,7 +1829,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                             pass  # Kill is final; do not turn shutdown into another hang.
 
     def shutdown(self) -> None:
-        try:
+        with cleanup_on_exit(
+            self._stop_server, description="Native speech server cleanup"
+        ):
             self.stop()
-        finally:
-            self._stop_server()

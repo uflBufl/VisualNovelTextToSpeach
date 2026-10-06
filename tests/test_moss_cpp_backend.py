@@ -210,6 +210,22 @@ class WindowsOwnedServerTest(unittest.TestCase):
                     any("directory cleanup failed" in note for note in notes)
                 )
 
+    def test_generation_cleanup_attempts_thread_join_after_server_stop_failure(self):
+        backend = object.__new__(MossCppVoiceRouterBackend)
+        primary = OSError("server stop failed")
+        worker = Mock()
+        worker.join.side_effect = RuntimeError("join failed")
+        with patch.object(backend, "_stop_server", side_effect=primary) as stop:
+            with self.assertRaises(OSError) as raised:
+                backend._stop_generation("generation-failed", worker)
+        self.assertIs(raised.exception, primary)
+        self.assertEqual(
+            primary.__notes__,
+            ["Native speech request thread cleanup failed: join failed"],
+        )
+        stop.assert_called_once_with("generation-failed")
+        worker.join.assert_called_once_with(timeout=2)
+
     def test_forced_server_shutdown_stays_bounded_when_wait_never_finishes(self):
         server = Mock()
         server.poll.return_value = None
@@ -466,6 +482,140 @@ class MossCppBackendTest(unittest.TestCase):
                 for note in raised.exception.__notes__
             )
         )
+
+    def test_generation_cleanup_keeps_real_http_failure(self):
+        backend = self.backend()
+        primary = TTSSynthesisError("MOSS C++ generation failed (HTTP 500)")
+        log, directory = backend.server_log, backend.server_directory
+        original_close, original_cleanup = log.close, directory.cleanup
+
+        def close_then_fail():
+            original_close()
+            raise OSError("log close failed")
+
+        def remove_then_fail():
+            original_cleanup()
+            raise OSError("directory cleanup failed")
+
+        with (
+            patch(
+                "vntts.moss_cpp_backend.TTSSynthesisError", return_value=primary
+            ) as error,
+            patch.object(log, "close", side_effect=close_then_fail),
+            patch.object(directory, "cleanup", side_effect=remove_then_fail),
+            self.assertRaises(TTSSynthesisError) as raised,
+        ):
+            backend.render(SynthesisRequest("Narrator", "Fail.")).collect()
+        error.assert_called_once_with("MOSS C++ generation failed (HTTP 500)")
+        self.assertIs(raised.exception, primary)
+        self.assertEqual(
+            primary.__notes__,
+            [
+                "Native speech generation cleanup failed: log close failed",
+                "Native speech server directory cleanup failed: directory cleanup failed",
+            ],
+        )
+        self.assertIsNotNone(self.children[0].poll())
+        self.assertFalse(Path(directory.name).exists())
+        self.assertEqual(
+            backend.render(SynthesisRequest("Narrator", "Again.")).collect().completion,
+            SynthesisCompletion.COMPLETE,
+        )
+        self.assertEqual(len(self.children), 2)
+
+    def test_generation_cleanup_keeps_fatal_interruption(self):
+        backend = self.backend()
+        primary = KeyboardInterrupt("generation interrupted")
+        original_stop = backend._stop_server
+
+        def stop_then_fail(reason="shutdown"):
+            original_stop(reason)
+            raise OSError("server cleanup failed")
+
+        with (
+            patch.object(backend, "_start_server", side_effect=primary),
+            patch.object(backend, "_stop_server", side_effect=stop_then_fail),
+            self.assertRaises(KeyboardInterrupt) as raised,
+        ):
+            backend.render(SynthesisRequest("Narrator", "Interrupted.")).collect()
+        self.assertIs(raised.exception, primary)
+        self.assertTrue(
+            any("server cleanup failed" in note for note in primary.__notes__)
+        )
+        self.assertIsNotNone(self.children[0].poll())
+
+    def test_shutdown_cleanup_keeps_stop_failure(self):
+        for primary in (
+            KeyboardInterrupt("stop interrupted"),
+            RuntimeError("stop failed"),
+        ):
+            with self.subTest(error=type(primary).__name__):
+                backend = self.backend()
+                original_stop = backend._stop_server
+
+                def stop_then_fail(reason="shutdown"):
+                    original_stop(reason)
+                    raise OSError("server cleanup failed")
+
+                with (
+                    patch.object(backend, "stop", side_effect=primary),
+                    patch.object(backend, "_stop_server", side_effect=stop_then_fail),
+                    self.assertRaises(type(primary)) as raised,
+                ):
+                    backend.shutdown()
+                self.assertIs(raised.exception, primary)
+                self.assertEqual(
+                    primary.__notes__,
+                    ["Native speech server cleanup failed: server cleanup failed"],
+                )
+                self.assertIsNotNone(self.children[-1].poll())
+
+    def test_cancelled_generation_retains_standalone_cleanup_failure(self):
+        backend = self.backend()
+        request = SynthesisRequest("Narrator", "Cancel.", cancellation=Event())
+        prepared = backend._prepare_request(request)
+        cleanup_error = OSError("server cleanup failed")
+        original_stop = backend._stop_server
+
+        def cancel_during_start(_cancelled):
+            request.cancellation.set()
+            raise TTSSynthesisError("cancelled startup")
+
+        def stop_then_fail(reason="shutdown"):
+            original_stop(reason)
+            raise cleanup_error
+
+        with (
+            patch.object(backend, "_start_server", side_effect=cancel_during_start),
+            patch.object(backend, "_stop_server", side_effect=stop_then_fail),
+            self.assertRaises(OSError) as raised,
+        ):
+            next(backend._generate(prepared, request))
+        self.assertIs(raised.exception, cleanup_error)
+        self.assertIsNotNone(self.children[0].poll())
+        events = [entry["native"] for entry in self.native_log.report()["events"]]
+        self.assertEqual(events[-2]["outcome"], "cancelled")
+        self.assertEqual(events[-1]["reason"], "generation-cancelled")
+
+    def test_closing_cancelled_generator_preserves_generator_exit(self):
+        backend = self.backend()
+        request = SynthesisRequest("Narrator", "Close.", cancellation=Event())
+        generation = backend._generate(backend._prepare_request(request), request)
+        next(generation)
+        request.cancellation.set()
+        original_stop = backend._stop_server
+
+        def stop_then_fail(reason="shutdown"):
+            original_stop(reason)
+            raise OSError("server cleanup failed")
+
+        with patch.object(backend, "_stop_server", side_effect=stop_then_fail):
+            generation.close()
+        self.assertIsNotNone(self.children[0].poll())
+        events = [entry["native"] for entry in self.native_log.report()["events"]]
+        self.assertEqual(events[-2]["outcome"], "cancelled")
+        self.assertIsNone(events[-2]["reason"])
+        self.assertEqual(events[-1]["reason"], "generation-cancelled")
 
     def test_locked_log_does_not_mask_original_synthesis_error(self):
         backend = self.backend()
