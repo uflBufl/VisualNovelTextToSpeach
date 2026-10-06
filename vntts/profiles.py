@@ -1,4 +1,4 @@
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Self, TypeAlias
@@ -220,10 +220,9 @@ class GameProfileStore:
         return store
 
     def save(self) -> Path:
-        return self._save_profiles(self.profiles)
+        return self._save_profiles(list(self.profiles))
 
-    def _save_profiles(self, profiles: Iterable[GameProfile]) -> Path:
-        profiles = list(profiles)
+    def _save_profiles(self, profiles: Sequence[GameProfile]) -> Path:
         self._ensure_unique_profiles(profiles)
         self._revision = write_versioned_json_if_unchanged(
             self.path,
@@ -312,8 +311,7 @@ class GameProfileStore:
         return profile
 
     @staticmethod
-    def _ensure_unique_profiles(profiles: Iterable[GameProfile]) -> None:
-        profiles = list(profiles)
+    def _ensure_unique_profiles(profiles: Sequence[GameProfile]) -> None:
         ids = [profile.id for profile in profiles]
         if any(not profile_id.strip() for profile_id in ids):
             raise ValueError("profile IDs must not be empty")
