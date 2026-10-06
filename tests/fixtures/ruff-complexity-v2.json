@@ -1196,7 +1196,7 @@
       "path": "vntts/app.py",
       "scope": "TrayApplication.shutdown",
       "count": 1,
-      "maximum": 58
+      "maximum": 57
     },
     {
       "code": "PLR0915",

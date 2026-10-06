@@ -1815,41 +1815,41 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def _build_actions(self) -> None:
         self.tray = QSystemTrayIcon(self._application_icon(), self)
-        self.menu: QMenu = QMenu()
-        self.status_action = QAction("Starting...")
+        self.menu: QMenu = QMenu(self.dashboard)
+        self.status_action = QAction("Starting...", self)
         self.status_action.setEnabled(False)
-        self.dialog_action = QAction("No dialogue detected")
+        self.dialog_action = QAction("No dialogue detected", self)
         self.dialog_action.setEnabled(False)
-        self.read_action = QAction("Read current dialogue")
-        self.show_dashboard_action = QAction("Full controls")
-        self.show_compact_action = QAction("Compact controls")
-        self.live_action = QAction("Start reading")
-        self.sequence_resync_action = QAction("Set story position / resync...")
-        self.sequence_expected_action = QAction("Use expected next line")
-        self.auto_advance_action = QAction("Auto advance dialogue")
+        self.read_action = QAction("Read current dialogue", self)
+        self.show_dashboard_action = QAction("Full controls", self)
+        self.show_compact_action = QAction("Compact controls", self)
+        self.live_action = QAction("Start reading", self)
+        self.sequence_resync_action = QAction("Set story position / resync...", self)
+        self.sequence_expected_action = QAction("Use expected next line", self)
+        self.auto_advance_action = QAction("Auto advance dialogue", self)
         self.auto_advance_action.setCheckable(True)
         self.auto_advance_action.setChecked(self.settings.auto_advance_enabled)
-        self.auto_advance_reason_action = QAction()
+        self.auto_advance_reason_action = QAction(self)
         self.auto_advance_reason_action.setEnabled(False)
-        self.calibrate_action = QAction("Calibrate dialogue region...")
-        self.diagnostics_action = QAction("Live diagnostics")
-        self.readiness_action = QAction("Check readiness")
-        self.settings_action = QAction("Settings...")
-        self.profiles_action = QAction("Game profiles...")
-        self.corrections_action = QAction("OCR corrections...")
-        self.ocr_review_action = QAction("Review uncertain OCR...")
-        self.pregeneration_action = QAction("Prepare offline audio...")
-        self.setup_action = QAction("Run setup")
-        self.assets_action = QAction("Manage models and voices...")
-        self.moss_runtime_action = QAction("Load OpenMOSS")
-        self.voice_preview_action = QAction("Choose narrator voice...")
-        self.speaker_mapping_action = QAction("Manage character voices...")
-        self.history_action = QAction("Dialogue history...")
-        self.support_action = QAction("Support and logs")
-        self.macos_permissions_action = QAction("macOS permissions...")
+        self.calibrate_action = QAction("Calibrate dialogue region...", self)
+        self.diagnostics_action = QAction("Live diagnostics", self)
+        self.readiness_action = QAction("Check readiness", self)
+        self.settings_action = QAction("Settings...", self)
+        self.profiles_action = QAction("Game profiles...", self)
+        self.corrections_action = QAction("OCR corrections...", self)
+        self.ocr_review_action = QAction("Review uncertain OCR...", self)
+        self.pregeneration_action = QAction("Prepare offline audio...", self)
+        self.setup_action = QAction("Run setup", self)
+        self.assets_action = QAction("Manage models and voices...", self)
+        self.moss_runtime_action = QAction("Load OpenMOSS", self)
+        self.voice_preview_action = QAction("Choose narrator voice...", self)
+        self.speaker_mapping_action = QAction("Manage character voices...", self)
+        self.history_action = QAction("Dialogue history...", self)
+        self.support_action = QAction("Support and logs", self)
+        self.macos_permissions_action = QAction("macOS permissions...", self)
         self.macos_permissions_action.setVisible(sys.platform == "darwin")
-        self.settings_folder_action = QAction("Open settings folder")
-        self.quit_action = QAction("Quit")
+        self.settings_folder_action = QAction("Open settings folder", self)
+        self.quit_action = QAction("Quit", self)
 
     def _build_main_menu(self) -> None:
         self.read_action.setEnabled(False)
@@ -4474,6 +4474,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.last_controller_error = message
         self.signals.error_reported.emit(message)
 
+    def _dispose_tray(self) -> None:
+        self.tray.hide()
+        self.menu.close()
+        self.tray.deleteLater()
+        self.menu.deleteLater()
+
     def shutdown(self) -> None:
         if self._shutting_down:
             return
@@ -4514,8 +4520,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.unknown_speaker_cancel_button = None
         self.dashboard.keep_running_on_close = False
         self.dashboard._quitting = True
-        self.tray.hide()
-        self.tray.deleteLater()
+        self._dispose_tray()
         self.dashboard.close()
         self.compact_controller.close()
         if self.diagnostics_dialog is not None:

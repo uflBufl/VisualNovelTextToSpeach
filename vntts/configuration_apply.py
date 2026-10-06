@@ -149,7 +149,7 @@ class ConfigurationApplyMixin:
     def _setup_configuration_apply(self) -> None:
         if not isinstance(self, QObject):
             raise TypeError("ConfigurationApplyMixin requires a QObject host")
-        self.cancel_configuration_action = QAction("Cancel settings apply")
+        self.cancel_configuration_action = QAction("Cancel settings apply", self)
         self.cancel_configuration_action.setVisible(False)
         self.cancel_configuration_action.setEnabled(False)
         self.cancel_configuration_action.setStatusTip(

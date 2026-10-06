@@ -18,7 +18,7 @@ from PySide6.QtCore import (  # noqa: E402
     QThreadPool,
     QTimer,
 )
-from PySide6.QtGui import QFont  # noqa: E402
+from PySide6.QtGui import QAction, QFont  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (  # noqa: E402
     QMessageBox,
     QSizePolicy,
 )
+from shiboken6 import isValid  # noqa: E402
 
 from vntts.app import (  # noqa: E402
     SettingsDialog,
@@ -300,6 +301,29 @@ class TrayApplicationTest(unittest.TestCase):
                 tray_application.shutdown()
                 delete_dialog(tray_application.dashboard)
                 delete_dialog(tray_application.compact_controller)
+
+    def test_tray_menu_and_commands_follow_their_native_owner_lifetimes(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        menu = tray.menu
+        actions = [value for value in vars(tray).values() if isinstance(value, QAction)]
+        self.assertTrue(actions)
+
+        tray.shutdown()
+        tray.shutdown()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        self.assertFalse(isValid(tray.tray))
+        self.assertFalse(isValid(menu))
+        self.assertTrue(all(isValid(action) for action in actions))
+
+        tray.deleteLater()
+        QCoreApplication.sendPostedEvents(tray, QEvent.Type.DeferredDelete)
+        self.assertTrue(all(not isValid(action) for action in actions))
+        delete_dialog(tray.dashboard)
+        delete_dialog(tray.compact_controller)
 
     def test_tray_shell_exposes_runtime_controls(self):
         controller = Mock()
