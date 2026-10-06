@@ -1427,6 +1427,69 @@ class LiveReplayTest(unittest.TestCase):
             )
         )
 
+    def test_sequence_frame_failure_still_shuts_down_controller_once(self):
+        with TemporaryDirectory() as directory:
+            line = {
+                "line_id": "story:cleanup:1",
+                "chapter": "1",
+                "sequence": 1,
+                "speaker": "Rhiannon",
+                "text": "Hello.",
+                "source_audio_status": "absent",
+            }
+            path = self.create_sequence_corpus(
+                directory,
+                mode="shadow",
+                story_lines=[line],
+                events=[
+                    {
+                        "event_id": "cleanup-1",
+                        "sequence": 1,
+                        "kind": "speech",
+                        "control": "terminal",
+                        "successors": [],
+                        "line_id": line["line_id"],
+                    }
+                ],
+                dialogue_line_ids=(line["line_id"],),
+                expected_counts={
+                    "ocr_calls": 1,
+                    "bounded_recoveries": 0,
+                    "key_dispatch_attempts": 0,
+                    "confirmed_key_dispatches": 0,
+                },
+            )
+            corpus = load_live_replay_corpus(path)
+            primary = OSError("frame stop failed")
+            released = []
+
+            def stop_frames(_source):
+                released.append("frames")
+                raise primary
+
+            def shutdown(_controller):
+                released.append("controller")
+                raise KeyboardInterrupt("controller cleanup failed")
+
+            with (
+                patch("vntts.live_replay.ReplayFrameSource.stop", stop_frames),
+                patch("vntts.live_replay.ReplayAppController.shutdown", shutdown),
+                patch("vntts.live_replay.LiveDialogReader", return_value=Mock()),
+                patch(
+                    "vntts.live_replay.ThreadPoolExecutor",
+                    side_effect=lambda **_kwargs: Mock(),
+                ),
+                patch("vntts.live_replay.Event.wait", return_value=True),
+                self.assertRaises(OSError) as caught,
+            ):
+                LiveReplayRunner(corpus).run()
+            self.assertIs(caught.exception, primary)
+            self.assertEqual(released, ["frames", "controller"])
+            self.assertEqual(
+                primary.__notes__,
+                ["Replay controller cleanup failed: controller cleanup failed"],
+            )
+
     def test_legacy_timeout_drains_pending_ocr_before_executor_cancellation(self):
         release = Event()
         entered = Event()

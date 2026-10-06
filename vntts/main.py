@@ -7,7 +7,7 @@ from collections.abc import Callable
 
 from pynput import keyboard
 
-from vntts.cleanup import attempt_cleanup
+from vntts.cleanup import cleanup_on_exit
 from vntts.cli import cli_error
 from vntts.controller import (
     AppController,
@@ -70,19 +70,10 @@ def listen_for_hotkeys(
             live_hotkey: on_live_toggle,
         }
     )
-    try:
+    with cleanup_on_exit(listener.stop, description="Hotkey listener cleanup"):
         listener.start()
         listener.wait()
         listener.join()
-    except BaseException as error:
-        attempt_cleanup(
-            listener.stop,
-            description="Hotkey listener cleanup",
-            primary_error=error,
-        )
-        raise
-    else:
-        listener.stop()
 
 
 def main(tts_factory: Callable[..., object] = TTSEngine) -> int:
@@ -124,18 +115,19 @@ def main(tts_factory: Callable[..., object] = TTSEngine) -> int:
         else:
             controller.toggle_live()
 
-    try:
-        listen_for_hotkeys(
-            hotkey,
-            live_hotkey,
-            read_once,
-            toggle_reading,
-        )
-    except KeyboardInterrupt:
-        return 130
-    except (OSError, RuntimeError) as error:
-        return cli_error(f"Unable to listen for hotkeys: {error}")
-    finally:
-        controller.shutdown()
+    with cleanup_on_exit(
+        controller.shutdown, description="Application controller cleanup"
+    ):
+        try:
+            listen_for_hotkeys(
+                hotkey,
+                live_hotkey,
+                read_once,
+                toggle_reading,
+            )
+        except KeyboardInterrupt:
+            return 130
+        except (OSError, RuntimeError) as error:
+            return cli_error(f"Unable to listen for hotkeys: {error}")
 
     return 0

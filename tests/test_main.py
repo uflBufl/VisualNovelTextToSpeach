@@ -1904,6 +1904,33 @@ class MainTest(unittest.TestCase):
             listener.stop.assert_called_once_with()
             controller.shutdown.assert_called_once_with()
 
+    def test_controller_cleanup_retains_only_propagating_listener_error(self):
+        for handled in (False, True):
+            primary = (
+                KeyboardInterrupt() if handled else SystemExit("listener interrupted")
+            )
+            cleanup_error = OSError("controller cleanup failed")
+            controller = Mock()
+            controller.start.return_value = True
+            controller.shutdown.side_effect = cleanup_error
+            with (
+                self.subTest(handled=handled),
+                patch("vntts.main.load_app_settings", return_value=AppSettings()),
+                patch("vntts.main.AppController", return_value=controller),
+                patch("vntts.main.listen_for_hotkeys", side_effect=primary),
+                self.assertRaises(BaseException) as caught,
+            ):
+                main()
+            self.assertIs(caught.exception, cleanup_error if handled else primary)
+            controller.shutdown.assert_called_once_with()
+            if not handled:
+                self.assertEqual(
+                    primary.__notes__,
+                    [
+                        "Application controller cleanup failed: controller cleanup failed"
+                    ],
+                )
+
     def test_main_reports_listener_failure_and_shuts_down(self):
         controller = Mock()
         controller.start.return_value = True

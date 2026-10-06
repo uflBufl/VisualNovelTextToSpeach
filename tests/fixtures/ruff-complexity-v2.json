@@ -1343,7 +1343,7 @@
       "path": "vntts/live_replay.py",
       "scope": "LiveReplayRunner._run_sequence",
       "count": 1,
-      "maximum": 113
+      "maximum": 109
     },
     {
       "code": "PLR0915",

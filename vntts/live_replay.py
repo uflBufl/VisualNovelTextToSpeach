@@ -15,7 +15,6 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
-from tempfile import TemporaryDirectory
 from threading import Condition, Event, Lock, RLock
 from time import monotonic
 from typing import NotRequired, Protocol, TypeAlias, TypedDict
@@ -29,6 +28,8 @@ from vntts_artifacts.generated_audio import (
 )
 
 from vntts.chapter_voice_preload import ChapterVoicePreloader
+from vntts.cleanup import cleanup_on_exit
+from vntts.cleanup import temporary_directory as owned_temporary_directory
 from vntts.cli import cli_error, cli_messages
 from vntts.controller import AppController, LiveSequenceStatus
 from vntts.dialog_capture import (
@@ -1207,16 +1208,20 @@ class LiveReplayRunner:
         )
         controller.live_reader = reader
         controller._set_backend_live_mode(True)
-        try:
-            reader.start()
-            completed = frame_source.completed.wait(self.timeout_seconds)
-            if not completed:
-                errors.append(
-                    TimeoutError(
-                        f"Live replay timed out after {self.timeout_seconds:g} seconds"
+        with cleanup_on_exit(
+            controller.shutdown, description="Replay controller cleanup"
+        ):
+            with cleanup_on_exit(
+                frame_source.stop, description="Replay frame source cleanup"
+            ):
+                reader.start()
+                completed = frame_source.completed.wait(self.timeout_seconds)
+                if not completed:
+                    errors.append(
+                        TimeoutError(
+                            f"Live replay timed out after {self.timeout_seconds:g} seconds"
+                        )
                     )
-                )
-            frame_source.stop()
             reader.stop()
             reader.wait()
             metrics = reader.get_pipeline_metrics()
@@ -1226,9 +1231,6 @@ class LiveReplayRunner:
                     "Replay sequence did not initialize its story cursor"
                 )
             final_cursor_snapshot = final_cursor.snapshot()
-        finally:
-            frame_source.stop()
-            controller.shutdown()
 
         frame_consumption = frame_source.snapshot()
         observed = _group_played_dialogue(played)
@@ -1983,7 +1985,7 @@ def _generated_audio_index_snapshot(
     )
     if current_artifacts != binding.artifacts:
         raise ValueError("Generated audio inventory changed after corpus validation")
-    with TemporaryDirectory(prefix="vntts-live-replay-") as temporary_directory:
+    with owned_temporary_directory(prefix="vntts-live-replay-") as temporary_directory:
         snapshot_root = Path(temporary_directory)
         snapshot_manifest = snapshot_root / "generated-audio.json"
         for artifact in binding.artifacts:
@@ -2032,7 +2034,7 @@ def _live_sequence_snapshot(
         raise ValueError("Live replay sequence plan changed after corpus validation")
     if story_path != binding.story_index.path or plan_path != binding.plan.path:
         raise ValueError("Live replay sequence authority changed after validation")
-    with TemporaryDirectory(prefix="vntts-live-replay-sequence-") as directory:
+    with owned_temporary_directory(prefix="vntts-live-replay-sequence-") as directory:
         root = Path(directory)
         snapshot_story = root / "story-index.jsonl"
         snapshot_plan = root / "live-sequence.json"
