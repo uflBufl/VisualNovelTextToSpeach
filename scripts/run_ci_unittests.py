@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from vntts.cleanup import cleanup_on_exit, temporary_directory
 from vntts.cli import cli_message
 
 SHARD_TIMEOUTS = {
@@ -145,7 +146,7 @@ def _run_sharded_full_discovery(system, selected_modules=None):
     except ValueError as error:
         print(str(error), file=sys.stderr)
         return 2
-    with tempfile.TemporaryDirectory(prefix="vntts-unittest-shards-") as directory:
+    with temporary_directory(prefix="vntts-unittest-shards-") as directory:
         root = Path(directory)
         midpoint = (len(app_ids) + 1) // 2
         app_shards = [("qt-app", app_ids[:midpoint])]
@@ -182,7 +183,10 @@ def _run_sharded_full_discovery(system, selected_modules=None):
                 name,
                 str(inventory),
             ]
-            with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as transcript:
+            transcript = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
+            with cleanup_on_exit(
+                transcript.close, description="Unittest transcript cleanup"
+            ):
                 try:
                     completed = subprocess.run(
                         command,

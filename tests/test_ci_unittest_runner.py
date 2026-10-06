@@ -2,7 +2,7 @@ import json
 import subprocess
 import unittest
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, TemporaryFile
 from unittest.mock import Mock, patch
 
 from scripts.run_ci_unittests import (
@@ -138,6 +138,56 @@ class CiUnitTestRunnerTest(unittest.TestCase):
             ]
             path.write_text(json.dumps(names), encoding="utf-8")
             self.assertEqual(_run_exact_test_file(path), 0)
+
+    def test_shard_spawn_failure_survives_transcript_and_inventory_cleanup(self):
+        primary = OSError("shard launch failed")
+        original_cleanup = TemporaryDirectory.cleanup
+        transcripts = []
+
+        def transcript(*args, **kwargs):
+            value = TemporaryFile(*args, **kwargs)
+            transcripts.append(value)
+            original_close = value.close
+
+            def close_then_fail():
+                original_close()
+                raise KeyboardInterrupt("transcript cleanup failed")
+
+            value.close = close_then_fail
+            return value
+
+        def remove_then_fail(directory):
+            original_cleanup(directory)
+            if Path(directory.name).name.startswith("vntts-unittest-shards-"):
+                raise OSError("inventory cleanup failed")
+
+        with (
+            patch(
+                "scripts.run_ci_unittests._flatten_suite",
+                return_value=(Mock(id=Mock(return_value="test-id")),),
+            ),
+            patch(
+                "scripts.run_ci_unittests.partition_ui_test_ids",
+                return_value=(("app-id",), (), (), ()),
+            ),
+            patch("scripts.run_ci_unittests.subprocess.run", side_effect=primary),
+            patch(
+                "scripts.run_ci_unittests.tempfile.TemporaryFile",
+                side_effect=transcript,
+            ),
+            patch.object(TemporaryDirectory, "cleanup", new=remove_then_fail),
+            self.assertRaises(OSError) as caught,
+        ):
+            _run_sharded_full_discovery("Darwin")
+        self.assertIs(caught.exception, primary)
+        self.assertTrue(all(value.closed for value in transcripts))
+        self.assertEqual(
+            primary.__notes__,
+            [
+                "Unittest transcript cleanup failed: transcript cleanup failed",
+                "Temporary directory cleanup failed: inventory cleanup failed",
+            ],
+        )
 
     def test_macos_shard_timeout_fails_instead_of_hanging(self):
         run = Mock(side_effect=subprocess.TimeoutExpired(("python",), 60))

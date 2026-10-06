@@ -401,6 +401,42 @@ class RuntimePathsTest(unittest.TestCase):
         )
         self.assertTrue(all(item["sha256"] for item in report["artifacts"]))
 
+    def test_package_render_keeps_primary_during_backend_and_cache_cleanup(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            primary = RuntimeError("packaged render failed")
+            backend = Mock()
+            backend.render.side_effect = primary
+            backend.shutdown.side_effect = KeyboardInterrupt("backend cleanup failed")
+            original_cleanup = TemporaryDirectory.cleanup
+
+            def remove_then_fail(temporary):
+                original_cleanup(temporary)
+                if Path(temporary.name).name.startswith("package-self-test-"):
+                    raise OSError("cache cleanup failed")
+
+            with (
+                patch(
+                    "vntts.package_self_test.get_local_data_directory",
+                    return_value=root,
+                ),
+                patch.object(TemporaryDirectory, "cleanup", new=remove_then_fail),
+                self.assertRaises(RuntimeError) as caught,
+            ):
+                probe_bundled_pocket_render(
+                    root / "bundle", backend_factory=Mock(return_value=backend)
+                )
+            self.assertIs(caught.exception, primary)
+            backend.shutdown.assert_called_once_with()
+            self.assertEqual(
+                primary.__notes__,
+                [
+                    "Package render backend cleanup failed: backend cleanup failed",
+                    "Temporary directory cleanup failed: cache cleanup failed",
+                ],
+            )
+            self.assertEqual(list(root.iterdir()), [])
+
     def test_invalid_probe_details_do_not_abort_package_report(self):
         for failed_check in (
             "Bundled Pocket TTS runtime",

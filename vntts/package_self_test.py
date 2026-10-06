@@ -7,12 +7,12 @@ import traceback
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from types import ModuleType
 from typing import TypeAlias
 
 from durable_file import atomic_write_json, sha256_file
 
+from vntts.cleanup import cleanup_on_exit, temporary_directory
 from vntts.cli import CLIReportResult
 from vntts.game_audio_decoder import (
     DecoderSetupError,
@@ -184,7 +184,7 @@ def probe_bundled_pocket_render(
     backend_factory: Callable[..., IsolatedSpeechBackend] = IsolatedSpeechBackend,
     temporary_directory_factory: Callable[
         ..., AbstractContextManager[str]
-    ] = TemporaryDirectory,
+    ] = temporary_directory,
 ) -> ReportDocument:
     bundle_root = get_bundle_root() if bundle_root is None else Path(bundle_root)
     if bundle_root is None:
@@ -205,7 +205,9 @@ def probe_bundled_pocket_render(
                 persistent_audio_cache_directory=root / "audio",
                 allow_gated_model_access=False,
             )
-            try:
+            with cleanup_on_exit(
+                backend.shutdown, description="Package render backend cleanup"
+            ):
                 result = backend.render(
                     SynthesisRequest(
                         voice="Narrator",
@@ -215,8 +217,6 @@ def probe_bundled_pocket_render(
                     )
                 ).collect()
                 health = dict(backend.health or {})
-            finally:
-                backend.shutdown()
         samples = int(result.pcm.size)
         if (
             samples <= 0
