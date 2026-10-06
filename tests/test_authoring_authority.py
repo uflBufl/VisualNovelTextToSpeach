@@ -3,7 +3,7 @@ import json
 import os
 import unittest
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 from unittest.mock import patch
 
 from tests.symlink_support import symlink_or_skip
@@ -69,6 +69,43 @@ class AuthoringAuthorityTest(unittest.TestCase):
                             assert_authority_snapshot(
                                 snapshot, "test authority", **kwargs
                             )
+
+    def test_temporary_stream_close_keeps_original_publication_failure(self):
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "output.json"
+            primary = OSError("publication fsync failed")
+            streams = []
+
+            def stream_factory(*args, **kwargs):
+                stream = NamedTemporaryFile(*args, **kwargs)
+                streams.append(stream)
+                original_close = stream.close
+
+                def close_then_fail():
+                    original_close()
+                    raise OSError("publication close failed")
+
+                stream.close = close_then_fail
+                return stream
+
+            with (
+                patch(
+                    "vntts.authoring.authority.tempfile.NamedTemporaryFile",
+                    side_effect=stream_factory,
+                ),
+                patch("vntts.authoring.authority.os.fsync", side_effect=primary),
+                self.assertRaises(AuthoringAuthorityError) as caught,
+            ):
+                write_json_document_no_replace(output, {}, "test document")
+            self.assertIs(caught.exception.__cause__, primary)
+            self.assertEqual(
+                primary.__notes__,
+                [
+                    "Publication temporary stream cleanup failed: publication close failed"
+                ],
+            )
+            self.assertTrue(all(stream.file.closed for stream in streams))
+            self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_temp_cleanup_failure_preserves_publication_outcome(self):
         with TemporaryDirectory() as directory:

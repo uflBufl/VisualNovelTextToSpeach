@@ -18,6 +18,7 @@ from typing import NotRequired, Protocol, TypedDict, runtime_checkable
 from PIL import Image
 
 from vntts.chapter_voice_preload import ChapterVoicePreloader
+from vntts.cleanup import cleanup_on_exit
 from vntts.cli import cli_error, cli_messages
 from vntts.dialog_capture import (
     capture_live_frame,
@@ -686,12 +687,15 @@ def _write_payload_no_replace(path: Path, payload: bytes) -> tuple[int, int]:
     temporary: Path | None = None
     identity: tuple[int, int] | None = None
     try:
-        with tempfile.NamedTemporaryFile(
+        stream = tempfile.NamedTemporaryFile(
             prefix=f".{path.name}.",
             suffix=".tmp",
             dir=path.parent,
             delete=False,
-        ) as stream:
+        )
+        with cleanup_on_exit(
+            stream.close, description="Publication temporary stream cleanup"
+        ):
             temporary = Path(stream.name)
             stream.write(payload)
             stream.flush()

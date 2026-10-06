@@ -17,6 +17,8 @@ from threading import Event, Lock, Thread, current_thread
 from time import monotonic
 from typing import Self, SupportsFloat, TypedDict, TypeVar
 
+from vntts.cleanup import cleanup_on_exit
+
 try:
     import psutil
 except ImportError:  # pragma: no cover - dependency is declared by the app.
@@ -325,7 +327,10 @@ class NativeResourceSampler:
 
     def _read_gpu_output(self) -> bytes | None:
         try:
-            with TemporaryFile(mode="w+b") as output:
+            output = TemporaryFile(mode="w+b")
+            with cleanup_on_exit(
+                output.close, description="GPU probe transcript cleanup"
+            ):
                 result = subprocess.run(
                     [
                         "nvidia-smi",

@@ -3,7 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -401,6 +401,43 @@ class LiveReplayCaptureTest(unittest.TestCase):
                 [path.name for path in (root / "frames").iterdir()],
                 ["frame-000001.png"],
             )
+
+    def test_temporary_stream_close_keeps_original_publication_failure(self):
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "output.json"
+            primary = OSError("publication fsync failed")
+            streams = []
+
+            def stream_factory(*args, **kwargs):
+                stream = NamedTemporaryFile(*args, **kwargs)
+                streams.append(stream)
+                original_close = stream.close
+
+                def close_then_fail():
+                    original_close()
+                    raise OSError("publication close failed")
+
+                stream.close = close_then_fail
+                return stream
+
+            with (
+                patch(
+                    "vntts.live_replay_capture.tempfile.NamedTemporaryFile",
+                    side_effect=stream_factory,
+                ),
+                patch("vntts.live_replay_capture.os.fsync", side_effect=primary),
+                self.assertRaises(LiveReplayCaptureError) as caught,
+            ):
+                live_replay_capture._write_payload_no_replace(output, b"{}")
+            self.assertIs(caught.exception.__cause__, primary)
+            self.assertEqual(
+                primary.__notes__,
+                [
+                    "Publication temporary stream cleanup failed: publication close failed"
+                ],
+            )
+            self.assertTrue(all(stream.file.closed for stream in streams))
+            self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_capture_keeps_frame_when_temp_cleanup_fails(self):
         with TemporaryDirectory() as directory:

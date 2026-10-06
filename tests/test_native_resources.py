@@ -2,6 +2,7 @@ import json
 import subprocess
 import time
 import unittest
+from tempfile import TemporaryFile
 from threading import Event
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -160,6 +161,34 @@ class NativeResourceSamplerTest(unittest.TestCase):
                     summary["native_process"]["avg_cores_used"], expected_cores
                 )
                 json.dumps(summary, allow_nan=False)
+
+    def test_gpu_close_failure_does_not_change_primary_failure_classification(self):
+        for primary, status in (
+            (FileNotFoundError("missing GPU tool"), "missing"),
+            (subprocess.TimeoutExpired("nvidia-smi", 1), "timeout"),
+        ):
+            output = TemporaryFile(mode="w+b")
+            original_close = output.close
+
+            def close_then_fail():
+                original_close()
+                raise OSError("transcript close failed")
+
+            with (
+                self.subTest(status=status),
+                patch("vntts.native_resources.TemporaryFile", return_value=output),
+                patch.object(output, "close", side_effect=close_then_fail) as close,
+                patch("vntts.native_resources.subprocess.run", side_effect=primary),
+            ):
+                sampler = NativeResourceSampler(42)
+                self.assertIsNone(sampler._read_gpu_output())
+            self.assertEqual(sampler._gpu_status, status)
+            self.assertTrue(output.closed)
+            close.assert_called_once_with()
+            self.assertEqual(
+                primary.__notes__,
+                ["GPU probe transcript cleanup failed: transcript close failed"],
+            )
 
     def test_marks_missing_or_timeout_gpu_once_and_keeps_na_values_null(self):
         for failure, expected in (

@@ -11,6 +11,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
+from vntts.cleanup import cleanup_on_exit
 from vntts.document_identity import canonical_document_sha256
 from vntts.path_safety import contained_regular_file
 
@@ -150,9 +151,12 @@ def write_json_document_no_replace(
     temporary = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
+        stream = tempfile.NamedTemporaryFile(
             prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, delete=False
-        ) as stream:
+        )
+        with cleanup_on_exit(
+            stream.close, description="Publication temporary stream cleanup"
+        ):
             temporary = Path(stream.name)
             stream.write(payload)
             stream.flush()
