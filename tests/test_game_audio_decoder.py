@@ -180,6 +180,33 @@ class GameAudioDecoderTest(unittest.TestCase):
         finally:
             timer.cancel()
 
+    def test_decoder_cleanup_failure_preserves_primary_startup_error(self):
+        process = Mock()
+        with (
+            patch.object(decoder, "_start_decoder_process", return_value=process),
+            patch.object(
+                decoder,
+                "_wait_for_decoder_process",
+                side_effect=decoder.DecoderSetupError("startup timed out"),
+            ),
+            patch.object(
+                decoder,
+                "_stop_decoder_process",
+                side_effect=OSError("process group unavailable"),
+            ),
+            self.assertRaisesRegex(
+                decoder.DecoderSetupError, "startup timed out"
+            ) as raised,
+        ):
+            decoder._run(["decoder"])
+
+        self.assertTrue(
+            any(
+                "Game-audio decoder process cleanup failed" in note
+                for note in raised.exception.__notes__
+            )
+        )
+
     @unittest.skipIf(sys.platform == "win32", "POSIX process groups require POSIX")
     def test_posix_cleanup_stays_bounded_after_sigkill(self):
         process = Mock(pid=42)

@@ -22,6 +22,7 @@ from durable_file import atomic_write_json, sha256_file
 
 from vntts.application_directories import get_local_data_directory
 from vntts.authoring.advisory_lock import AdvisoryLockBusyError, exclusive_advisory_lock
+from vntts.cleanup import attempt_cleanup
 from vntts.runtime_paths import get_bundle_root
 from vntts.subprocess_utils import terminate_process
 
@@ -104,11 +105,19 @@ def _run(
         (Path(directory) / "output").open("w+b") as output,
     ):
         process = _start_decoder_process(command, output)
+        primary_error: BaseException | None = None
         try:
             _wait_for_decoder_process(process, cancellation, timeout)
             _raise_decoder_failure(process, output)
+        except BaseException as error:
+            primary_error = error
+            raise
         finally:
-            _stop_decoder_process(process)
+            attempt_cleanup(
+                lambda: _stop_decoder_process(process),
+                description="Game-audio decoder process cleanup",
+                primary_error=primary_error,
+            )
 
 
 def _start_decoder_process(
