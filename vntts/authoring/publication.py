@@ -12,6 +12,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 
+from vntts.cleanup import cleanup_on_exit
+
 if TYPE_CHECKING:
     from vntts.authoring.generation_lease import GenerationLease
 
@@ -29,8 +31,9 @@ def no_replace_destination(value: str | Path) -> Path:
 @contextmanager
 def staged_directory(parent: str | Path, *, prefix: str) -> Iterator[Path]:
     """Yield a temporary publication directory and always clean leftovers."""
-    with TemporaryDirectory(prefix=prefix, dir=parent) as directory:
-        yield Path(directory).resolve()
+    directory = TemporaryDirectory(prefix=prefix, dir=parent)
+    with cleanup_on_exit(directory.cleanup, description="Publication staging cleanup"):
+        yield Path(directory.name).resolve()
 
 
 @contextmanager

@@ -2,6 +2,7 @@ import unittest
 from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from vntts.authoring.publication import publish_single_base_successor, staged_directory
 
@@ -29,6 +30,27 @@ class StagedDirectoryTest(unittest.TestCase):
                 (staging / "value").write_text("ok", encoding="utf-8")
                 staging.rename(destination)
             self.assertEqual((destination / "value").read_text(encoding="utf-8"), "ok")
+
+    def test_staging_cleanup_failure_preserves_only_its_own_operation_error(self):
+        for primary_type in (None, ValueError, KeyboardInterrupt):
+            with self.subTest(primary_type=primary_type), TemporaryDirectory() as root:
+                primary = primary_type("publication failed") if primary_type else None
+                cleanup_error = OSError("staging cleanup failed")
+                with patch(
+                    "vntts.authoring.publication.TemporaryDirectory.cleanup",
+                    side_effect=cleanup_error,
+                ) as cleanup:
+                    with self.assertRaises(type(primary or cleanup_error)) as raised:
+                        with staged_directory(root, prefix=".staging-"):
+                            if primary is not None:
+                                raise primary
+                self.assertIs(raised.exception, primary or cleanup_error)
+                cleanup.assert_called_once_with()
+                if primary is not None:
+                    self.assertEqual(
+                        primary.__notes__,
+                        ["Publication staging cleanup failed: staging cleanup failed"],
+                    )
 
     def test_single_base_successor_rejects_changed_snapshot_before_publish(self):
         with TemporaryDirectory() as directory:
