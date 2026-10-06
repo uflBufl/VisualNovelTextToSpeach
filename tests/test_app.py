@@ -3628,6 +3628,33 @@ class TrayApplicationTest(unittest.TestCase):
         )
         delete_dialog(dialog)
 
+    def test_incomplete_shortcuts_do_not_block_settings_previews(self):
+        original = AppSettings()
+        dialog = SettingsDialog(original)
+        dialog.live_hotkey.clear()
+        dialog.output_volume.setValue(37)
+        errors = dialog.update_validation_summary()
+        self.assertEqual([widget for _, widget, _ in errors], [dialog.live_hotkey])
+        self.assertIn("Live reading", dialog.validation_summary.text())
+        with patch("vntts.app.GameNarratorDialog") as picker:
+            picker.return_value.exec.return_value = QDialog.DialogCode.Rejected
+            dialog.choose_narrator()
+            draft = picker.call_args.args[0]
+            self.assertEqual(draft.output_volume_percent, 37)
+            self.assertEqual(draft.live_hotkey, original.live_hotkey)
+        with self.assertRaisesRegex(ValueError, "press a shortcut"):
+            dialog.settings()
+        with TemporaryDirectory() as directory:
+            dialog.game_pack.setText(str(Path(directory) / "missing-pack.json"))
+            errors = dialog.update_validation_summary()
+            self.assertIn(dialog.game_pack, [widget for _, widget, _ in errors])
+        dialog.game_pack.clear()
+        dialog.read_hotkey.set_hotkey("<ctrl>+j")
+        dialog.live_hotkey.set_hotkey("<ctrl>+k")
+        self.assertEqual(dialog.settings().read_hotkey, "<ctrl>+j")
+        self.assertEqual(dialog.settings().live_hotkey, "<ctrl>+k")
+        delete_dialog(dialog)
+
     def test_settings_reject_duplicate_recorded_hotkeys(self):
         dialog = SettingsDialog(AppSettings())
         dialog.live_hotkey.set_hotkey(dialog.read_hotkey.hotkey())

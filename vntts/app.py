@@ -1455,15 +1455,14 @@ class SettingsDialog(QDialog):
         self.accept()
 
     def _raw_settings(self) -> AppSettings:
+        """Project draft controls; recorded shortcuts are applied on save."""
+
         def optional_text(widget: QLineEdit) -> str | None:
             return widget.text().strip() or None
 
-        hotkeys = self.hotkey_assignments()
         return AppSettings.from_mapping(
             {
                 **asdict(self.original_settings),
-                "read_hotkey": hotkeys["Read once"],
-                "live_hotkey": hotkeys["Live reading"],
                 "screenshot_directory": self.screenshot_directory.text().strip(),
                 "ocr_diagnostics_directory": (
                     self.ocr_diagnostics_directory.text().strip()
@@ -1563,9 +1562,11 @@ class SettingsDialog(QDialog):
         )
 
     def settings(self) -> AppSettings:
-        return guard_auto_advance_settings(
-            self._settings_with_game_pack(self._raw_settings())
+        hotkeys = self.hotkey_assignments()
+        settings = self._raw_settings().updated(
+            read_hotkey=hotkeys["Read once"], live_hotkey=hotkeys["Live reading"]
         )
+        return guard_auto_advance_settings(self._settings_with_game_pack(settings))
 
     def hotkey_assignments(self) -> dict[str, str]:
         return {

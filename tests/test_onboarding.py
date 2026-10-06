@@ -718,6 +718,38 @@ class OnboardingWizardTest(unittest.TestCase):
         )
         wizard.deleteLater()
 
+    def test_incomplete_shortcuts_do_not_block_configuration_previews(self):
+        original = AppSettings()
+        wizard = OnboardingWizard(original)
+        page = wizard.configuration_page
+        page.capture_mode.setCurrentIndex(page.capture_mode.findData("screen"))
+        page.live_hotkey.clear()
+        self.assertEqual(
+            [widget for widget, _ in page.update_validation_summary()],
+            [page.live_hotkey],
+        )
+        with patch("vntts.onboarding_ui.GameNarratorDialog") as picker:
+            picker.return_value.exec.return_value = QDialog.DialogCode.Rejected
+            page.choose_narrator()
+            self.assertEqual(picker.call_args.args[0].live_hotkey, original.live_hotkey)
+        with patch("vntts.onboarding_ui.AssetManagerDialog") as assets:
+            assets.return_value.exec.return_value = QDialog.DialogCode.Rejected
+            page.manage_assets()
+            self.assertEqual(assets.call_args.args[0].live_hotkey, original.live_hotkey)
+        with self.assertRaisesRegex(ValueError, "press a shortcut"):
+            page.settings()
+        with TemporaryDirectory() as directory:
+            page.game_pack.setText(str(Path(directory) / "missing-pack.json"))
+            self.assertIn(
+                page.game_pack, [widget for widget, _ in page.validation_errors()]
+            )
+        page.game_pack.clear()
+        page.read_hotkey.set_hotkey("<ctrl>+j")
+        page.live_hotkey.set_hotkey("<ctrl>+k")
+        self.assertEqual(page.settings().read_hotkey, "<ctrl>+j")
+        self.assertEqual(page.settings().live_hotkey, "<ctrl>+k")
+        wizard.deleteLater()
+
     def test_configuration_validation_lists_all_errors_and_focuses_first(self):
         wizard = OnboardingWizard(AppSettings())
         page = wizard.configuration_page

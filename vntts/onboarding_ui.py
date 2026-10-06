@@ -587,7 +587,7 @@ class ConfigurationPage(QWizardPage):
             self._use_narrator_file(path)
 
     def manage_assets(self) -> None:
-        dialog = AssetManagerDialog(self.settings(), parent=self)
+        dialog = AssetManagerDialog(self._preview_settings(), parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         settings = dialog.settings()
@@ -854,6 +854,7 @@ class ConfigurationPage(QWizardPage):
         return True
 
     def _base_settings(self) -> AppSettings:
+        """Project draft controls; recorded shortcuts are applied on save."""
         if self.reading_setup:
             return self.original_settings.updated(
                 capture_mode=self.capture_mode.currentData(),
@@ -865,7 +866,6 @@ class ConfigurationPage(QWizardPage):
         def optional_text(widget: QLineEdit) -> str | None:
             return widget.text().strip() or None
 
-        hotkeys = self.hotkey_assignments()
         return AppSettings.from_mapping(
             {
                 **asdict(self.original_settings),
@@ -875,8 +875,6 @@ class ConfigurationPage(QWizardPage):
                 "auto_advance_enabled": self.auto_advance.isChecked(),
                 "game_window_title": self.game_window.currentText().strip() or None,
                 "game_pack": optional_text(self.game_pack),
-                "read_hotkey": hotkeys["Read once"],
-                "live_hotkey": hotkeys["Live reading"],
                 "speech_backend": self.speech_backend.currentData(),
                 "tts_model": optional_text(self.tts_model),
                 "tts_profile": self.tts_profile,
@@ -890,11 +888,19 @@ class ConfigurationPage(QWizardPage):
             }
         )
 
-    def settings(self) -> AppSettings:
+    def _preview_settings(self) -> AppSettings:
         settings = self._base_settings()
         if settings.game_pack and not self.reading_setup:
             settings = apply_game_pack(settings)
         return guard_auto_advance_settings(settings)
+
+    def settings(self) -> AppSettings:
+        if self.reading_setup:
+            return self._preview_settings()
+        hotkeys = self.hotkey_assignments()
+        return self._preview_settings().updated(
+            read_hotkey=hotkeys["Read once"], live_hotkey=hotkeys["Live reading"]
+        )
 
     def hotkey_assignments(self) -> dict[str, str]:
         return {
