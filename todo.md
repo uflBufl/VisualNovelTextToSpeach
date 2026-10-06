@@ -560,4 +560,6 @@ Planned implementation order after approval:
 
 ## Investigate intermittent macOS Qt test crash
 
+- [ ] Compare the October 6 qt-app-2 native GC SIGSEGV in `test_settings_and_assets_apply_without_blocking_qt_events` with the existing owner-deletion investigation. Stack enters QAction disconnectNotify/QMenu destruction while player-session configuration runs. Evidence: `.codex/investigations/hotkeys-qt-gc-oct06.log`; reproduce the exact shard/preceding owners before changing cleanup.
+
 - [ ] A macOS changed-test run intermittently terminated with `shiboken6` `mainThreadDeletionHandler` SIGSEGV during pure-Python `test_player_session` after UI tests. The exact final 10-test sequence passed 10 times, the full onboarding/person/player sequence passed five times, and a later 2734-test selector passed. Reproduce and bisect an earlier Qt owner in the remainder shard with faulthandler before changing cleanup; retain the crash log in `.codex/investigations/` if it becomes repeatable. Gate: a narrowed failing sequence and a deterministic cleanup check.
