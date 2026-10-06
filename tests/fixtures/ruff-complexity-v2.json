@@ -454,7 +454,7 @@
       "path": "vntts/moss_cpp_backend.py",
       "scope": "MossCppVoiceRouterBackend._generate",
       "count": 1,
-      "maximum": 34
+      "maximum": 26
     },
     {
       "code": "C901",
@@ -902,7 +902,7 @@
       "path": "vntts/moss_cpp_backend.py",
       "scope": "MossCppVoiceRouterBackend._generate",
       "count": 1,
-      "maximum": 30
+      "maximum": 24
     },
     {
       "code": "PLR0912",
@@ -1378,7 +1378,7 @@
       "path": "vntts/moss_cpp_backend.py",
       "scope": "MossCppVoiceRouterBackend._generate",
       "count": 1,
-      "maximum": 164
+      "maximum": 133
     },
     {
       "code": "PLR0915",

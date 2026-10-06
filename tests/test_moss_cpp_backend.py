@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+import http.client
 import json
 import os
 import subprocess
@@ -10,7 +11,7 @@ import time
 import unittest
 import zipfile
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import SpooledTemporaryFile, TemporaryDirectory
 from threading import Event, Lock, Thread
 from unittest.mock import Mock, patch
 
@@ -362,6 +363,133 @@ class MossCppBackendTest(unittest.TestCase):
         )
         self.addCleanup(backend.shutdown)
         return backend
+
+    def test_http_preserves_transport_failure_when_connection_close_is_fatal(self):
+        backend = self.backend()
+        transport_error = OSError("transport failed")
+        close_error = KeyboardInterrupt("connection close failed")
+
+        with (
+            patch.object(
+                http.client.HTTPConnection, "request", side_effect=transport_error
+            ),
+            patch.object(
+                http.client.HTTPConnection, "close", side_effect=close_error
+            ) as close,
+            self.assertRaises(OSError) as raised,
+        ):
+            backend._http("GET", "/health")
+
+        self.assertIs(raised.exception, transport_error)
+        self.assertIn("connection close failed", " ".join(transport_error.__notes__))
+        close.assert_called_once_with()
+
+    def test_reference_validation_keeps_primary_when_real_decoder_close_fails(self):
+        invalid_reference = self.root / "three-channel.wav"
+        sf.write(invalid_reference, np.zeros((4_800, 3)), 48_000, subtype="PCM_16")
+        primary = TTSConfigurationError("MOSS C++ reference must be mono/stereo")
+        reference = sf.SoundFile(invalid_reference)
+        original_close = reference.close
+
+        def close_then_fail():
+            original_close()
+            raise OSError("decoder close failed")
+
+        with (
+            patch("vntts.moss_cpp_backend.sf.SoundFile", return_value=reference),
+            patch.object(reference, "close", side_effect=close_then_fail) as close,
+            patch("vntts.moss_cpp_backend.TTSConfigurationError", return_value=primary),
+            self.assertRaises(TTSConfigurationError) as caught,
+        ):
+            _normalize_reference_audio(invalid_reference)
+        self.assertIs(caught.exception, primary)
+        self.assertTrue(reference.closed)
+        close.assert_called_once_with()
+        self.assertEqual(
+            primary.__notes__,
+            ["Native speech reference decoder cleanup failed: decoder close failed"],
+        )
+
+    def test_reference_snapshot_failure_releases_snapshot_and_source(self):
+        backend = self.backend()
+        reference_path = self.reference
+        primary = TTSConfigurationError("MOSS C++ reference must be mono/stereo")
+        closed = []
+        sources = []
+        snapshots = []
+        source_open_count = 0
+        source_close_error = OSError("reference source close failed")
+        snapshot_close_error = OSError("reference snapshot close failed")
+        real_path_open = Path.open
+        real_spooled = SpooledTemporaryFile
+
+        def open_source(path, *args, **kwargs):
+            nonlocal source_open_count
+            source = real_path_open(path, *args, **kwargs)
+            if path != reference_path:
+                return source
+            source_open_count += 1
+            sources.append(source)
+            if source_open_count != 2:
+                return source
+            original_close = source.close
+
+            def close_source():
+                original_close()
+                closed.append("source")
+                raise source_close_error
+
+            source.close = close_source
+            return source
+
+        def open_snapshot(*args, **kwargs):
+            snapshot = real_spooled(*args, **kwargs)
+            snapshots.append(snapshot)
+            original_close = snapshot.close
+
+            def close_snapshot():
+                if not snapshot.closed:
+                    original_close()
+                    closed.append("snapshot")
+                    raise snapshot_close_error
+
+            snapshot.close = close_snapshot
+            return snapshot
+
+        with (
+            patch.object(Path, "open", new=open_source),
+            patch(
+                "vntts.moss_cpp_backend.SpooledTemporaryFile", side_effect=open_snapshot
+            ),
+            patch(
+                "vntts.moss_cpp_backend._normalize_reference_audio", side_effect=primary
+            ),
+            self.assertRaisesRegex(
+                TTSConfigurationError, "reference must be mono/stereo"
+            ) as raised,
+        ):
+            backend._prepare_reference(
+                reference_path,
+                Path(backend.server_directory.name),
+                registered=True,
+            )
+
+        self.assertIs(raised.exception, primary)
+        self.assertEqual(closed, ["snapshot", "source"])
+        self.assertTrue(all(source.closed for source in sources))
+        self.assertTrue(all(snapshot.closed for snapshot in snapshots))
+        notes = raised.exception.__notes__
+        self.assertEqual(source_open_count, 2)
+        self.assertLess(
+            notes.index(
+                "Native speech reference snapshot cleanup failed: "
+                "reference snapshot close failed"
+            ),
+            notes.index(
+                "Native speech reference source cleanup failed: "
+                "reference source close failed"
+            ),
+        )
 
     @staticmethod
     def _windows_sharing_violation():

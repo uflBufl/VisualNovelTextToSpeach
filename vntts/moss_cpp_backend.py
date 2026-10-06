@@ -597,7 +597,10 @@ def _diagnostic_file_size(path: Path) -> int | None:
 def _normalize_reference_audio(
     path: str | Path | BinaryIO | SpooledTemporaryFile[bytes],
 ) -> tuple[bytes, float, int, int]:
-    with sf.SoundFile(path) as reference:
+    reference = sf.SoundFile(path)
+    with cleanup_on_exit(
+        reference.close, description="Native speech reference decoder cleanup"
+    ):
         duration = round(reference.frames / reference.samplerate, 6)
         sample_rate = reference.samplerate
         channels = reference.channels
@@ -1419,7 +1422,9 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             self.port,
             timeout=timeout or self.request_timeout,
         )
-        try:
+        with cleanup_on_exit(
+            connection.close, description="Native speech HTTP connection cleanup"
+        ):
             connection.request(
                 method,
                 path,
@@ -1433,8 +1438,6 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             if len(data) > 16 * 1024 * 1024:
                 raise TTSSynthesisError("MOSS C++ response exceeds the audio limit")
             return response.status, dict(response.getheaders()), data
-        finally:
-            connection.close()
 
     def _resolve_prompt_codes(self, character: str) -> tuple[str, str]:
         # Keep reference resolution/content checking in the existing voice route.
@@ -1467,6 +1470,92 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 gen_s=None,
                 decode_s=None,
             )
+
+    def _registered_reference(
+        self, identity: str | None, server_directory: Path
+    ) -> tuple[str, float, int, int] | None:
+        if identity is None:
+            return None
+        cached = self._registered_references.get(identity)
+        if cached is None:
+            return None
+        return (
+            cached
+            if self._voice_directory(server_directory)
+            .joinpath(f"{cached[0]}.wav")
+            .is_file()
+            else None
+        )
+
+    def _prepare_reference(
+        self, prompt_audio_path: Path, server_directory: Path, *, registered: bool
+    ) -> tuple[str | None, str, bytes | None, float, int, int]:
+        with ExitStack() as reference_stack:
+            reference_identity = None
+            reference: Path | BinaryIO | SpooledTemporaryFile[bytes] = prompt_audio_path
+            if registered:
+                digest = hashlib.sha256()
+                source = prompt_audio_path.open("rb")
+                with cleanup_on_exit(
+                    source.close, description="Native speech reference source cleanup"
+                ):
+                    while chunk := source.read(1024 * 1024):
+                        digest.update(chunk)
+                reference_identity = digest.hexdigest()
+            cached_reference = self._registered_reference(
+                reference_identity, server_directory
+            )
+            if registered and cached_reference is None:
+                source = prompt_audio_path.open("rb")
+                reference_stack.enter_context(
+                    cleanup_on_exit(
+                        source.close,
+                        description="Native speech reference source cleanup",
+                    )
+                )
+                # Keep a cache miss's identity and decoded audio on one
+                # immutable snapshot in case the source changes mid-read.
+                snapshot = SpooledTemporaryFile(max_size=8 * 1024 * 1024)
+                reference_stack.enter_context(
+                    cleanup_on_exit(
+                        snapshot.close,
+                        description="Native speech reference snapshot cleanup",
+                    )
+                )
+                digest = hashlib.sha256()
+                while chunk := source.read(1024 * 1024):
+                    digest.update(chunk)
+                    snapshot.write(chunk)
+                snapshot.seek(0)
+                reference = snapshot
+                reference_identity = digest.hexdigest()
+                cached_reference = self._registered_reference(
+                    reference_identity, server_directory
+                )
+            if cached_reference is None:
+                (
+                    reference_wav,
+                    reference_s,
+                    reference_sample_rate,
+                    reference_channels,
+                ) = _normalize_reference_audio(reference)
+                voice_id = hashlib.sha256(reference_wav).hexdigest()
+            else:
+                (
+                    voice_id,
+                    reference_s,
+                    reference_sample_rate,
+                    reference_channels,
+                ) = cached_reference
+                reference_wav = None
+        return (
+            reference_identity,
+            voice_id,
+            reference_wav,
+            reference_s,
+            reference_sample_rate,
+            reference_channels,
+        )
 
     def _generate(
         self, prepared: MossTTSPreparedSpeech, request: SynthesisRequest
@@ -1526,67 +1615,18 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 self.voice_registry_supported
                 and server_info.get("voice_registry") is True
             )
-            with ExitStack() as reference_stack:
-                reference_identity = None
-                prompt_audio_path = _reference_audio_path(prepared.prompt_audio_codes)
-                reference: Path | BinaryIO | SpooledTemporaryFile[bytes] = (
-                    prompt_audio_path
-                )
-
-                def registered_reference(
-                    identity: str | None,
-                ) -> tuple[str, float, int, int] | None:
-                    if identity is None:
-                        return None
-                    cached = self._registered_references.get(identity)
-                    if cached is None:
-                        return None
-                    return (
-                        cached
-                        if self._voice_directory(server_directory)
-                        .joinpath(f"{cached[0]}.wav")
-                        .is_file()
-                        else None
-                    )
-
-                if registered:
-                    digest = hashlib.sha256()
-                    with prompt_audio_path.open("rb") as source:
-                        while chunk := source.read(1024 * 1024):
-                            digest.update(chunk)
-                    reference_identity = digest.hexdigest()
-                cached_reference = registered_reference(reference_identity)
-                if registered and cached_reference is None:
-                    source = reference_stack.enter_context(prompt_audio_path.open("rb"))
-                    # Keep a cache miss's identity and decoded audio on one
-                    # immutable snapshot in case the source changes mid-read.
-                    snapshot = reference_stack.enter_context(
-                        SpooledTemporaryFile(max_size=8 * 1024 * 1024)
-                    )
-                    digest = hashlib.sha256()
-                    while chunk := source.read(1024 * 1024):
-                        digest.update(chunk)
-                        snapshot.write(chunk)
-                    snapshot.seek(0)
-                    reference = snapshot
-                    reference_identity = digest.hexdigest()
-                    cached_reference = registered_reference(reference_identity)
-                if cached_reference is None:
-                    (
-                        reference_wav,
-                        reference_s,
-                        reference_sample_rate,
-                        reference_channels,
-                    ) = _normalize_reference_audio(reference)
-                    voice_id = hashlib.sha256(reference_wav).hexdigest()
-                else:
-                    (
-                        voice_id,
-                        reference_s,
-                        reference_sample_rate,
-                        reference_channels,
-                    ) = cached_reference
-                    reference_wav = None
+            (
+                reference_identity,
+                voice_id,
+                reference_wav,
+                reference_s,
+                reference_sample_rate,
+                reference_channels,
+            ) = self._prepare_reference(
+                _reference_audio_path(prepared.prompt_audio_codes),
+                server_directory,
+                registered=registered,
+            )
             seed = prepared.seed
             if seed is not None and (type(seed) is not int or not 0 <= seed < 2**64):
                 raise TTSConfigurationError(
