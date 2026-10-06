@@ -9,6 +9,7 @@ import tempfile
 from collections.abc import Iterable, Mapping, MutableSequence, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 
 from durable_file import atomic_write_json, sha256_file
@@ -59,7 +60,7 @@ from vntts.authoring.source_reference_bindings import (
     queue_voice_overrides_sha256,
     retired_source_reference_variants_from_manifest,
 )
-from vntts.authoring.workspace_foundation import contained_regular_file
+from vntts.authoring.workspace_foundation import contained_regular_file, file_sha256
 from vntts.chapter_voice_preload import (
     _source_audio_covers_full_line,
     _validated_source_audio_line_ids,
@@ -155,6 +156,9 @@ class SourceReferenceBindingsResult:
             "selected_variants": self.selected_variants,
             "bound_queue_items": self.bound_queue_items,
         }
+
+
+_file_sha256 = partial(file_sha256, error_type=SourceReferenceReviewError)
 
 
 def import_source_reference_review(
@@ -281,7 +285,7 @@ def _publish_source_reference_plan(
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 payload = _candidate_bytes(candidate, "reference_payload")
                 destination.write_bytes(payload)
-                if sha256_file(destination) != candidate["reference_sha256"]:
+                if _file_sha256(destination) != candidate["reference_sha256"]:
                     raise SourceReferenceReviewError(
                         f"Copied reference checksum changed: {candidate['reference_relative']}"
                     )
@@ -471,7 +475,7 @@ def _validate_plan_reference(
         reference.get("sha256"),
         f"reference {cluster_index}:{reference_index} hash",
     )
-    if sha256_file(path) != expected:
+    if _file_sha256(path) != expected:
         raise SourceReferenceReviewError(f"Plan reference changed: {relative}")
 
 
@@ -753,13 +757,13 @@ def _copy_binding_voice_references(
     digests: list[str] = []
     for index, relative in enumerate(voice.references, start=1):
         source = _contained_file(source_root, relative)
-        digest = sha256_file(source)
+        digest = _file_sha256(source)
         suffix = source.suffix.lower() or ".wav"
         target_relative = target_root / f"{index:02d}{suffix}"
         target = staging / target_relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
-        if sha256_file(target) != digest:
+        if _file_sha256(target) != digest:
             raise SourceReferenceReviewError(error_message)
         copied.append(target_relative.as_posix())
         digests.append(digest)
@@ -780,7 +784,7 @@ def _copy_selected_binding_variant(
         plan_directory, _text(reference.get("path"), "Variant reference path")
     )
     digest = _sha256(reference.get("sha256"), f"variant {variant_id} reference hash")
-    if sha256_file(source) != digest:
+    if _file_sha256(source) != digest:
         raise SourceReferenceReviewError(
             f"Source-reference plan artifact changed: {variant_id}"
         )
@@ -789,7 +793,7 @@ def _copy_selected_binding_variant(
     target = staging / target_relative
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, target)
-    if sha256_file(target) != digest:
+    if _file_sha256(target) != digest:
         raise SourceReferenceReviewError(
             f"Source-reference variant changed while copied: {variant_id}"
         )
@@ -836,7 +840,7 @@ def publish_source_reference_bindings(
     plan_directory = Path(plan_directory).expanduser().resolve()
     plan = load_source_reference_plan(plan_directory)
     plan_path = plan_directory / "plan.json"
-    plan_sha256 = sha256_file(plan_path)
+    plan_sha256 = _file_sha256(plan_path)
     selected_variant_ids, quality_review_path, quality_review_sha256 = (
         _quality_review_selection(quality_review, selected_variant_ids, plan_sha256)
     )
@@ -939,11 +943,11 @@ def publish_source_reference_bindings(
         }
         manifest_path = staging / "voice-manifest.json"
         write_voice_manifest(manifest_path, manifest)
-        if sha256_file(plan_path) != plan_sha256:
+        if _file_sha256(plan_path) != plan_sha256:
             raise SourceReferenceReviewError(
                 "Source-reference plan changed during binding publication"
             )
-        if sha256_file(base_voice_manifest) != base_sha256:
+        if _file_sha256(base_voice_manifest) != base_sha256:
             raise SourceReferenceReviewError(
                 "Base voice manifest changed during binding publication"
             )
@@ -951,7 +955,7 @@ def publish_source_reference_bindings(
             _assert_source_unchanged(source, digest, f"voice reference {source.name}")
         if (
             quality_review_path is not None
-            and sha256_file(quality_review_path) != quality_review_sha256
+            and _file_sha256(quality_review_path) != quality_review_sha256
         ):
             raise SourceReferenceReviewError(
                 "Source-reference quality review changed during binding publication"
@@ -1202,7 +1206,7 @@ def _retirement_records(
                 f"Retired source-reference voice is missing or ambiguous: {voice_character}"
             )
         reference = _contained_file(base_binding_manifest.parent, voice.references[0])
-        reference_sha256 = sha256_file(reference)
+        reference_sha256 = _file_sha256(reference)
         if reference_sha256 != _sha256(
             variant.get("reference_sha256"),
             "retired source-reference variant SHA-256",
@@ -1590,7 +1594,7 @@ def publish_source_reference_evaluation(
     plan_directory = Path(plan_directory).expanduser().resolve()
     plan = load_source_reference_plan(plan_directory)
     plan_path = plan_directory / "plan.json"
-    plan_sha256 = sha256_file(plan_path)
+    plan_sha256 = _file_sha256(plan_path)
     output = no_replace_destination(output)
     if output.exists() or output.is_symlink():
         raise SourceReferenceReviewError(
@@ -1653,9 +1657,9 @@ def publish_source_reference_evaluation(
             "source_reference_plan": str(plan_directory),
             "source_reference_plan_sha256": plan_sha256,
             "voice_manifest": manifest_path.name,
-            "voice_manifest_sha256": sha256_file(manifest_path),
+            "voice_manifest_sha256": _file_sha256(manifest_path),
             "queue": queue_path.name,
-            "queue_sha256": sha256_file(queue_path),
+            "queue_sha256": _file_sha256(queue_path),
             "variants": variants,
             "review_policy": (
                 "Source-match trials compare original and generated audio blindly. "
@@ -1666,7 +1670,7 @@ def publish_source_reference_evaluation(
         atomic_write_json(staging / "comparison.json", comparison)
         load_voice_manifest(manifest_path)
         VoiceGenerationQueue.load(queue_path)
-        if sha256_file(plan_path) != plan_sha256:
+        if _file_sha256(plan_path) != plan_sha256:
             raise SourceReferenceReviewError(
                 "Source-reference plan changed during evaluation publication"
             )
@@ -1678,7 +1682,7 @@ def publish_source_reference_evaluation(
             )
         for variant in variants:
             source = staging / _text(variant.get("source_audio"), "Evaluation source")
-            if sha256_file(source) != _sha256(
+            if _file_sha256(source) != _sha256(
                 variant.get("source_audio_sha256"), "Evaluation source hash"
             ):
                 raise SourceReferenceReviewError(
@@ -1725,9 +1729,9 @@ def _load_evaluation_generation(
     manifest_sha256 = _sha256(
         comparison.get("voice_manifest_sha256"), "Evaluation manifest hash"
     )
-    if sha256_file(queue_path) != queue_sha256:
+    if _file_sha256(queue_path) != queue_sha256:
         raise SourceReferenceReviewError("Evaluation queue changed")
-    if sha256_file(manifest_path) != manifest_sha256:
+    if _file_sha256(manifest_path) != manifest_sha256:
         raise SourceReferenceReviewError("Evaluation voice manifest changed")
     try:
         queue = VoiceGenerationQueue.load(queue_path)
@@ -1806,7 +1810,7 @@ def _validate_listening_variant(
     source_sha256 = _sha256(
         variant.get("source_audio_sha256"), f"variant {variant_id} source hash"
     )
-    if sha256_file(source) != source_sha256:
+    if _file_sha256(source) != source_sha256:
         raise SourceReferenceReviewError(
             f"Evaluation source audio changed: {variant_id}"
         )
@@ -1882,7 +1886,7 @@ def _collect_generated_variant_samples(
         audio_sha256 = _sha256(
             result.get("file_sha256"), f"generated result {queue_id} hash"
         )
-        if sha256_file(audio) != audio_sha256:
+        if _file_sha256(audio) != audio_sha256:
             raise SourceReferenceReviewError(
                 f"Generated evaluation audio changed: {queue_id}"
             )
@@ -2017,7 +2021,7 @@ def publish_source_reference_listening_reports(
     ) = _load_evaluation_generation(evaluation_directory, state_path)
     comparison_sha256 = hashlib.sha256(comparison_payload).hexdigest()
     state_path = Path(state_path).expanduser().resolve()
-    state_sha256 = sha256_file(state_path)
+    state_sha256 = _file_sha256(state_path)
     output = no_replace_destination(output)
     if output.exists() or output.is_symlink():
         raise SourceReferenceReviewError(
@@ -2080,19 +2084,19 @@ def publish_source_reference_listening_reports(
             "Listening trial count",
         )
         shutil.rmtree(validation)
-        if sha256_file(queue_path) != queue_sha256:
+        if _file_sha256(queue_path) != queue_sha256:
             raise SourceReferenceReviewError(
                 "Evaluation queue changed during report publication"
             )
-        if sha256_file(comparison_path) != comparison_sha256:
+        if _file_sha256(comparison_path) != comparison_sha256:
             raise SourceReferenceReviewError(
                 "Evaluation comparison changed during report publication"
             )
-        if sha256_file(manifest_path) != manifest_sha256:
+        if _file_sha256(manifest_path) != manifest_sha256:
             raise SourceReferenceReviewError(
                 "Evaluation voice manifest changed during report publication"
             )
-        if sha256_file(state_path) != state_sha256:
+        if _file_sha256(state_path) != state_sha256:
             raise SourceReferenceReviewError(
                 "Evaluation generation state changed during report publication"
             )

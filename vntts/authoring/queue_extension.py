@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 from os import PathLike
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from vntts_artifacts.voice_generation_queue import (
 )
 
 from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.workspace_foundation import file_sha256
 from vntts.document_identity import is_lowercase_sha256
 
 SCHEMA = "vntts.authoring-generation-queue-extension"
@@ -24,6 +26,9 @@ WORKSPACE_VERSION = 1
 
 class QueueExtensionError(ValueError):
     """Raised when an additive queue successor is unsafe or inconsistent."""
+
+
+_file_sha256 = partial(file_sha256, error_type=QueueExtensionError)
 
 
 def publish_additive_generation_queue(
@@ -55,8 +60,8 @@ def publish_additive_generation_queue(
     if not extension_by_id:
         raise QueueExtensionError("Queue extension adds no generation items")
 
-    base_sha256 = sha256_file(base_path)
-    extension_sha256 = sha256_file(extension_path)
+    base_sha256 = _file_sha256(base_path)
+    extension_sha256 = _file_sha256(extension_path)
     added = [
         {
             "queue_id": queue_id,
@@ -201,7 +206,7 @@ def workspace_queue_extension(
         "schema_version": WORKSPACE_VERSION,
         "base_queue_path": "provenance/seed-generation-queue.jsonl",
         "queue_path": "inputs/generation-queue.jsonl",
-        "queue_sha256": sha256_file(queue_path),
+        "queue_sha256": _file_sha256(queue_path),
         "base_queue_sha256": ledger["base_queue_sha256"],
         "extension_queue_sha256": ledger["extension_queue_sha256"],
         "extension_id": ledger["extension_id"],

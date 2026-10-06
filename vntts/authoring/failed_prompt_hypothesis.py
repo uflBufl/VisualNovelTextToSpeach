@@ -6,9 +6,8 @@ import copy
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
-
-from durable_file import sha256_file
 
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
@@ -27,6 +26,7 @@ from vntts.authoring.missing_voice_reuse_review import (
     load_missing_voice_reuse_review,
 )
 from vntts.authoring.publication import no_replace_destination
+from vntts.authoring.workspace_foundation import file_sha256
 
 FAILED_PROMPT_SELECTION_SCHEMA = "vntts.authoring-failed-prompt-selection"
 FAILED_PROMPT_SELECTION_VERSION = 1
@@ -53,6 +53,9 @@ class FailedPromptHypothesisResult:
         }
 
 
+_file_sha256 = partial(file_sha256, error_type=FailedPromptHypothesisError)
+
+
 def publish_failed_prompt_hypothesis_selection(
     plan_path: str | Path,
     session_path: str | Path,
@@ -75,7 +78,7 @@ def publish_failed_prompt_hypothesis_selection(
         )
     if bundle["plan"].get("plan_id") != document["plan_id"] or bundle["plan"].get(
         "sha256"
-    ) != sha256_file(plan_path):
+    ) != _file_sha256(plan_path):
         raise FailedPromptHypothesisError(
             "Prompt review belongs to a different immutable plan"
         )
@@ -149,10 +152,10 @@ def publish_failed_prompt_hypothesis_selection(
         "schema": FAILED_PROMPT_SELECTION_SCHEMA,
         "schema_version": FAILED_PROMPT_SELECTION_VERSION,
         "plan_id": document["plan_id"],
-        "plan_sha256": sha256_file(plan_path),
+        "plan_sha256": _file_sha256(plan_path),
         "review_bundle_id": bundle["bundle_id"],
         "review_bundle_sha256": session["bundle_sha256"],
-        "review_session_sha256": sha256_file(session_path),
+        "review_session_sha256": _file_sha256(session_path),
         "blind_key_sha256": bundle["blind_key_sha256"],
         "decisions": decisions,
         "authority": (

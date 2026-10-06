@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Mapping
+from functools import partial
 from pathlib import Path
 from typing import cast
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     VoiceGenerationQueueItem,
@@ -46,9 +47,12 @@ from vntts.authoring.workspace_config import (
     workspace_successor_config_fingerprint,
 )
 from vntts.authoring.workspace_foundation import (
+    file_sha256,
     stage_single_base_successor,
 )
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
+
+_file_sha256 = partial(file_sha256, error_type=AuthoringWorkbenchError)
 
 
 def create_reviewed_waveform_publication_workspace(
@@ -72,7 +76,7 @@ def create_reviewed_waveform_publication_workspace(
             "Reviewed-waveform publication base is already migrated"
         )
     queue_path = base_directory / "queue.jsonl"
-    queue_sha256 = sha256_file(queue_path)
+    queue_sha256 = _file_sha256(queue_path)
     queue_by_id = {item.queue_id: item for item in queue.items}
     voice_path = selected_voice_manifest_path(
         base_directory, base_document, error_type=AuthoringWorkbenchError
@@ -81,7 +85,7 @@ def create_reviewed_waveform_publication_workspace(
         raise AuthoringWorkbenchError(
             "Reviewed-waveform publication requires a selected voice manifest"
         )
-    voice_sha256 = sha256_file(voice_path)
+    voice_sha256 = _file_sha256(voice_path)
     story_binding = base_document.get("story_index")
     if not isinstance(story_binding, dict):
         raise AuthoringWorkbenchError(
@@ -92,7 +96,7 @@ def create_reviewed_waveform_publication_workspace(
         safe_workspace_relative_path(story_binding.get("path"), "Selected story index"),
         "Selected story index",
     )
-    story_sha256 = sha256_file(story_path)
+    story_sha256 = _file_sha256(story_path)
     if story_sha256 != require_workspace_sha256(
         story_binding.get("sha256"), "Selected story index SHA-256"
     ):
@@ -197,7 +201,7 @@ def _approved_waveform_ledgers(
         source = contained_workspace_path(
             base_directory / "generated-audio", relative, "Approved waveform"
         )
-        if not source.is_file() or sha256_file(source) != require_workspace_sha256(
+        if not source.is_file() or _file_sha256(source) != require_workspace_sha256(
             result.get("file_sha256"), f"Approved waveform {queue_id!r} SHA-256"
         ):
             raise AuthoringWorkbenchError(f"Approved waveform changed for {queue_id!r}")
@@ -371,7 +375,7 @@ def _reviewed_waveform_base_state(
             batch.get(path_field), f"Reviewed-waveform {label}"
         )
         source = contained_workspace_path(root, relative, f"Reviewed-waveform {label}")
-        if not source.is_file() or sha256_file(source) != batch.get(hash_field):
+        if not source.is_file() or _file_sha256(source) != batch.get(hash_field):
             raise AuthoringWorkbenchError(
                 f"Reviewed-waveform {label} authority changed"
             )
@@ -396,7 +400,7 @@ def _validate_reviewed_waveform_state(
 ) -> None:
     if state.get("reviewed_waveform_publication") != batch:
         raise AuthoringWorkbenchError("Reviewed-waveform state authority changed")
-    if sha256_file(root / "queue.jsonl") != batch.get("queue_sha256"):
+    if _file_sha256(root / "queue.jsonl") != batch.get("queue_sha256"):
         raise AuthoringWorkbenchError("Reviewed-waveform queue changed")
     queue_ids = {item.queue_id for item in queue.items}
     base_items = _state_items(base_state)
@@ -441,7 +445,7 @@ def _character_reference_sha256s(voice_path: Path, character: str) -> list[str]:
         )
         if not reference.is_file():
             raise AuthoringWorkbenchError("Narrator voice reference is unavailable")
-        digests.append(sha256_file(reference))
+        digests.append(_file_sha256(reference))
     if not digests:
         raise AuthoringWorkbenchError("Selected narrator has no voice references")
     return sorted(set(digests))

@@ -10,10 +10,11 @@ import secrets
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import TypedDict
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts import VoiceGenerationQueueItem
 
 from vntts.authoring.authority import canonical_document_sha256
@@ -45,7 +46,7 @@ from vntts.authoring.missing_voice_reuse_binding import (
     _validate_binding_bundle,
 )
 from vntts.authoring.workbench import inspect_workspace
-from vntts.authoring.workspace_foundation import load_json_object
+from vntts.authoring.workspace_foundation import file_sha256, load_json_object
 from vntts.voices import synthesis_character_for_line
 
 AUTOMATIC_UNRESOLVED_ORIGIN = "automatic_no_complete_candidate"
@@ -83,6 +84,9 @@ class MissingVoiceLiveFallbackResult:
         return {**asdict(self), "workspace": str(self.workspace)}
 
 
+_file_sha256 = partial(file_sha256, error_type=MissingVoiceLiveFallbackError)
+
+
 def authorize_missing_voice_live_fallback(
     workspace: str | Path,
     authority_directory: str | Path,
@@ -99,7 +103,7 @@ def authorize_missing_voice_live_fallback(
     workspace_path = workspace / "workspace.json"
     inspect_workspace(workspace)
     workspace_document = _read_json(workspace_path, "workspace")
-    workspace_sha256 = sha256_file(workspace_path)
+    workspace_sha256 = _file_sha256(workspace_path)
     narrator_character = _required_text(
         workspace_document.get("narrator_character"), "Configured narrator character"
     )
@@ -292,20 +296,20 @@ def authorize_missing_voice_live_fallback(
                 staged_manifest,
                 entries=entries,
             )
-            if sha256_file(queue_path) != queue_sha256:
+            if _file_sha256(queue_path) != queue_sha256:
                 raise BulkGenerationSourceChangedError(
                     "Generation queue changed before missing-voice fallback commit"
                 )
-            if sha256_file(state_path) != state_sha256:
+            if _file_sha256(state_path) != state_sha256:
                 raise BulkGenerationSourceChangedError(
                     "Generation state changed before missing-voice fallback commit"
                 )
             for path, digest in authority["snapshots"]:
-                if not path.is_file() or sha256_file(path) != digest:
+                if not path.is_file() or _file_sha256(path) != digest:
                     raise BulkGenerationSourceChangedError(
                         "Missing-voice fallback authority changed before commit"
                     )
-            if sha256_file(workspace_path) != workspace_sha256:
+            if _file_sha256(workspace_path) != workspace_sha256:
                 raise BulkGenerationSourceChangedError(
                     "Workspace changed before missing-voice fallback commit"
                 )
@@ -340,7 +344,7 @@ def authorize_missing_voice_live_fallback(
         batch_id,
         authority_decision_id,
         state_sha256,
-        sha256_file(state_path),
+        _file_sha256(state_path),
         applied=True,
         created=True,
     )
@@ -387,7 +391,7 @@ def _load_authority(directory: Path) -> MissingVoiceAuthority:
         .expanduser()
         .resolve()
     )
-    if not plan_path.is_file() or sha256_file(plan_path) != _text_field(
+    if not plan_path.is_file() or _file_sha256(plan_path) != _text_field(
         decision, "plan_sha256", "Missing-voice fallback plan checksum"
     ):
         raise MissingVoiceLiveFallbackError(
@@ -397,7 +401,7 @@ def _load_authority(directory: Path) -> MissingVoiceAuthority:
     if (
         not session_path.is_file()
         or not isinstance(binding, dict)
-        or sha256_file(session_path) != binding.get("review_session_sha256")
+        or _file_sha256(session_path) != binding.get("review_session_sha256")
     ):
         raise MissingVoiceLiveFallbackError(
             "Missing-voice fallback review session authority changed"
@@ -423,12 +427,12 @@ def _load_authority(directory: Path) -> MissingVoiceAuthority:
                 ),
             )
         )
-    snapshots.append((bundle_path, sha256_file(bundle_path)))
+    snapshots.append((bundle_path, _file_sha256(bundle_path)))
     return {
         "decision": decision,
-        "decision_sha256": sha256_file(decision_path),
+        "decision_sha256": _file_sha256(decision_path),
         "bundle": bundle,
-        "bundle_sha256": sha256_file(bundle_path),
+        "bundle_sha256": _file_sha256(bundle_path),
         "plan": plan,
         "snapshots": tuple(snapshots),
     }

@@ -7,9 +7,10 @@ import json
 import shutil
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts.voice_manifest import (
     VoiceManifestEntry,
     VoiceManifestError,
@@ -51,6 +52,7 @@ from vntts.authoring.workbench import (
     contained_workspace_path,
     safe_workspace_relative_path,
 )
+from vntts.authoring.workspace_foundation import file_sha256
 from vntts.voices import voice_manifest_entries_at_path
 
 MISSING_VOICE_REUSE_DECISION_SCHEMA = "vntts.authoring-missing-voice-reuse-decision"
@@ -84,6 +86,9 @@ class MissingVoiceReuseBindingResult:
         }
 
 
+_file_sha256 = partial(file_sha256, error_type=MissingVoiceReuseBindingError)
+
+
 def publish_missing_voice_reuse_binding(
     plan_path: str | Path,
     session_path: str | Path,
@@ -105,7 +110,7 @@ def publish_missing_voice_reuse_binding(
         )
     if bundle["plan"].get("plan_id") != document["plan_id"] or bundle["plan"].get(
         "sha256"
-    ) != sha256_file(plan_path):
+    ) != _file_sha256(plan_path):
         raise MissingVoiceReuseBindingError(
             "Missing-voice review belongs to a different immutable plan"
         )
@@ -232,7 +237,7 @@ def publish_missing_voice_reuse_binding(
         "source_workspace_sha256": document["source"]["workspace_sha256"],
         "review_bundle_id": bundle["bundle_id"],
         "review_bundle_sha256": session["bundle_sha256"],
-        "review_session_sha256": sha256_file(session_path),
+        "review_session_sha256": _file_sha256(session_path),
         "blind_key_sha256": bundle["blind_key_sha256"],
         "cohort_ids": sorted(target_by_cohort),
         "selected_candidates": selected_candidates,
@@ -305,8 +310,8 @@ def publish_missing_voice_reuse_binding(
                     target_path = staging / relative
                     target_path.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copyfile(source_path, target_path)
-                    digest = sha256_file(source_path)
-                    if sha256_file(target_path) != digest:
+                    digest = _file_sha256(source_path)
+                    if _file_sha256(target_path) != digest:
                         raise MissingVoiceReuseBindingError(
                             "Missing-voice binding reference changed while copied"
                         )
@@ -321,7 +326,7 @@ def publish_missing_voice_reuse_binding(
                 "schema": MISSING_VOICE_REUSE_DECISION_SCHEMA,
                 "schema_version": MISSING_VOICE_REUSE_DECISION_VERSION,
                 "plan_path": str(plan_path),
-                "plan_sha256": sha256_file(plan_path),
+                "plan_sha256": _file_sha256(plan_path),
                 "session_path": str(session_path),
                 "binding": binding,
             }
@@ -335,9 +340,9 @@ def publish_missing_voice_reuse_binding(
             inventory = [
                 {
                     "path": "decision.json",
-                    "sha256": sha256_file(staging / "decision.json"),
+                    "sha256": _file_sha256(staging / "decision.json"),
                 },
-                {"path": "manifest.json", "sha256": sha256_file(manifest_path)},
+                {"path": "manifest.json", "sha256": _file_sha256(manifest_path)},
                 *sorted(inventory, key=lambda value: value["path"]),
             ]
             body = {
@@ -430,7 +435,7 @@ def _validate_binding_bundle(
         if (
             artifact.is_symlink()
             or not artifact.is_file()
-            or sha256_file(artifact) != item["sha256"]
+            or _file_sha256(artifact) != item["sha256"]
         ):
             raise MissingVoiceReuseBindingError(
                 "Missing-voice binding artifact changed"

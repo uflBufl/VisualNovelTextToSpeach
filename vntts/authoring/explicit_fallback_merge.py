@@ -10,7 +10,7 @@ from functools import partial
 from pathlib import Path
 from typing import cast
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     VoiceGenerationQueueItem,
@@ -52,6 +52,7 @@ from vntts.authoring.workspace_config import (
 from vntts.authoring.workspace_foundation import (
     copy_generation_wavs,
     copy_workspace_tree_snapshot,
+    file_sha256,
 )
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 
@@ -93,6 +94,9 @@ class _MergeIdentity:
     destination: Path
     workspace_id: str
     config_fingerprint: str
+
+
+_file_sha256 = partial(file_sha256, error_type=AuthoringWorkbenchError)
 
 
 def merge_explicit_live_fallbacks(
@@ -168,8 +172,8 @@ def _select_explicit_fallback_merge(
     )
     base_queue_path = base_directory / "queue.jsonl"
     source_queue_path = source_directory / "queue.jsonl"
-    base_queue_sha256 = sha256_file(base_queue_path)
-    source_queue_sha256 = sha256_file(source_queue_path)
+    base_queue_sha256 = _file_sha256(base_queue_path)
+    source_queue_sha256 = _file_sha256(source_queue_path)
     same_queue = (
         source_queue_sha256 == base_queue_sha256
         and source_queue.metadata == base_queue.metadata
@@ -423,7 +427,7 @@ def _validate_explicit_fallback_publication_sources(
             "Explicit fallback source became active before publication"
         )
     for path, digest in snapshots:
-        if not path.is_file() or sha256_file(path) != digest:
+        if not path.is_file() or _file_sha256(path) != digest:
             raise AuthoringWorkbenchError(
                 "Explicit fallback authority changed before publication"
             )
@@ -487,7 +491,7 @@ def validate_explicit_fallback_merge_workspace(
         return
     merge, version = _validated_explicit_fallback_merge(value)
     expected_queue_sha256 = _validate_explicit_fallback_merge_digests(merge, version)
-    if sha256_file(Path(directory) / "queue.jsonl") != expected_queue_sha256:
+    if _file_sha256(Path(directory) / "queue.jsonl") != expected_queue_sha256:
         raise AuthoringWorkbenchError("Explicit fallback base queue changed")
     items = merge.get("items")
     if not isinstance(items, list) or not items:
