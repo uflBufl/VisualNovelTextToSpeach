@@ -26,6 +26,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from vntts.audio_output import AudioOutput, StreamingAudioStream, resolve_audio_output
+from vntts.cleanup import attempt_cleanup
 from vntts.moss_delay_backend import MossTTSDelayVoiceRouterBackend
 from vntts.path_safety import contained_path
 from vntts.playback import (
@@ -1023,20 +1024,20 @@ class IsolatedSpeechBackend:
         try:
             self._launch_worker()
         except BaseException as error:
-            try:
-                self._terminate_process(self.process)
-            except BaseException as cleanup_error:
-                error.add_note(f"Speech worker termination failed: {cleanup_error}")
-            finally:
-                if self._runtime_use is not None:
-                    try:
-                        self._runtime_use.close()
-                    except BaseException as cleanup_error:
-                        error.add_note(
-                            f"Speech runtime claim cleanup failed: {cleanup_error}"
-                        )
-                    finally:
-                        self._runtime_use = None
+            attempt_cleanup(
+                lambda: self._terminate_process(self.process),
+                description="Speech worker termination",
+                primary_error=error,
+            )
+            if self._runtime_use is not None:
+                try:
+                    attempt_cleanup(
+                        self._runtime_use.close,
+                        description="Speech runtime claim cleanup",
+                        primary_error=error,
+                    )
+                finally:
+                    self._runtime_use = None
             raise
 
     def _launch_worker(self) -> None:
@@ -1145,13 +1146,13 @@ class IsolatedSpeechBackend:
                 bufsize=0,
             )
         except Exception as error:
-            if self._runtime_use is not None:
-                try:
-                    self._runtime_use.launched(None)
-                except BaseException as cleanup_error:
-                    error.add_note(
-                        f"Speech runtime launch reset failed: {cleanup_error}"
-                    )
+            runtime_use = self._runtime_use
+            if runtime_use is not None:
+                attempt_cleanup(
+                    lambda: runtime_use.launched(None),
+                    description="Speech runtime launch reset",
+                    primary_error=error,
+                )
             raise
         if not _is_worker_process(candidate):
             configuration_error = TTSConfigurationError(

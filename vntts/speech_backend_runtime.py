@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Protocol, TypeAlias
 
 from durable_file import sha256_file
 
+from vntts.cleanup import attempt_cleanup
 from vntts.path_safety import contained_path
 from vntts.runtime_paths import resolve_speech_runtime_root
 from vntts.services.tts_engine import TTSConfigurationError
@@ -27,7 +28,8 @@ def shutdown_speech_backend(
     backend: object, *, primary_error: BaseException | None = None
 ) -> None:
     """Release a backend without replacing an earlier operation failure."""
-    try:
+
+    def release() -> None:
         shutdown = getattr(backend, "shutdown", None)
         if callable(shutdown):
             shutdown()
@@ -35,10 +37,12 @@ def shutdown_speech_backend(
             stop = getattr(backend, "stop", None)
             if callable(stop):
                 stop()
-    except BaseException as error:
-        if primary_error is None:
-            raise
-        primary_error.add_note(f"Speech backend shutdown failed: {error}")
+
+    attempt_cleanup(
+        release,
+        description="Speech backend shutdown",
+        primary_error=primary_error,
+    )
 
 
 def activate_backend_runtime(
