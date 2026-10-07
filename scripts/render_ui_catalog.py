@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
     from vntts.authoring.source_reference_quality_ui import SourceReferenceQualityDialog
     from vntts.authoring.workbench_ui import AuthoringWorkbenchDialog
+    from vntts.support import RuntimeSupportLog
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CATALOG = PROJECT_ROOT / "ui-catalog.json"
@@ -108,6 +109,22 @@ def _close_catalog_widget(widget: QWidget) -> None:
     widget.deleteLater()
     QCoreApplication.sendPostedEvents(widget, QEvent.Type.DeferredDelete)
     QApplication.processEvents()
+
+
+def _catalog_support_log(state: str) -> RuntimeSupportLog:
+    from vntts.support import RuntimeSupportLog
+
+    recorded_at = datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc)
+    events = RuntimeSupportLog(clock=lambda: recorded_at)
+    if state != "empty":
+        for index in range(42 if state == "new-events" else 3):
+            recorded_at = recorded_at.replace(minute=index)
+            events.add(
+                "info" if index % 7 else "warning",
+                f"Captured dialogue and checked selected voice ({index})",
+            )
+    recorded_at = datetime(2026, 9, 22, 13, 0, tzinfo=timezone.utc)
+    return events
 
 
 def _source_reference_review(
@@ -1593,30 +1610,15 @@ def _render_stories(
         return dialog
 
     def support_center(state: str) -> SupportCenterDialog:
-        events: list[dict[str, str]] = []
-        if state != "empty":
-            events.extend(
-                {
-                    "recorded_at": f"2026-09-22T12:{index:02d}:00+00:00",
-                    "level": "info" if index % 7 else "warning",
-                    "message": f"Captured dialogue and checked selected voice ({index})",
-                }
-                for index in range(42 if state == "new-events" else 3)
-            )
-        dialog = SupportCenterDialog(SimpleNamespace(snapshot=lambda: list(events)))
+        events = _catalog_support_log(state)
+        dialog = SupportCenterDialog(events)
         dialog.refresh()
         if state == "new-events":
             dialog.show()
             app.processEvents()
             dialog.events.moveCursor(QTextCursor.MoveOperation.Start)
             dialog.events.verticalScrollBar().setValue(0)
-            events.append(
-                {
-                    "recorded_at": "2026-09-22T13:00:00+00:00",
-                    "level": "warning",
-                    "message": "Selected game window is no longer available",
-                }
-            )
+            events.add("warning", "Selected game window is no longer available")
             dialog.refresh()
         elif state == "exporting":
             dialog.request_export()
