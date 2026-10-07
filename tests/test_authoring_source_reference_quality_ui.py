@@ -464,6 +464,19 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             dialog.close_button.click()
             self.assertFalse(dialog.isVisible())
 
+    def test_catalog_completion_persists_a_valid_accepted_decision(self):
+        from scripts.render_ui_catalog import _source_reference_review
+
+        dialog = _source_reference_review("complete")
+        try:
+            self.assertIsNone(dialog.current)
+            persisted = load_source_reference_quality_review(dialog.session_path)
+            self.assertEqual(persisted["completed_count"], 1)
+            self.assertEqual(persisted["variants"][0]["decision"]["decision"], "accept")
+        finally:
+            dialog.close()
+            dialog._catalog_temporary_directory.cleanup()
+
     def test_complete_message_remains_visible_with_large_text(self):
         with TemporaryDirectory() as directory:
             session = write_quality_session(Path(directory))
@@ -471,8 +484,15 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             font = dialog.font()
             font.setPixelSize(48)
             dialog.setFont(font)
-            dialog.session["variants"][0]["decision"] = "accept"
-            dialog._load_next(dialog.session)
+            current = dialog.current
+            self.assertIsNotNone(current)
+            dialog._load_next(
+                dialog.decision_recorder(session, current["variant_id"], "accept")
+            )
+            persisted = load_source_reference_quality_review(session)
+            self.assertEqual(persisted["completed_count"], 1)
+            self.assertEqual(persisted["variants"][0]["decision"]["decision"], "accept")
+            self.assertIsNone(dialog.current)
             dialog.show()
             self.application.processEvents()
 

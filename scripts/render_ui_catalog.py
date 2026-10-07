@@ -17,8 +17,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 from unittest.mock import Mock, patch
+
+if TYPE_CHECKING:
+    from vntts.authoring.source_reference_quality_ui import SourceReferenceQualityDialog
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CATALOG = PROJECT_ROOT / "ui-catalog.json"
@@ -135,6 +138,37 @@ def _prepare_catalog_screenshot(widget: Any, story_id: str, app: Any) -> None:
         app.processEvents()
 
 
+def _source_reference_review(state: str) -> SourceReferenceQualityDialog:
+    from PySide6.QtMultimedia import QMediaPlayer
+
+    from tests.test_authoring_source_reference_quality_ui import write_quality_session
+    from vntts.authoring.source_reference_quality_ui import SourceReferenceQualityDialog
+
+    temporary = TemporaryDirectory(prefix="vntts-ui-catalog-")
+    session = write_quality_session(Path(temporary.name))
+    dialog = SourceReferenceQualityDialog(session)
+    dialog._catalog_temporary_directory = temporary
+    current = dialog.current
+    assert current is not None
+    if state == "heard":
+        for token in (
+            "reference",
+            *(sample["queue_id"] for sample in current["generated_samples"]),
+        ):
+            dialog._playing_token = token
+            dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+    elif state == "complete":
+        dialog._load_next(
+            dialog.decision_recorder(session, current["variant_id"], "accept")
+        )
+    elif state == "compact":
+        font = dialog.font()
+        font.setPointSize(max(font.pointSize() + 3, 16))
+        dialog.setFont(font)
+        dialog.resize(dialog.minimumSize())
+    return dialog
+
+
 def _render_stories(
     catalog: dict[str, Any], output: Path, selected_surface: str | None
 ) -> dict[str, str]:
@@ -157,7 +191,6 @@ def _render_stories(
     from tests.test_authoring_missing_voice_reuse_review import (
         create_missing_voice_reuse_review_fixture,
     )
-    from tests.test_authoring_source_reference_quality_ui import write_quality_session
     from tests.test_authoring_terminal_conflict_review_ui import (
         TerminalConflictReviewUiTest,
     )
@@ -185,9 +218,6 @@ def _render_stories(
     )
     from vntts.authoring.missing_voice_reuse_review_ui import (
         MissingVoiceReuseReviewDialog,
-    )
-    from vntts.authoring.source_reference_quality_ui import (
-        SourceReferenceQualityDialog,
     )
     from vntts.authoring.terminal_conflict_review import (
         record_terminal_conflict_decision,
@@ -1905,28 +1935,6 @@ def _render_stories(
             dialog.resize(dialog.minimumSize())
         return dialog
 
-    def source_reference_review(state: str) -> Any:
-        temporary = TemporaryDirectory(prefix="vntts-ui-catalog-")
-        session = write_quality_session(Path(temporary.name))
-        dialog = SourceReferenceQualityDialog(session)
-        dialog._catalog_temporary_directory = temporary
-        if state == "heard":
-            for token in (
-                "reference",
-                *(sample["queue_id"] for sample in dialog.current["generated_samples"]),
-            ):
-                dialog._playing_token = token
-                dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
-        elif state == "complete":
-            dialog.session["variants"][0]["decision"] = "accept"
-            dialog._load_next(dialog.session)
-        elif state == "compact":
-            font = dialog.font()
-            font.setPointSize(max(font.pointSize() + 3, 16))
-            dialog.setFont(font)
-            dialog.resize(dialog.minimumSize())
-        return dialog
-
     def blind_listening(state: str) -> Any:
         temporary = TemporaryDirectory(prefix="vntts-ui-catalog-")
         root = Path(temporary.name)
@@ -1944,7 +1952,9 @@ def _render_stories(
                 playback.finish()
                 dialog.poll_playback()
         elif state == "complete":
-            record_trial_preference(session, dialog.current_trial["trial_id"], "a")
+            current = dialog.current_trial
+            assert current is not None
+            record_trial_preference(session, current["trial_id"], "a")
             dialog.load_next_trial()
         elif state == "compact":
             font = dialog.font()
@@ -1964,8 +1974,10 @@ def _render_stories(
             }
             dialog._update_decision_buttons()
         elif state == "complete":
+            current = dialog._current
+            assert current is not None
             record_terminal_conflict_decision(
-                directory, dialog._current["case_id"], "neither_acceptable"
+                directory, current["case_id"], "neither_acceptable"
             )
             dialog._load_next()
         elif state == "compact":
@@ -2179,10 +2191,12 @@ def _render_stories(
         "failed-reference-review.heard": lambda: failed_reference_review("heard"),
         "failed-reference-review.preview": lambda: failed_reference_review("preview"),
         "failed-reference-review.compact": lambda: failed_reference_review("compact"),
-        "source-reference-review.pending": lambda: source_reference_review("pending"),
-        "source-reference-review.heard": lambda: source_reference_review("heard"),
-        "source-reference-review.complete": lambda: source_reference_review("complete"),
-        "source-reference-review.compact": lambda: source_reference_review("compact"),
+        "source-reference-review.pending": lambda: _source_reference_review("pending"),
+        "source-reference-review.heard": lambda: _source_reference_review("heard"),
+        "source-reference-review.complete": lambda: _source_reference_review(
+            "complete"
+        ),
+        "source-reference-review.compact": lambda: _source_reference_review("compact"),
         "blind-listening.pending": lambda: blind_listening("pending"),
         "blind-listening.heard": lambda: blind_listening("heard"),
         "blind-listening.complete": lambda: blind_listening("complete"),

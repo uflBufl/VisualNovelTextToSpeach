@@ -41,7 +41,7 @@
       "path": "scripts/render_ui_catalog.py",
       "scope": "_render_stories",
       "count": 1,
-      "maximum": 204
+      "maximum": 199
     },
     {
       "code": "C901",
@@ -993,7 +993,7 @@
       "path": "scripts/render_ui_catalog.py",
       "scope": "_render_stories",
       "count": 1,
-      "maximum": 962
+      "maximum": 948
     },
     {
       "code": "PLR0915",
