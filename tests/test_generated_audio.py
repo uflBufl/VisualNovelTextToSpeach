@@ -18,6 +18,7 @@ from vntts_artifacts.generated_audio import (
     write_generated_audio_manifest,
 )
 
+from tests.audio_output_fixtures import FakeAudioOutput
 from tests.symlink_support import symlink_or_skip
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.document_identity import canonical_document_sha256
@@ -41,24 +42,6 @@ from vntts.playback import PreparedPlayback, outcome_for_prepared
 from vntts.settings import AppSettings
 from vntts.speech_backend import SpeechBackendCapabilities
 from vntts.voice_library import VoiceLibrary
-
-
-class FakeAudioOutput:
-    def __init__(self):
-        self.plays = []
-        self.stopped = False
-
-    def query_devices(self, _device=None, _kind=None):
-        return {"default_samplerate": 24_000}
-
-    def play(self, samples, sample_rate, **options):
-        self.plays.append((np.asarray(samples), sample_rate, options))
-
-    def wait(self):
-        return Mock(output_underflow=False)
-
-    def stop(self):
-        self.stopped = True
 
 
 class ExplicitStreamAudioOutput(FakeAudioOutput):

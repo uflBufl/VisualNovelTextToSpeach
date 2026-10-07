@@ -13,8 +13,8 @@ from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
 import vntts.authoring.reviewed_rejection_fallback as rejection
 from tests import test_authoring_audio_event_projection_fallback
+from tests.audio_output_fixtures import FakeAudioOutput
 from tests.authoring_fixtures import create_test_workspace
-from tests.test_generated_audio import FakeAudioOutput
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
 from vntts.authoring.game_pack import _decision_records

@@ -11,9 +11,9 @@ from vntts_artifacts.generated_audio import (
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
 import vntts.authoring.audio_event_omission as successor_module
+from tests.audio_output_fixtures import FakeAudioOutput
 from tests.authoring_fixtures import create_test_workspace
 from tests.symlink_support import symlink_or_skip
-from tests.test_generated_audio import FakeAudioOutput
 from vntts.authoring.audio_event_omission import (
     create_audio_event_omission_workspace,
     validate_audio_event_omission_workspace,

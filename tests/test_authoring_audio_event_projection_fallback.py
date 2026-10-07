@@ -16,9 +16,9 @@ from vntts_artifacts.voice_generation_queue import (
 )
 
 import vntts.authoring.audio_event_projection_fallback as successor_module
+from tests.audio_output_fixtures import FakeAudioOutput
 from tests.authoring_fixtures import write_legacy_fixture
 from tests.symlink_support import symlink_or_skip
-from tests.test_generated_audio import FakeAudioOutput
 from vntts.authoring.audio_event_projection_fallback import (
     create_audio_event_projection_fallback_workspace,
     validate_audio_event_projection_fallback_workspace,

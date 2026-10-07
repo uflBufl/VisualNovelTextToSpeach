@@ -576,6 +576,5 @@ Planned implementation order after approval:
 
 ## Active - Finish shared pregeneration and playback fixture ownership
 
-- [ ] Move the reused generated-audio output fake to `tests/audio_output_fixtures.py` with truthful sample/device/options/Mock return types. Preserve 24kHz device rate, captured arrays/options, underflow receipt and stop state; migrate all consumers. Retain differing explicit-stream, MOSS and TTS doubles.
 - [ ] Move the canonical offline fallback authority writer to existing `tests/authoring_fixtures.py` and migrate original/workbench callers. Preserve voice-vs-prompt schemas and hashed IDs, origin truthiness and source-item binding; do not create a generic authority factory.
 - [ ] Freeze source and run the local selector first, normal Ruff/format/MyPy/complexity/lock gates, exact baseline byte/return/array witnesses and independent review. Expand equivalent imports across the repository, commit each repair separately, remove verified TODO steps, fetch fresh main and run the branch selector before the authorized push. Update bounded memory after successful gates.

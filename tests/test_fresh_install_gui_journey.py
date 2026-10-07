@@ -16,8 +16,8 @@ from PySide6.QtCore import QCoreApplication, QEvent, Qt  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
+from tests.audio_output_fixtures import FakeAudioOutput  # noqa: E402
 from tests.bulk_generation_fixtures import audio_samples  # noqa: E402
-from tests.test_generated_audio import FakeAudioOutput  # noqa: E402
 from tests.test_pregeneration_setup import ManualThreadPool  # noqa: E402
 from tests.test_pregeneration_voices import write_manifest  # noqa: E402
 from tests.test_self_service_pregeneration import (  # noqa: E402
