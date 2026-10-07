@@ -34,11 +34,11 @@ from tests.authoring_fixtures import (
     create_carry_source_workspace,
     create_test_workspace,
     current_carry_fields,
+    write_authority,
     write_carry_target_manifest,
     write_legacy_fixture,
 )
 from tests.symlink_support import symlink_or_skip
-from tests.test_authoring_offline_fallback_authority import write_authority
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_repair import FailureRepairPolicy

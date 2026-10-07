@@ -696,3 +696,55 @@ def current_carry_fields(
             bulk_generation_module.inspect_generated_speech(audio)
         ),
     }
+
+
+def write_authority(
+    path: Path,
+    queue_id: str,
+    source_item_sha256: str,
+    *,
+    kind: str = "voice",
+    origin: str | None = None,
+) -> Path:
+    origin = origin or "automatic_no_complete_candidate"
+    if kind == "voice":
+        body: dict[str, object] = {
+            "schema": "vntts.authoring-missing-voice-reuse-decision",
+            "schema_version": 1,
+            "binding": {
+                "target_mode": "failed",
+                "queue_voice_overrides": {},
+                "selected_candidates": [],
+                "decisions": [
+                    {
+                        "decision": "neither",
+                        "review_decision_origin": origin,
+                        "queue_ids": [queue_id],
+                    }
+                ],
+                "source_failed_state_item_sha256s": {queue_id: source_item_sha256},
+            },
+        }
+        document = {
+            **body,
+            "decision_id": bulk_generation_module._canonical_sha256(body),
+        }
+    else:
+        body = {
+            "schema": "vntts.authoring-failed-prompt-selection",
+            "schema_version": 1,
+            "decisions": [
+                {
+                    "decision": "keep_unresolved",
+                    "review_decision_origin": origin,
+                    "queue_ids": [queue_id],
+                    "source_state_item_sha256s": {queue_id: source_item_sha256},
+                }
+            ],
+        }
+        document = {
+            **body,
+            "selection_id": bulk_generation_module._canonical_sha256(body),
+        }
+    path.write_text(json.dumps(document, sort_keys=True), encoding="utf-8")
+    return path
