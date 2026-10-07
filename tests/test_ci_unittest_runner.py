@@ -1,6 +1,8 @@
 import json
 import subprocess
 import unittest
+from contextlib import redirect_stderr
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory, TemporaryFile
 from unittest.mock import Mock, patch
@@ -126,6 +128,16 @@ class CiUnitTestRunnerTest(unittest.TestCase):
         self.assertEqual(
             workflow_failure_sections(output), ("FAIL: test_one\ntrace one",)
         )
+
+    def test_exact_inventory_encoding_error_returns_diagnostic_status(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "tests.json"
+            path.write_bytes(b"\xff")
+            output = StringIO()
+            with redirect_stderr(output):
+                result = _run_exact_test_file(path)
+        self.assertEqual(result, 2)
+        self.assertIn("Unable to load exact test inventory", output.getvalue())
 
     def test_exact_inventory_executes_each_named_test_once(self):
         with TemporaryDirectory() as directory:

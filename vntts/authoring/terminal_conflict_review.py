@@ -1579,6 +1579,7 @@ def _is_stored_progress_lease(value: object) -> TypeGuard[_StoredProgressLease]:
     return (
         isinstance(value, dict)
         and value.get("schema") == PROGRESS_LEASE_SCHEMA
+        and type(value.get("schema_version")) is int
         and value.get("schema_version") == PROGRESS_LEASE_VERSION
         and isinstance(value.get("pid"), int)
         and value["pid"] > 0
@@ -1644,7 +1645,7 @@ def _remove_progress_lock(path: Path, guard_path: Path, lease: _ProgressLease) -
         with exclusive_advisory_lock(guard_path, blocking=True):
             if json.loads(path.read_text(encoding="utf-8")) == lease:
                 path.unlink()
-    except OSError, json.JSONDecodeError, AdvisoryLockBusyError:
+    except OSError, UnicodeError, json.JSONDecodeError, AdvisoryLockBusyError:
         return
 
 

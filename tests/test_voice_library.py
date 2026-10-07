@@ -94,6 +94,15 @@ class _CopySnapshotProbe:
 
 
 class VoiceLibraryTest(unittest.TestCase):
+    def test_invalid_index_encoding_preserves_domain_error(self) -> None:
+        with TemporaryDirectory() as directory:
+            library = VoiceLibrary(directory)
+            library.path.write_bytes(b"\xff")
+            with self.assertRaisesRegex(
+                VoiceLibraryError, "Unable to read voice library"
+            ):
+                library.bindings()
+
     def test_thread_lock_creates_one_shared_lock_per_path(self) -> None:
         with (
             patch.object(voice_library, "_THREAD_LOCKS", {}),

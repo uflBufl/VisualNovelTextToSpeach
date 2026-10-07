@@ -50,6 +50,7 @@ from vntts.pregeneration_setup import (  # noqa: E402
     PregenerationJobStore,
     PregenerationSetupError,
     _cached_story_index_document,
+    _is_outdated_reverse1999_index,
     _story_selections,
     discover_game_content,
     estimate_preparation,
@@ -261,6 +262,12 @@ class ManualThreadPool:
 
 
 class PregenerationSetupTest(unittest.TestCase):
+    def test_outdated_index_detector_ignores_invalid_encoding(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "story-index.jsonl"
+            path.write_bytes(b"\xff")
+            self.assertFalse(_is_outdated_reverse1999_index(path))
+
     def test_verified_story_parse_is_reused_by_checksum(self):
         with TemporaryDirectory() as temporary_directory:
             path = write_story_index(Path(temporary_directory))

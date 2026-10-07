@@ -104,7 +104,7 @@ def _isolate_pregeneration_tests(test_ids):
 def _run_exact_test_file(path):
     try:
         test_ids = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
         print(f"Unable to load exact test inventory: {error}", file=sys.stderr)
         return 2
     if (

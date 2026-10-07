@@ -1546,7 +1546,7 @@ def _read_snapshot(path: str | Path, description: str) -> tuple[bytes, str]:
 def _load_json_optional(path: str | Path) -> JsonDocument:
     try:
         value = json.loads(Path(path).read_text(encoding="utf-8"))
-    except OSError, json.JSONDecodeError:
+    except OSError, UnicodeError, json.JSONDecodeError:
         return {}
     return value if isinstance(value, dict) else {}
 
@@ -1555,7 +1555,7 @@ def _load_jsonl_metadata_optional(path: str | Path) -> JsonDocument:
     try:
         with Path(path).open(encoding="utf-8") as stream:
             value = json.loads(next(stream))
-    except OSError, StopIteration, json.JSONDecodeError:
+    except OSError, UnicodeError, StopIteration, json.JSONDecodeError:
         return {}
     return value if isinstance(value, dict) else {}
 

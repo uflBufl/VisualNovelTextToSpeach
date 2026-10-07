@@ -399,6 +399,15 @@ def write_fixture_live_sequence(fixture, path, *, story_path=None):
 
 
 class AuthoringGamePackTest(unittest.TestCase):
+    def test_state_reader_preserves_domain_error_for_invalid_encoding(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            path.write_bytes(b"\xff")
+            with self.assertRaisesRegex(
+                FinalGamePackError, "Unable to read generation state"
+            ):
+                game_pack_module._load_stable_state(path, None, "1" * 64)
+
     def test_publication_preserves_primary_when_staging_cleanup_fails(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

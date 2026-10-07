@@ -922,7 +922,7 @@ def _is_outdated_reverse1999_index(path: Path) -> bool:
     try:
         with path.open(encoding="utf-8") as stream:
             metadata = json.loads(next(stream))
-    except OSError, StopIteration, json.JSONDecodeError:
+    except OSError, UnicodeError, StopIteration, json.JSONDecodeError:
         return False
     return (
         isinstance(metadata, dict)

@@ -101,6 +101,26 @@ class ShutdownRenderBackend(FakeRenderBackend):
 
 
 class AuthoringModelBenchmarkTest(unittest.TestCase):
+    def test_json_readers_preserve_domain_errors_for_invalid_encoding(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "input.json"
+            path.write_bytes(b"\xff")
+            for load in (load_benchmark_corpus, load_model_variants):
+                with self.subTest(reader=load.__name__):
+                    with self.assertRaisesRegex(ModelBenchmarkError, "Unable to read"):
+                        load(path)
+            with patch.object(
+                benchmark_module,
+                "load_stable_generation_queue",
+                return_value=(None, "1" * 64),
+            ):
+                with self.assertRaisesRegex(ModelBenchmarkError, "Unable to capture"):
+                    benchmark_module._capture_failure_corpus_inputs(
+                        path,
+                        path,
+                        lambda *_args: self.fail("Invalid state reached loader"),
+                    )
+
     @staticmethod
     def _write_strict_corpus(root):
         corpus = root / "corpus.json"

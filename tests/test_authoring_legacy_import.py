@@ -22,6 +22,7 @@ from vntts_artifacts.voice_generation_queue import (
     write_voice_generation_queue,
 )
 
+from vntts.authoring import legacy_import as legacy_module
 from vntts.authoring.cli import main
 from vntts.authoring.legacy_import import (
     IMPORT_SCHEMA,
@@ -199,6 +200,17 @@ def write_legacy_fixture(
 
 
 class LegacyAuthoringImportTest(unittest.TestCase):
+    def test_optional_metadata_ignores_invalid_encoding(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "metadata.json"
+            path.write_bytes(b"\xff")
+            for load in (
+                legacy_module._load_json_optional,
+                legacy_module._load_jsonl_metadata_optional,
+            ):
+                with self.subTest(reader=load.__name__):
+                    self.assertEqual(load(path), {})
+
     def test_preserves_validated_source_job_timestamps(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

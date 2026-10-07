@@ -561,7 +561,7 @@ class VoiceLibrary:
             raise VoiceLibraryError("Voice library index must not be a symlink")
         try:
             document = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
             raise VoiceLibraryError(f"Unable to read voice library: {error}") from error
         if _validate_document(document):
             if document["version"] != VOICE_LIBRARY_VERSION:

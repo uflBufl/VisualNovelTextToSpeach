@@ -1496,7 +1496,7 @@ def _load_stable_state(
     try:
         payload = state_path.read_bytes()
         state = json.loads(payload)
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise FinalGamePackError(
             f"Unable to read generation state {state_path}: {error}"
         ) from error

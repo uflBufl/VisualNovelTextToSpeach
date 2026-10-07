@@ -269,7 +269,7 @@ def _capture_failure_corpus_inputs(
         try:
             state_payload = state_path.read_bytes()
             state_snapshot = json.loads(state_payload)
-        except (OSError, json.JSONDecodeError) as error:
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
             raise ModelBenchmarkError(
                 f"Unable to capture comparison inputs: {error}"
             ) from error
@@ -622,7 +622,7 @@ def load_benchmark_corpus(path: str | Path) -> JsonDocument:
     path = Path(path).expanduser().resolve()
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise ModelBenchmarkError(
             f"Unable to read benchmark corpus {path}: {error}"
         ) from error
@@ -1245,7 +1245,7 @@ def _snapshot_voice_registry(
 def load_model_variants(path: str | Path) -> list[ModelVariant]:
     try:
         document = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise ModelBenchmarkError(
             f"Unable to read model variants {path}: {error}"
         ) from error

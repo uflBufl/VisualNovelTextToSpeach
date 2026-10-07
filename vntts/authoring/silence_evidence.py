@@ -68,7 +68,7 @@ def load_silence_failure_evidence(directory: str | Path) -> dict[str, object]:
     root = Path(directory).expanduser().resolve()
     try:
         document = json.loads((root / "evidence.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise SilenceFailureEvidenceError(
             f"Unable to read silence-failure evidence: {error}"
         ) from error

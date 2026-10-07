@@ -12,6 +12,7 @@ from vntts_artifacts.audio import write_pcm16_wav
 
 import tests.test_authoring_reconciliation as reconciliation_tests
 from tests.symlink_support import symlink_or_skip
+from vntts.authoring import terminal_conflict_review as terminal_module
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import inspect_generated_wav
@@ -41,6 +42,18 @@ from vntts.authoring.terminal_conflict_review import (
 
 
 class TerminalConflictReviewTest(unittest.TestCase):
+    def test_progress_lock_cleanup_preserves_malformed_foreign_lease(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / ".progress.lock"
+            path.write_bytes(b"\xff")
+            terminal_module._remove_progress_lock(
+                path,
+                root / ".progress.lock.guard",
+                terminal_module._new_progress_lease(),
+            )
+            self.assertEqual(path.read_bytes(), b"\xff")
+
     def create_fixture(self, root):
         helper = reconciliation_tests.AuthoringReconciliationTest()
         primary, secondary, queue_id, bundles, publication = (
@@ -557,6 +570,16 @@ class TerminalConflictReviewTest(unittest.TestCase):
                 )
 
             self.assertFalse((output / ".progress.lock").exists())
+
+    def test_progress_lease_schema_version_requires_exact_integer(self):
+        value = {
+            "schema": PROGRESS_LEASE_SCHEMA,
+            "schema_version": True,
+            "pid": 1,
+            "hostname": "host",
+            "lease_id": "lease",
+        }
+        self.assertFalse(terminal_module._is_stored_progress_lease(value))
 
 
 if __name__ == "__main__":
