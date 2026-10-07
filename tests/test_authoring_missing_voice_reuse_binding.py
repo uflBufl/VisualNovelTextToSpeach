@@ -8,7 +8,7 @@ from vntts_artifacts.file_integrity import sha256_file
 
 from tests.missing_voice_reuse_fixtures import (
     build_failed_missing_voice_reuse_plan_fixture,
-    create_missing_voice_reuse_review_fixture,
+    create_missing_voice_reuse_binding_review,
     create_missing_voice_reuse_workspace,
 )
 from vntts.authoring import missing_voice_reuse_binding as binding_module
@@ -30,26 +30,7 @@ from vntts.authoring.source_reference_bindings import (
 )
 
 
-def create_missing_voice_reuse_binding_review(root, statuses=("generated", "failed")):
-    return AuthoringMissingVoiceReuseBindingTest().create_review(
-        root, statuses=statuses
-    )
-
-
 class AuthoringMissingVoiceReuseBindingTest(unittest.TestCase):
-    def create_review(self, root, statuses=("generated", "failed")):
-        plan_path, evidence, snapshots, queue_id = (
-            create_missing_voice_reuse_review_fixture(root, statuses=statuses)
-        )
-        with patch(
-            "vntts.authoring.missing_voice_reuse_review._load_candidate_workspace",
-            side_effect=lambda _plan, _candidate, path: snapshots[Path(path).resolve()],
-        ):
-            session_path = build_missing_voice_reuse_review(
-                plan_path, evidence, root / "review", seed=7
-            )
-        return plan_path, session_path, queue_id
-
     def create_failed_review(self, root):
         fixture, _imported, workspace = create_missing_voice_reuse_workspace(root)
         plan = build_failed_missing_voice_reuse_plan_fixture(fixture, workspace)
@@ -98,7 +79,9 @@ class AuthoringMissingVoiceReuseBindingTest(unittest.TestCase):
     def test_selected_candidate_binds_the_full_exact_cohort(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            plan_path, session_path, queue_id = self.create_review(root)
+            plan_path, session_path, queue_id = (
+                create_missing_voice_reuse_binding_review(root)
+            )
             bundle, _session = load_missing_voice_reuse_review(session_path)
             cohort = bundle["cohorts"][0]
             selected = cohort["complete_candidate_labels"][0]
@@ -212,7 +195,9 @@ class AuthoringMissingVoiceReuseBindingTest(unittest.TestCase):
     def test_incomplete_review_and_tampered_bundle_fail_closed(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            plan_path, session_path, _queue_id = self.create_review(root)
+            plan_path, session_path, _queue_id = (
+                create_missing_voice_reuse_binding_review(root)
+            )
             with self.assertRaisesRegex(MissingVoiceReuseBindingError, "Every"):
                 publish_missing_voice_reuse_binding(
                     plan_path, session_path, root / "binding"
@@ -280,7 +265,9 @@ class AuthoringMissingVoiceReuseBindingTest(unittest.TestCase):
     def test_existing_binding_rejects_non_integer_bundle_and_decision_versions(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            plan_path, session_path, queue_id = self.create_review(root)
+            plan_path, session_path, queue_id = (
+                create_missing_voice_reuse_binding_review(root)
+            )
             bundle, _session = load_missing_voice_reuse_review(session_path)
             cohort = bundle["cohorts"][0]
             selected = cohort["complete_candidate_labels"][0]

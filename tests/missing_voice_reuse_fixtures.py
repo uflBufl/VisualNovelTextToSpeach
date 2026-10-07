@@ -7,6 +7,7 @@ import json
 import wave
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from unittest.mock import patch
 
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import write_generated_audio_manifest
@@ -24,7 +25,13 @@ from vntts.authoring.missing_voice_reuse import (
     build_missing_voice_reuse_plan,
     write_missing_voice_reuse_plan,
 )
-from vntts.authoring.missing_voice_reuse_review import CandidateSnapshot
+from vntts.authoring.missing_voice_reuse_binding import (
+    publish_missing_voice_reuse_binding,
+)
+from vntts.authoring.missing_voice_reuse_review import (
+    CandidateSnapshot,
+    build_missing_voice_reuse_review,
+)
 from vntts.authoring.workbench import create_resume_workspace
 
 
@@ -265,3 +272,34 @@ def create_missing_voice_reuse_review_fixture(
             },
         }
     return plan_path, evidence, snapshots, queue_id
+
+
+def create_missing_voice_reuse_binding_review(
+    root: Path, statuses: Sequence[str] = ("generated", "failed")
+) -> tuple[Path, Path, str]:
+    plan_path, evidence, snapshots, queue_id = (
+        create_missing_voice_reuse_review_fixture(root, statuses=statuses)
+    )
+    with patch(
+        "vntts.authoring.missing_voice_reuse_review._load_candidate_workspace",
+        side_effect=lambda _plan, _candidate, path: snapshots[Path(path).resolve()],
+    ):
+        session_path = build_missing_voice_reuse_review(
+            plan_path, evidence, root / "review", seed=7
+        )
+    return plan_path, session_path, queue_id
+
+
+def create_missing_voice_live_fallback_fixture(root: Path) -> tuple[Path, Path, str]:
+    plan_path, session_path, queue_id = create_missing_voice_reuse_binding_review(
+        root, statuses=("failed", "failed")
+    )
+    binding = publish_missing_voice_reuse_binding(
+        plan_path, session_path, root / "binding"
+    ).directory
+    plan: dict[str, object] = json.loads(plan_path.read_text(encoding="utf-8"))
+    source = plan.get("source")
+    if not isinstance(source, dict) or not isinstance(source.get("workspace"), str):
+        raise TypeError("Missing-voice fixture plan source is malformed")
+    workspace = Path(source["workspace"])
+    return workspace, binding, queue_id

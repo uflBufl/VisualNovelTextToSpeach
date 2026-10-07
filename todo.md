@@ -573,8 +573,3 @@ Planned implementation order after approval:
 ## Active - Continue cleanup ownership expansion
 
 - [ ] **Remaining native acquisition boundaries:** qualify `_launch_owned_process` and Windows job initialization separately from the completed server-resource cleanup. Trace real Windows API failure behavior before changing guards; keep suspended-child ownership and the existing two-second wait budget. Gate: failed job acquisition plus kill/wait failures preserves the acquisition error and leaves no runnable child; retain real-Windows qualification where mocks cannot prove ownership.
-
-## Active - Expand shared authoring fixture ownership
-
-- [ ] Move shared missing-voice binding-review and unresolved live-fallback builders into `tests/missing_voice_reuse_fixtures.py`; keep explicit fake CandidateSnapshot loading scoped to review creation, exact paths/statuses/seeds and return tuples. Migrate all original tests and checksum/known-role consumers, then delete superseded wrappers. Depends on the caller inventory.
-- [ ] Verify with the local changed-test selector first, normal Ruff/format/MyPy/complexity/lock gates and a post-repair repository scan. Obtain independent review, commit the two repairs separately, fetch main and run the branch selector before pushing. Record the bounded audit and any justified exceptions in memory; remove completed TODO items.

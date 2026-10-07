@@ -10,7 +10,7 @@ from vntts_artifacts.voice_manifest import load_voice_manifest
 
 import vntts.authoring.known_role_live_fallback as fallback_module
 import vntts.authoring.workspace_state as workspace_state_module
-from tests.test_authoring_missing_voice_live_fallback import (
+from tests.missing_voice_reuse_fixtures import (
     create_missing_voice_live_fallback_fixture,
 )
 from vntts.authoring.authority import canonical_document_sha256

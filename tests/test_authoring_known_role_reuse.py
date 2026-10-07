@@ -5,7 +5,7 @@ from tempfile import TemporaryDirectory
 
 from vntts_artifacts.voice_manifest import load_voice_manifest
 
-from tests.test_authoring_missing_voice_live_fallback import (
+from tests.missing_voice_reuse_fixtures import (
     create_missing_voice_live_fallback_fixture,
 )
 from vntts.authoring import known_role_reuse as known_role_module

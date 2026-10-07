@@ -22,10 +22,8 @@ from tests import (
     test_authoring_source_reference_review as reference_fixtures,
 )
 from tests import test_authoring_voice_quality_gate as gate_fixtures
-from tests.test_authoring_missing_voice_live_fallback import (
+from tests.missing_voice_reuse_fixtures import (
     create_missing_voice_live_fallback_fixture,
-)
-from tests.test_authoring_missing_voice_reuse_binding import (
     create_missing_voice_reuse_binding_review,
 )
 from vntts.authoring import (

@@ -3,8 +3,8 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from tests.test_authoring_missing_voice_reuse_binding import (
-    create_missing_voice_reuse_binding_review,
+from tests.missing_voice_reuse_fixtures import (
+    create_missing_voice_live_fallback_fixture,
 )
 from vntts.authoring.bulk_generation import (
     authorize_live_fallback,
@@ -19,32 +19,16 @@ from vntts.authoring.missing_voice_live_fallback import (
     _existing_batch_id,
     authorize_missing_voice_live_fallback,
 )
-from vntts.authoring.missing_voice_reuse_binding import (
-    publish_missing_voice_reuse_binding,
-)
 from vntts.generated_audio import GeneratedAudioLibrary
 
 
-def create_missing_voice_live_fallback_fixture(root):
-    return AuthoringMissingVoiceLiveFallbackTest().fixture(root)
-
-
 class AuthoringMissingVoiceLiveFallbackTest(unittest.TestCase):
-    def fixture(self, root):
-        plan_path, session_path, queue_id = create_missing_voice_reuse_binding_review(
-            root, statuses=("failed", "failed")
-        )
-        binding = publish_missing_voice_reuse_binding(
-            plan_path, session_path, root / "binding"
-        ).directory
-        plan = json.loads(plan_path.read_text(encoding="utf-8"))
-        workspace = Path(plan["source"]["workspace"])
-        return workspace, binding, queue_id
-
     def test_preflight_apply_runtime_load_and_idempotency(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            workspace, binding, queue_id = self.fixture(root)
+            workspace, binding, queue_id = create_missing_voice_live_fallback_fixture(
+                root
+            )
             state_path = workspace / "generated-audio/generation-state.json"
             queue_path = workspace / "queue.jsonl"
             progress_path = state_path.parent / RUNTIME_PROGRESS_MANIFEST_NAME
@@ -102,7 +86,9 @@ class AuthoringMissingVoiceLiveFallbackTest(unittest.TestCase):
     def test_wrong_role_stale_authority_and_partial_scope_fail_closed(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            workspace, binding, queue_id = self.fixture(root)
+            workspace, binding, queue_id = create_missing_voice_live_fallback_fixture(
+                root
+            )
             state_path = workspace / "generated-audio/generation-state.json"
             queue_path = workspace / "queue.jsonl"
             with self.assertRaisesRegex(MissingVoiceLiveFallbackError, "wrong role"):
@@ -131,7 +117,9 @@ class AuthoringMissingVoiceLiveFallbackTest(unittest.TestCase):
 
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            workspace, binding, _queue_id = self.fixture(root)
+            workspace, binding, _queue_id = create_missing_voice_live_fallback_fixture(
+                root
+            )
             decision_path = binding / "decision.json"
             decision = json.loads(decision_path.read_text(encoding="utf-8"))
             decision["binding"]["queue_voice_overrides"] = {"forged": "Centurion"}
