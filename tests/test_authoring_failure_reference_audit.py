@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from tests.test_authoring_workbench import create_test_workspace
+from tests.authoring_fixtures import create_test_workspace
 from vntts.authoring import reference_render_comparison
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_reference_audit import (

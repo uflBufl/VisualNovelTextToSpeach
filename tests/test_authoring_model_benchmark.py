@@ -11,8 +11,8 @@ import numpy as np
 from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 
 import vntts.authoring.model_benchmark as benchmark_module
+from tests.authoring_fixtures import write_legacy_fixture
 from tests.symlink_support import symlink_or_skip
-from tests.test_authoring_legacy_import import write_legacy_fixture
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.model_benchmark import (
     ModelBenchmarkError,

@@ -14,8 +14,8 @@ from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 import vntts.authoring.audio_event_workspace as audio_event_workspace_module
 import vntts.authoring.workbench as workbench_module
 import vntts.authoring.workspace_creation as workspace_creation_module
+from tests.authoring_fixtures import create_test_workspace
 from tests.test_authoring_audio_event_review import write_source_story
-from tests.test_authoring_workbench import create_test_workspace
 from vntts.authoring.audio_event_composition import (
     publish_audio_event_composition,
     record_audio_event_composition_decision,

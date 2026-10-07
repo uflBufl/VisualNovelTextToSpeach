@@ -13,7 +13,7 @@ from vntts_artifacts.voice_generation_queue import (
 )
 
 import vntts.authoring.explicit_fallback_merge as fallback_merge_module
-from tests.test_authoring_workbench import create_test_workspace
+from tests.authoring_fixtures import create_test_workspace
 from vntts.authoring.bulk_generation import authorize_live_fallback
 from vntts.authoring.explicit_fallback_merge import (
     merge_explicit_live_fallbacks,

@@ -6,8 +6,8 @@ from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from tests.authoring_fixtures import create_test_workspace
 from tests.symlink_support import symlink_or_skip
-from tests.test_authoring_workbench import create_test_workspace
 from vntts.authoring import voice_repair_comparison as comparison_module
 from vntts.authoring.bulk_generation import _canonical_sha256
 from vntts.authoring.cli import main as authoring_main

@@ -13,7 +13,7 @@ from vntts_artifacts.voice_generation_queue import (
     write_voice_generation_queue,
 )
 
-from tests.test_authoring_legacy_import import write_legacy_fixture
+from tests.authoring_fixtures import write_legacy_fixture
 from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
 from vntts.authoring.game_pack import publish_final_game_pack
 from vntts.authoring.legacy_import import import_legacy_job

@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 
 import vntts.authoring.voice_quality_gate as voice_quality_gate_module
 from tests import test_authoring_cohort_review
-from tests.test_authoring_workbench import create_test_workspace
+from tests.authoring_fixtures import create_test_workspace
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.cohort_review import (
     build_cohort_review_decision,

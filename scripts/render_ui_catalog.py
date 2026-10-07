@@ -367,6 +367,7 @@ def _render_stories(
     from r1999extractor.story_voice_review_ui import StoryVoiceReviewDialog
     from vntts_artifacts.file_integrity import sha256_file
 
+    from tests.authoring_fixtures import create_test_workspace
     from tests.test_authoring_cohort_review import create_pending_cohort_workspace
     from tests.test_authoring_failure_reference_audit import FailureReferenceAuditTest
     from tests.test_authoring_legacy_reason_review import _legacy_bad_fixture
@@ -377,7 +378,6 @@ def _render_stories(
     from tests.test_authoring_terminal_conflict_review_ui import (
         TerminalConflictReviewUiTest,
     )
-    from tests.test_authoring_workbench import create_test_workspace
     from vntts.app import (
         SettingsDialog,
         build_story_match_recovery_prompt,

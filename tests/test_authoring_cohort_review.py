@@ -11,9 +11,8 @@ from unittest.mock import patch
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
 from tests import test_authoring_workbench as workbench_tests
+from tests.authoring_fixtures import create_test_workspace, write_legacy_fixture
 from tests.symlink_support import symlink_or_skip
-from tests.test_authoring_legacy_import import write_legacy_fixture
-from tests.test_authoring_workbench import create_test_workspace
 from vntts.authoring import workspace_inspection as inspection_module
 from vntts.authoring.bulk_generation import _canonical_sha256
 from vntts.authoring.cli import main as authoring_main

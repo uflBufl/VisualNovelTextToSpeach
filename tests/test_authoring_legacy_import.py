@@ -7,21 +7,12 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import numpy as np
-from vntts_artifacts.audio import (
-    PCM16_MONO_WAV_FORMAT,
-    probe_pcm16_mono_wav,
-    write_pcm16_wav,
-)
 from vntts_artifacts.file_integrity import sha256_file
-from vntts_artifacts.generated_audio import write_generated_audio_manifest
-from vntts_artifacts.hashing import text_sha256
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
-    expected_voice_generation_queue_id,
-    write_voice_generation_queue,
 )
 
+from tests.authoring_fixtures import write_legacy_fixture
 from vntts.authoring import legacy_import as legacy_module
 from vntts.authoring.cli import main
 from vntts.authoring.legacy_import import (
@@ -32,171 +23,6 @@ from vntts.authoring.legacy_import import (
     import_standalone_generation,
     inspect_standalone_generation,
 )
-
-
-def write_legacy_fixture(
-    root,
-    *,
-    job_name="original-job",
-    title="Patch 3.7",
-    text="Preserve this generated line exactly.",
-):
-    root.mkdir(parents=True, exist_ok=True)
-    story = root / "story-index.jsonl"
-    story.write_text("synthetic story provenance\n", encoding="utf-8")
-    voices = root / "voice-manifest.json"
-    voices.write_text('{"version": 2, "voices": []}\n', encoding="utf-8")
-    text_hash = text_sha256(text)
-    line_id = "reverse1999:315401:7"
-    queue_id = expected_voice_generation_queue_id(line_id, text_hash)
-    queue = root / "shared" / "queue.jsonl"
-    write_voice_generation_queue(
-        queue,
-        {
-            "game": "Reverse: 1999",
-            "language": "en",
-            "generated_at": "2026-08-16T17:00:00+00:00",
-        },
-        [
-            {
-                "record_type": "generation_item",
-                "queue_id": queue_id,
-                "line_id": line_id,
-                "text_sha256": text_hash,
-                "speaker": "Rhiannon",
-                "voice_character": "Rhiannon",
-                "text": text,
-                "action": "generate",
-                "state": "pending",
-                "emotion": "warm",
-                "provider_extension": {"keep": True},
-            }
-        ],
-    )
-    queue_hash = sha256_file(queue)
-    output = root / "shared" / "generated-audio"
-    wav = output / "audio" / "rhiannon" / "line.wav"
-    write_pcm16_wav(
-        wav,
-        np.sin(np.linspace(0, 4 * np.pi, 4_000, dtype=np.float32)) * 0.1,
-        16_000,
-    )
-    info = probe_pcm16_mono_wav(wav)
-    quality = {
-        "duration_seconds": round(info.duration_seconds, 4),
-        "sample_rate": info.sample_rate,
-        "channels": 1,
-        "sample_count": info.sample_count,
-        "peak": round(info.peak, 6),
-    }
-    state_path = output / "generation-state.json"
-    state = {
-        "schema": "r1999.bulk-generation-state",
-        "schema_version": 1,
-        "queue_sha256": queue_hash,
-        "game": "Reverse: 1999",
-        "language": "en",
-        "active": {
-            "queue_id": queue_id,
-            "line_id": line_id,
-            "phase": "retrying",
-            "attempt": 1,
-            "attempt_limit": 3,
-            "total_attempts": 4,
-            "seed": 12,
-            "started_at": "2026-08-16T17:00:00+00:00",
-            "updated_at": "2026-08-16T17:00:01+00:00",
-            "last_error": "interrupted diagnostic",
-        },
-        "items": {
-            queue_id: {
-                "status": "approved",
-                "review_status": "approved",
-                "attempts": 3,
-                "path": "audio/rhiannon/line.wav",
-                "line_id": line_id,
-                "text_sha256": text_hash,
-                "file_sha256": sha256_file(wav),
-                "provider": "moss-tts",
-                "model": "moss-v1.5",
-                "prompt_sha256": "a" * 64,
-                "seed": 11,
-                "quality": quality,
-                "updated_at": "2026-08-16T17:05:00+00:00",
-            }
-        },
-    }
-    state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
-    manifest = output / "manifest.json"
-    write_generated_audio_manifest(
-        manifest,
-        {
-            "game": "Reverse: 1999",
-            "language": "en",
-            "source_queue_sha256": queue_hash,
-            "generated_at": "2026-08-16T17:06:00+00:00",
-        },
-        [
-            {
-                "queue_id": queue_id,
-                "line_id": line_id,
-                "text_sha256": text_hash,
-                "audio": "audio/rhiannon/line.wav",
-                "audio_format": PCM16_MONO_WAV_FORMAT,
-                "audio_sha256": sha256_file(wav),
-                "sample_rate": info.sample_rate,
-                "sample_count": info.sample_count,
-                "provider": "moss-tts",
-                "model": "moss-v1.5",
-                "prompt_sha256": "a" * 64,
-                "seed": 11,
-                "review_status": "approved",
-            }
-        ],
-    )
-    jobs = root / "jobs"
-    job_directory = jobs / job_name
-    job_directory.mkdir(parents=True)
-    job = {
-        "schema": "r1999.pregeneration-job",
-        "schema_version": 1,
-        "created_at": "2026-08-16T16:00:00+00:00",
-        "updated_at": "2026-08-16T17:00:00+00:00",
-        "status": "complete",
-        "title": title,
-        "targets": [
-            {
-                "target_id": "hero-story:rhiannon",
-                "category": "Character stories",
-                "title": "The Eaglet Takes Wing",
-                "chapters": ["315401"],
-                "episode_count": 1,
-                "line_count": 1,
-            }
-        ],
-        "story_index": str(story),
-        "queue": str(queue),
-        "output": str(output),
-        "voice_manifest": str(voices),
-        "vntts_python": "/legacy/vntts/python",
-        "model": "moss-v1.5",
-        "narrator_character": "Matilda",
-    }
-    (job_directory / "job.json").write_text(
-        json.dumps(job, sort_keys=True), encoding="utf-8"
-    )
-    return {
-        "job_directory": job_directory,
-        "jobs": jobs,
-        "job": job,
-        "queue": queue,
-        "queue_id": queue_id,
-        "line_id": line_id,
-        "text_hash": text_hash,
-        "state": state_path,
-        "manifest": manifest,
-        "wav": wav,
-    }
 
 
 class LegacyAuthoringImportTest(unittest.TestCase):

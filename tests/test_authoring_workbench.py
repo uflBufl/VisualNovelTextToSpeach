@@ -33,8 +33,8 @@ import vntts.authoring.workspace_creation as workspace_creation_module
 import vntts.authoring.workspace_inspection as workspace_inspection_module
 import vntts.authoring.workspace_outcome_merge as workspace_outcome_merge_module
 import vntts.authoring.workspace_state as workspace_state_module
+from tests.authoring_fixtures import create_test_workspace, write_legacy_fixture
 from tests.symlink_support import symlink_or_skip
-from tests.test_authoring_legacy_import import write_legacy_fixture
 from tests.test_authoring_offline_fallback_authority import write_authority
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.cli import main as authoring_main
@@ -65,100 +65,6 @@ from vntts.authoring.workbench import (
     review_selected_item,
     review_workspace_item,
 )
-
-
-def create_test_workspace(root, *, text=None):
-    fixture_options = {} if text is None else {"text": text}
-    fixture = write_legacy_fixture(root / "legacy", **fixture_options)
-    queue_item = VoiceGenerationQueue.load(fixture["queue"]).items[0]
-    side_text = "A source-audio line outside the generation queue."
-    write_story_index_document(
-        fixture["job"]["story_index"],
-        {
-            "game": "Reverse: 1999",
-            "language": "en",
-            "generated_at": "2026-08-16T15:00:00+00:00",
-            "collections": [
-                {
-                    "collection_id": "main",
-                    "title": "The Eaglet Takes Wing",
-                    "kind": "character-story",
-                    "order": 1,
-                },
-                {
-                    "collection_id": "source-only",
-                    "title": "Installed source audio",
-                    "kind": "reference",
-                    "order": 2,
-                },
-            ],
-        },
-        [
-            {
-                "record_type": "line",
-                "line_id": queue_item.line_id,
-                "text_sha256": queue_item.text_sha256,
-                "text": queue_item.text,
-                "speaker": queue_item.speaker,
-                "voice_character": queue_item.voice_character,
-                "kind": "dialogue",
-                "chapter": "315401",
-                "sequence": 7,
-                "collection_id": "main",
-                "source_audio_status": "absent",
-                "source_audio_reason": "fixture_absent",
-                "source_kind": "story",
-                "speakable": True,
-            },
-            {
-                "record_type": "line",
-                "line_id": "reverse1999:source:1",
-                "text_sha256": text_sha256(side_text),
-                "text": side_text,
-                "speaker": "Rhiannon",
-                "voice_character": "Rhiannon",
-                "kind": "dialogue",
-                "chapter": "source",
-                "sequence": 1,
-                "collection_id": "source-only",
-                "source_audio_status": "available",
-                "source_audio_reason": "fixture_available",
-                "source_kind": "story",
-                "speakable": True,
-            },
-        ],
-    )
-    voice_reference = root / "legacy" / "rhiannon.wav"
-    voice_reference.write_bytes(b"voice-reference")
-    second_voice_reference = root / "legacy" / "rhiannon-2.wav"
-    second_voice_reference.write_bytes(b"second-voice-reference")
-    Path(fixture["job"]["voice_manifest"]).write_text(
-        json.dumps(
-            {
-                "version": 2,
-                "voices": [
-                    {
-                        "character": "Rhiannon",
-                        "speaker": "Rhiannon",
-                        "references": ["rhiannon.wav", "rhiannon-2.wav"],
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    imported = import_legacy_job(fixture["job_directory"], root / "imports").destination
-    workspace = create_resume_workspace(
-        imported,
-        root / "workspaces",
-        story_index=fixture["job"]["story_index"],
-        voice_manifest=fixture["job"]["voice_manifest"],
-        backend="moss-tts",
-        model="model with spaces",
-        generation_profile="stable",
-        narrator_character="Rhiannon",
-    )
-    return fixture, imported, workspace
 
 
 def create_carry_source_workspace(

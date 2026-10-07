@@ -19,8 +19,8 @@ from vntts_artifacts.voice_manifest import VoiceManifestError, write_voice_manif
 
 import vntts.authoring.workbench as workbench_module
 import vntts.authoring.workspace_inspection as workspace_inspection_module
+from tests.authoring_fixtures import create_test_workspace
 from tests.symlink_support import symlink_or_skip
-from tests.test_authoring_workbench import create_test_workspace
 from vntts.authoring.bulk_generation import ReviewCommit, process_started_at
 from vntts.authoring.cohort_bundle import CohortReviewBundle
 from vntts.authoring.workbench import (

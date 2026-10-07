@@ -15,7 +15,7 @@ from vntts_artifacts.voice_generation_queue import (
 )
 
 import vntts.story_index_snapshot as story_snapshot_module
-from tests.test_authoring_legacy_import import write_legacy_fixture
+from tests.authoring_fixtures import write_legacy_fixture
 from vntts.authoring import missing_voice_reuse as reuse_module
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.legacy_import import import_legacy_job
