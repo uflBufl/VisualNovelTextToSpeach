@@ -1189,7 +1189,14 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 self.assertIs(tray.open_pregeneration(), dialog)
                 dialog.automatic_activation = True
                 tray._remember_preparation_context()
-                dialog._show_final_handoff(dialog.pack_result())
+                pack = dialog.pack_result()
+                self.assertIsNotNone(pack)
+                dialog._show_final_handoff(
+                    approved=pack.approved,
+                    live_fallbacks=pack.live_fallbacks,
+                    story_lines=pack.story_lines,
+                    omissions=pack.omissions,
+                )
                 self.assertIsNone(tray.pregeneration_dialog)
             for _attempt in range(400):
                 self.application.processEvents()

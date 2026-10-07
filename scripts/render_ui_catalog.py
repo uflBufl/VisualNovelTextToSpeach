@@ -1331,14 +1331,10 @@ def _render_stories(
             failed=0,
             other_terminal=0,
         )
-        result = SimpleNamespace(
-            approved=34,
-            live_fallbacks=0,
-            story_lines=42,
-            omissions=0,
-        )
         dialog._stop_generation_progress()
-        dialog._show_final_handoff(result)
+        dialog._show_final_handoff(
+            approved=34, live_fallbacks=0, story_lines=42, omissions=0
+        )
         dialog.defer_activation("Reading settings changed after preparation started.")
         dialog.continue_button.setFocus()
         return dialog

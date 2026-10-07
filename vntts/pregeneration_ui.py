@@ -2626,22 +2626,17 @@ class OfflineAudioPreparationDialog(QDialog):
         self._emit_task_progress()
 
     def _render_generation_result(self, result: OfflineGenerationResult) -> None:
-        if self._generation_input is None or result is None:
+        if self._generation_input is None:
             return
-        values = tuple(
-            value if isinstance(value, int) and not isinstance(value, bool) else 0
-            for value in (
-                getattr(result, "generated", 0),
-                getattr(result, "failed", 0),
-                getattr(result, "other_terminal", 0),
+        self._render_generation_progress(
+            OfflineGenerationProgress(
+                result.generated, result.failed, result.other_terminal
             )
         )
-        generated, failed, other_terminal = values
-        self._render_generation_progress(
-            OfflineGenerationProgress(generated, failed, other_terminal)
-        )
 
-    def _show_final_handoff(self, result: OfflinePackResult) -> None:
+    def _show_final_handoff(
+        self, *, approved: int, live_fallbacks: int, story_lines: int, omissions: int
+    ) -> None:
         assert self._job is not None
         self.progress_timer.stop()
         self.step.setText("Step 4 of 4 - Activate and read")
@@ -2654,17 +2649,9 @@ class OfflineAudioPreparationDialog(QDialog):
         self.progress_bar.setFormat("Audio saved")
         self.play_ready_button.hide()
         original = self._job.estimate.original_audio_lines
-        prepared = getattr(result, "approved", 0)
-        live = getattr(result, "live_fallbacks", 0)
-        story_lines = getattr(result, "story_lines", 0)
-        omissions = getattr(result, "omissions", 0)
-        prepared = prepared if isinstance(prepared, int) else 0
-        live = live if isinstance(live, int) else 0
-        story_lines = story_lines if isinstance(story_lines, int) else 0
-        omissions = omissions if isinstance(omissions, int) else 0
         self._show_phase(
             "Ready with live speech for remaining lines"
-            if live
+            if live_fallbacks
             else "Offline audio is ready",
             (
                 "Your story audio is saved and validated. VNTTS is checking that "
@@ -2678,11 +2665,11 @@ class OfflineAudioPreparationDialog(QDialog):
             "Close leaves the current audio setup unchanged; the saved pack can be "
             "activated by reopening this preparation later.",
         )
-        self._render_completed_story_readiness(live=live)
+        self._render_completed_story_readiness(live=live_fallbacks)
         coverage_rows = [
             ("Original game audio", f"{original} in this selection"),
-            ("Prepared", f"{prepared} in the saved pack"),
-            ("Live fallback", str(live)),
+            ("Prepared", f"{approved} in the saved pack"),
+            ("Live fallback", str(live_fallbacks)),
             (
                 "Story lines",
                 str(story_lines or self._job.estimate.selected_lines),
@@ -4493,7 +4480,12 @@ class OfflineAudioPreparationDialog(QDialog):
             self._populate_stories(self.current_content())
         except (OSError, PregenerationSetupError) as error:
             status_error = error
-        self._show_final_handoff(result)
+        self._show_final_handoff(
+            approved=result.approved,
+            live_fallbacks=result.live_fallbacks,
+            story_lines=result.story_lines,
+            omissions=result.omissions,
+        )
         if status_error is not None:
             self.resume_status.setText(
                 "Offline audio was saved, but its story status could not be updated: "
