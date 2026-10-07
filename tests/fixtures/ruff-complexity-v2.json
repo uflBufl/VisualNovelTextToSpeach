@@ -375,13 +375,6 @@
     {
       "code": "C901",
       "path": "vntts/live_replay_capture.py",
-      "scope": "LiveReplayCaptureSession._validate_bound_inputs",
-      "count": 1,
-      "maximum": 12
-    },
-    {
-      "code": "C901",
-      "path": "vntts/live_replay_capture.py",
       "scope": "main",
       "count": 1,
       "maximum": 12

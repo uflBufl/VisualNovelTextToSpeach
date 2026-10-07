@@ -337,6 +337,35 @@ class LiveReplayCaptureTest(unittest.TestCase):
             with self.assertRaisesRegex(LiveReplayCaptureError, "already exists"):
                 session.finish()
 
+    def test_capture_validates_dialogue_and_observation_frames_before_publication(self):
+        for observation_only in (False, True):
+            for failure in ("changed", "missing", "symlink"):
+                with self.subTest(observation=observation_only, failure=failure):
+                    with TemporaryDirectory() as directory:
+                        root = Path(directory) / "capture"
+                        session = LiveReplayCaptureSession(root)
+                        session.observe(frame("red"), "Narrator", "A line.")
+                        if observation_only:
+                            session.note_uncertain_observation(frame("blue"))
+                        captured = sorted((root / "frames").iterdir())[-1]
+                        if failure == "changed":
+                            captured.write_bytes(b"changed")
+                        else:
+                            captured.unlink()
+                            if failure == "symlink":
+                                outside = Path(directory) / "outside.png"
+                                outside.write_bytes(b"outside")
+                                symlink_or_skip(captured, outside)
+                        label = "observation" if observation_only else "replay"
+                        reason = "changed" if failure == "changed" else "is unavailable"
+                        with self.assertRaisesRegex(
+                            LiveReplayCaptureError, f"Captured {label} frame {reason}"
+                        ):
+                            session.finish()
+                        self.assertFalse((root / "corpus.json").exists())
+                        self.assertFalse((root / "capture-report.json").exists())
+                        self.assertFalse((root / "observation-ledger.json").exists())
+
     def test_capture_retries_after_frames_directory_creation_failure(self):
         with TemporaryDirectory() as directory:
             requested = Path(directory) / "capture"

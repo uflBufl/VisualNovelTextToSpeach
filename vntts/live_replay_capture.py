@@ -607,20 +607,16 @@ class LiveReplayCaptureSession:
                 )
         for item in self.dialogue:
             for frame in item["frames"]:
-                path = self.directory.joinpath(*PurePosixPath(frame["path"]).parts)
-                if path.is_symlink() or not path.is_file():
-                    raise LiveReplayCaptureError("Captured replay frame is unavailable")
-                if hashlib.sha256(path.read_bytes()).hexdigest() != frame["sha256"]:
-                    raise LiveReplayCaptureError("Captured replay frame changed")
+                self._validate_frame(frame, "Captured replay frame")
         for observation in self.observations:
-            frame = observation["frame"]
-            path = self.directory.joinpath(*PurePosixPath(frame["path"]).parts)
-            if path.is_symlink() or not path.is_file():
-                raise LiveReplayCaptureError(
-                    "Captured observation frame is unavailable"
-                )
-            if hashlib.sha256(path.read_bytes()).hexdigest() != frame["sha256"]:
-                raise LiveReplayCaptureError("Captured observation frame changed")
+            self._validate_frame(observation["frame"], "Captured observation frame")
+
+    def _validate_frame(self, frame: FrameSpecification, label: str) -> None:
+        path = self.directory.joinpath(*PurePosixPath(frame["path"]).parts)
+        if path.is_symlink() or not path.is_file():
+            raise LiveReplayCaptureError(f"{label} is unavailable")
+        if hashlib.sha256(path.read_bytes()).hexdigest() != frame["sha256"]:
+            raise LiveReplayCaptureError(f"{label} changed")
 
 
 def capture_replay_session(
