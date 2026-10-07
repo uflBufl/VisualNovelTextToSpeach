@@ -130,3 +130,134 @@ def write_model_reports(root: Path, *, item_count: int = 2) -> list[Path]:
         )
         reports.append(report)
     return reports
+
+
+def write_listening_fixture(root: Path) -> Path:
+    session_root = root / "listening-session"
+    audio_root = session_root / "audio"
+    audio_root.mkdir(parents=True)
+    source_audio: dict[str, Path] = {}
+    for side, frequency in (("a", 3), ("b", 5)):
+        samples = np.sin(np.linspace(0, frequency * np.pi, 800, dtype=np.float32)) * 0.1
+        source_audio[side] = root / f"source-{side}.wav"
+        write_pcm16_wav(source_audio[side], samples, 16_000)
+        write_pcm16_wav(audio_root / f"trial-0001-{side}.wav", samples, 16_000)
+    source_report = root / "source-report.json"
+    source_report.write_text('{"synthetic": true}\n', encoding="utf-8")
+    sources = [
+        {"path": str(source_report.resolve()), "sha256": sha256_file(source_report)}
+    ]
+    source_hash = hashlib.sha256(
+        json.dumps(sources, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    key = {
+        "schema": "r1999.model-listening-key",
+        "schema_version": 1,
+        "created_at": "2026-08-15T09:00:00+00:00",
+        "source_kind": "model-reports",
+        "source_sha256": source_hash,
+        "sources": sources,
+        "models": [
+            {
+                "model_id": "provider/model-one",
+                "provider": "provider",
+                "model": "model-one",
+                "reports": ["/legacy/one.json"],
+            },
+            {
+                "model_id": "provider/model-two",
+                "provider": "provider",
+                "model": "model-two",
+                "reports": ["/legacy/two.json"],
+            },
+        ],
+        "assignments": [
+            {
+                "trial_id": "trial-0001",
+                "a": {
+                    "model_id": "provider/model-one",
+                    "source": str(source_audio["a"].resolve()),
+                },
+                "b": {
+                    "model_id": "provider/model-two",
+                    "source": str(source_audio["b"].resolve()),
+                },
+            }
+        ],
+    }
+    key_path = session_root / ".blind-key.json"
+    key_path.write_text(json.dumps(key, sort_keys=True), encoding="utf-8")
+    key_path.chmod(0o600)
+    session = {
+        "schema": "r1999.model-listening-session",
+        "schema_version": 1,
+        "created_at": "2026-08-15T09:00:00+00:00",
+        "updated_at": "2026-08-15T09:01:00+00:00",
+        "source_kind": "model-reports",
+        "source_sha256": source_hash,
+        "blind_key_sha256": sha256_file(key_path),
+        "seed": 42,
+        "decision_mode": "preference-only",
+        "trial_count": 1,
+        "completed_count": 1,
+        "trials": [
+            {
+                "trial_id": "trial-0001",
+                "queue_id": "legacy:line",
+                "line_id": None,
+                "text_sha256": "3" * 64,
+                "text": "Synthetic line",
+                "audio": {
+                    "a": "audio/trial-0001-a.wav",
+                    "b": "audio/trial-0001-b.wav",
+                },
+                "rating": {
+                    "preference": "a",
+                    "reviewed_at": "2026-08-15T09:01:00+00:00",
+                },
+            }
+        ],
+    }
+    session_path = session_root / "session.json"
+    session_path.write_text(json.dumps(session, sort_keys=True), encoding="utf-8")
+    report = {
+        "schema": "r1999.model-listening-report",
+        "schema_version": 1,
+        "generated_at": "2026-08-15T09:02:00+00:00",
+        "session": str(session_path.resolve()),
+        "complete": True,
+        "completed_trials": 1,
+        "pending_trials": 0,
+        "manual_selection_required": True,
+        "models": [
+            {
+                "model_id": "provider/model-one",
+                "provider": "provider",
+                "model": "model-one",
+                "reviewed_trials": 1,
+                "preference": {"wins": 1, "losses": 0, "ties": 0, "rate": 1.0},
+                "rank": 1,
+            },
+            {
+                "model_id": "provider/model-two",
+                "provider": "provider",
+                "model": "model-two",
+                "reviewed_trials": 1,
+                "preference": {"wins": 0, "losses": 1, "ties": 0, "rate": 0.0},
+                "rank": 2,
+            },
+        ],
+        "pairwise": [
+            {
+                "left_model": "provider/model-one",
+                "right_model": "provider/model-two",
+                "trials": 1,
+                "left_wins": 1,
+                "right_wins": 0,
+                "ties": 0,
+            }
+        ],
+    }
+    report_path = session_root / "report.json"
+    report_path.write_text(json.dumps(report, sort_keys=True), encoding="utf-8")
+    return session_root

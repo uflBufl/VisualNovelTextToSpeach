@@ -13,8 +13,11 @@ from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 
 import vntts.authoring.listening as listening_module
-from tests.listening_fixtures import FakePlayback, write_model_reports
-from tests.test_authoring_listening_import import write_listening_fixture
+from tests.listening_fixtures import (
+    FakePlayback,
+    write_listening_fixture,
+    write_model_reports,
+)
 from vntts.authoring.listening import (
     REPORT_SCHEMA,
     ModelListeningError,

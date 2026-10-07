@@ -5,8 +5,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import vntts.authoring.listening as listening_module
-from tests.listening_fixtures import write_model_reports
-from tests.test_authoring_listening_import import write_listening_fixture
+from tests.listening_fixtures import write_listening_fixture, write_model_reports
 from vntts.authoring.listening import (
     aggregate_listening_report,
     create_listening_session_from_reports,
