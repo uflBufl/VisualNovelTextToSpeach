@@ -254,7 +254,16 @@ class FailureRepairPolicy:
             raise FailureRepairPolicyError("Unsupported failure-repair policy version")
         sentence = document.get("sentence_segment_queue_ids")
         edge = document.get("edge_silence_queue_ids")
-        if not _queue_id_list(sentence) or not _queue_id_list(edge):
+        seed = document.get("bounded_seed_retry_queue_ids", [])
+        fallback = document.get("offline_fallback_queue_ids", [])
+        inline = document.get("inline_pause_queue_ids", [])
+        if (
+            not _queue_id_list(sentence)
+            or not _queue_id_list(edge)
+            or not _queue_id_list(seed)
+            or not _queue_id_list(fallback)
+            or not _queue_id_list(inline)
+        ):
             raise FailureRepairPolicyError(
                 "Failure-repair queue IDs must be JSON lists"
             )
@@ -262,9 +271,9 @@ class FailureRepairPolicy:
             tuple(sentence),
             tuple(edge),
             _policy_pause(document.get("segment_pause_ms")),
-            tuple(document.get("bounded_seed_retry_queue_ids") or ()),
-            tuple(document.get("offline_fallback_queue_ids") or ()),
-            tuple(document.get("inline_pause_queue_ids") or ()),
+            tuple(seed),
+            tuple(fallback),
+            tuple(inline),
             document.get("inline_pause_ms", DEFAULT_INLINE_PAUSE_MS),
         )
 

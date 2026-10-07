@@ -87,6 +87,26 @@ class AuthoringFailureRepairTest(unittest.TestCase):
             ):
                 FailureRepairPolicy.from_document(malformed_version)
 
+    def test_policy_versions_require_json_lists_for_all_strategies(self):
+        for policy, version in (
+            (FailureRepairPolicy(), 1),
+            (FailureRepairPolicy(bounded_seed_retry_queue_ids=("line:b",)), 2),
+            (FailureRepairPolicy(offline_fallback_queue_ids=("line:f",)), 3),
+            (FailureRepairPolicy(inline_pause_queue_ids=("line:i",)), 4),
+        ):
+            document = policy.to_document()
+            self.assertEqual(document["schema_version"], version)
+            self.assertEqual(FailureRepairPolicy.from_document(document), policy)
+            for field in document:
+                if not field.endswith("queue_ids"):
+                    continue
+                for value in ("x", {"line:x": False}, None, False, 0, ("line:x",), [1]):
+                    with (
+                        self.subTest(version=version, field=field, value=value),
+                        self.assertRaisesRegex(FailureRepairPolicyError, "JSON lists"),
+                    ):
+                        FailureRepairPolicy.from_document({**document, field: value})
+
     def test_all_repair_strategies_are_mutually_exclusive(self):
         fields = (
             "sentence_segment_queue_ids",
@@ -109,7 +129,6 @@ class AuthoringFailureRepairTest(unittest.TestCase):
                 edge_silence_queue_ids=("line:z",),
                 bounded_seed_retry_queue_ids=("line:a",),
             )
-
 
     def test_repair_parameters_reject_nonfinite_values_before_editing(self):
         speech = np.full(800, 0.2, dtype=np.float32)
@@ -136,7 +155,6 @@ class AuthoringFailureRepairTest(unittest.TestCase):
                             **{field: value},
                         )
         np.testing.assert_array_equal(pcm, original)
-
 
     def test_inline_pause_prompt_is_exact_and_bounded(self):
         prompt, count = inline_sentence_pause_prompt(
