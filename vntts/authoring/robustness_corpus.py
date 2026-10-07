@@ -47,7 +47,10 @@ from vntts.authoring.publication import (
     rename_directory_no_replace,
     staged_directory,
 )
-from vntts.authoring.speech_quality import measure_generated_speech_bytes
+from vntts.authoring.speech_quality import (
+    SPEECH_QUALITY_ANALYSIS_VERSION,
+    measure_generated_speech_samples,
+)
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     contained_workspace_path,
@@ -412,11 +415,24 @@ def analyze_speech_robustness_bytes(payload: bytes) -> JsonDocument:
     if not isinstance(payload, bytes):
         raise SpeechRobustnessCorpusError("Robustness audio payload must be bytes")
     samples, sample_rate = _read_pcm16(payload)
+    return _analyze_speech_robustness_samples(samples, sample_rate)
+
+
+def _analyze_speech_robustness_samples(
+    samples: NDArray[np.int16], sample_rate: int
+) -> JsonDocument:
     normalized = samples.astype(np.float64) / 32768.0
     absolute = np.abs(normalized)
     differences = np.abs(np.diff(normalized))
     try:
-        speech_quality = asdict(measure_generated_speech_bytes(payload))
+        speech_quality = asdict(
+            measure_generated_speech_samples(
+                samples,
+                sample_rate=sample_rate,
+                duration_seconds=len(samples) / sample_rate,
+                analysis_version=SPEECH_QUALITY_ANALYSIS_VERSION,
+            )
+        )
     except BulkGenerationError as error:
         raise SpeechRobustnessCorpusError(str(error)) from error
     repeated = _max_exact_active_repeat(samples, sample_rate)
@@ -566,6 +582,12 @@ def analyze_text_timing_bytes(payload: bytes, text: str) -> JsonDocument:
     """Estimate pause placement against requested text without claiming ASR."""
     text = _required_text(text, "Requested speech text")
     samples, sample_rate = _read_pcm16(payload)
+    return _analyze_text_timing_samples(samples, sample_rate, text)
+
+
+def _analyze_text_timing_samples(
+    samples: NDArray[np.int16], sample_rate: int, text: str
+) -> JsonDocument:
     normalized = samples.astype(np.float64) / 32768.0
     frame_samples = max(1, round(sample_rate * 0.08))
     frame_rms = np.asarray(
@@ -946,6 +968,7 @@ def _sample_record(
     audio_payload: bytes,
     assessment: _Assessment,
 ) -> _SampleRecord:
+    samples, sample_rate = _read_pcm16(audio_payload)
     return {
         "workspace_id": workspace_id,
         "workspace_sha256": workspace_sha256,
@@ -967,8 +990,10 @@ def _sample_record(
         ),
         "state_item_sha256": canonical_document_sha256(item),
         "synthesis": _sample_metadata(item),
-        "analysis": analyze_speech_robustness_bytes(audio_payload),
-        "text_timing": analyze_text_timing_bytes(audio_payload, queue_item.text),
+        "analysis": _analyze_speech_robustness_samples(samples, sample_rate),
+        "text_timing": _analyze_text_timing_samples(
+            samples, sample_rate, queue_item.text
+        ),
         "decision_ids": [],
     }
 
@@ -1503,10 +1528,15 @@ def _validate_sample_artifacts(
                 "Robustness sample audio is not inventoried"
             )
         payload = artifact_snapshots[audio].payload
-        if analyze_speech_robustness_bytes(payload) != sample.get("analysis"):
+        pcm, sample_rate = _read_pcm16(payload)
+        if _analyze_speech_robustness_samples(pcm, sample_rate) != sample.get(
+            "analysis"
+        ):
             raise SpeechRobustnessCorpusError("Robustness sample analysis is invalid")
-        if version >= 2 and analyze_text_timing_bytes(
-            payload, _required_text(sample.get("text"), "Sample requested text")
+        if version >= 2 and _analyze_text_timing_samples(
+            pcm,
+            sample_rate,
+            _required_text(sample.get("text"), "Sample requested text"),
         ) != sample.get("text_timing"):
             raise SpeechRobustnessCorpusError(
                 "Robustness sample text-timing analysis is invalid"

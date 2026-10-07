@@ -8,10 +8,12 @@ from dataclasses import replace
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import numpy as np
 
 from tests.test_authoring_workbench import create_test_workspace
+from vntts.authoring import robustness_corpus
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.cohort_review import (
     build_cohort_review_decision,
@@ -319,6 +321,40 @@ class AuthoringRobustnessCorpusTest(unittest.TestCase):
                         build_speech_robustness_asr_report(
                             corpus, model, transcriber=Batch(result)
                         )
+
+    def test_audio_reports_reuse_one_decode_and_preserve_metrics(self):
+        from dataclasses import asdict
+
+        from vntts.authoring.speech_quality import measure_generated_speech_bytes
+
+        for count in (1, 1_280, 1_281):
+            samples = np.full(count, 184, dtype=np.int16)
+            samples[count // 3 : count // 2] = 0
+            payload = _wav_bytes(samples)
+            expected = asdict(measure_generated_speech_bytes(payload))
+            with patch("wave.open", wraps=wave.open) as opened:
+                report = analyze_speech_robustness_bytes(payload)
+                self.assertEqual(opened.call_count, 1)
+            self.assertEqual(report["speech_quality"], expected)
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state, queue_id = _pending_workspace(root / "reviewed")
+            _decision(workspace, queue_id)
+            with patch.object(
+                robustness_corpus, "_read_pcm16", wraps=robustness_corpus._read_pcm16
+            ) as decoded:
+                corpus = publish_speech_robustness_corpus(
+                    [workspace / "cohort-reviews"], [], root / "corpus"
+                )
+            # One decode for creation, one for staged and one for final validation.
+            self.assertEqual(decoded.call_count, 3)
+            with patch.object(
+                robustness_corpus, "_read_pcm16", wraps=robustness_corpus._read_pcm16
+            ) as decoded:
+                loaded = load_speech_robustness_corpus(corpus.directory)
+            self.assertEqual(decoded.call_count, 1)
+            self.assertEqual(loaded.corpus_id, corpus.corpus_id)
 
     def test_exact_active_pcm_repetition_is_diagnostic_only(self):
         rng = np.random.default_rng(42)
