@@ -111,6 +111,33 @@ class AuthoringFailureRepairTest(unittest.TestCase):
             )
 
 
+    def test_repair_parameters_reject_nonfinite_values_before_editing(self):
+        speech = np.full(800, 0.2, dtype=np.float32)
+        pcm = np.concatenate((speech, np.zeros(1_600), speech))
+        pcm[1_500] = 0.01
+        original = pcm.copy()
+        for value in (float("nan"), float("inf"), float("-inf")):
+            for field in ("trigger_seconds", "padding_seconds", "silence_dbfs"):
+                with self.subTest(repair="edge", field=field, value=value):
+                    with self.assertRaises(ValueError):
+                        trim_excess_edge_silence(pcm, 1_000, **{field: value})
+            for field in (
+                "trigger_seconds",
+                "target_seconds",
+                "silence_dbfs",
+                "removal_dbfs",
+            ):
+                with self.subTest(repair="internal", field=field, value=value):
+                    with self.assertRaises(ValueError):
+                        compress_single_sentence_boundary_silence(
+                            pcm,
+                            1_000,
+                            "The gate is already open. We should leave before dawn.",
+                            **{field: value},
+                        )
+        np.testing.assert_array_equal(pcm, original)
+
+
     def test_inline_pause_prompt_is_exact_and_bounded(self):
         prompt, count = inline_sentence_pause_prompt(
             "What happened? You're hurt.", pause_ms=180

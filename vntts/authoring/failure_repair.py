@@ -404,11 +404,14 @@ def trim_excess_edge_silence(
     ):
         raise ValueError("Repair sample rate must be a positive integer")
     if (
-        trigger_seconds <= 0
+        not np.isfinite((trigger_seconds, padding_seconds)).all()
+        or trigger_seconds <= 0
         or padding_seconds < 0
         or padding_seconds >= trigger_seconds
     ):
         raise ValueError("Edge silence timing is invalid")
+    if not np.isfinite(silence_dbfs):
+        raise ValueError("Edge silence threshold must be finite")
     threshold = 10.0 ** (float(silence_dbfs) / 20.0)
     active = np.flatnonzero(np.abs(samples) > threshold)
     if not active.size:
@@ -464,13 +467,19 @@ def compress_single_sentence_boundary_silence(
     ):
         raise ValueError("Silence frame size must be an integer from 10 to 200 ms")
     if (
-        trigger_seconds <= DEFAULT_NOTABLE_SILENCE_SECONDS
+        not np.isfinite((trigger_seconds, target_seconds)).all()
+        or trigger_seconds <= DEFAULT_NOTABLE_SILENCE_SECONDS
         or target_seconds <= 0
         or target_seconds >= trigger_seconds
     ):
         raise ValueError("Internal silence timing is invalid")
-    if removal_dbfs > silence_dbfs:
-        raise ValueError("Removal threshold must be no louder than silence threshold")
+    if (
+        not np.isfinite((silence_dbfs, removal_dbfs)).all()
+        or removal_dbfs > silence_dbfs
+    ):
+        raise ValueError(
+            "Removal threshold must be finite and no louder than silence threshold"
+        )
 
     frame_samples = max(1, round(sample_rate * frame_ms / 1000))
     frame_rms = np.asarray(
