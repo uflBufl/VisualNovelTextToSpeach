@@ -127,6 +127,60 @@ def _run_exact_test_file(path):
     return 0 if result.wasSuccessful() else 1
 
 
+def _run_shard(system, name, inventory):
+    command = [
+        sys.executable,
+        "-u",
+        "-m",
+        "scripts.run_ci_unittests",
+        "--shard",
+        name,
+        str(inventory),
+    ]
+    transcript = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
+    with cleanup_on_exit(transcript.close, description="Unittest transcript cleanup"):
+        try:
+            completed = subprocess.run(
+                command,
+                timeout=SHARD_TIMEOUTS[system][name],
+                stdout=transcript,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        except subprocess.TimeoutExpired:
+            transcript.seek(0)
+            output = transcript.read()
+            print(output, end="")
+            if os.environ.get("GITHUB_ACTIONS"):
+                print(
+                    f"::error title={system} {name} tests timed out::"
+                    f"{escape_workflow_command(workflow_failure_details(output))}",
+                    file=sys.stderr,
+                )
+            print(
+                f"{system} unittest shard {name} exceeded "
+                f"{SHARD_TIMEOUTS[system][name]} seconds",
+                file=sys.stderr,
+            )
+            return 124
+        transcript.seek(0)
+        output = transcript.read()
+    if completed.returncode:
+        print(output, end="")
+        if os.environ.get("GITHUB_ACTIONS"):
+            sections = workflow_failure_sections(output)
+            for details in sections or (
+                output or f"{system} unittest shard {name} exited without output.",
+            ):
+                print(
+                    f"::error title={system} {name} tests failed::"
+                    f"{escape_workflow_command(workflow_failure_details(details))}",
+                    file=sys.stderr,
+                )
+        return completed.returncode
+    return 0
+
+
 def _run_sharded_full_discovery(system, selected_modules=None):
     suite = unittest.defaultTestLoader.discover("tests", top_level_dir=".")
     test_ids = tuple(value.id() for value in _flatten_suite(suite))
@@ -175,59 +229,9 @@ def _run_sharded_full_discovery(system, selected_modules=None):
             inventory = root / f"{name}.json"
             inventory.write_text(json.dumps(ids), encoding="utf-8")
             print(f"Running {system} unittest shard {name}: {len(ids)} tests")
-            command = [
-                sys.executable,
-                "-u",
-                "-m",
-                "scripts.run_ci_unittests",
-                "--shard",
-                name,
-                str(inventory),
-            ]
-            transcript = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
-            with cleanup_on_exit(
-                transcript.close, description="Unittest transcript cleanup"
-            ):
-                try:
-                    completed = subprocess.run(
-                        command,
-                        timeout=SHARD_TIMEOUTS[system][name],
-                        stdout=transcript,
-                        stderr=subprocess.STDOUT,
-                        text=True,
-                    )
-                except subprocess.TimeoutExpired:
-                    transcript.seek(0)
-                    output = transcript.read()
-                    print(output, end="")
-                    if os.environ.get("GITHUB_ACTIONS"):
-                        print(
-                            f"::error title={system} {name} tests timed out::"
-                            f"{escape_workflow_command(workflow_failure_details(output))}",
-                            file=sys.stderr,
-                        )
-                    print(
-                        f"{system} unittest shard {name} exceeded "
-                        f"{SHARD_TIMEOUTS[system][name]} seconds",
-                        file=sys.stderr,
-                    )
-                    return 124
-                transcript.seek(0)
-                output = transcript.read()
-            if completed.returncode:
-                print(output, end="")
-                if os.environ.get("GITHUB_ACTIONS"):
-                    sections = workflow_failure_sections(output)
-                    for details in sections or (
-                        output
-                        or f"{system} unittest shard {name} exited without output.",
-                    ):
-                        print(
-                            f"::error title={system} {name} tests failed::"
-                            f"{escape_workflow_command(workflow_failure_details(details))}",
-                            file=sys.stderr,
-                        )
-                return completed.returncode
+            status = _run_shard(system, name, inventory)
+            if status:
+                return status
     count = sum(len(ids) for _, ids in shards)
     print(f"Ran {count} exact discovered tests once in {len(shards)} shards")
     return 0

@@ -1453,13 +1453,6 @@
     {
       "code": "C901",
       "path": "scripts/run_ci_unittests.py",
-      "scope": "_run_sharded_full_discovery",
-      "count": 1,
-      "maximum": 13
-    },
-    {
-      "code": "C901",
-      "path": "scripts/run_ci_unittests.py",
       "scope": "main",
       "count": 1,
       "maximum": 12
