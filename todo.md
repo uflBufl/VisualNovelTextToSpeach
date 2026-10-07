@@ -573,3 +573,20 @@ Planned implementation order after approval:
 ## Active - Continue cleanup ownership expansion
 
 - [ ] **Remaining native acquisition boundaries:** qualify `_launch_owned_process` and Windows job initialization separately from the completed server-resource cleanup. Trace real Windows API failure behavior before changing guards; keep suspended-child ownership and the existing two-second wait budget. Gate: failed job acquisition plus kill/wait failures preserves the acquisition error and leaves no runnable child; retain real-Windows qualification where mocks cannot prove ownership.
+
+## Active - Authoring listening and playback audit
+
+- [ ] Inspect design/readability and transition scaffolding in `listening.py`, `pcm_playback.py` and `review_playback_evidence.py`; inventory phases, largest functions, complexity, public/reflective callers and repeated implementations.
+- [ ] Inspect correctness/data boundaries and type contracts for immutable listening bundles, mutable sessions and playback evidence.
+- [ ] Inspect execution/resource ownership and repeated work within review/playback phases; preserve warmed device, snapshots and independent authority checks.
+- [ ] Inspect tests/observability and configured tool/dependency scope; qualify candidate rules and external host gates.
+- [ ] Record and fix every qualified finding separately, expand verified fixes across matching project consumers, and run required local/fresh-main selectors plus static gates before commit/push.
+
+### Listening validated-document ownership
+
+- [ ] **Investigate and remove duplicate blind-key validation:** `load_listening_session` validates the key and source WAVs but discards the typed key; preference recording, aggregation and report ensuring immediately reload it. Return typed session/key from one private owner, keep the public session facade and independent rereads across saved preferences and report publication. Gate: current/legacy report equality, source/key corruption rejection, serialized rating writes and bounded key/WAV validation counts.
+
+### Captured authority expansion
+
+- [ ] **Voice manifest registry/document binding:** `_load_registry` in `pregeneration_voices.py` hashes once, then constructs a registry and raw manifest from two separate reads before a final hash. Reuse captured bytes and `CharacterVoiceRegistry.from_document`; preserve reference root, both callers, final source-change detection and publication digest gates. Gate: registry/document/digest agree during a transient file replacement and changed final bytes still reject.
+- [ ] **Story-index cache snapshot qualification:** `_cached_playable_voice_roles` and `_cached_story_index_document` parse after a preliminary hash and rehash after parsing. Qualify transient replacement against the actual cached document/roles. Preserve the warm one-hash path, bounded cache and final invalidation. The installed artifact parser exposes only a path API; investigate existing temporary snapshot readers before adding a shared helper. Gate: an ABA replacement cannot cache roles/document against a different digest, unchanged warm calls avoid parsing.

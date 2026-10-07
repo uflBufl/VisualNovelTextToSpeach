@@ -784,8 +784,12 @@ def _load_blind_key(
     session_path: PathInput, session: _ValidatedListeningSession
 ) -> ListeningKey:
     key_path = Path(session_path).expanduser().resolve().with_name(".blind-key.json")
-    _validate_blind_key_file(key_path, session)
-    key = _load_schema(key_path, {_blind_key_schema(session)}, "listening key")
+    snapshot = _capture_blind_key(key_path, session)
+    try:
+        document = snapshot.json_document("listening key")
+    except AuthoringAuthorityError as error:
+        raise ModelListeningError(str(error)) from error
+    key = _validate_schema(document, {_blind_key_schema(session)}, "listening key")
     _validate_blind_key_identity(key, session)
     if not _is_listening_key(key):
         raise ModelListeningError("Listening session blind key is invalid")
@@ -799,15 +803,20 @@ def _load_blind_key(
     return key
 
 
-def _validate_blind_key_file(
+def _capture_blind_key(
     key_path: Path, session: _ValidatedListeningSession
-) -> None:
+) -> AuthoritySnapshot:
     if key_path.is_file() and not private_file_is_restricted(key_path):
         raise ModelListeningError("Listening session blind key mode must be 0600")
-    if not key_path.is_file() or sha256_file(key_path) != session.get(
-        "blind_key_sha256"
-    ):
+    try:
+        snapshot = capture_authority_file(key_path, "listening key")
+    except AuthoringAuthorityError as error:
+        raise ModelListeningError(
+            "Listening session blind key is missing or changed"
+        ) from error
+    if snapshot.sha256 != session.get("blind_key_sha256"):
         raise ModelListeningError("Listening session blind key is missing or changed")
+    return snapshot
 
 
 def _blind_key_schema(session: _ValidatedListeningSession) -> str:

@@ -644,6 +644,53 @@ class AuthoringListeningTest(unittest.TestCase):
         self.assertEqual(report["models"][0]["preference"]["wins"], 2)
         self.assertEqual(report["pairwise"][0]["trials"], 2)
 
+    def test_aggregate_parses_only_session_bound_key_bytes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            session_path = create_listening_session_from_reports(
+                write_model_reports(root, item_count=1), root / "session"
+            )
+            key_path = session_path.with_name(".blind-key.json")
+            original = key_path.read_bytes()
+            changed = json.loads(original)
+            changed["models"][0]["provider"] = "unbound-provider"
+            replacement = json.dumps(changed).encode()
+            original_hash = listening_module.sha256_file
+            original_capture = listening_module.capture_authority_file
+
+            def replace_after_hash(path):
+                if Path(path) != key_path:
+                    return original_hash(path)
+                key_path.write_bytes(original)
+                digest = original_hash(path)
+                key_path.write_bytes(replacement)
+                return digest
+
+            def replace_after_capture(path, label, **kwargs):
+                if Path(path) == key_path:
+                    key_path.write_bytes(original)
+                snapshot = original_capture(path, label, **kwargs)
+                if Path(path) == key_path:
+                    key_path.write_bytes(replacement)
+                return snapshot
+
+            with (
+                patch.object(
+                    listening_module, "sha256_file", side_effect=replace_after_hash
+                ),
+                patch.object(
+                    listening_module,
+                    "capture_authority_file",
+                    side_effect=replace_after_capture,
+                ),
+            ):
+                report = aggregate_listening_report(session_path)
+
+            self.assertEqual(key_path.read_bytes(), replacement)
+            self.assertEqual(
+                {model["provider"] for model in report["models"]}, {"synthetic"}
+            )
+
     def test_aggregate_accepts_matching_captured_session_and_key(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
