@@ -30,6 +30,8 @@ from vntts.authoring.missing_voice_reuse_binding import (
 )
 from vntts.authoring.missing_voice_reuse_review import (
     CandidateSnapshot,
+    _object,
+    _objects,
     build_missing_voice_reuse_review,
 )
 from vntts.authoring.workbench import create_resume_workspace
@@ -197,6 +199,104 @@ def _write_wav(path: Path) -> None:
         output.setsampwidth(2)
         output.setframerate(8_000)
         output.writeframes(b"\x00\x00" * 800)
+
+
+def create_failed_prompt_hypothesis_review(
+    root: Path, *, tamper_prompt: bool = False
+) -> tuple[LegacyFixture, Path, Path, Path]:
+    fixture, _imported, workspace = create_missing_voice_reuse_workspace(
+        root,
+        text="What happened? You're hurt.",
+        missing_voice_policy={
+            "schema_version": 1,
+            "mode": "narrator_roles",
+            "roles": ["Aderyn"],
+        },
+    )
+    state_path = workspace / "generated-audio/generation-state.json"
+    state: dict[str, object] = json.loads(state_path.read_text(encoding="utf-8"))
+    items = state.get("items")
+    if not isinstance(items, dict):
+        raise TypeError("Missing-voice prompt fixture state is malformed")
+    items[fixture["queue_id"]] = {
+        "status": "failed",
+        "attempts": 1,
+        "last_error": "Generated WAV failed speech-silence validation",
+    }
+    state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    plan = build_missing_voice_reuse_plan(
+        workspace,
+        "Aderyn",
+        cohorts={"failed": ("314601.png",)},
+        candidate_voice_characters=("Centurion",),
+        failed_queue_ids=(fixture["queue_id"],),
+        inline_pause_ms=180,
+    )
+    plan_path = root / "plan.json"
+    write_missing_voice_reuse_plan(plan, plan_path)
+    candidate = plan.document["candidates"][0]
+    candidate_id = candidate.get("candidate_id")
+    voice_character = candidate.get("voice_character")
+    if not isinstance(candidate_id, str) or not isinstance(voice_character, str):
+        raise TypeError("Missing-voice prompt fixture candidate is malformed")
+    render_hypothesis = _object(
+        candidate.get("render_hypothesis"),
+        "Missing-voice prompt fixture hypothesis",
+    )
+    prompts = _objects(
+        render_hypothesis.get("prompts"), "Missing-voice prompt fixture prompts"
+    )
+    if not prompts:
+        raise TypeError("Missing-voice prompt fixture hypothesis is malformed")
+    prompt = prompts[0]
+    derived_prompt_sha256 = prompt.get("derived_prompt_sha256")
+    marker_count = prompt.get("marker_count")
+    if not isinstance(derived_prompt_sha256, str) or not isinstance(marker_count, int):
+        raise TypeError("Missing-voice prompt fixture prompt is malformed")
+    candidate_root = (root / "candidate").resolve()
+    audio = candidate_root / "generated-audio/audio/sample.wav"
+    _write_wav(audio)
+    derived = "f" * 64 if tamper_prompt else derived_prompt_sha256
+    item: dict[str, object] = {
+        "status": "generated",
+        "attempts": 2,
+        "path": "audio/sample.wav",
+        "file_sha256": sha256_file(audio),
+        "quality": {"duration_seconds": 0.1},
+        "source_reference_binding": {
+            "queue_id": fixture["queue_id"],
+            "synthesis_voice_character": voice_character,
+        },
+        "failure_repair": {
+            "strategy": "inline_pause_marker",
+            "pause_ms": 180,
+            "marker_count": marker_count,
+            "derived_prompt_sha256": derived,
+        },
+        "synthesis_text_sha256": derived,
+    }
+    snapshot: CandidateSnapshot = {
+        "directory": candidate_root,
+        "workspace": {"workspace_id": "candidate-workspace"},
+        "state": {"items": {fixture["queue_id"]: item}},
+        "authority": {
+            "path": str(candidate_root),
+            "workspace_id": "candidate-workspace",
+            "workspace_sha256": "1" * 64,
+            "state_sha256": "2" * 64,
+            "voice_manifest_sha256": "3" * 64,
+        },
+    }
+    with patch(
+        "vntts.authoring.missing_voice_reuse_review._load_candidate_workspace",
+        return_value=snapshot,
+    ):
+        session = build_missing_voice_reuse_review(
+            plan_path,
+            {candidate_id: (candidate_root,)},
+            root / "review",
+        )
+    return fixture, workspace, plan_path, session
 
 
 def create_missing_voice_reuse_review_fixture(

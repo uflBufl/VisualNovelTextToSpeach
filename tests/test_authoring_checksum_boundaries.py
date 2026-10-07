@@ -8,9 +8,6 @@ from unittest.mock import patch
 from tests import (
     test_authoring_explicit_fallback_merge as merge_fixtures,
 )
-from tests import (
-    test_authoring_failed_prompt_hypothesis as prompt_fixtures,
-)
 from tests import test_authoring_queue_builder as builder_fixtures
 from tests import (
     test_authoring_queue_extension as queue_fixtures,
@@ -23,6 +20,7 @@ from tests import (
 )
 from tests import test_authoring_voice_quality_gate as gate_fixtures
 from tests.missing_voice_reuse_fixtures import (
+    create_failed_prompt_hypothesis_review,
     create_missing_voice_live_fallback_fixture,
     create_missing_voice_reuse_binding_review,
 )
@@ -112,9 +110,7 @@ class ChecksumBoundaryTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             _fixture, _workspace, plan, session = (
-                prompt_fixtures.AuthoringFailedPromptHypothesisTest().create_review(
-                    root
-                )
+                create_failed_prompt_hypothesis_review(root)
             )
             self._disappear_after(
                 failed_prompt_hypothesis,
