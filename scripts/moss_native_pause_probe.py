@@ -8,25 +8,33 @@ import os
 import tempfile
 import wave
 import zipfile
+from _thread import LockType
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 from threading import Event, Thread
 from time import monotonic
+from typing import NotRequired, Protocol, TypedDict
 from uuid import uuid4
 
 import numpy as np
+from numpy.typing import ArrayLike, NDArray
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import read_pcm16_mono_wav, write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 
 from vntts import support
 from vntts.authoring.speech_quality import analyze_generated_speech_samples
-from vntts.moss_cpp_backend import MossCppVoiceRouterBackend, moss_cpp_paths
+from vntts.moss_cpp_backend import (
+    MossCppVoiceRouterBackend,
+    NativeHeaders,
+    moss_cpp_paths,
+)
 from vntts.pregeneration_audition import _mono_pcm
-from vntts.reference_quality import analyze_reference
+from vntts.reference_quality import ReferenceQualityReport, analyze_reference
 from vntts.runtime_config import initialize_voice_registry
-from vntts.settings import get_settings_path, load_app_settings
+from vntts.settings import AppSettings, get_settings_path, load_app_settings
 from vntts.speech_backend import (
     get_moss_tts_generation_profile,
     moss_tts_generation_profiles,
@@ -36,14 +44,212 @@ from vntts.synthesis import (
     SynthesisCachePolicy,
     SynthesisCompletion,
     SynthesisRequest,
+    SynthesisResult,
     moss_generation_limits,
 )
+from vntts.voice_library import VoiceLibrary
 from vntts.voices import (
     CharacterVoice,
     CharacterVoiceRegistry,
     application_voice_library,
     voice_binding_source_id,
 )
+
+
+class _ProbeOptions(argparse.Namespace):
+    reference: Path | None
+    alternate_reference: Path | None
+    timing_sequence: bool
+    require_changing_voice: bool
+    output: Path
+    model: Path | None
+    executable: Path | None
+    cancel_restart: bool
+
+
+class _RegistryInitializer(Protocol):
+    def __call__(
+        self, settings: AppSettings | None, *, voice_library: VoiceLibrary
+    ) -> CharacterVoiceRegistry | None: ...
+
+
+class _OwnedServer(Protocol):
+    @property
+    def pid(self) -> int: ...
+
+    def poll(self) -> int | None: ...
+
+
+class _RenderStream(Protocol):
+    def collect(self) -> SynthesisResult: ...
+
+
+class _ProbeBackend(Protocol):
+    @property
+    def server(self) -> _OwnedServer | None: ...
+
+    @property
+    def server_lock(self) -> LockType: ...
+
+    @property
+    def server_info(self) -> dict[str, object] | None: ...
+
+    @property
+    def runtime_status(self) -> str | None: ...
+
+    def _http(
+        self,
+        method: str,
+        path: str,
+        body: Mapping[str, object] | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> _NativeResponse: ...
+
+    def render(self, request: SynthesisRequest) -> _RenderStream: ...
+
+    def shutdown(self) -> None: ...
+
+
+class _BackendFactory(Protocol):
+    def __call__(
+        self,
+        registry: CharacterVoiceRegistry,
+        *,
+        model_name: Path,
+        narrator_reference: Path,
+        startup_timeout: float,
+        request_timeout: float,
+        startup_progress: Callable[[str], object],
+        audio_cache_size: int,
+        persistent_audio_cache_directory: Path,
+        persistent_audio_cache_max_entries: int,
+        prompt_cache_directory: Path,
+    ) -> _ProbeBackend: ...
+
+
+type _NativeResponse = tuple[int, NativeHeaders, bytes]
+type _SamplingProfiles = Mapping[str, Mapping[str, float]]
+type _Quality = dict[str, float | int]
+
+
+class _FileReceipt(TypedDict):
+    path: str
+    sha256: str
+
+
+class _Limits(TypedDict):
+    max_tokens: int | None
+    max_audio_seconds: float | None
+
+
+class _RenderResult(TypedDict):
+    cache_source: str
+    sample_rate: int
+    pcm_frames: int
+    diagnostic_frames: int
+    timing_ms: float
+    limits: _Limits
+
+
+class _RawResponse(_FileReceipt):
+    http_status: int
+    headers: dict[str, str]
+    bytes: int
+
+
+class _RawMeasurements(TypedDict):
+    sample_rate: int
+    wav_frames: int
+    seconds: float
+    left: _Quality
+    right: _Quality
+    mono: _Quality
+
+
+class _Attempt(TypedDict):
+    id: str
+    seed: int
+    text: str
+    voice: str
+    phase: str
+    profile: str
+    sampling: Mapping[str, float]
+    production_limits: _Limits
+    completion: str | None
+    files: dict[str, _FileReceipt]
+    elapsed_seconds: NotRequired[float]
+    result: NotRequired[_RenderResult]
+    output_quality: NotRequired[_Quality]
+    output_wav_validation_s: NotRequired[float]
+    interrupted: NotRequired[bool]
+    error: NotRequired[str]
+    native: NotRequired[dict[str, object] | None]
+    raw_response: NotRequired[_RawResponse]
+    raw_quality: NotRequired[_RawMeasurements]
+    raw_quality_error: NotRequired[str]
+    raw_wav_validation_s: NotRequired[float]
+
+
+class _ServerReceipt(TypedDict):
+    confirmed_exited: bool | None
+    pid: NotRequired[int]
+    returncode: NotRequired[int | None]
+    error: NotRequired[str]
+
+
+class _CancelReceipt(TypedDict):
+    cancelled_completion: str
+    cancelled_outcome: object
+    cancelled_server: _ServerReceipt
+    restart_server_pid: int
+    restart_attempt: _Attempt
+
+
+class _ShutdownReceipt(TypedDict):
+    servers: list[_ServerReceipt]
+    confirmed_exited: bool | None
+
+
+class _SavedSelection(TypedDict):
+    settings_file: str
+    voice_manifest: str | None
+    narrator_assignment: str | None
+
+
+class _Matrix(TypedDict):
+    texts: list[dict[str, str]]
+    profiles: list[str]
+
+
+class _ProbeReport(TypedDict):
+    schema: str
+    schema_version: int
+    reference: str
+    reference_sha256: str
+    contains_generated_voice_audio: bool
+    seed: int
+    matrix: _Matrix
+    attempts: list[_Attempt]
+    saved_selection: NotRequired[_SavedSelection]
+    reference_preflight: NotRequired[ReferenceQualityReport]
+    alternate_reference: NotRequired[dict[str, object]]
+    native_paths: NotRequired[dict[str, str]]
+    startup_seconds: NotRequired[float]
+    runtime: NotRequired[dict[str, object] | None]
+    compute: NotRequired[str | None]
+    http_capture_method: NotRequired[str]
+    expected_attempt_count: NotRequired[int]
+    interrupted: NotRequired[bool]
+    cancel_restart: NotRequired[dict[str, object]]
+    error: NotRequired[str]
+    shutdown_error: NotRequired[str]
+    server_shutdown: NotRequired[_ShutdownReceipt]
+    all_requests_terminal: NotRequired[bool]
+    all_requests_complete: NotRequired[bool]
+    exit_code: NotRequired[int]
+    archive: NotRequired[str]
+
 
 TEXTS = (
     ("short", "The storm has passed."),
@@ -59,7 +265,7 @@ PROBE_SAMPLING = {
 ZIP_MAX_BYTES = 128 * 1024 * 1024
 
 
-def _parser():
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reference", type=Path)
     parser.add_argument("--alternate-reference", type=Path)
@@ -80,22 +286,23 @@ def _parser():
     return parser
 
 
-def _sha256(path):
-    return sha256_file(path)
+def _sha256(path: Path) -> str:
+    digest: str = sha256_file(path)
+    return digest
 
 
-def _write_json(path, document):
+def _write_json(path: Path, document: Mapping[str, object]) -> None:
     atomic_write_json(path, document, ensure_ascii=False, indent=2, sort_keys=True)
 
 
-def _pcm16(samples):
+def _pcm16(samples: ArrayLike) -> NDArray[np.int16]:
     values = np.asarray(samples, dtype=np.float32)
     if not values.size or not np.isfinite(values).all():
         raise ValueError("MOSS probe received empty or non-finite PCM")
     return np.rint(np.clip(values, -1.0, 1.0) * 32767).astype(np.int16)
 
 
-def _quality(samples, sample_rate):
+def _quality(samples: ArrayLike, sample_rate: int) -> _Quality:
     values = np.asarray(samples)
     quality, _spans = analyze_generated_speech_samples(
         values,
@@ -106,7 +313,7 @@ def _quality(samples, sample_rate):
     return asdict(quality)
 
 
-def _raw_measurements(data):
+def _raw_measurements(data: bytes) -> _RawMeasurements:
     with wave.open(io.BytesIO(data), "rb") as source:
         channels, sample_rate, frames = (
             source.getnchannels(),
@@ -137,7 +344,12 @@ def _raw_measurements(data):
 
 
 @contextmanager
-def _configured_native_paths(executable, model, *, extra=None):
+def _configured_native_paths(
+    executable: Path | None,
+    model: Path | None,
+    *,
+    extra: Mapping[str, str | None] | None = None,
+) -> Iterator[None]:
     changes = {
         "VNTTS_MOSS_CPP_EXECUTABLE": str(executable.expanduser().resolve())
         if executable is not None
@@ -161,30 +373,42 @@ def _configured_native_paths(executable, model, *, extra=None):
                 os.environ[name] = value
 
 
-def _capture_native_response(backend):
+def _capture_native_response(
+    backend: _ProbeBackend,
+) -> tuple[list[_NativeResponse], Callable[[], None]]:
     original = backend._http
-    responses = []
+    responses: list[_NativeResponse] = []
 
-    def wrapped(method, path, body=None, *, timeout=None):
+    def wrapped(
+        method: str,
+        path: str,
+        body: Mapping[str, object] | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> _NativeResponse:
         response = original(method, path, body, timeout=timeout)
         if path == "/tts" and method == "POST" and isinstance(response, tuple):
             if len(response) == 3 and isinstance(response[2], bytes):
                 responses.append(response)
         return response
 
-    backend._http = wrapped
+    setattr(backend, "_http", wrapped)
 
-    def restore():
-        backend._http = original
+    def restore() -> None:
+        setattr(backend, "_http", original)
 
     return responses, restore
 
 
-def _attempt_name(index, profile, label):
+def _attempt_name(index: int, profile: str, label: str) -> str:
     return f"attempt-{index:02d}-{profile}-{label}"
 
 
-def _saved_narrator_reference(settings, registry_initializer, voice_library=None):
+def _saved_narrator_reference(
+    settings: AppSettings | None,
+    registry_initializer: _RegistryInitializer,
+    voice_library: VoiceLibrary | None = None,
+) -> tuple[Path, CharacterVoiceRegistry]:
     if voice_library is None:
         voice_library = application_voice_library()
     registry = registry_initializer(settings, voice_library=voice_library)
@@ -195,10 +419,34 @@ def _saved_narrator_reference(settings, registry_initializer, voice_library=None
             "saved Narrator voice must resolve to exactly one existing reference; "
             "pass --reference PATH"
         )
+    assert registry is not None
     return references[0].resolve(), registry
 
 
-def _qualification_alternate(options, registry, narrator_reference):
+def _saved_selection(
+    settings: AppSettings | None, voice_library: VoiceLibrary | None
+) -> _SavedSelection:
+    assert settings is not None and voice_library is not None
+    manifest = settings.voice_manifest
+    return {
+        "settings_file": get_settings_path().name,
+        "voice_manifest": Path(manifest).name if manifest else None,
+        "narrator_assignment": voice_binding_source_id(
+            voice_library.binding("Narrator")
+        ),
+    }
+
+
+def _model_name(model: Path | None, settings: AppSettings | None) -> str | Path | None:
+    if model is not None:
+        return model
+    assert settings is not None
+    return settings.tts_model
+
+
+def _qualification_alternate(
+    options: _ProbeOptions, registry: CharacterVoiceRegistry, narrator_reference: Path
+) -> tuple[tuple[str, Path] | None, CharacterVoiceRegistry]:
     explicit = getattr(options, "alternate_reference", None)
     if explicit is not None:
         reference = explicit.expanduser().resolve()
@@ -206,15 +454,15 @@ def _qualification_alternate(options, registry, narrator_reference):
             {id(voice): voice for voice in registry.voices.values()}.values()
         )
         voice = CharacterVoice("Qualification alternate", "alternate", reference)
-        return voice.character, reference, CharacterVoiceRegistry((*voices, voice))
+        return (voice.character, reference), CharacterVoiceRegistry((*voices, voice))
     if not getattr(options, "require_changing_voice", False):
-        return None, None, registry
-    voices = sorted(
+        return None, registry
+    sorted_voices = sorted(
         {id(voice): voice for voice in registry.voices.values()}.values(),
         key=lambda voice: voice.character.casefold(),
     )
     narrator_sha256 = _sha256(narrator_reference)
-    for voice in voices:
+    for voice in sorted_voices:
         if voice.character.casefold() == "narrator" or not voice.references:
             continue
         reference = voice.references[0].expanduser().resolve()
@@ -229,13 +477,13 @@ def _qualification_alternate(options, registry, narrator_reference):
         except OSError, ValueError:
             continue
         if preflight["objective_preflight"] == "pass":
-            return voice.character, reference, registry
+            return (voice.character, reference), registry
     raise ValueError(
         "no second usable saved game voice was found; pass --alternate-reference PATH"
     )
 
 
-def _write_archive(output, archive, *, recursive=False):
+def _write_archive(output: Path, archive: Path, *, recursive: bool = False) -> None:
     paths = [
         path
         for path in (output.rglob("*") if recursive else output.iterdir())
@@ -262,25 +510,31 @@ def _write_archive(output, archive, *, recursive=False):
         raise
 
 
+def _native_details() -> list[dict[str, object]]:
+    events = support.native_speech_log.report()["events"]
+    assert isinstance(events, list)
+    return [support._support_mapping(event.get("native", {})) for event in events]
+
+
 def _render_attempt(
-    backend,
-    output,
-    index,
-    profile,
-    label,
-    text,
-    responses,
+    backend: _ProbeBackend,
+    output: Path,
+    index: int,
+    profile: str,
+    label: str,
+    text: str,
+    responses: list[_NativeResponse],
     *,
-    sampling_profiles=PROBE_SAMPLING,
-    voice="Narrator",
-    phase="diagnostic-warm",
-):
+    sampling_profiles: _SamplingProfiles = PROBE_SAMPLING,
+    voice: str = "Narrator",
+    phase: str = "diagnostic-warm",
+) -> _Attempt:
     name = _attempt_name(index, profile, label)
     expected_tokens, expected_seconds = moss_generation_limits(text)
     profile_name, sampling = get_moss_tts_generation_profile(
         profile, profiles=sampling_profiles
     )
-    record = {
+    record: _Attempt = {
         "id": name,
         "seed": 1,
         "text": text,
@@ -352,10 +606,10 @@ def _render_attempt(
     finally:
         record["native"] = next(
             (
-                event["native"]
-                for event in reversed(support.native_speech_log.report()["events"])
-                if event.get("native", {}).get("attempt_id") == trace_id
-                and event["native"].get("operation") == "fresh-generation"
+                event
+                for event in reversed(_native_details())
+                if event.get("attempt_id") == trace_id
+                and event.get("operation") == "fresh-generation"
             ),
             None,
         )
@@ -389,26 +643,26 @@ def _render_attempt(
     return record
 
 
-def _capture_owned_server(backend, servers):
+def _capture_owned_server(backend: _ProbeBackend, servers: list[_OwnedServer]) -> None:
     server = getattr(backend, "server", None)
     if server is not None and not any(server is known for known in servers):
         servers.append(server)
 
 
 def _cancel_and_restart(
-    backend,
-    output,
-    index,
-    responses,
+    backend: _ProbeBackend,
+    output: Path,
+    index: int,
+    responses: list[_NativeResponse],
     *,
-    timeout=15,
-    cancellation_text="The qualification request must remain active until cancellation is observed.",
-):
+    timeout: float = 15,
+    cancellation_text: str = "The qualification request must remain active until cancellation is observed.",
+) -> _CancelReceipt:
     cancellation = Event()
     attempt_id = uuid4().hex
-    result = []
+    result: list[SynthesisResult | BaseException] = []
 
-    def render():
+    def render() -> None:
         try:
             with native_speech_context.set({"attempt_id": attempt_id}):
                 result.append(
@@ -432,9 +686,9 @@ def _cancel_and_restart(
     old_server = None
     while task.is_alive() and monotonic() < deadline:
         started = any(
-            event.get("native", {}).get("attempt_id") == attempt_id
-            and event["native"].get("operation") == "request-start"
-            for event in support.native_speech_log.report()["events"]
+            event.get("attempt_id") == attempt_id
+            and event.get("operation") == "request-start"
+            for event in _native_details()
         )
         if started:
             with backend.server_lock:
@@ -480,10 +734,10 @@ def _cancel_and_restart(
     if new_server is None or new_server.pid == old_server.pid:
         raise RuntimeError("Fresh render did not start a new owned server")
     cancelled_event = next(
-        event["native"]
-        for event in reversed(support.native_speech_log.report()["events"])
-        if event.get("native", {}).get("attempt_id") == attempt_id
-        and event["native"].get("operation") == "fresh-generation"
+        event
+        for event in reversed(_native_details())
+        if event.get("attempt_id") == attempt_id
+        and event.get("operation") == "fresh-generation"
     )
     return {
         "cancelled_completion": result[0].completion.value,
@@ -499,15 +753,15 @@ def _cancel_and_restart(
 
 
 def run(
-    options,
+    options: _ProbeOptions,
     *,
-    backend_factory=MossCppVoiceRouterBackend,
-    path_check=moss_cpp_paths,
-    settings_loader=load_app_settings,
-    registry_initializer=initialize_voice_registry,
-    voice_library=None,
-    sampling_profiles=PROBE_SAMPLING,
-):
+    backend_factory: _BackendFactory = MossCppVoiceRouterBackend,
+    path_check: Callable[[str | Path | None], tuple[Path, Path, Path]] = moss_cpp_paths,
+    settings_loader: Callable[[], AppSettings] = load_app_settings,
+    registry_initializer: _RegistryInitializer = initialize_voice_registry,
+    voice_library: VoiceLibrary | None = None,
+    sampling_profiles: _SamplingProfiles = PROBE_SAMPLING,
+) -> int:
     settings = (
         settings_loader()
         if options.reference is None or options.model is None
@@ -531,11 +785,9 @@ def run(
         raise ValueError(f"output directory already exists: {output}")
     if archive.exists():
         raise ValueError(f"output archive already exists: {archive}")
-    alternate_voice, alternate_reference, registry = _qualification_alternate(
-        options, registry, reference
-    )
+    alternate, registry = _qualification_alternate(options, registry, reference)
     output.mkdir(parents=True)
-    report = {
+    report: _ProbeReport = {
         "schema": "vntts.moss-native-probe",
         "schema_version": 1,
         "reference": reference.name,
@@ -549,27 +801,22 @@ def run(
         "attempts": [],
     }
     if options.reference is None:
-        report["saved_selection"] = {
-            "settings_file": get_settings_path().name,
-            "voice_manifest": Path(settings.voice_manifest).name
-            if getattr(settings, "voice_manifest", None)
-            else None,
-            "narrator_assignment": voice_binding_source_id(
-                voice_library.binding("Narrator")
-            ),
-        }
+        report["saved_selection"] = _saved_selection(settings, voice_library)
     backend = None
     prompt_cache = tempfile.TemporaryDirectory(
         prefix="vntts-moss-probe-voices-", ignore_cleanup_errors=True
     )
-    owned_servers = []
+    owned_servers: list[_OwnedServer] = []
     exit_code = 0
     try:
         print(
             f"Reference: {reference.name}\nSHA-256: {report['reference_sha256']}",
             flush=True,
         )
-        preflight = {**analyze_reference(reference), "path": reference.name}
+        preflight: ReferenceQualityReport = {
+            **analyze_reference(reference),
+            "path": reference.name,
+        }
         report["reference_preflight"] = preflight
         if preflight["sha256"] != report["reference_sha256"]:
             raise ValueError("reference changed during preflight")
@@ -584,8 +831,9 @@ def run(
             f"Reference preflight passed: {preflight['duration_seconds']:.3f}s",
             flush=True,
         )
-        if alternate_reference is not None:
-            alternate_preflight = {
+        if alternate is not None:
+            alternate_voice, alternate_reference = alternate
+            alternate_preflight: ReferenceQualityReport = {
                 **analyze_reference(alternate_reference),
                 "path": alternate_reference.name,
             }
@@ -602,9 +850,10 @@ def run(
                 "sha256": alternate_sha256,
                 "preflight": alternate_preflight,
             }
-        model_name = options.model if options.model is not None else settings.tts_model
         with _configured_native_paths(options.executable, options.model):
-            executable, model, sidecar = path_check(model_name)
+            executable, model, sidecar = path_check(
+                _model_name(options.model, settings)
+            )
         # Constructor setup returns immediately only when both resolved assets are
         # explicit. This scope prevents the managed installer from downloading.
         with _configured_native_paths(executable, model):
@@ -630,7 +879,7 @@ def run(
             report["startup_seconds"] = round(monotonic() - startup_started, 3)
             report["runtime"] = getattr(backend, "server_info", None)
             report["compute"] = getattr(backend, "runtime_status", None)
-            backend._generation_profiles = sampling_profiles
+            setattr(backend, "_generation_profiles", sampling_profiles)
             responses, restore = _capture_native_response(backend)
             report["http_capture_method"] = "_http"
             try:
@@ -659,7 +908,7 @@ def run(
                             "same-voice-warm",
                         ),
                     )
-                if alternate_reference is not None:
+                if alternate is not None:
                     sequence.extend(
                         (
                             (
@@ -747,7 +996,7 @@ def run(
         prompt_cache.cleanup()
         # Keep each observed Popen, not a PID lookup: shutdown clears backend.server
         # and the OS may reuse its PID. Unknown is not proof of clean shutdown.
-        receipts = []
+        receipts: list[_ServerReceipt] = []
         for server in owned_servers:
             try:
                 returncode = server.poll()
@@ -813,8 +1062,8 @@ def run(
     return exit_code
 
 
-def main(argv=None):
-    options = _parser().parse_args(argv)
+def main(argv: Sequence[str] | None = None) -> int:
+    options = _parser().parse_args(argv, namespace=_ProbeOptions())
     try:
         exit_code = run(options)
     except ValueError as error:

@@ -5,8 +5,10 @@ import wave
 import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Lock
 from types import SimpleNamespace
 from typing import ClassVar
+from unittest.mock import patch
 
 import numpy as np
 
@@ -52,6 +54,10 @@ class _FakeBackend:
         self.options = options
         self.requests = []
         self.shutdown_called = False
+        self.server = None
+        self.server_lock = Lock()
+        self.server_info = None
+        self.runtime_status = None
         type(self).instances.append(self)
 
     def _http(self, method, path, body=None, *, timeout=None):
@@ -145,6 +151,44 @@ def _options(root):
 
 
 class MossNativePauseProbeTest(unittest.TestCase):
+    def test_unrelated_log_events_do_not_disrupt_native_evidence(self):
+        class LoggedBackend(_FakeBackend):
+            def render(self, request):
+                probe.support.record_native_speech(
+                    operation="fresh-generation", outcome="complete"
+                )
+                return super().render(request)
+
+        log = probe.support.NativeSpeechLog()
+        log.add("info", "An unrelated log event has no native details")
+        with TemporaryDirectory() as temporary:
+            options = _options(Path(temporary))
+            with patch.object(probe.support, "native_speech_log", log):
+                self.assertEqual(
+                    probe.run(
+                        options,
+                        backend_factory=LoggedBackend,
+                        path_check=lambda _model: (
+                            Path("server"),
+                            Path("model.gguf"),
+                            Path("codec.gguf"),
+                        ),
+                        settings_loader=AppSettings,
+                    ),
+                    0,
+                )
+            report = json.loads((options.output / "report.json").read_text())
+            self.assertTrue(report["all_requests_complete"])
+            self.assertEqual(len(report["attempts"]), 6)
+            self.assertTrue(
+                all(
+                    attempt["native"]["outcome"] == "complete"
+                    for attempt in report["attempts"]
+                )
+            )
+            original = LoggedBackend.instances[-1]
+            self.assertEqual(original._http.__func__, _FakeBackend._http)
+
     def test_missing_raw_responses_never_count_as_complete_evidence(self):
         with TemporaryDirectory() as temporary:
             options = _options(Path(temporary))
@@ -181,7 +225,7 @@ class MossNativePauseProbeTest(unittest.TestCase):
                 )
             )
 
-            voice, reference, selected_registry = probe._qualification_alternate(
+            qualification, selected_registry = probe._qualification_alternate(
                 SimpleNamespace(
                     alternate_reference=None,
                     require_changing_voice=True,
@@ -190,7 +234,7 @@ class MossNativePauseProbeTest(unittest.TestCase):
                 narrator,
             )
 
-            self.assertEqual((voice, reference), ("Centurion", alternate.resolve()))
+            self.assertEqual(qualification, ("Centurion", alternate.resolve()))
             self.assertIs(selected_registry, registry)
 
     def test_replacement_servers_all_receive_shutdown_receipts(self):
@@ -418,12 +462,8 @@ class MossNativePauseProbeTest(unittest.TestCase):
                 model=Path("model.gguf"),
                 executable=None,
             )
-            registry = SimpleNamespace(
-                resolve=lambda name: (
-                    SimpleNamespace(references=(reference,))
-                    if name == "Narrator"
-                    else None
-                )
+            registry = CharacterVoiceRegistry(
+                (CharacterVoice("Narrator", "narrator", reference),)
             )
             _FakeBackend.instances.clear()
 
@@ -436,7 +476,7 @@ class MossNativePauseProbeTest(unittest.TestCase):
                         Path("model.gguf"),
                         Path("codec.gguf"),
                     ),
-                    settings_loader=lambda: SimpleNamespace(tts_model="saved-model"),
+                    settings_loader=lambda: AppSettings(tts_model="saved-model"),
                     registry_initializer=lambda _settings, **_kwargs: registry,
                     voice_library=VoiceLibrary(root / "library"),
                 ),
@@ -463,7 +503,7 @@ class MossNativePauseProbeTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "pass --reference PATH"):
                 probe.run(
                     options,
-                    settings_loader=lambda: SimpleNamespace(tts_model="saved-model"),
+                    settings_loader=lambda: AppSettings(tts_model="saved-model"),
                     registry_initializer=lambda _settings, **_kwargs: registry,
                 )
 
