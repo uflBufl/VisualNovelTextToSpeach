@@ -4,15 +4,37 @@ import hashlib
 import json
 import struct
 import zlib
+from collections.abc import Generator
 from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 from vntts_artifacts.audio import probe_pcm16_mono_wav, write_pcm16_wav
+from vntts_artifacts.hashing import text_sha256
+from vntts_artifacts.story_index import write_story_index_document
 
+from vntts.authoring.bulk_generation import BulkGenerationResult, run_bulk_generation
 from vntts.authoring.source_reference_quality import (
     QUALITY_REVIEW_SCHEMA,
     QUALITY_REVIEW_VERSION,
+    SourceReferenceQualityResult,
+    publish_source_reference_quality_review,
+)
+from vntts.authoring.source_reference_review import (
+    SourceReferenceEvaluationResult,
+    SourceReferencePlanResult,
+    import_source_reference_review,
+    publish_source_reference_evaluation,
+)
+from vntts.synthesis import (
+    SynthesisChunk,
+    SynthesisChunkStream,
+    SynthesisCompletion,
+    SynthesisDiagnostics,
+    SynthesisLimits,
+    SynthesisRequest,
+    SynthesisResult,
+    SynthesisTiming,
 )
 
 
@@ -30,24 +52,11 @@ def _write_audio(root: Path, name: str, value: float) -> dict[str, object]:
 
 
 def _write_png(root: Path, name: str) -> dict[str, object]:
-    def chunk(kind: bytes, payload: bytes) -> bytes:
-        return (
-            struct.pack(">I", len(payload))
-            + kind
-            + payload
-            + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
-        )
-
-    payload = b"\x89PNG\r\n\x1a\n"
-    payload += chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 2, 8, 6, 0, 0, 0))
-    rows = b"\x00" + b"\x7f\x30\x10\xff" * 2
-    payload += chunk(b"IDAT", zlib.compress(rows * 2))
-    payload += chunk(b"IEND", b"")
     path = root / name
-    path.write_bytes(payload)
+    write_test_png(path, red=127, green=48, blue=16)
     return {
         "image": name,
-        "image_sha256": hashlib.sha256(payload).hexdigest(),
+        "image_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         "width": 2,
         "height": 2,
     }
@@ -106,3 +115,241 @@ def write_quality_session(root: Path) -> Path:
         encoding="utf-8",
     )
     return session
+
+
+class EvaluationRenderer:
+    name = "synthetic"
+    model_name = "synthetic-v1"
+
+    def __init__(self) -> None:
+        self.requests: list[SynthesisRequest] = []
+
+    def render(self, request: SynthesisRequest) -> SynthesisChunkStream:
+        self.requests.append(request)
+        pcm = np.sin(
+            np.linspace(0, 20, 4_000, dtype=np.float32), dtype=np.float32
+        ) * np.float32(0.2)
+
+        def produce() -> Generator[SynthesisChunk, None, SynthesisResult]:
+            yield SynthesisChunk(pcm, 16_000, 0, 1.0)
+            return SynthesisResult(
+                pcm=pcm,
+                sample_rate=16_000,
+                completion=SynthesisCompletion.COMPLETE,
+                limits=SynthesisLimits(256, 180.0),
+                timing=SynthesisTiming(1.0, 2.0),
+                diagnostics=SynthesisDiagnostics(
+                    backend=self.name,
+                    cache_source="fresh-generation",
+                    generation_profile=request.generation_profile,
+                    seed=request.seed,
+                    chunk_count=1,
+                    sample_count=len(pcm),
+                ),
+            )
+
+        return SynthesisChunkStream(produce())
+
+    def stop(self) -> None:
+        pass
+
+
+def write_test_png(path: Path, *, red: int, green: int = 40, blue: int = 20) -> None:
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(payload))
+            + kind
+            + payload
+            + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+        )
+
+    payload = b"\x89PNG\r\n\x1a\n"
+    payload += chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 2, 8, 6, 0, 0, 0))
+    row = b"\x00" + bytes((red, green, blue, 255)) * 2
+    payload += chunk(b"IDAT", zlib.compress(row * 2))
+    payload += chunk(b"IEND", b"")
+    path.write_bytes(payload)
+
+
+def candidate_key(
+    character: str, portrait: str, bank: str, media_id: int, reference_sha256: str
+) -> str:
+    identity = json.dumps(
+        [character, portrait, bank, media_id, reference_sha256],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(identity.encode()).hexdigest()
+
+
+def write_source_reference_review_inputs(
+    root: str | Path,
+    *,
+    shared_portrait_bank: bool = False,
+    character: str = "Hero",
+    line_prefix: str = "",
+) -> tuple[Path, Path, Path]:
+    root = Path(root)
+    references = root / "references"
+    references.mkdir()
+    candidates: list[dict[str, object]] = []
+    decisions: list[dict[str, object]] = []
+    accepted_young_bank = "hero-adult.bnk" if shared_portrait_bank else "hero-young.bnk"
+    for index, (portrait, bank, decision) in enumerate(
+        (
+            ("adult.png", "hero-adult.bnk", "accept"),
+            ("young.png", accepted_young_bank, "accept"),
+            ("adult.png", "hero-adult.bnk", "reject"),
+        ),
+        start=1,
+    ):
+        reference = references / f"{index}.wav"
+        values = np.sin(np.linspace(0, 20 + index, 4_000, dtype=np.float32)) * 0.2
+        write_pcm16_wav(reference, values, 16_000)
+        reference_sha256 = hashlib.sha256(reference.read_bytes()).hexdigest()
+        candidate = {
+            "character": character,
+            "portrait": portrait,
+            "source_bank": bank,
+            "media_id": index,
+            "reference": f"references/{index}.wav",
+            "reference_sha256": reference_sha256,
+            "technical_pass": True,
+            "transcript_conflict": False,
+            "source_lines": [
+                {
+                    "line_id": f"source:{index}",
+                    "text": f"Source transcript {index}",
+                }
+            ],
+        }
+        evidence_sha256 = hashlib.sha256(
+            json.dumps(
+                candidate,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        key = candidate_key(character, portrait, bank, index, reference_sha256)
+        candidates.append(candidate)
+        decisions.append(
+            {
+                "candidate_key": key,
+                "candidate_evidence_sha256": evidence_sha256,
+                "reference_sha256": reference_sha256,
+                "decision": decision,
+                "notes": "exact human decision",
+            }
+        )
+    report = root / "report.json"
+    report.write_text(
+        json.dumps(
+            {
+                "schema": "r1999.story-voice-reference-candidates",
+                "schema_version": 1,
+                "groups": [],
+                "candidates": candidates,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    review = root / "review.json"
+    review.write_text(
+        json.dumps(
+            {
+                "schema": "r1999.story-voice-reference-review",
+                "schema_version": 2,
+                "candidate_report_sha256": hashlib.sha256(
+                    report.read_bytes()
+                ).hexdigest(),
+                "decisions": decisions,
+                "invalidated_decisions": [],
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    records: list[dict[str, object]] = []
+    for index, portrait in enumerate(("adult.png", "young.png", "other.png"), start=1):
+        text = f"Missing target {index}."
+        records.append(
+            {
+                "record_type": "line",
+                "line_id": f"{line_prefix}target:{index}",
+                "chapter": "one",
+                "sequence": index,
+                "speaker": character,
+                "voice_character": character,
+                "text": text,
+                "text_sha256": text_sha256(text),
+                "kind": "dialogue",
+                "source_audio_status": "absent",
+                "source_audio_reason": "fixture",
+                "source_kind": "story",
+                "speakable": True,
+                "collection_id": "main",
+                "portrait": portrait,
+            }
+        )
+    story = root / "story.jsonl"
+    write_story_index_document(
+        story,
+        {
+            "game": "Synthetic",
+            "language": "en",
+            "generated_at": "2026-08-18T00:00:00+00:00",
+            "collections": [
+                {
+                    "collection_id": "main",
+                    "title": "Main",
+                    "kind": "story",
+                    "order": 1,
+                }
+            ],
+        },
+        records,
+    )
+    return report, review, story
+
+
+def publish_source_reference_quality_fixture(
+    root: Path,
+    *,
+    portrait_directory: str | Path | None = None,
+    shared_portrait_bank: bool = False,
+    character: str = "Hero",
+    line_prefix: str = "",
+) -> tuple[
+    SourceReferencePlanResult,
+    SourceReferenceEvaluationResult,
+    BulkGenerationResult,
+    SourceReferenceQualityResult,
+]:
+    report, review, story = write_source_reference_review_inputs(
+        root,
+        shared_portrait_bank=shared_portrait_bank,
+        character=character,
+        line_prefix=line_prefix,
+    )
+    plan = import_source_reference_review(report, review, story, root / "plan")
+    evaluation = publish_source_reference_evaluation(
+        plan.directory, root / "evaluation"
+    )
+    generation = run_bulk_generation(
+        evaluation.directory / "queue.jsonl",
+        root / "generation",
+        EvaluationRenderer(),
+        provider="synthetic",
+        model="synthetic-v1",
+        generation_profile="stable",
+    )
+    quality = publish_source_reference_quality_review(
+        plan.directory,
+        evaluation.directory,
+        generation.state,
+        root / "quality",
+        portrait_directory=portrait_directory,
+    )
+    return plan, evaluation, generation, quality

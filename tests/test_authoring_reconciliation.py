@@ -23,13 +23,13 @@ from tests.authoring_fixtures import (
     create_test_workspace,
     write_legacy_fixture,
 )
+from tests.source_reference_fixtures import (
+    publish_source_reference_quality_fixture,
+)
 from tests.symlink_support import symlink_or_skip
 from tests.terminal_conflict_fixtures import (
     create_parallel_review_workspaces,
     decide_parallel_review_bundle,
-)
-from tests.test_authoring_source_reference_review import (
-    publish_source_reference_quality_fixture,
 )
 from vntts.authoring.bulk_generation import authorize_live_fallback
 from vntts.authoring.cohort_bundle import (

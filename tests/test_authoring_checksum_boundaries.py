@@ -15,14 +15,15 @@ from tests import (
 from tests import (
     test_authoring_reviewed_waveform_publication as waveform_fixtures,
 )
-from tests import (
-    test_authoring_source_reference_review as reference_fixtures,
-)
 from tests.authoring_fixtures import create_voice_quality_review
 from tests.missing_voice_reuse_fixtures import (
     create_failed_prompt_hypothesis_review,
     create_missing_voice_live_fallback_fixture,
     create_missing_voice_reuse_binding_review,
+)
+from tests.source_reference_fixtures import (
+    publish_source_reference_quality_fixture,
+    write_source_reference_review_inputs,
 )
 from vntts.authoring import (
     explicit_fallback_merge,
@@ -205,9 +206,7 @@ class ChecksumBoundaryTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             plan, evaluation, generation, _quality = (
-                reference_fixtures.AuthoringSourceReferenceReviewTest().publish_quality_fixture(
-                    root
-                )
+                publish_source_reference_quality_fixture(root)
             )
             self._disappear_after(
                 source_reference_quality,
@@ -270,11 +269,7 @@ class ChecksumBoundaryTest(unittest.TestCase):
     def test_reference_evaluation_missing_plan_stays_a_review_error(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            report, review, story = (
-                reference_fixtures.AuthoringSourceReferenceReviewTest().write_inputs(
-                    root
-                )
-            )
+            report, review, story = write_source_reference_review_inputs(root)
             plan = source_reference_review.import_source_reference_review(
                 report, review, story, root / "plan"
             )

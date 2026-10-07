@@ -13,7 +13,6 @@ import numpy as np
 from vntts_artifacts import (
     VoiceGenerationQueue,
     expected_voice_generation_queue_id,
-    write_story_index_document,
     write_voice_generation_queue,
 )
 from vntts_artifacts.audio import write_pcm16_wav
@@ -22,6 +21,13 @@ from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_mani
 
 import vntts.authoring.source_reference_review as source_review_module
 import vntts.story_index_snapshot as story_snapshot_module
+from tests.source_reference_fixtures import (
+    EvaluationRenderer,
+    candidate_key,
+    publish_source_reference_quality_fixture,
+    write_source_reference_review_inputs,
+    write_test_png,
+)
 from vntts.authoring import source_reference_quality_records
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.authoring.bulk_generation import load_generation_state, run_bulk_generation
@@ -65,259 +71,13 @@ from vntts.authoring.source_reference_review import (
     publish_source_reference_evaluation,
     publish_source_reference_listening_reports,
 )
-from vntts.synthesis import (
-    SynthesisChunk,
-    SynthesisChunkStream,
-    SynthesisCompletion,
-    SynthesisDiagnostics,
-    SynthesisLimits,
-    SynthesisResult,
-    SynthesisTiming,
-)
-
-
-class EvaluationRenderer:
-    name = "synthetic"
-    model_name = "synthetic-v1"
-
-    def __init__(self):
-        self.requests = []
-
-    def render(self, request):
-        self.requests.append(request)
-        pcm = np.sin(np.linspace(0, 20, 4_000, dtype=np.float32)) * 0.2
-
-        def produce():
-            yield SynthesisChunk(pcm, 16_000, 0, 1.0)
-            return SynthesisResult(
-                pcm=pcm,
-                sample_rate=16_000,
-                completion=SynthesisCompletion.COMPLETE,
-                limits=SynthesisLimits(256, 180.0),
-                timing=SynthesisTiming(1.0, 2.0),
-                diagnostics=SynthesisDiagnostics(
-                    backend=self.name,
-                    cache_source="fresh-generation",
-                    generation_profile=request.generation_profile,
-                    seed=request.seed,
-                    chunk_count=1,
-                    sample_count=len(pcm),
-                ),
-            )
-
-        return SynthesisChunkStream(produce())
-
-    def stop(self):
-        pass
-
-
-def write_test_png(path, *, red):
-    def chunk(kind, payload):
-        return (
-            struct.pack(">I", len(payload))
-            + kind
-            + payload
-            + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
-        )
-
-    payload = b"\x89PNG\r\n\x1a\n"
-    payload += chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 2, 8, 6, 0, 0, 0))
-    row = b"\x00" + bytes((red, 40, 20, 255)) * 2
-    payload += chunk(b"IDAT", zlib.compress(row * 2))
-    payload += chunk(b"IEND", b"")
-    path.write_bytes(payload)
-
-
-def candidate_key(character, portrait, bank, media_id, reference_sha256):
-    identity = json.dumps(
-        [character, portrait, bank, media_id, reference_sha256],
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(identity.encode()).hexdigest()
-
-
-def publish_source_reference_quality_fixture(root):
-    return AuthoringSourceReferenceReviewTest().publish_quality_fixture(root)
 
 
 class AuthoringSourceReferenceReviewTest(unittest.TestCase):
-    def publish_quality_fixture(
-        self,
-        root,
-        *,
-        portrait_directory=None,
-        shared_portrait_bank=False,
-        character="Hero",
-        line_prefix="",
-    ):
-        report, review, story = self.write_inputs(
-            root,
-            shared_portrait_bank=shared_portrait_bank,
-            character=character,
-            line_prefix=line_prefix,
-        )
-        plan = import_source_reference_review(report, review, story, root / "plan")
-        evaluation = publish_source_reference_evaluation(
-            plan.directory, root / "evaluation"
-        )
-        generation = run_bulk_generation(
-            evaluation.directory / "queue.jsonl",
-            root / "generation",
-            EvaluationRenderer(),
-            provider="synthetic",
-            model="synthetic-v1",
-            generation_profile="stable",
-        )
-        quality = publish_source_reference_quality_review(
-            plan.directory,
-            evaluation.directory,
-            generation.state,
-            root / "quality",
-            portrait_directory=portrait_directory,
-        )
-        return plan, evaluation, generation, quality
-
-    def write_inputs(
-        self,
-        root,
-        *,
-        shared_portrait_bank=False,
-        character="Hero",
-        line_prefix="",
-    ):
-        root = Path(root)
-        references = root / "references"
-        references.mkdir()
-        candidates = []
-        decisions = []
-        accepted_young_bank = (
-            "hero-adult.bnk" if shared_portrait_bank else "hero-young.bnk"
-        )
-        for index, (portrait, bank, decision) in enumerate(
-            (
-                ("adult.png", "hero-adult.bnk", "accept"),
-                ("young.png", accepted_young_bank, "accept"),
-                ("adult.png", "hero-adult.bnk", "reject"),
-            ),
-            start=1,
-        ):
-            reference = references / f"{index}.wav"
-            values = np.sin(np.linspace(0, 20 + index, 4_000, dtype=np.float32)) * 0.2
-            write_pcm16_wav(reference, values, 16_000)
-            reference_sha256 = hashlib.sha256(reference.read_bytes()).hexdigest()
-            candidate = {
-                "character": character,
-                "portrait": portrait,
-                "source_bank": bank,
-                "media_id": index,
-                "reference": f"references/{index}.wav",
-                "reference_sha256": reference_sha256,
-                "technical_pass": True,
-                "transcript_conflict": False,
-                "source_lines": [
-                    {
-                        "line_id": f"source:{index}",
-                        "text": f"Source transcript {index}",
-                    }
-                ],
-            }
-            evidence_sha256 = hashlib.sha256(
-                json.dumps(
-                    candidate,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode()
-            ).hexdigest()
-            key = candidate_key(character, portrait, bank, index, reference_sha256)
-            candidates.append(candidate)
-            decisions.append(
-                {
-                    "candidate_key": key,
-                    "candidate_evidence_sha256": evidence_sha256,
-                    "reference_sha256": reference_sha256,
-                    "decision": decision,
-                    "notes": "exact human decision",
-                }
-            )
-        report = root / "report.json"
-        report.write_text(
-            json.dumps(
-                {
-                    "schema": "r1999.story-voice-reference-candidates",
-                    "schema_version": 1,
-                    "groups": [],
-                    "candidates": candidates,
-                },
-                sort_keys=True,
-            ),
-            encoding="utf-8",
-        )
-        review = root / "review.json"
-        review.write_text(
-            json.dumps(
-                {
-                    "schema": "r1999.story-voice-reference-review",
-                    "schema_version": 2,
-                    "candidate_report_sha256": hashlib.sha256(
-                        report.read_bytes()
-                    ).hexdigest(),
-                    "decisions": decisions,
-                    "invalidated_decisions": [],
-                },
-                sort_keys=True,
-            ),
-            encoding="utf-8",
-        )
-        records = []
-        for index, portrait in enumerate(
-            ("adult.png", "young.png", "other.png"), start=1
-        ):
-            text = f"Missing target {index}."
-            records.append(
-                {
-                    "record_type": "line",
-                    "line_id": f"{line_prefix}target:{index}",
-                    "chapter": "one",
-                    "sequence": index,
-                    "speaker": character,
-                    "voice_character": character,
-                    "text": text,
-                    "text_sha256": text_sha256(text),
-                    "kind": "dialogue",
-                    "source_audio_status": "absent",
-                    "source_audio_reason": "fixture",
-                    "source_kind": "story",
-                    "speakable": True,
-                    "collection_id": "main",
-                    "portrait": portrait,
-                }
-            )
-        story = root / "story.jsonl"
-        write_story_index_document(
-            story,
-            {
-                "game": "Synthetic",
-                "language": "en",
-                "generated_at": "2026-08-18T00:00:00+00:00",
-                "collections": [
-                    {
-                        "collection_id": "main",
-                        "title": "Main",
-                        "kind": "story",
-                        "order": 1,
-                    }
-                ],
-            },
-            records,
-        )
-        return report, review, story
-
     def test_v2_unrouted_media_uses_fixed_corpus_without_invented_transcript(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            report, review, story = self.write_inputs(root)
+            report, review, story = write_source_reference_review_inputs(root)
             report_document = json.loads(report.read_text(encoding="utf-8"))
             report_document["schema_version"] = 2
             for index, candidate in enumerate(report_document["candidates"], start=1):
@@ -455,7 +215,7 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
     def test_imports_self_contained_variant_clusters_and_exact_queue_ids(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            report, review, story = self.write_inputs(root)
+            report, review, story = write_source_reference_review_inputs(root)
             source_hashes = {
                 path.name: hashlib.sha256(path.read_bytes()).hexdigest()
                 for path in (report, review, story)
@@ -492,7 +252,7 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
     def test_rejects_changed_reference_and_never_creates_output(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            report, review, story = self.write_inputs(root)
+            report, review, story = write_source_reference_review_inputs(root)
             (root / "references/1.wav").write_bytes(b"replacement")
             output = root / "unsafe"
 
@@ -504,7 +264,7 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
     def test_story_records_come_from_captured_bytes_during_parser_replacement(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            report, review, story = self.write_inputs(root)
+            report, review, story = write_source_reference_review_inputs(root)
             original = story.read_bytes()
             records = [json.loads(line) for line in original.decode().splitlines()]
             original_speaker = records[1]["speaker"]
@@ -554,7 +314,7 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
     def test_plan_loader_rejects_tampered_copied_reference(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            report, review, story = self.write_inputs(root)
+            report, review, story = write_source_reference_review_inputs(root)
             result = import_source_reference_review(
                 report, review, story, root / "imported-plan"
             )
@@ -568,7 +328,7 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
     def test_plan_loader_enforces_queue_authority_without_source_inputs(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            report, review, story = self.write_inputs(root)
+            report, review, story = write_source_reference_review_inputs(root)
             result = import_source_reference_review(
                 report, review, story, root / "imported-plan"
             )
@@ -601,7 +361,7 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
     def test_import_and_plan_loader_reject_noninteger_versions(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            report, review, story = self.write_inputs(root)
+            report, review, story = write_source_reference_review_inputs(root)
             original_report = report.read_bytes()
             original_review = review.read_bytes()
             for source, version in ((report, True), (report, 1.0), (review, 2.0)):
@@ -633,7 +393,7 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
     def test_refuses_to_replace_existing_output(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            report, review, story = self.write_inputs(root)
+            report, review, story = write_source_reference_review_inputs(root)
             output = root / "exists"
             output.mkdir()
 
@@ -643,7 +403,7 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
     def test_cli_publishes_machine_readable_summary(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            report, review, story = self.write_inputs(root)
+            report, review, story = write_source_reference_review_inputs(root)
             stdout = StringIO()
 
             with redirect_stdout(stdout):
@@ -670,7 +430,7 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
     def test_publishes_fixed_corpus_inputs_for_every_accepted_variant(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            report, review, story = self.write_inputs(root)
+            report, review, story = write_source_reference_review_inputs(root)
             plan = import_source_reference_review(report, review, story, root / "plan")
 
             result = publish_source_reference_evaluation(
@@ -707,7 +467,7 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
     def test_evaluation_refuses_overwrite_and_tampered_plan_reference(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            report, review, story = self.write_inputs(root)
+            report, review, story = write_source_reference_review_inputs(root)
             plan = import_source_reference_review(report, review, story, root / "plan")
             output = root / "evaluation"
             publish_source_reference_evaluation(plan.directory, output)
@@ -726,7 +486,7 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
     def test_cli_builds_reference_evaluation(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            report, review, story = self.write_inputs(root)
+            report, review, story = write_source_reference_review_inputs(root)
             plan = import_source_reference_review(report, review, story, root / "plan")
             stdout = StringIO()
 
@@ -750,7 +510,7 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
     def test_publishes_reports_and_creates_final_blind_session(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            report, review, story = self.write_inputs(root)
+            report, review, story = write_source_reference_review_inputs(root)
             plan = import_source_reference_review(report, review, story, root / "plan")
             evaluation = publish_source_reference_evaluation(
                 plan.directory, root / "evaluation"
@@ -812,7 +572,7 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
     def test_listening_report_cli_refuses_to_replace_output(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            report, review, story = self.write_inputs(root)
+            report, review, story = write_source_reference_review_inputs(root)
             plan = import_source_reference_review(report, review, story, root / "plan")
             evaluation = publish_source_reference_evaluation(
                 plan.directory, root / "evaluation"
@@ -851,7 +611,9 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
     def test_publishes_cluster_quality_cards_and_records_distinct_decisions(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            _plan, _evaluation, _generation, result = self.publish_quality_fixture(root)
+            _plan, _evaluation, _generation, result = (
+                publish_source_reference_quality_fixture(root)
+            )
             session = load_source_reference_quality_review(result.session)
             first, second = session["variants"]
             record_source_reference_quality_decision(
@@ -885,7 +647,9 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
     def test_quality_decision_uses_one_snapshot_and_rejects_replacements(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            _plan, _evaluation, _generation, result = self.publish_quality_fixture(root)
+            _plan, _evaluation, _generation, result = (
+                publish_source_reference_quality_fixture(root)
+            )
             original_payload = result.session.read_bytes()
             foreign = json.loads(original_payload)
             foreign["variants"][0]["decision"] = {
@@ -1000,7 +764,9 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
     def test_quality_review_rejects_noncanonical_scalar_types(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            _plan, _evaluation, _generation, result = self.publish_quality_fixture(root)
+            _plan, _evaluation, _generation, result = (
+                publish_source_reference_quality_fixture(root)
+            )
             original = json.loads(result.session.read_text(encoding="utf-8"))
             for field, value in (
                 ("schema_version", True),
@@ -1061,8 +827,10 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
             portraits.mkdir()
             write_test_png(portraits / "adult.png", red=120)
             write_test_png(portraits / "young.png", red=200)
-            _plan, _evaluation, _generation, result = self.publish_quality_fixture(
-                root, portrait_directory=portraits
+            _plan, _evaluation, _generation, result = (
+                publish_source_reference_quality_fixture(
+                    root, portrait_directory=portraits
+                )
             )
             session = load_source_reference_quality_review(result.session)
 
@@ -1086,9 +854,11 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
             write_test_png(portraits / "adult.png", red=120)
             write_test_png(portraits / "young.png", red=121)
             (root / "separate").mkdir()
-            _plan, _evaluation, _generation, separate = self.publish_quality_fixture(
-                root / "separate",
-                portrait_directory=portraits,
+            _plan, _evaluation, _generation, separate = (
+                publish_source_reference_quality_fixture(
+                    root / "separate",
+                    portrait_directory=portraits,
+                )
             )
             separate_session = load_source_reference_quality_review(separate.session)
             for card in separate_session["variants"]:
@@ -1102,10 +872,12 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
 
             shared_root = root / "shared"
             shared_root.mkdir()
-            _plan, _evaluation, _generation, shared = self.publish_quality_fixture(
-                shared_root,
-                portrait_directory=portraits,
-                shared_portrait_bank=True,
+            _plan, _evaluation, _generation, shared = (
+                publish_source_reference_quality_fixture(
+                    shared_root,
+                    portrait_directory=portraits,
+                    shared_portrait_bank=True,
+                )
             )
             shared_session = load_source_reference_quality_review(shared.session)
             for card in shared_session["variants"]:
@@ -1163,10 +935,12 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
             portraits.mkdir()
             write_test_png(portraits / "adult.png", red=120)
             write_test_png(portraits / "young.png", red=121)
-            _plan, _evaluation, _generation, quality = self.publish_quality_fixture(
-                root,
-                portrait_directory=portraits,
-                shared_portrait_bank=True,
+            _plan, _evaluation, _generation, quality = (
+                publish_source_reference_quality_fixture(
+                    root,
+                    portrait_directory=portraits,
+                    shared_portrait_bank=True,
+                )
             )
             session = load_source_reference_quality_review(quality.session)
             for card in session["variants"]:
@@ -1187,7 +961,9 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
     def test_quality_review_rejects_tampered_audio_and_concurrent_decision(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            _plan, _evaluation, _generation, result = self.publish_quality_fixture(root)
+            _plan, _evaluation, _generation, result = (
+                publish_source_reference_quality_fixture(root)
+            )
             session = load_source_reference_quality_review(result.session)
             variant = session["variants"][0]
             lock = result.session.with_name(f".{result.session.name}.lock")
@@ -1211,7 +987,9 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
     def test_binding_cli_requires_completed_quality_review(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            plan, _evaluation, _generation, result = self.publish_quality_fixture(root)
+            plan, _evaluation, _generation, result = (
+                publish_source_reference_quality_fixture(root)
+            )
             manifest = self.write_base_voice_manifest(root, include_rhiannon=True)
             session = load_source_reference_quality_review(result.session)
             for card in session["variants"]:
@@ -1257,7 +1035,9 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
     def test_binding_publication_rejects_incomplete_quality_review(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            plan, _evaluation, _generation, result = self.publish_quality_fixture(root)
+            plan, _evaluation, _generation, result = (
+                publish_source_reference_quality_fixture(root)
+            )
             manifest = self.write_base_voice_manifest(root)
 
             with self.assertRaisesRegex(SourceReferenceReviewError, "incomplete"):
@@ -1274,7 +1054,7 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
     def test_binding_manifest_routes_exact_queue_ids_with_provenance(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            report, review, story = self.write_inputs(root)
+            report, review, story = write_source_reference_review_inputs(root)
             base_manifest = self.write_base_voice_manifest(root)
             plan_result = import_source_reference_review(
                 report, review, story, root / "plan"
@@ -1358,17 +1138,17 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
             second_root.mkdir()
             third_root.mkdir()
             first_plan, _evaluation, _generation, first_quality = (
-                self.publish_quality_fixture(first_root)
+                publish_source_reference_quality_fixture(first_root)
             )
             second_plan, _evaluation, _generation, second_quality = (
-                self.publish_quality_fixture(
+                publish_source_reference_quality_fixture(
                     second_root,
                     character="Guide",
                     line_prefix="guide-",
                 )
             )
             third_plan, _evaluation, _generation, third_quality = (
-                self.publish_quality_fixture(
+                publish_source_reference_quality_fixture(
                     third_root,
                     character="Witness",
                     line_prefix="witness-",
@@ -1546,10 +1326,10 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
             first_root.mkdir()
             second_root.mkdir()
             first_plan, _evaluation, _generation, first_quality = (
-                self.publish_quality_fixture(first_root)
+                publish_source_reference_quality_fixture(first_root)
             )
             second_plan, _evaluation, _generation, second_quality = (
-                self.publish_quality_fixture(
+                publish_source_reference_quality_fixture(
                     second_root,
                     character="Guide",
                     line_prefix="guide-",
@@ -1607,7 +1387,7 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
     def test_binding_manifest_copies_only_explicit_base_characters(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            report, review, story = self.write_inputs(root)
+            report, review, story = write_source_reference_review_inputs(root)
             base_manifest = self.write_base_voice_manifest(root, include_rhiannon=True)
             plan_result = import_source_reference_review(
                 report, review, story, root / "plan"
@@ -1669,7 +1449,7 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
     def test_binding_manifest_rejects_unknown_or_duplicate_base_character(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            report, review, story = self.write_inputs(root)
+            report, review, story = write_source_reference_review_inputs(root)
             base_manifest = self.write_base_voice_manifest(root, include_rhiannon=True)
             plan_result = import_source_reference_review(
                 report, review, story, root / "plan"
@@ -1703,7 +1483,7 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
     def test_binding_manifest_rejects_tampered_override_digest(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            report, review, story = self.write_inputs(root)
+            report, review, story = write_source_reference_review_inputs(root)
             base_manifest = self.write_base_voice_manifest(root)
             plan_result = import_source_reference_review(
                 report, review, story, root / "plan"
@@ -1730,7 +1510,7 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
     def test_binding_manifest_rejects_unselected_manifest_voice(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            report, review, story = self.write_inputs(root)
+            report, review, story = write_source_reference_review_inputs(root)
             base_manifest = self.write_base_voice_manifest(root)
             plan_result = import_source_reference_review(
                 report, review, story, root / "plan"

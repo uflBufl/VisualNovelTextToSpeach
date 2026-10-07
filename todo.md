@@ -573,8 +573,3 @@ Planned implementation order after approval:
 ## Active - Continue cleanup ownership expansion
 
 - [ ] **Remaining native acquisition boundaries:** qualify `_launch_owned_process` and Windows job initialization separately from the completed server-resource cleanup. Trace real Windows API failure behavior before changing guards; keep suspended-child ownership and the existing two-second wait budget. Gate: failed job acquisition plus kill/wait failures preserves the acquisition error and leaves no runnable child; retain real-Windows qualification where mocks cannot prove ownership.
-
-## Active - Decouple composite authoring fixtures from test cases
-
-- [ ] Move source-reference report/review/story inputs and full quality publication into the existing source-reference fixture owner with real production result types and synthetic renderer contract. Preserve options, schema1/schema2 scenarios, exact bytes and hashes; consolidate the two 2x2 PNG encoders with explicit existing colors and migrate all callers.
-- [ ] Run the local selector first after all source edits, normal static gates and shared-owner disabled-rule scans; independently review exact data/patch/options/result contracts, then search all repository aliases/imports/constructors for equivalent leftovers. Commit independent repairs separately, refresh main, run branch selector and push. Remove completed TODO work and correct bounded memory.
