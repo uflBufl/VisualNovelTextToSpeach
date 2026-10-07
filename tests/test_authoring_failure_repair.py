@@ -1,4 +1,5 @@
 import unittest
+from itertools import combinations
 
 import numpy as np
 
@@ -85,6 +86,30 @@ class AuthoringFailureRepairTest(unittest.TestCase):
                 self.assertRaisesRegex(FailureRepairPolicyError, "malformed"),
             ):
                 FailureRepairPolicy.from_document(malformed_version)
+
+    def test_all_repair_strategies_are_mutually_exclusive(self):
+        fields = (
+            "sentence_segment_queue_ids",
+            "edge_silence_queue_ids",
+            "bounded_seed_retry_queue_ids",
+            "offline_fallback_queue_ids",
+            "inline_pause_queue_ids",
+        )
+        for first, second in combinations(fields, 2):
+            with (
+                self.subTest(first=first, second=second),
+                self.assertRaisesRegex(FailureRepairPolicyError, "strategies: line:a$"),
+            ):
+                FailureRepairPolicy(**{first: ("line:a",), second: ("line:a",)})
+        with self.assertRaisesRegex(
+            FailureRepairPolicyError, "strategies: line:a, line:z$"
+        ):
+            FailureRepairPolicy(
+                sentence_segment_queue_ids=("line:z", "line:a"),
+                edge_silence_queue_ids=("line:z",),
+                bounded_seed_retry_queue_ids=("line:a",),
+            )
+
 
     def test_inline_pause_prompt_is_exact_and_bounded(self):
         prompt, count = inline_sentence_pause_prompt(

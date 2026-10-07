@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import TypeGuard
@@ -97,18 +98,13 @@ class FailureRepairPolicy:
         inline = _canonical_queue_ids(
             self.inline_pause_queue_ids, "Inline-pause queue IDs"
         )
-        overlap = (
-            (set(sentence) & set(edge))
-            | (set(sentence) & set(seed))
-            | (set(edge) & set(seed))
-            | (set(sentence) & set(fallback))
-            | (set(edge) & set(fallback))
-            | (set(seed) & set(fallback))
-            | (set(sentence) & set(inline))
-            | (set(edge) & set(inline))
-            | (set(seed) & set(inline))
-            | (set(fallback) & set(inline))
-        )
+        overlap = {
+            queue_id
+            for queue_id, count in Counter(
+                sentence + edge + seed + fallback + inline
+            ).items()
+            if count > 1
+        }
         if overlap:
             raise FailureRepairPolicyError(
                 "A queue ID cannot use two failure-repair strategies: "
