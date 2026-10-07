@@ -13,7 +13,7 @@ try:
     from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtWidgets import QApplication
 
-    from tests.test_authoring_missing_voice_reuse_review import (
+    from tests.missing_voice_reuse_fixtures import (
         create_missing_voice_reuse_review_fixture,
     )
     from vntts.authoring.missing_voice_reuse_review import (

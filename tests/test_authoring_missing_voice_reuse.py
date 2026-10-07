@@ -6,19 +6,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from vntts_artifacts.file_integrity import sha256_file
-from vntts_artifacts.generated_audio import write_generated_audio_manifest
-from vntts_artifacts.story_index import write_story_index_document
-from vntts_artifacts.voice_generation_queue import (
-    VoiceGenerationQueue,
-    write_voice_generation_queue,
-)
-
 import vntts.story_index_snapshot as story_snapshot_module
-from tests.authoring_fixtures import write_legacy_fixture
+from tests.missing_voice_reuse_fixtures import (
+    build_failed_missing_voice_reuse_plan_fixture,
+    build_missing_voice_reuse_plan_fixture,
+    create_missing_voice_reuse_workspace,
+)
 from vntts.authoring import missing_voice_reuse as reuse_module
 from vntts.authoring.cli import main as authoring_main
-from vntts.authoring.legacy_import import import_legacy_job
 from vntts.authoring.missing_voice_reuse import (
     MissingVoiceReuseError,
     _inline_pause_candidates,
@@ -31,21 +26,8 @@ from vntts.authoring.missing_voice_reuse import (
     write_missing_voice_reuse_plan,
 )
 from vntts.authoring.workbench import (
-    create_resume_workspace,
     inspect_generation_readiness,
 )
-
-
-def create_missing_voice_reuse_workspace(root):
-    return AuthoringMissingVoiceReuseTest().create_workspace(root)
-
-
-def build_missing_voice_reuse_plan_fixture(workspace):
-    return AuthoringMissingVoiceReuseTest().build_plan(workspace)
-
-
-def build_failed_missing_voice_reuse_plan_fixture(fixture, workspace):
-    return AuthoringMissingVoiceReuseTest().build_failed_plan(fixture, workspace)
 
 
 class AuthoringMissingVoiceReuseTest(unittest.TestCase):
@@ -85,141 +67,15 @@ class AuthoringMissingVoiceReuseTest(unittest.TestCase):
             self.assertEqual(list((root / "candidate-inputs").iterdir()), [])
 
     def create_workspace(self, root, *, text=None, missing_voice_policy=None):
-        fixture = write_legacy_fixture(root / "legacy")
-        queue = VoiceGenerationQueue.load(fixture["queue"])
-        item = queue.items[0]
-        record = item.to_record()
-        record["speaker"] = "Aderyn"
-        record["voice_character"] = "Aderyn"
-        if text is not None:
-            import hashlib
-
-            record["text"] = text
-            record["text_sha256"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
-            record["queue_id"] = f"{record['line_id']}:{record['text_sha256'][:16]}"
-            fixture["queue_id"] = record["queue_id"]
-        write_voice_generation_queue(fixture["queue"], queue.metadata, [record])
-        queue_sha256 = sha256_file(fixture["queue"])
-
-        state = json.loads(fixture["state"].read_text(encoding="utf-8"))
-        state["queue_sha256"] = queue_sha256
-        state["active"] = None
-        state["items"] = {}
-        fixture["state"].write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
-        write_generated_audio_manifest(
-            fixture["manifest"],
-            {
-                "game": "Reverse: 1999",
-                "language": "en",
-                "source_queue_sha256": queue_sha256,
-                "generated_at": "2026-08-16T17:06:00+00:00",
-            },
-            [],
+        return create_missing_voice_reuse_workspace(
+            root, text=text, missing_voice_policy=missing_voice_policy
         )
-        write_story_index_document(
-            fixture["job"]["story_index"],
-            {
-                "game": "Reverse: 1999",
-                "language": "en",
-                "generated_at": "2026-08-16T15:00:00+00:00",
-                "collections": [
-                    {
-                        "collection_id": "story",
-                        "title": "Aderyn story",
-                        "kind": "character-story",
-                        "order": 1,
-                    }
-                ],
-            },
-            [
-                {
-                    "record_type": "line",
-                    "line_id": item.line_id,
-                    "text_sha256": record["text_sha256"],
-                    "text": record["text"],
-                    "speaker": "Aderyn",
-                    "voice_character": "Aderyn",
-                    "kind": "dialogue",
-                    "chapter": "315401",
-                    "sequence": 7,
-                    "collection_id": "story",
-                    "source_audio_status": "absent",
-                    "source_audio_reason": "fixture_absent",
-                    "source_kind": "story",
-                    "speakable": True,
-                    "portrait": "314601.png",
-                }
-            ],
-        )
-        voice_manifest = Path(fixture["job"]["voice_manifest"])
-        (voice_manifest.parent / "adult.wav").write_bytes(b"adult-reference")
-        (voice_manifest.parent / "rhiannon.wav").write_bytes(b"rhiannon-reference")
-        (voice_manifest.parent / "narrator.wav").write_bytes(b"narrator-reference")
-        voice_manifest.write_text(
-            json.dumps(
-                {
-                    "version": 2,
-                    "voices": [
-                        {
-                            "character": "Adult Aderyn",
-                            "speaker": "adult-aderyn",
-                            "references": ["adult.wav"],
-                        },
-                        {
-                            "character": "Rhiannon",
-                            "speaker": "rhiannon",
-                            "references": ["rhiannon.wav"],
-                        },
-                        {
-                            "character": "Centurion",
-                            "speaker": "centurion",
-                            "references": ["narrator.wav"],
-                        },
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
-        imported = import_legacy_job(
-            fixture["job_directory"], root / "imports"
-        ).destination
-        workspace = create_resume_workspace(
-            imported,
-            root / "workspaces",
-            story_index=fixture["job"]["story_index"],
-            voice_manifest=voice_manifest,
-            backend="moss-tts",
-            model="model",
-            generation_profile="stable",
-            narrator_character="Centurion",
-            missing_voice_policy=missing_voice_policy,
-        )
-        return fixture, imported, workspace.directory
 
     def build_plan(self, workspace):
-        return build_missing_voice_reuse_plan(
-            workspace,
-            "Aderyn",
-            cohorts={"adult family": ("314601.png",)},
-            candidate_voice_characters=("Adult Aderyn", "Centurion"),
-        )
+        return build_missing_voice_reuse_plan_fixture(workspace)
 
     def build_failed_plan(self, fixture, workspace):
-        state_path = workspace / "generated-audio/generation-state.json"
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-        state["items"][fixture["queue_id"]] = {
-            "status": "failed",
-            "attempts": 3,
-            "last_error": "Generated WAV failed speech-silence validation",
-        }
-        state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
-        return build_missing_voice_reuse_plan(
-            workspace,
-            "Aderyn",
-            cohorts={"failed family": ("314601.png",)},
-            candidate_voice_characters=("Centurion",),
-            failed_queue_ids=(fixture["queue_id"],),
-        )
+        return build_failed_missing_voice_reuse_plan_fixture(fixture, workspace)
 
     def test_plan_is_exact_small_and_does_not_mutate_workspace(self):
         with TemporaryDirectory() as directory:

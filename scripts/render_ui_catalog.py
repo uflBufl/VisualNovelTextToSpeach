@@ -374,7 +374,7 @@ def _render_stories(
         create_test_workspace,
     )
     from tests.listening_fixtures import FakePlayback, write_model_reports
-    from tests.test_authoring_missing_voice_reuse_review import (
+    from tests.missing_voice_reuse_fixtures import (
         create_missing_voice_reuse_review_fixture,
     )
     from tests.test_authoring_terminal_conflict_review_ui import (

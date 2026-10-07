@@ -6,12 +6,10 @@ from unittest.mock import patch
 
 from vntts_artifacts.file_integrity import sha256_file
 
-from tests.test_authoring_missing_voice_reuse import (
+from tests.missing_voice_reuse_fixtures import (
     build_failed_missing_voice_reuse_plan_fixture,
-    create_missing_voice_reuse_workspace,
-)
-from tests.test_authoring_missing_voice_reuse_review import (
     create_missing_voice_reuse_review_fixture,
+    create_missing_voice_reuse_workspace,
 )
 from vntts.authoring import missing_voice_reuse_binding as binding_module
 from vntts.authoring.authority import canonical_document_sha256

@@ -1,15 +1,17 @@
 import json
 import unittest
-import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from vntts_artifacts.file_integrity import sha256_file
 
-from tests.test_authoring_missing_voice_reuse import (
+from tests.missing_voice_reuse_fixtures import (
+    _write_wav as write_wav,
+)
+from tests.missing_voice_reuse_fixtures import (
     build_failed_missing_voice_reuse_plan_fixture,
-    build_missing_voice_reuse_plan_fixture,
+    create_missing_voice_reuse_review_fixture,
     create_missing_voice_reuse_workspace,
 )
 from vntts.authoring.authority import canonical_document_sha256
@@ -26,83 +28,9 @@ from vntts.authoring.missing_voice_reuse_review import (
 )
 
 
-def write_wav(path):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with wave.open(str(path), "wb") as output:
-        output.setnchannels(1)
-        output.setsampwidth(2)
-        output.setframerate(8_000)
-        output.writeframes(b"\x00\x00" * 800)
-
-
-def create_missing_voice_reuse_review_fixture(root, statuses=("generated", "failed")):
-    return AuthoringMissingVoiceReuseReviewTest().fixture(root, statuses=statuses)
-
-
 class AuthoringMissingVoiceReuseReviewTest(unittest.TestCase):
     def fixture(self, root, statuses=("generated", "failed")):
-        fixture, _imported, workspace = create_missing_voice_reuse_workspace(root)
-        plan = build_missing_voice_reuse_plan_fixture(workspace)
-        plan_path = root / "plan.json"
-        write_missing_voice_reuse_plan(plan, plan_path)
-        queue_id = fixture["queue_id"]
-        snapshots = {}
-        evidence = {}
-        for index, (candidate, status) in enumerate(
-            zip(plan.document["candidates"], statuses, strict=True), start=1
-        ):
-            candidate_root = root / f"candidate-{index}"
-            candidate_root.mkdir()
-            evidence[candidate["candidate_id"]] = (candidate_root,)
-            item = {
-                "status": status,
-                "attempts": 1,
-                "provider": "moss-tts",
-                "model": "/models/moss-test",
-                "generation_profile": "stable",
-                "seed": 0,
-                "source_reference_binding": {
-                    "queue_id": queue_id,
-                    "synthesis_voice_character": candidate["voice_character"],
-                },
-            }
-            if status == "generated":
-                audio = candidate_root / "generated-audio/audio/sample.wav"
-                write_wav(audio)
-                item.update(
-                    {
-                        "path": "audio/sample.wav",
-                        "file_sha256": sha256_file(audio),
-                        "quality": {"duration_seconds": 0.1},
-                    }
-                )
-            else:
-                item.update(
-                    {
-                        "failure": {"kind": "missed_eos_audio_limit"},
-                        "last_error": "Typed limited render",
-                    }
-                )
-            snapshots[candidate_root.resolve()] = {
-                "directory": candidate_root.resolve(),
-                "workspace": {
-                    "workspace_id": f"workspace-{index}",
-                    "run_config": {
-                        "backend": "moss-tts",
-                        "model": "/models/moss-test",
-                        "generation_profile": "stable",
-                    },
-                },
-                "state": {"items": {queue_id: item}},
-                "authority": {
-                    "path": str(candidate_root.resolve()),
-                    "workspace_id": f"workspace-{index}",
-                    "workspace_sha256": f"{index}" * 64,
-                    "state_sha256": f"{index + 2}" * 64,
-                    "voice_manifest_sha256": f"{index + 4}" * 64,
-                },
-            }
-        return plan_path, evidence, snapshots, queue_id
+        return create_missing_voice_reuse_review_fixture(root, statuses=statuses)
 
     def test_failed_arm_stays_visible_and_cannot_be_selected(self):
         with TemporaryDirectory() as directory:
