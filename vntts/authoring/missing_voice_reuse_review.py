@@ -726,26 +726,17 @@ def _review_cohort_for_plan(
     cohort_id = _text(cohort.get("cohort_id"), "Plan cohort ID")
     samples = [
         copy.deepcopy(sample)
-        for sample in sample_by_id.values()
-        if sample["cohort_id"] == cohort_id
+        for queue_id in document["comparison_sample_queue_ids"]
+        if (sample := sample_by_id[queue_id])["cohort_id"] == cohort_id
     ]
-    samples.sort(
-        key=lambda sample: document["comparison_sample_queue_ids"].index(
-            sample["queue_id"]
-        )
-    )
     required_ids = {sample["queue_id"] for sample in samples}
-    complete = [
-        candidate["label"]
-        for candidate in candidates
-        if all(
-            {sample["queue_id"]: sample["status"] for sample in candidate["samples"]}[
-                queue_id
-            ]
-            == "generated"
-            for queue_id in required_ids
-        )
-    ]
+    complete = []
+    for candidate in candidates:
+        statuses = {
+            sample["queue_id"]: sample["status"] for sample in candidate["samples"]
+        }
+        if all(statuses[queue_id] == "generated" for queue_id in required_ids):
+            complete.append(candidate["label"])
     return {
         "cohort_id": cohort_id,
         "sample_count": len(samples),

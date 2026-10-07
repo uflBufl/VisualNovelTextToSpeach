@@ -16,6 +16,7 @@ from vntts.authoring.missing_voice_reuse import write_missing_voice_reuse_plan
 from vntts.authoring.missing_voice_reuse_review import (
     AUTOMATIC_UNRESOLVED_ORIGIN,
     MissingVoiceReuseReviewError,
+    _review_cohorts,
     build_missing_voice_reuse_review,
     load_missing_voice_reuse_review,
     missing_voice_reuse_review_progress,
@@ -162,6 +163,71 @@ class AuthoringMissingVoiceReuseReviewTest(unittest.TestCase):
                 ],
                 generated["label"],
             )
+
+    def test_review_cohorts_preserve_plan_order_and_candidate_gates(self):
+        class CountingSamples(list):
+            def __init__(self, values):
+                super().__init__(values)
+                self.iterations = 0
+                self.rows = 0
+
+            def __iter__(self):
+                self.iterations += 1
+                for value in super().__iter__():
+                    self.rows += 1
+                    yield value
+
+        document = {
+            "comparison_sample_queue_ids": ["q1", "q2", "q3", "q4"],
+            "cohorts": [{"cohort_id": "first"}, {"cohort_id": "second"}],
+        }
+        sample_by_id = {
+            queue_id: {
+                "queue_id": queue_id,
+                "cohort_id": "first" if queue_id in {"q1", "q2"} else "second",
+                "text": queue_id,
+            }
+            for queue_id in ("q4", "q2", "q3", "q1")
+        }
+        candidate_samples = CountingSamples(
+            [
+                {"queue_id": queue_id, "status": "generated"}
+                for queue_id in document["comparison_sample_queue_ids"]
+            ]
+        )
+        partial_samples = CountingSamples(
+            [
+                {
+                    "queue_id": queue_id,
+                    "status": "failed" if queue_id == "q2" else "generated",
+                }
+                for queue_id in document["comparison_sample_queue_ids"]
+            ]
+        )
+        candidates = [
+            {"label": "A", "samples": candidate_samples},
+            {"label": "B", "samples": partial_samples},
+        ]
+
+        cohorts = _review_cohorts(document, sample_by_id, candidates)
+
+        self.assertEqual(
+            [
+                [sample["queue_id"] for sample in cohort["samples"]]
+                for cohort in cohorts
+            ],
+            [["q1", "q2"], ["q3", "q4"]],
+        )
+        self.assertEqual(cohorts[0]["complete_candidate_labels"], ["A"])
+        self.assertEqual(cohorts[0]["decision_options"], ["A", "neither"])
+        self.assertEqual(cohorts[1]["complete_candidate_labels"], ["A", "B"])
+        self.assertEqual(cohorts[1]["decision_options"], ["A", "B", "neither"])
+        self.assertEqual(candidate_samples.iterations, 2)
+        self.assertEqual(partial_samples.iterations, 2)
+        self.assertEqual(candidate_samples.rows, 8)
+        self.assertEqual(partial_samples.rows, 8)
+        cohorts[0]["samples"][0]["text"] = "changed"
+        self.assertEqual(sample_by_id["q1"]["text"], "q1")
 
     def test_all_failed_cohort_is_automatically_unresolved(self):
         with TemporaryDirectory() as directory:

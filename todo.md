@@ -573,8 +573,3 @@ Planned implementation order after approval:
 ## Active - Continue cleanup ownership expansion
 
 - [ ] **Remaining native acquisition boundaries:** qualify `_launch_owned_process` and Windows job initialization separately from the completed server-resource cleanup. Trace real Windows API failure behavior before changing guards; keep suspended-child ownership and the existing two-second wait budget. Gate: failed job acquisition plus kill/wait failures preserves the acquisition error and leaves no runnable child; retain real-Windows qualification where mocks cannot prove ownership.
-
-## Active - Ordered review lookup expansion
-
-
-- [ ] **Expand repeated ordered-ID/status lookups to missing-voice review:** validated `_review_plan`/`_validate_plan_inventory` establishes unique, complete ordered comparison IDs and `_review_samples_by_id` uses those same samples. `_review_cohort_for_plan` still sorts each sample with list.index and rebuilds a candidate status map inside every all() iteration. Iterate authoritative IDs directly to retain plan order without sorting, and build each candidate map once per cohort. Preserve copied samples, cohort filtering, blind candidate label order, all-generated eligibility and independent persisted bundle validation. Gate: reversed sample-map insertion order, multiple samples/cohorts and a partially failed candidate preserve ordered samples, eligibility and decision options; deterministic operation counts plus public review regressions. Do not replace unrelated single UI index lookups or introduce a generic ranking helper.
