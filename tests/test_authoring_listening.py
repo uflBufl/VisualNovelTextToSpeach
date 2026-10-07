@@ -1113,7 +1113,7 @@ class AuthoringListeningTest(unittest.TestCase):
             ]
             from vntts.authoring import listening as listening_module
 
-            original_load = listening_module.load_listening_session
+            original_load = listening_module._load_listening_documents
             first_loaded = Event()
             release_first = Event()
             calls_lock = Lock()
@@ -1140,7 +1140,7 @@ class AuthoringListeningTest(unittest.TestCase):
 
             with patch.object(
                 listening_module,
-                "load_listening_session",
+                "_load_listening_documents",
                 side_effect=coordinated_load,
             ):
                 first = Thread(target=record, args=(trial_ids[0], "a"))

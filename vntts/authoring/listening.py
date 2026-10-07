@@ -638,6 +638,13 @@ def _write_listening_session_staged(
 
 
 def load_listening_session(path: PathInput) -> ListeningSession:
+    session, _key = _load_listening_documents(path)
+    return _public_session(session)
+
+
+def _load_listening_documents(
+    path: PathInput,
+) -> tuple[_ValidatedListeningSession, ListeningKey]:
     path = Path(path).expanduser().resolve()
     session = _load_schema(
         path,
@@ -656,8 +663,8 @@ def load_listening_session(path: PathInput) -> ListeningSession:
         _validate_listening_trial(path, trial, current_schema, legacy_audio_hashes)
     if not _is_listening_session(session):
         raise ModelListeningError("Listening session is invalid")
-    _load_blind_key(path, session)
-    return _public_session(session)
+    key = _load_blind_key(path, session)
+    return session, key
 
 
 def _session_trials(session: dict[str, object]) -> list[object]:
@@ -948,10 +955,7 @@ def record_trial_preference(
     session_path = Path(session_path).expanduser().resolve()
     guard_path = session_path.with_name(f".{session_path.name}.guard")
     with exclusive_advisory_lock(guard_path, blocking=True):
-        session = load_listening_session(session_path)
-        if not _is_listening_session(session):
-            raise ModelListeningError("Listening session is invalid")
-        _load_blind_key(session_path, session)
+        session, _key = _load_listening_documents(session_path)
         trial = next(
             (item for item in session["trials"] if item.get("trial_id") == trial_id),
             None,
@@ -990,10 +994,7 @@ def aggregate_listening_report(
 ) -> dict[str, object]:
     """Aggregate current preferences, optionally bound to captured input documents."""
     session_path = Path(session_path).expanduser().resolve()
-    session = load_listening_session(session_path)
-    if not _is_listening_session(session):
-        raise ModelListeningError("Listening session is invalid")
-    key = _load_blind_key(session_path, session)
+    session, key = _load_listening_documents(session_path)
     for label, actual, expected in (
         ("session", session, expected_session),
         ("key", key, expected_key),
@@ -1035,10 +1036,7 @@ def ensure_listening_report(
     """Return a current report without rewriting an equivalent legacy snapshot."""
     session_path = Path(session_path).expanduser().resolve()
     output_path = Path(output_path or session_path.with_name("report.json")).resolve()
-    session = load_listening_session(session_path)
-    if not _is_listening_session(session):
-        raise ModelListeningError("Listening session is invalid")
-    key = _load_blind_key(session_path, session)
+    session, key = _load_listening_documents(session_path)
     expected = _report_fields(session, key)
     expected_schema = (
         LEGACY_REPORT_SCHEMA
