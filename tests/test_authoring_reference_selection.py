@@ -1,3 +1,4 @@
+import hashlib
 import json
 import unittest
 from contextlib import redirect_stdout
@@ -18,6 +19,7 @@ from vntts.authoring.reference_selection import (
     select_voice_reference,
     validate_reference_selection_provenance,
 )
+from vntts.reference_quality import analyze_reference
 
 
 def write_reference(path, frequency):
@@ -116,7 +118,33 @@ class AuthoringReferenceSelectionTest(unittest.TestCase):
             manifest = write_manifest(root)
             source = manifest.read_bytes()
             report = inspect_voice_reference_candidates(manifest, "The Hero")
-            self.assertEqual(report["objective_ranking"], [1, 2])
+            self.assertEqual(
+                report,
+                {
+                    "schema": "vntts.authoring-reference-candidates",
+                    "schema_version": 1,
+                    "manifest": str(manifest.resolve()),
+                    "manifest_sha256": hashlib.sha256(source).hexdigest(),
+                    "character": "Hero",
+                    "references": [
+                        {
+                            **analyze_reference(root / relative),
+                            "path": relative,
+                            "reference_number": number,
+                        }
+                        for number, relative in enumerate(
+                            ("references/hero-1.wav", "references/hero-2.wav"),
+                            start=1,
+                        )
+                    ],
+                    "objective_ranking": [1, 2],
+                    "manual_review_required": [
+                        "speaker similarity",
+                        "music or background contamination",
+                        "spoken content and pronunciation",
+                    ],
+                },
+            )
             output = root / "selected.json"
             result = select_voice_reference(manifest, "Hero", 2, output)
             selected = json.loads(output.read_text(encoding="utf-8"))

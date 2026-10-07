@@ -31,6 +31,21 @@ PathInput: TypeAlias = str | Path
 JsonDocument: TypeAlias = dict[str, object]
 
 
+class ReferenceCandidateReport(ReferenceQualityReport):
+    reference_number: int
+
+
+class ReferenceCandidatesReport(TypedDict):
+    schema: str
+    schema_version: int
+    manifest: str
+    manifest_sha256: str
+    character: str
+    references: list[ReferenceCandidateReport]
+    objective_ranking: list[int]
+    manual_review_required: list[str]
+
+
 class _ReferenceCandidate(TypedDict):
     relative: str
     path: Path
@@ -45,7 +60,7 @@ class _ManifestSnapshot(TypedDict):
     entry_index: int
     character: str
     candidates: list[_ReferenceCandidate]
-    report: JsonDocument
+    report: ReferenceCandidatesReport
 
 
 class ReferenceSelectionError(ValueError):
@@ -72,7 +87,7 @@ class ReferenceSelectionResult:
 
 def inspect_voice_reference_candidates(
     manifest_path: PathInput, character: str
-) -> JsonDocument:
+) -> ReferenceCandidatesReport:
     """Return objective metrics over one read-once manifest/reference snapshot."""
     snapshot = _capture_manifest(manifest_path, character)
     return snapshot["report"]
@@ -310,7 +325,7 @@ def _capture_manifest(manifest_path: PathInput, character: str) -> _ManifestSnap
     ranking = rank_reference_quality(
         [candidate["analysis"] for candidate in candidates]
     )
-    report = {
+    report: ReferenceCandidatesReport = {
         "schema": "vntts.authoring-reference-candidates",
         "schema_version": 1,
         "manifest": str(manifest_path),
@@ -318,13 +333,9 @@ def _capture_manifest(manifest_path: PathInput, character: str) -> _ManifestSnap
         "character": entry.character,
         "references": [
             {
+                **value["analysis"],
                 "reference_number": candidate_index + 1,
                 "path": value["relative"],
-                **{
-                    key: item
-                    for key, item in value["analysis"].items()
-                    if key != "path"
-                },
             }
             for candidate_index, value in enumerate(candidates)
         ],
