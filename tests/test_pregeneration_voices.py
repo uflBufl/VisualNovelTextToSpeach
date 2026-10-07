@@ -36,6 +36,7 @@ from vntts.pregeneration_voices import (
     PregenerationVoiceError,
     VoiceDecisionStore,
     VoicePlanStore,
+    _load_registry,
     _materialize_voice_catalog,
     player_voice_catalog_is_current,
     resolve_pregeneration_settings,
@@ -430,6 +431,53 @@ def write_player_candidate_manifest(
 
 
 class VoicePlanStoreTest(unittest.TestCase):
+    def test_registry_and_manifest_share_one_snapshot_and_recheck_final_bytes(self):
+        for restore in (True, False):
+            with self.subTest(restore=restore), TemporaryDirectory() as directory:
+                manifest_path = write_manifest(Path(directory) / "voices")
+                original = manifest_path.read_bytes()
+                expected = json.loads(original)
+                changed = json.loads(original)
+                changed["voices"][0]["speaker"] = "unbound-speaker"
+                replacement = json.dumps(changed).encode()
+                from_file = CharacterVoiceRegistry.from_file
+                from_document = CharacterVoiceRegistry.from_document
+
+                def replace_during_parse(parse, *args):
+                    manifest_path.write_bytes(replacement)
+                    try:
+                        return parse(*args)
+                    finally:
+                        if restore:
+                            manifest_path.write_bytes(original)
+
+                with (
+                    patch.object(
+                        CharacterVoiceRegistry,
+                        "from_file",
+                        side_effect=lambda path: replace_during_parse(from_file, path),
+                    ),
+                    patch.object(
+                        CharacterVoiceRegistry,
+                        "from_document",
+                        side_effect=lambda document, path: replace_during_parse(
+                            from_document, document, path
+                        ),
+                    ),
+                ):
+                    if not restore:
+                        with self.assertRaisesRegex(
+                            PregenerationVoiceError, "changed while they were read"
+                        ):
+                            _load_registry(manifest_path)
+                        continue
+                    registry, digest, document = _load_registry(manifest_path)
+
+                self.assertEqual(document, expected)
+                self.assertEqual(digest, hashlib.sha256(original).hexdigest())
+                self.assertEqual(registry.resolve("Rhiannon").speaker, "rhiannon-v1")
+                self.assertEqual(manifest_path.read_bytes(), original)
+
     def test_voice_catalog_writes_each_reference_before_reading_the_next(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

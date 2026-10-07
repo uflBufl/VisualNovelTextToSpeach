@@ -30,6 +30,7 @@ from vntts_artifacts.voice_manifest import (
 )
 
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
+from vntts.authoring.authority import AuthoringAuthorityError, capture_authority_file
 from vntts.authoring.publication import (
     AtomicPublicationError,
     rename_directory_no_replace,
@@ -1354,20 +1355,22 @@ def _load_registry(
     if manifest_path is None:
         return CharacterVoiceRegistry(), None, {}
     try:
-        before = sha256_file(manifest_path)
-        registry = CharacterVoiceRegistry.from_file(manifest_path)
+        snapshot = capture_authority_file(manifest_path, "character voice manifest")
         manifest_document = _json_object(
-            json.loads(manifest_path.read_text(encoding="utf-8")),
+            snapshot.json_document("character voice manifest"),
             "character voice manifest",
         )
+        registry = CharacterVoiceRegistry.from_document(
+            manifest_document, manifest_path
+        )
         after = sha256_file(manifest_path)
-    except (OSError, VoiceManifestError, ValueError) as error:
+    except (AuthoringAuthorityError, OSError, VoiceManifestError, ValueError) as error:
         raise PregenerationVoiceError(
             f"Unable to read character voices: {error}"
         ) from error
-    if before != after:
+    if snapshot.sha256 != after:
         raise PregenerationVoiceError("Character voices changed while they were read")
-    return registry, before, manifest_document
+    return registry, snapshot.sha256, manifest_document
 
 
 def _materialize_voice_catalog(
