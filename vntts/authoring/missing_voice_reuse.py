@@ -1297,7 +1297,7 @@ def _cohort_for_portrait(rules: JsonObjects, portrait: str, queue_id: str) -> st
     matches = [
         _string(rule["cohort_id"], "cohort ID")
         for rule in rules
-        if portrait in set(_strings(rule["portraits"], "cohort portraits"))
+        if portrait in _strings(rule["portraits"], "cohort portraits")
     ]
     if len(matches) != 1:
         raise MissingVoiceReuseError(

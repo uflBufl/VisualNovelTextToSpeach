@@ -5,7 +5,8 @@ from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
@@ -47,6 +48,7 @@ from vntts.pregeneration_pack import (
     _optional_sequence_snapshot,
     _portable_voice_entries,
     _stage_live_sequence,
+    _story_audio_pack,
     _write_cumulative_routes,
     inspect_story_audio,
     load_saved_pack,
@@ -63,6 +65,21 @@ from vntts.source_audio_semantics import SourceAudioSemanticEvidenceError
 from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.synthesis import SynthesisCompletion
 from vntts.versioned_json import write_versioned_json
+
+
+class SavedStoryPackSelectionTest(unittest.TestCase):
+    def test_one_shot_selection_filters_every_saved_job(self):
+        matching = SimpleNamespace(selected_line_ids=("selected",))
+        other = SimpleNamespace(selected_line_ids=("other",))
+        store = Mock()
+        store.jobs_for_content.return_value = (matching, other)
+        store.published_packs.return_value = ()
+        result = _story_audio_pack(
+            object(), iter(("selected",)), store, manifest=None, imported_pack=None
+        )
+        store.published_packs.assert_called_once_with(matching)
+        self.assertIsNone(result.manifest)
+        self.assertFalse(result.explicit)
 
 
 def item(name, sequence):

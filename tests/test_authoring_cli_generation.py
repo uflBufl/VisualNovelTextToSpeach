@@ -12,6 +12,7 @@ from tests.symlink_support import symlink_or_skip
 from vntts.authoring.cli import create_parser
 from vntts.authoring.cli_generation import (
     _load_stable_voice_registry,
+    _ready_spoken_item,
     _run_bulk_generation,
 )
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
@@ -140,3 +141,32 @@ class AuthoringGenerationVoiceInputTest(unittest.TestCase):
             symlink_or_skip(manifest_root / "linked.wav", outside)
             with self.assertRaisesRegex(VoiceManifestError, "symlink"):
                 _load_stable_voice_registry(path)
+
+    def test_readiness_preserves_spoken_and_projected_selection(self):
+        for speakable, queue_id, narrator, expected in (
+            (True, "spoken", "narrator.wav", True),
+            (False, "projected", "narrator.wav", True),
+            (False, "other", "narrator.wav", False),
+            (False, "projected", None, False),
+        ):
+            with self.subTest(
+                speakable=speakable, queue_id=queue_id, narrator=narrator
+            ):
+                item = SimpleNamespace(
+                    document={"text": "Hello", "speakable": speakable},
+                    queue_id=queue_id,
+                    speaker="Narrator",
+                    voice_character=None,
+                )
+                self.assertEqual(
+                    _ready_spoken_item(
+                        item,
+                        backend="pocket-tts",
+                        registry=CharacterVoiceRegistry(),
+                        narrator_reference=narrator,
+                        projection_ids=("projected",),
+                        synthesis_overrides={},
+                        queue_overrides={},
+                    ),
+                    expected,
+                )

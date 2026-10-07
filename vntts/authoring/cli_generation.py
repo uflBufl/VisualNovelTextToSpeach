@@ -554,7 +554,7 @@ def _ready_spoken_item(
     synthesis_overrides: dict[str, str],
     queue_overrides: dict[str, str],
 ) -> bool:
-    if not (is_spoken_queue_item(item) or item.queue_id in set(projection_ids)):
+    if not (is_spoken_queue_item(item) or item.queue_id in projection_ids):
         return False
     requested = synthesis_character_for_line(item.speaker, item.voice_character)
     character = queue_overrides.get(

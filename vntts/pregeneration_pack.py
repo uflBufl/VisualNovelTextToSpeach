@@ -223,10 +223,11 @@ def _story_audio_pack(
     elif manifest is not None:
         manifest_path = Path(manifest).expanduser().resolve()
     else:
+        selected = set(selection_line_ids)
         manifests = [
             path
             for job in job_store.jobs_for_content(content)
-            if set(selection_line_ids).issubset(job.selected_line_ids)
+            if selected.issubset(job.selected_line_ids)
             for path in job_store.published_packs(job)
         ]
         manifest_path = max(

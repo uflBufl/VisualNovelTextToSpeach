@@ -429,7 +429,7 @@ class LinuxX11WindowBackend:
         states = self._property(window, "_NET_WM_STATE")
         hidden = self._atom("_NET_WM_STATE_HIDDEN")
         minimized = attributes.map_state != 2 or (
-            states is not None and hidden in set(states)
+            states is not None and hidden in states
         )
         return WindowInfo(int(handle), title, process_id, minimized)
 
