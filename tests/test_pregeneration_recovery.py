@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 
-from tests.test_pregeneration_pack import fixture
+from tests.pregeneration_fixtures import fixture
 from vntts.pregeneration_generation import (
     OfflineGenerationError,
     OfflineGenerationResult,

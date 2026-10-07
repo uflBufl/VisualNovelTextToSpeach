@@ -8,8 +8,8 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import write_story_index_document
 from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 
-from tests.test_pregeneration_pack import fixture
-from tests.test_pregeneration_pack import item as pack_item
+from tests.pregeneration_fixtures import fixture
+from tests.pregeneration_fixtures import item as pack_item
 from vntts.pregeneration_generation import (
     OfflineGenerationError,
     OfflineGenerationWorker,
@@ -199,7 +199,7 @@ class PregenerationResourcesTest(unittest.TestCase):
                 OfflineGenerationWorker(command=("worker",)).generate(inputs, plan)
 
     def test_pack_stops_before_staging_when_audio_copy_will_not_fit(self):
-        from tests.test_pregeneration_pack import fixture
+        from tests.pregeneration_fixtures import fixture
 
         with TemporaryDirectory() as temporary_directory:
             job, inputs, result, _items = fixture(Path(temporary_directory))
@@ -216,7 +216,7 @@ class PregenerationResourcesTest(unittest.TestCase):
                 OfflinePackPublisher().publish(job, inputs, result)
 
     def test_pack_wraps_disk_preflight_file_errors(self):
-        from tests.test_pregeneration_pack import fixture
+        from tests.pregeneration_fixtures import fixture
 
         with TemporaryDirectory() as temporary_directory:
             job, inputs, result, _items = fixture(Path(temporary_directory))
@@ -233,7 +233,7 @@ class PregenerationResourcesTest(unittest.TestCase):
                 OfflinePackPublisher().publish(job, inputs, result)
 
     def test_saved_pack_loader_rechecks_the_self_service_identity(self):
-        from tests.test_pregeneration_pack import fixture
+        from tests.pregeneration_fixtures import fixture
 
         with TemporaryDirectory() as temporary_directory:
             job, inputs, result, _items = fixture(Path(temporary_directory))
@@ -246,7 +246,7 @@ class PregenerationResourcesTest(unittest.TestCase):
     def test_saved_pack_loader_rejects_any_damaged_generated_audio(self):
         from vntts_artifacts.generated_audio import load_generated_audio_document
 
-        from tests.test_pregeneration_pack import fixture
+        from tests.pregeneration_fixtures import fixture
 
         with TemporaryDirectory() as temporary_directory:
             job, inputs, result, _items = fixture(Path(temporary_directory))

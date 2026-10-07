@@ -574,6 +574,8 @@ Planned implementation order after approval:
 
 - [ ] **Remaining native acquisition boundaries:** qualify `_launch_owned_process` and Windows job initialization separately from the completed server-resource cleanup. Trace real Windows API failure behavior before changing guards; keep suspended-child ownership and the existing two-second wait budget. Gate: failed job acquisition plus kill/wait failures preserves the acquisition error and leaves no runnable child; retain real-Windows qualification where mocks cannot prove ownership.
 
-## Active - Finish shared listening and generation fixture ownership
+## Active - Finish shared pregeneration and playback fixture ownership
 
-- [ ] Run the local selector first after source freezes, configured Ruff/format/MyPy/complexity/lock checks, shared-owner disabled-rule inventory and baseline byte/contract witnesses. Independently review ownership and all direct/alias/multiline callers, expand matching pure helpers across the repository, commit each repair separately, fetch main and run branch selector before push. Remove completed TODO work and update bounded memory.
+- [ ] Move the reused generated-audio output fake to `tests/audio_output_fixtures.py` with truthful sample/device/options/Mock return types. Preserve 24kHz device rate, captured arrays/options, underflow receipt and stop state; migrate all consumers. Retain differing explicit-stream, MOSS and TTS doubles.
+- [ ] Move the canonical offline fallback authority writer to existing `tests/authoring_fixtures.py` and migrate original/workbench callers. Preserve voice-vs-prompt schemas and hashed IDs, origin truthiness and source-item binding; do not create a generic authority factory.
+- [ ] Freeze source and run the local selector first, normal Ruff/format/MyPy/complexity/lock gates, exact baseline byte/return/array witnesses and independent review. Expand equivalent imports across the repository, commit each repair separately, remove verified TODO steps, fetch fresh main and run the branch selector before the authorized push. Update bounded memory after successful gates.

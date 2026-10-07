@@ -11,9 +11,9 @@ from vntts_artifacts.story_index import (
     write_story_index_document,
 )
 
+from tests.pregeneration_fixtures import fixture
 from tests.test_chapter_voice_preload import write_verified_source_story
 from tests.test_generated_audio import FakeAudioOutput
-from tests.test_pregeneration_pack import fixture
 from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.generated_audio import (
     GeneratedAudioFallbackBackend,
