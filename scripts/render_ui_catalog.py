@@ -306,7 +306,7 @@ def _source_reference_review(
 ) -> SourceReferenceQualityDialog:
     from PySide6.QtMultimedia import QMediaPlayer
 
-    from tests.test_authoring_source_reference_quality_ui import write_quality_session
+    from tests.source_reference_fixtures import write_quality_session
     from vntts.authoring.source_reference_quality_ui import SourceReferenceQualityDialog
 
     temporary = resources.enter_context(temporary_directory(prefix="vntts-ui-catalog-"))
