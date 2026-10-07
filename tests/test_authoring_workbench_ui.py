@@ -1787,8 +1787,8 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 ) as state_load,
                 patch.object(
                     workspace_inspection_module,
-                    "load_story_index_document",
-                    wraps=workspace_inspection_module.load_story_index_document,
+                    "load_story_index_snapshot",
+                    wraps=workspace_inspection_module.load_story_index_snapshot,
                 ) as story_load,
             ):
                 projection = _load_workbench_projection(

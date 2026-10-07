@@ -19,7 +19,6 @@ from durable_file import sha256_file
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
-    load_story_index_document,
 )
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
@@ -117,8 +116,8 @@ from vntts.authoring.workspace_state import (
     cached_workspace_generation_state,
     shared_workspace_state_reads,
 )
-from vntts.cleanup import temporary_directory
 from vntts.document_identity import canonical_document_sha256
+from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.voices import (
     CharacterVoice,
     CharacterVoiceRegistry,
@@ -1120,13 +1119,10 @@ def _load_bound_story_document(
         _require_sha256(story.get("sha256"), "Story index snapshot SHA-256"),
         "Story index snapshot",
     )
-    with temporary_directory(prefix="vntts-story-snapshot-") as temporary:
-        snapshot = Path(temporary) / "story-index.jsonl"
-        snapshot.write_bytes(payload)
-        try:
-            return load_story_index_document(snapshot)
-        except StoryIndexError as error:
-            raise AuthoringWorkbenchError(str(error)) from error
+    try:
+        return load_story_index_snapshot(path, payload)
+    except StoryIndexError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
 
 
 def immutable_history_timestamps(

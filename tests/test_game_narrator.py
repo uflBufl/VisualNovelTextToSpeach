@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (  # noqa: E402
     QSizePolicy,
 )
 from vntts_artifacts.file_integrity import sha256_file  # noqa: E402
-from vntts_artifacts.story_index import load_story_index_document  # noqa: E402
 
 from tests.test_authoring_pcm_playback import FakeAudioModule  # noqa: E402
 from tests.test_pregeneration_audition import FakeBackend, clean_wav_bytes  # noqa: E402
@@ -52,6 +51,7 @@ from vntts.pregeneration_voices import VoicePlanStore  # noqa: E402
 from vntts.qt_audio import QtPcmPlayer  # noqa: E402
 from vntts.runtime_config import initialize_voice_registry  # noqa: E402
 from vntts.settings import AppSettings, load_app_settings  # noqa: E402
+from vntts.story_index_snapshot import load_story_index_snapshot  # noqa: E402
 from vntts.voice_library import VoiceLibrary  # noqa: E402
 from vntts.voices import CharacterVoiceRegistry  # noqa: E402
 
@@ -1754,8 +1754,8 @@ class GameNarratorTest(unittest.TestCase):
                     importer, "import_installed", side_effect=importing_game
                 ) as importing,
                 patch(
-                    "vntts.pregeneration_setup.load_story_index_document",
-                    wraps=load_story_index_document,
+                    "vntts.pregeneration_setup.load_story_index_snapshot",
+                    wraps=load_story_index_snapshot,
                 ) as parse_index,
             ):
                 self.assertEqual(importer.narrator_characters(), ("Centurion",))

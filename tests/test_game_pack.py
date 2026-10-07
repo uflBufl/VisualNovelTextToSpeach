@@ -31,6 +31,7 @@ from vntts.source_audio_semantics import (
     load_source_audio_semantic_evidence,
     semantic_text_sha256,
 )
+from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.voices import CharacterVoiceRegistry
 
 
@@ -322,8 +323,8 @@ class GamePackImportTest(unittest.TestCase):
                     wraps=load_story_index,
                 ) as artifact_story_load,
                 patch(
-                    "vntts.game_pack.load_story_index_document",
-                    wraps=load_story_index_document,
+                    "vntts.game_pack.load_story_index_snapshot",
+                    wraps=load_story_index_snapshot,
                 ) as vntts_story_load,
                 patch(
                     "vntts.source_audio_semantics.load_story_index_document",
@@ -353,17 +354,17 @@ class GamePackImportTest(unittest.TestCase):
                 )
                 story_path = root / "story-index.jsonl"
 
-                def replace_story_before_parse(path):
+                def replace_story_before_parse(path, payload):
                     rows = story_path.read_text(encoding="utf-8").splitlines()
                     record = json.loads(rows[1])
                     record["speaker"] = "Changed speaker"
                     rows[1] = json.dumps(record)
                     story_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
-                    return load_story_index_document(path)
+                    return load_story_index_snapshot(path, payload)
 
                 with (
                     patch(
-                        "vntts.game_pack.load_story_index_document",
+                        "vntts.game_pack.load_story_index_snapshot",
                         side_effect=replace_story_before_parse,
                     ),
                     self.assertRaisesRegex(GamePackError, "checksum changed"),
@@ -384,8 +385,8 @@ class GamePackImportTest(unittest.TestCase):
                     Path(directory), include_semantics=include_semantics
                 )
                 if component == "story":
-                    loader = load_story_index_document
-                    target = "vntts.game_pack.load_story_index_document"
+                    loader = load_story_index_snapshot
+                    target = "vntts.game_pack.load_story_index_snapshot"
                 else:
                     loader = load_source_audio_semantic_evidence
                     target = "vntts.game_pack.load_source_audio_semantic_evidence"

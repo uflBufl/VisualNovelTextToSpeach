@@ -1,6 +1,7 @@
 """Public, device-independent import boundary for complete VNTTS game packs."""
 
 import argparse
+import hashlib
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -13,7 +14,6 @@ from vntts_artifacts.game_pack import GamePack, GamePackError, load_game_pack
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
-    load_story_index_document,
 )
 
 from vntts.path_safety import contained_path, safe_relative_path
@@ -22,6 +22,7 @@ from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
     load_source_audio_semantic_evidence,
 )
+from vntts.story_index_snapshot import load_story_index_snapshot
 
 
 @dataclass(frozen=True)
@@ -208,7 +209,10 @@ def _validate_semantic_evidence(
 
 
 def _load_bound_story_index(path: Path, checksum: str) -> StoryIndexDocument:
-    document = load_story_index_document(path)
+    payload = path.read_bytes()
+    if hashlib.sha256(payload).hexdigest() != checksum:
+        raise GamePackError("Game pack story checksum changed while it was being read")
+    document = load_story_index_snapshot(path, payload)
     if sha256_file(path) != checksum:
         raise GamePackError("Game pack story checksum changed while it was being read")
     return document

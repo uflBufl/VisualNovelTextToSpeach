@@ -19,7 +19,6 @@ from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
     StoryIndexRecord,
-    load_story_index_document,
 )
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueueError,
@@ -36,6 +35,7 @@ from vntts.chapter_voice_preload import (
     _validated_source_audio_line_ids,
 )
 from vntts.settings import AppSettings
+from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.versioned_json import read_versioned_json, write_versioned_json
 
 if TYPE_CHECKING:
@@ -400,7 +400,10 @@ def _cached_story_selection(document: object) -> StorySelection:
 
 @lru_cache(maxsize=8)
 def _cached_story_index_document(path: str, expected_sha256: str) -> StoryIndexDocument:
-    document = load_story_index_document(path)
+    payload = Path(path).read_bytes()
+    if hashlib.sha256(payload).hexdigest() != expected_sha256:
+        raise StoryContentChanged("Story content changed while it was being read")
+    document = load_story_index_snapshot(path, payload)
     if sha256_file(path) != expected_sha256:
         raise StoryContentChanged("Story content changed while it was being read")
     return document

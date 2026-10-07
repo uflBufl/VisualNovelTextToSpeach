@@ -17,7 +17,6 @@ from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
     StoryIndexRecord,
-    load_story_index_document,
 )
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
@@ -74,6 +73,7 @@ from vntts.authoring.workbench import (
 )
 from vntts.authoring.workspace_inspection import generation_failure_category
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
+from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.voices import voice_manifest_entries_at_path
 
 JsonObject: TypeAlias = dict[str, object]
@@ -273,7 +273,6 @@ def _load_plan_source(workspace_directory: str | Path) -> _PlanSourceSnapshot:
     manifest_path = directory / "inputs/voice/manifest.json"
     story_path = directory / "inputs/story-index.jsonl"
     queue_sha256 = sha256_file(queue_path)
-    story_sha256 = sha256_file(story_path)
     try:
         manifest_snapshot = capture_authority_file(
             manifest_path, "missing-voice source manifest"
@@ -288,7 +287,10 @@ def _load_plan_source(workspace_directory: str | Path) -> _PlanSourceSnapshot:
             voices=voices,
         )
         retired = retired_source_reference_variants_from_manifest(manifest_document)
-        story = load_story_index_document(story_path)
+        story_snapshot = capture_authority_file(
+            story_path, "missing-voice source story index"
+        )
+        story = load_story_index_snapshot(story_path, story_snapshot.payload)
     except (
         OSError,
         UnicodeDecodeError,
@@ -309,7 +311,7 @@ def _load_plan_source(workspace_directory: str | Path) -> _PlanSourceSnapshot:
         queue_sha256=queue_sha256,
         manifest_path=manifest_path,
         manifest_sha256=manifest_snapshot.sha256,
-        story_sha256=story_sha256,
+        story_sha256=story_snapshot.sha256,
         voices=voices,
         overrides=overrides,
         retired_names={

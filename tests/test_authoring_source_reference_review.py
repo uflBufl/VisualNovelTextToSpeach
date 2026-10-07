@@ -20,6 +20,8 @@ from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.hashing import text_sha256
 from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_manifest
 
+import vntts.authoring.source_reference_review as source_review_module
+import vntts.story_index_snapshot as story_snapshot_module
 from vntts.authoring import source_reference_quality_records
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.authoring.bulk_generation import load_generation_state, run_bulk_generation
@@ -498,6 +500,56 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
                 import_source_reference_review(report, review, story, output)
 
             self.assertFalse(output.exists())
+
+    def test_story_records_come_from_captured_bytes_during_parser_replacement(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            report, review, story = self.write_inputs(root)
+            original = story.read_bytes()
+            records = [json.loads(line) for line in original.decode().splitlines()]
+            original_speaker = records[1]["speaker"]
+            records[1]["speaker"] = "Transient replacement."
+            replacement = "\n".join(json.dumps(record) for record in records).encode()
+            original_parser = story_snapshot_module.load_story_index_document
+
+            def parse_during_replacement(path):
+                story.write_bytes(replacement)
+                try:
+                    return original_parser(path)
+                finally:
+                    story.write_bytes(original)
+
+            with (
+                patch.object(
+                    source_review_module,
+                    "load_story_index_document",
+                    side_effect=parse_during_replacement,
+                    create=True,
+                ),
+                patch.object(
+                    story_snapshot_module,
+                    "load_story_index_document",
+                    side_effect=parse_during_replacement,
+                ),
+            ):
+                result = import_source_reference_review(
+                    report, review, story, root / "captured-plan"
+                )
+
+            plan = load_source_reference_plan(result.directory)
+            self.assertEqual(story.read_bytes(), original)
+            self.assertEqual(
+                plan["sources"]["story_index_sha256"],
+                hashlib.sha256(original).hexdigest(),
+            )
+            item = next(
+                item
+                for cluster in plan["clusters"]
+                for item in cluster["queue_items"]
+                if item["line_id"] == "target:1"
+            )
+            self.assertEqual(item["speaker"], original_speaker)
+            self.assertEqual(item["text_sha256"], text_sha256("Missing target 1."))
 
     def test_plan_loader_rejects_tampered_copied_reference(self):
         with TemporaryDirectory() as directory:

@@ -14,6 +14,7 @@ from vntts_artifacts.voice_generation_queue import (
     write_voice_generation_queue,
 )
 
+import vntts.story_index_snapshot as story_snapshot_module
 from tests.test_authoring_legacy_import import write_legacy_fixture
 from vntts.authoring import missing_voice_reuse as reuse_module
 from vntts.authoring.cli import main as authoring_main
@@ -245,6 +246,51 @@ class AuthoringMissingVoiceReuseTest(unittest.TestCase):
             ],
             ["Adult Aderyn", "Centurion"],
         )
+
+    def test_plan_uses_captured_story_bytes_during_parser_replacement(self):
+        import hashlib
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, _imported, workspace = self.create_workspace(root)
+            story = workspace / "inputs/story-index.jsonl"
+            original = story.read_bytes()
+            records = [json.loads(line) for line in original.decode().splitlines()]
+            records[1]["text"] = "Transient replacement."
+            records[1]["text_sha256"] = hashlib.sha256(
+                records[1]["text"].encode("utf-8")
+            ).hexdigest()
+            replacement = "\n".join(json.dumps(record) for record in records).encode()
+            original_parser = story_snapshot_module.load_story_index_document
+
+            def parse_during_replacement(path):
+                story.write_bytes(replacement)
+                try:
+                    return original_parser(path)
+                finally:
+                    story.write_bytes(original)
+
+            with (
+                patch.object(
+                    reuse_module,
+                    "load_story_index_document",
+                    side_effect=parse_during_replacement,
+                    create=True,
+                ),
+                patch.object(
+                    story_snapshot_module,
+                    "load_story_index_document",
+                    side_effect=parse_during_replacement,
+                ),
+            ):
+                snapshot = reuse_module._load_plan_source(workspace)
+
+            self.assertEqual(story.read_bytes(), original)
+            self.assertEqual(snapshot.story, original_parser(story))
+            self.assertEqual(snapshot.story.path, story.resolve())
+            self.assertEqual(
+                snapshot.story_sha256, hashlib.sha256(original).hexdigest()
+            )
 
     def test_publication_is_no_replace_and_tamper_evident(self):
         with TemporaryDirectory() as directory:

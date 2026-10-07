@@ -266,7 +266,7 @@ class PregenerationSetupTest(unittest.TestCase):
             path = write_story_index(Path(temporary_directory))
             _cached_story_index_document.cache_clear()
             with patch(
-                "vntts.pregeneration_setup.load_story_index_document",
+                "vntts.story_index_snapshot.load_story_index_document",
                 wraps=load_story_index_document,
             ) as load:
                 content = inspect_story_index(path)

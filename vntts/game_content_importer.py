@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.metadata
 import importlib.util
 import json
@@ -53,6 +54,7 @@ from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
     load_source_audio_semantic_evidence,
 )
+from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.subprocess_utils import last_output_line, terminate_process
 from vntts.voice_candidate_cache import voice_candidate_cache_guard
 from vntts.voices import is_narrator, synthesis_character_for_line
@@ -1232,7 +1234,10 @@ def _cached_playable_voice_roles(index: Path) -> set[str]:
                 return set(roles)
     except OSError, ValueError, TypeError:
         pass
-    available = _playable_voice_roles(load_story_index_document(index))
+    payload = index.read_bytes()
+    if hashlib.sha256(payload).hexdigest() != checksum:
+        raise GameContentImportError("Voice reference index changed while being read")
+    available = _playable_voice_roles(load_story_index_snapshot(index, payload))
     if sha256_file(index) != checksum:
         raise GameContentImportError("Voice reference index changed while being read")
     with suppress(OSError):

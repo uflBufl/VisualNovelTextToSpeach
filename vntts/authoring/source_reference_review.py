@@ -21,7 +21,6 @@ from vntts_artifacts import (
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
-    load_story_index_document,
 )
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueueItem
 from vntts_artifacts.voice_manifest import (
@@ -70,6 +69,7 @@ from vntts.document_identity import (
     file_sha256,
     is_lowercase_sha256,
 )
+from vntts.story_index_snapshot import load_story_index_snapshot
 
 SOURCE_REPORT_SCHEMA = "r1999.story-voice-reference-candidates"
 SOURCE_REPORT_VERSIONS = frozenset({1, 2})
@@ -208,16 +208,16 @@ def import_source_reference_review(
     candidates = _load_candidates(report_path, report)
     decisions, invalidated = _load_decisions(review, candidates)
     try:
-        story = load_story_index_document(story_index_path)
-    except StoryIndexError as error:
-        raise SourceReferenceReviewError(str(error)) from error
-    try:
         story_payload = story_index_path.read_bytes()
     except OSError as error:
         raise SourceReferenceReviewError(
             f"Unable to read story index {story_index_path}: {error}"
         ) from error
     story_sha256 = hashlib.sha256(story_payload).hexdigest()
+    try:
+        story = load_story_index_snapshot(story_index_path, story_payload)
+    except StoryIndexError as error:
+        raise SourceReferenceReviewError(str(error)) from error
 
     accepted = [
         candidate
