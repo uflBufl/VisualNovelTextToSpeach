@@ -97,13 +97,12 @@ def measure_generated_speech(
         raise BulkGenerationError(
             f"Unable to analyze generated speech: {error}"
         ) from error
-    quality, _spans = analyze_generated_speech_samples(
+    return measure_generated_speech_samples(
         samples,
         sample_rate=info.sample_rate,
         duration_seconds=info.duration_seconds,
         analysis_version=analysis_version,
     )
-    return quality
 
 
 def measure_generated_speech_bytes(
@@ -134,13 +133,12 @@ def measure_generated_speech_bytes(
         raise BulkGenerationError(
             "Unable to analyze generated speech: invalid WAV data"
         )
-    quality, _spans = analyze_generated_speech_samples(
+    return measure_generated_speech_samples(
         samples,
         sample_rate=sample_rate,
         duration_seconds=sample_count / sample_rate,
         analysis_version=analysis_version,
     )
-    return quality
 
 
 def measure_generated_speech_samples(
@@ -150,13 +148,12 @@ def measure_generated_speech_samples(
     duration_seconds: float,
     analysis_version: int,
 ) -> SpeechQuality:
-    quality, _spans = analyze_generated_speech_samples(
-        samples,
-        sample_rate=sample_rate,
-        duration_seconds=duration_seconds,
-        analysis_version=analysis_version,
+    silent, active_indices, frame_seconds = _analyze_speech_frames(
+        samples, sample_rate, duration_seconds, analysis_version
     )
-    return quality
+    return _frame_quality(
+        silent, active_indices, frame_seconds, duration_seconds, analysis_version
+    )
 
 
 def analyze_generated_speech_samples(
@@ -166,6 +163,22 @@ def analyze_generated_speech_samples(
     duration_seconds: float,
     analysis_version: int,
 ) -> tuple[SpeechQuality, tuple[SpeechSilenceSpan, ...]]:
+    silent, active_indices, frame_seconds = _analyze_speech_frames(
+        samples, sample_rate, duration_seconds, analysis_version
+    )
+    quality = _frame_quality(
+        silent, active_indices, frame_seconds, duration_seconds, analysis_version
+    )
+    spans = _silence_spans(silent, active_indices, frame_seconds, duration_seconds)
+    return quality, spans
+
+
+def _analyze_speech_frames(
+    samples: object,
+    sample_rate: int,
+    duration_seconds: float,
+    analysis_version: int,
+) -> tuple[NDArray[np.bool_], NDArray[np.intp], float]:
     _validate_analysis_version(analysis_version)
     sample_values = _validated_sample_values(samples, sample_rate, duration_seconds)
     if analysis_version == SPEECH_QUALITY_ANALYSIS_VERSION:
@@ -176,11 +189,7 @@ def analyze_generated_speech_samples(
     silent = _silent_frames(sample_values, frame_samples)
     active_indices = np.flatnonzero(~silent)
     frame_seconds = frame_samples / sample_rate
-    quality = _frame_quality(
-        silent, active_indices, frame_seconds, duration_seconds, analysis_version
-    )
-    spans = _silence_spans(silent, active_indices, frame_seconds, duration_seconds)
-    return quality, spans
+    return silent, active_indices, frame_seconds
 
 
 def _validate_analysis_version(analysis_version: int) -> None:
@@ -261,14 +270,7 @@ def _frame_quality(
     else:
         first_active = int(active_indices[0])
         last_active = int(active_indices[-1])
-        longest_internal = 0
-        current_internal = 0
-        for is_silent in silent[first_active + 1 : last_active]:
-            if is_silent:
-                current_internal += 1
-                longest_internal = max(longest_internal, current_internal)
-            else:
-                current_internal = 0
+        longest_internal = int(np.max(np.diff(active_indices) - 1, initial=0))
         quality = SpeechQuality(
             silence_ratio=round(float(np.mean(silent)), 4),
             leading_silence_seconds=round(first_active * frame_seconds, 3),

@@ -3,6 +3,7 @@ import unittest
 import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import numpy as np
 
@@ -10,6 +11,7 @@ from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.speech_quality import (
     SpeechQuality,
     SpeechSilenceSpan,
+    SpeechSilenceValidationError,
     analyze_generated_speech_samples,
     inspect_generated_speech,
     measure_generated_speech,
@@ -29,6 +31,47 @@ def wav_bytes(samples, sample_rate=125):
 
 
 class AuthoringSpeechQualityTest(unittest.TestCase):
+    def test_measurements_skip_diagnostic_spans_but_inspection_keeps_them(self):
+        samples = np.zeros(160, dtype=np.int16)
+        payload = wav_bytes(samples)
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "silent.wav"
+            path.write_bytes(payload)
+            for version in (1, 2):
+                with self.subTest(version=version):
+                    expected = SpeechQuality(1.0, 1.28, 1.28, 0.0, version)
+                    with patch(
+                        "vntts.authoring.speech_quality.SpeechSilenceSpan",
+                        wraps=SpeechSilenceSpan,
+                    ) as create_span:
+                        self.assertEqual(
+                            measure_generated_speech(path, analysis_version=version),
+                            expected,
+                        )
+                        self.assertEqual(
+                            measure_generated_speech_bytes(
+                                payload, analysis_version=version
+                            ),
+                            expected,
+                        )
+                        self.assertEqual(
+                            measure_generated_speech_samples(
+                                samples,
+                                sample_rate=125,
+                                duration_seconds=1.28,
+                                analysis_version=version,
+                            ),
+                            expected,
+                        )
+                        create_span.assert_not_called()
+                    with self.assertRaises(SpeechSilenceValidationError) as rejected:
+                        inspect_generated_speech(path, analysis_version=version)
+                    self.assertEqual(rejected.exception.quality, expected)
+                    self.assertEqual(
+                        rejected.exception.diagnosis.spans,
+                        (SpeechSilenceSpan("all_silent", 0.0, 1.28, 1.28),),
+                    )
+
     def test_versions_retain_threshold_and_partial_frame_metrics(self):
         # At 125 Hz each analysis frame is ten samples. 184 PCM16 units
         # falls below -45 dBFS, while 185 falls above it.
