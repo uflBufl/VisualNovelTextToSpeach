@@ -16,7 +16,7 @@ from vntts_artifacts.voice_generation_queue import (
 )
 
 import vntts.authoring.config_rebase as config_rebase_module
-from tests.test_authoring_workbench import (
+from tests.authoring_fixtures import (
     create_carry_source_workspace,
     write_carry_target_manifest,
 )

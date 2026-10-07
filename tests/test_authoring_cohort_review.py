@@ -10,9 +10,9 @@ from unittest.mock import patch
 
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
-from tests import test_authoring_workbench as workbench_tests
 from tests.authoring_fixtures import (
     create_pending_cohort_workspace,
+    current_carry_fields,
     write_legacy_fixture,
 )
 from tests.symlink_support import symlink_or_skip
@@ -123,7 +123,7 @@ class AuthoringCohortReviewTest(unittest.TestCase):
             state = json.loads(path.read_text())
             result = state["items"][queue_id]
             result.update(
-                workbench_tests.AuthoringWorkbenchTest()._current_carry_fields(
+                current_carry_fields(
                     workspace, queue_item, path.parent / result["path"]
                 )
             )

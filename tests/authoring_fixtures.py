@@ -1,7 +1,10 @@
 """Shared authoring input fixtures for tests and the UI catalog."""
 
+import hashlib
 import json
+from collections.abc import Sequence
 from copy import deepcopy
+from dataclasses import asdict
 from pathlib import Path
 from typing import TypedDict
 
@@ -17,10 +20,13 @@ from vntts_artifacts.hashing import text_sha256
 from vntts_artifacts.story_index import write_story_index_document
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
+    VoiceGenerationQueueItem,
     expected_voice_generation_queue_id,
     write_voice_generation_queue,
 )
 
+from vntts.authoring import bulk_generation as bulk_generation_module
+from vntts.authoring import workspace_creation as workspace_creation_module
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.cohort_review import (
     CohortReviewDecision,
@@ -34,6 +40,7 @@ from vntts.authoring.cohort_review import (
 )
 from vntts.authoring.legacy_import import import_legacy_job
 from vntts.authoring.robustness_corpus import publish_speech_robustness_corpus
+from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
 from vntts.authoring.workbench import WorkspaceCreationResult, create_resume_workspace
 from vntts.authoring.workspace_foundation import load_json_object
 
@@ -465,3 +472,227 @@ def create_voice_quality_review_from_workspace(
         sample_assessments={queue_id: "acceptable"},
     )
     return workspace, state_path, queue_id, plan, decision
+
+
+def create_carry_source_workspace(
+    root: Path,
+    *,
+    text: str | None = None,
+    queue_voice_override: str | None = None,
+    item_count: int = 1,
+) -> tuple[LegacyFixture, Path, WorkspaceCreationResult]:
+    kwargs: dict[str, str] = {} if text is None else {"text": text}
+    fixture = write_legacy_fixture(root / "legacy", **kwargs)
+    queue = VoiceGenerationQueue.load(fixture["queue"])
+    if item_count > 1:
+        state = load_json_object(fixture["state"], "carry fixture state")
+        template = queue.items[0]
+        records: list[dict[str, object]] = [template.document]
+        state_items = _object(state["items"])
+        for index in range(1, item_count):
+            record = deepcopy(template.document)
+            line_id = f"reverse1999:315401:{7 + index}"
+            line_text = f"{template.text} Line {index}."
+            text_hash = text_sha256(line_text)
+            queue_id = expected_voice_generation_queue_id(line_id, text_hash)
+            record.update(
+                line_id=line_id,
+                text=line_text,
+                text_sha256=text_hash,
+                queue_id=queue_id,
+            )
+            records.append(record)
+            result = deepcopy(_object(state_items[template.queue_id]))
+            original_audio = fixture["state"].parent / _required_text(
+                result["path"], "Fixture audio path"
+            )
+            result.update(
+                line_id=line_id,
+                text_sha256=text_hash,
+                path=f"audio/rhiannon/line-{index}.wav",
+            )
+            (
+                fixture["state"].parent
+                / _required_text(result["path"], "Fixture audio path")
+            ).write_bytes(original_audio.read_bytes())
+            state_items[queue_id] = result
+        write_voice_generation_queue(fixture["queue"], queue.metadata, records)
+        state["queue_sha256"] = sha256_file(fixture["queue"])
+        fixture["state"].write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+        queue = VoiceGenerationQueue.load(fixture["queue"])
+    write_story_index_document(
+        fixture["job"]["story_index"],
+        {
+            "game": "Reverse: 1999",
+            "language": "en",
+            "generated_at": "2026-08-16T15:00:00+00:00",
+            "collections": [
+                {
+                    "collection_id": "main",
+                    "title": "Carry-forward fixture",
+                    "kind": "character-story",
+                    "order": 1,
+                }
+            ],
+        },
+        [
+            {
+                "record_type": "line",
+                "line_id": queue_item.line_id,
+                "text_sha256": queue_item.text_sha256,
+                "text": queue_item.text,
+                "speaker": queue_item.speaker,
+                "voice_character": queue_item.voice_character,
+                "kind": "dialogue",
+                "chapter": "315401",
+                "sequence": 7,
+                "collection_id": "main",
+                "source_audio_status": "absent",
+                "source_audio_reason": "fixture_absent",
+                "source_kind": "story",
+                "speakable": True,
+            }
+            for queue_item in queue.items
+        ],
+    )
+    for name, payload in (
+        ("rhiannon.wav", b"rhiannon-reference-one"),
+        ("rhiannon-2.wav", b"rhiannon-reference-two"),
+    ):
+        (root / "legacy" / name).write_bytes(payload)
+    voice_manifest = Path(fixture["job"]["voice_manifest"])
+    voice_document: dict[str, object] = {
+        "version": 2,
+        "voices": [
+            {
+                "character": "Rhiannon",
+                "speaker": "Rhiannon",
+                "references": ["rhiannon.wav", "rhiannon-2.wav"],
+            }
+        ],
+    }
+    if queue_voice_override is not None:
+        _object_list(voice_document["voices"]).append(
+            {
+                "character": queue_voice_override,
+                "speaker": "bound-variant",
+                "reference": "rhiannon-2.wav",
+            }
+        )
+        overrides = {fixture["queue_id"]: queue_voice_override}
+        voice_document["vntts.authoring.source_reference_bindings"] = {
+            "schema": "vntts.authoring-source-reference-bindings",
+            "schema_version": 1,
+            "source_reference_plan_sha256": "a" * 64,
+            "selected_variants": [
+                {
+                    "variant_id": "bound-variant",
+                    "voice_character": queue_voice_override,
+                }
+            ],
+            "queue_voice_overrides": overrides,
+            "queue_voice_overrides_sha256": queue_voice_overrides_sha256(overrides),
+        }
+    voice_manifest.write_text(json.dumps(voice_document), encoding="utf-8")
+    state = load_json_object(fixture["state"], "carry fixture state")
+    state["active"] = None
+    for value in _object(state["items"]).values():
+        result = _object(value)
+        result["status"] = "generated"
+        result["review_status"] = "pending_review"
+    fixture["state"].write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    write_generated_audio_manifest(
+        fixture["manifest"],
+        {
+            "game": "Reverse: 1999",
+            "language": "en",
+            "source_queue_sha256": sha256_file(fixture["queue"]),
+            "generated_at": "2026-08-16T17:06:00+00:00",
+        },
+        [],
+    )
+    imported = import_legacy_job(fixture["job_directory"], root / "imports").destination
+    source = create_resume_workspace(
+        imported,
+        root / "workspaces",
+        story_index=fixture["job"]["story_index"],
+        voice_manifest=voice_manifest,
+        backend="moss-tts",
+        model="model with spaces",
+        generation_profile="stable",
+        narrator_character="Rhiannon",
+    )
+    return fixture, imported, source
+
+
+def write_carry_target_manifest(
+    root: Path, *, rhiannon_payloads: Sequence[bytes] | None = None
+) -> Path:
+    target = root / "target-voices"
+    target.mkdir()
+    payloads = rhiannon_payloads or (
+        b"rhiannon-reference-one",
+        b"rhiannon-reference-two",
+    )
+    (target / "rhiannon.wav").write_bytes(payloads[0])
+    (target / "rhiannon-2.wav").write_bytes(payloads[1])
+    (target / "paper-heron.wav").write_bytes(b"paper-heron-reference")
+    manifest = target / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "voices": [
+                    {
+                        "character": "Rhiannon",
+                        "speaker": "Rhiannon",
+                        "references": ["rhiannon.wav", "rhiannon-2.wav"],
+                    },
+                    {
+                        "character": "Paper Heron",
+                        "speaker": "Paper Heron",
+                        "reference": "paper-heron.wav",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return manifest
+
+
+def current_carry_fields(
+    workspace_directory: Path,
+    queue_item: VoiceGenerationQueueItem,
+    audio: Path,
+    *,
+    voice_character: str = "Rhiannon",
+) -> dict[str, object]:
+    workspace = load_json_object(
+        workspace_directory / "workspace.json", "carry fixture workspace"
+    )
+    return {
+        "status": "approved",
+        "review_status": "approved",
+        "file_sha256": sha256_file(audio),
+        "provider": "moss-tts",
+        "model": "model with spaces",
+        "prompt_sha256": bulk_generation_module.NO_PROMPT_SHA256,
+        "prompt_applied": False,
+        "queue_annotations_sha256": bulk_generation_module._canonical_sha256(
+            queue_item.document.get("prompt_adapters") or {}
+        ),
+        "synthesis_text_sha256": hashlib.sha256(
+            queue_item.text.encode("utf-8")
+        ).hexdigest(),
+        "text_transform": "short-trailing-ellipsis-v1",
+        "synthesis_provenance_sha256": workspace_creation_module._workspace_generation_provenance(
+            workspace_directory, workspace
+        ),
+        "generation_profile": "stable",
+        "voice_character": voice_character,
+        "quality": asdict(bulk_generation_module.inspect_generated_wav(audio)),
+        "speech_quality": asdict(
+            bulk_generation_module.inspect_generated_speech(audio)
+        ),
+    }
