@@ -8,6 +8,47 @@ from tempfile import TemporaryDirectory
 
 
 class UiCatalogTest(unittest.TestCase):
+    def test_history_catalog_renders_every_event_driven_state(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "catalog"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/render_ui_catalog.py",
+                    "--output",
+                    str(output),
+                    "--surface",
+                    "dialogue-history",
+                ],
+                cwd=root,
+                env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            packet = json.loads(
+                (output / "review-packets/dialogue-history.json").read_text()
+            )
+            self.assertEqual(
+                {story["id"] for story in packet["target"]["stories"]},
+                {
+                    f"dialogue-history.{state}"
+                    for state in (
+                        "empty",
+                        "populated",
+                        "filtered",
+                        "speaking",
+                        "failure",
+                        "long-text",
+                        "compact",
+                    )
+                },
+            )
+            for story in packet["target"]["stories"]:
+                self.assertGreater((output / story["screenshot"]).stat().st_size, 0)
+
     def test_authoring_review_catalog_covers_focus_and_long_names(self):
         root = Path(__file__).resolve().parents[1]
         with TemporaryDirectory() as directory:

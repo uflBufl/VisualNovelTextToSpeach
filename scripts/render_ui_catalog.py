@@ -1431,7 +1431,6 @@ def _render_stories(
         dialog = DialogueHistoryDialog(
             history, lambda *_args: None, stop_handler=lambda: None
         )
-        dialog.timer.stop()
         if state == "filtered":
             dialog.search.setText("storm")
         elif state == "speaking":
