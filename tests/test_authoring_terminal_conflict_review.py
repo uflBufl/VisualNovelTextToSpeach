@@ -1,25 +1,16 @@
-import hashlib
 import json
 import socket
 import unittest
-from dataclasses import asdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import numpy as np
-from vntts_artifacts.audio import write_pcm16_wav
-
 import tests.test_authoring_reconciliation as reconciliation_tests
 from tests.symlink_support import symlink_or_skip
+from tests.terminal_conflict_fixtures import create_terminal_conflict_fixture
 from vntts.authoring import terminal_conflict_review as terminal_module
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.authoring.authority import canonical_document_sha256
-from vntts.authoring.bulk_generation import inspect_generated_wav
-from vntts.authoring.cohort_bundle import (
-    build_cohort_review_bundle,
-    write_cohort_review_bundle,
-)
 from vntts.authoring.publication import AtomicPublicationError
 from vntts.authoring.reconciliation import (
     build_authoring_reconciliation,
@@ -55,31 +46,7 @@ class TerminalConflictReviewTest(unittest.TestCase):
             self.assertEqual(path.read_bytes(), b"\xff")
 
     def create_fixture(self, root):
-        helper = reconciliation_tests.AuthoringReconciliationTest()
-        primary, secondary, queue_id, bundles, publication = (
-            helper.create_parallel_fixture(root)
-        )
-        publication.unlink()
-        state_path = secondary / "generated-audio/generation-state.json"
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-        result = state["items"][queue_id]
-        audio = secondary / "generated-audio" / result["path"]
-        samples = np.linspace(-0.25, 0.25, 4_000, dtype=np.float32)
-        write_pcm16_wav(audio, samples, 16_000)
-        result["file_sha256"] = hashlib.sha256(audio.read_bytes()).hexdigest()
-        result["quality"] = asdict(inspect_generated_wav(audio))
-        state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
-        write_cohort_review_bundle(
-            build_cohort_review_bundle((primary, secondary)), publication
-        )
-        helper.decide_parallel_bundle(
-            publication,
-            ((primary.name, "accepted"), (secondary.name, "rejected")),
-        )
-        report = build_authoring_reconciliation(primary, bundles)
-        report_path = root / "reconciliation.json"
-        write_authoring_reconciliation(report, report_path)
-        return primary, secondary, queue_id, report_path
+        return create_terminal_conflict_fixture(root)
 
     def test_publish_collapses_only_identical_authorities_and_records_neither(self):
         with TemporaryDirectory() as directory:

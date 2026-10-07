@@ -8,9 +8,9 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import tests.test_authoring_reconciliation as reconciliation_tests
-import tests.test_authoring_terminal_conflict_review as review_tests
 import vntts.authoring.terminal_conflict_workspace as terminal_workspace_module
 import vntts.authoring.workbench as workbench_module
+from tests.terminal_conflict_fixtures import create_terminal_conflict_fixture
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
@@ -46,8 +46,8 @@ from vntts.authoring.workbench import (
 
 class TerminalConflictWorkspaceTest(unittest.TestCase):
     def create_successor(self, root, authority):
-        primary, secondary, queue_id, report_path = (
-            review_tests.TerminalConflictReviewTest().create_fixture(root)
+        primary, secondary, queue_id, report_path = create_terminal_conflict_fixture(
+            root
         )
         review_root = root / "conflict-review"
         review = publish_terminal_conflict_review(report_path, review_root)
@@ -340,8 +340,8 @@ class TerminalConflictWorkspaceTest(unittest.TestCase):
     def test_malformed_terminal_provenance_is_rejected_by_state_loader(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            primary, _secondary, queue_id, _report = (
-                review_tests.TerminalConflictReviewTest().create_fixture(root)
+            primary, _secondary, queue_id, _report = create_terminal_conflict_fixture(
+                root
             )
             state_path = primary / "generated-audio/generation-state.json"
             state = json.loads(state_path.read_text(encoding="utf-8"))

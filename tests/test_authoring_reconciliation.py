@@ -24,13 +24,16 @@ from tests.authoring_fixtures import (
     write_legacy_fixture,
 )
 from tests.symlink_support import symlink_or_skip
+from tests.terminal_conflict_fixtures import (
+    create_parallel_review_workspaces,
+    decide_parallel_review_bundle,
+)
 from tests.test_authoring_source_reference_review import (
     publish_source_reference_quality_fixture,
 )
 from vntts.authoring.bulk_generation import authorize_live_fallback
 from vntts.authoring.cohort_bundle import (
     build_cohort_review_bundle,
-    execute_cohort_bundle_decision,
     write_cohort_review_bundle,
 )
 from vntts.authoring.legacy_import import import_legacy_job
@@ -67,64 +70,10 @@ class AuthoringReconciliationTest(unittest.TestCase):
         return authoring, workspace, state, queue_id, bundles, quality, publication
 
     def create_parallel_fixture(self, root):
-        _fixture, imported, primary = create_test_workspace(root)
-        primary_directory = primary.directory
-        secondary = create_resume_workspace(
-            imported,
-            root / "workspaces",
-            story_index=primary_directory / "inputs/story-index.jsonl",
-            voice_manifest=primary_directory / "inputs/voice/manifest.json",
-            narrator_character="Rhiannon",
-            backend="moss-tts",
-            model="model with spaces",
-            generation_profile="alternate",
-        ).directory
-        queue_id = None
-        for workspace, profile in (
-            (primary_directory, "stable"),
-            (secondary, "alternate"),
-        ):
-            state_path = workspace / "generated-audio/generation-state.json"
-            state = json.loads(state_path.read_text(encoding="utf-8"))
-            queue_id, result = next(iter(state["items"].items()))
-            result.update(
-                {
-                    "status": "generated",
-                    "review_status": "pending_review",
-                    "generation_profile": profile,
-                    "voice_character": "Rhiannon",
-                    "prompt_applied": False,
-                    "synthesis_provenance_sha256": "b" * 64,
-                }
-            )
-            state["active"] = None
-            state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
-        bundles = root / "review-bundles"
-        bundles.mkdir()
-        publication = bundles / "parallel.json"
-        write_cohort_review_bundle(
-            build_cohort_review_bundle((primary_directory, secondary)), publication
-        )
-        return primary_directory, secondary, queue_id, bundles, publication
+        return create_parallel_review_workspaces(root)
 
     def decide_parallel_bundle(self, publication, decisions):
-        bundle = reconciliation_module.validate_cohort_review_bundle_document(
-            json.loads(publication.read_text(encoding="utf-8"))
-        )
-        for workspace_id, decision in decisions:
-            cohort = next(
-                value
-                for value in bundle.document["cohorts"]
-                if value["workspace_id"] == workspace_id
-            )
-            projection = execute_cohort_bundle_decision(
-                bundle,
-                workspace_id,
-                cohort["cohort_id"],
-                decision,
-                reviewed_queue_ids=[cohort["samples"][0]["queue_id"]],
-            )
-            bundle = projection.next_bundle
+        return decide_parallel_review_bundle(publication, decisions)
 
     def test_final_actions_are_counted_once_across_workspaces(self):
         with TemporaryDirectory() as directory:

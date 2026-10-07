@@ -377,9 +377,7 @@ def _render_stories(
     from tests.missing_voice_reuse_fixtures import (
         create_missing_voice_reuse_review_fixture,
     )
-    from tests.test_authoring_terminal_conflict_review_ui import (
-        TerminalConflictReviewUiTest,
-    )
+    from tests.terminal_conflict_fixtures import create_terminal_conflict_review
     from vntts.app import (
         SettingsDialog,
         build_story_match_recovery_prompt,
@@ -2120,7 +2118,7 @@ def _render_stories(
         temporary = resources.enter_context(
             temporary_directory(prefix="vntts-ui-catalog-")
         )
-        directory = TerminalConflictReviewUiTest().create_review(Path(temporary))
+        directory = create_terminal_conflict_review(Path(temporary))
         dialog = TerminalConflictReviewDialog(directory)
 
         if state == "heard":

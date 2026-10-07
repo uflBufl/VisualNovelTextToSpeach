@@ -15,11 +15,10 @@ try:
     from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtWidgets import QApplication
 
-    import tests.test_authoring_terminal_conflict_review as conflict_tests
+    from tests.terminal_conflict_fixtures import create_terminal_conflict_review
     from vntts.authoring.terminal_conflict_review import (
         TerminalConflictReviewError,
         load_terminal_conflict_review_progress,
-        publish_terminal_conflict_review,
         record_terminal_conflict_decision,
     )
     from vntts.authoring.terminal_conflict_review_ui import (
@@ -67,12 +66,7 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
         self.application.processEvents()
 
     def create_review(self, root):
-        _primary, _secondary, _queue_id, report = (
-            conflict_tests.TerminalConflictReviewTest().create_fixture(root)
-        )
-        directory = root / "conflict-review"
-        publish_terminal_conflict_review(report, directory)
-        return directory
+        return create_terminal_conflict_review(root)
 
     def test_requires_both_candidates_and_saves_neither_in_background(self):
         with TemporaryDirectory() as directory:

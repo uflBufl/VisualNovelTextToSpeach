@@ -7,8 +7,8 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import tests.test_authoring_reconciliation as reconciliation_tests
-import tests.test_authoring_terminal_conflict_review as review_tests
 from tests.symlink_support import symlink_or_skip
+from tests.terminal_conflict_fixtures import create_terminal_conflict_fixture
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.publication import AtomicPublicationError
 from vntts.authoring.terminal_conflict_resolution import (
@@ -27,9 +27,7 @@ from vntts.authoring.terminal_conflict_review import (
 
 class TerminalConflictResolutionTest(unittest.TestCase):
     def create_review(self, root):
-        primary, secondary, queue_id, report = (
-            review_tests.TerminalConflictReviewTest().create_fixture(root)
-        )
+        primary, secondary, queue_id, report = create_terminal_conflict_fixture(root)
         directory = root / "conflict-review"
         published = publish_terminal_conflict_review(report, directory)
         document = json.loads(published.review.read_text(encoding="utf-8"))
