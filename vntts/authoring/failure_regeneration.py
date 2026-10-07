@@ -287,14 +287,13 @@ def _validated_plan_document(
         raise FailureRegenerationError(
             "Failure regeneration plan schema is unsupported"
         )
-    _required_text(document.get("workspace_id"), "Workspace ID")
-    for field, label in (
-        ("workspace_config_fingerprint", "Workspace config fingerprint"),
-        ("queue_sha256", "Queue SHA-256"),
-        ("state_sha256", "State SHA-256"),
-        ("plan_id", "Plan ID"),
-    ):
-        _required_sha256(document.get(field), label)
+    workspace_id = _required_text(document.get("workspace_id"), "Workspace ID")
+    config_fingerprint = _required_sha256(
+        document.get("workspace_config_fingerprint"), "Workspace config fingerprint"
+    )
+    queue_sha256 = _required_sha256(document.get("queue_sha256"), "Queue SHA-256")
+    state_sha256 = _required_sha256(document.get("state_sha256"), "State SHA-256")
+    plan_id = _required_sha256(document.get("plan_id"), "Plan ID")
     records = document.get("records")
     if not isinstance(records, list):
         raise FailureRegenerationError("Failure regeneration records must be a list")
@@ -317,16 +316,13 @@ def _validated_plan_document(
     return {
         "schema": FAILURE_REGENERATION_PLAN_SCHEMA,
         "schema_version": FAILURE_REGENERATION_PLAN_VERSION,
-        "workspace_id": _required_text(document.get("workspace_id"), "Workspace ID"),
-        "workspace_config_fingerprint": _required_sha256(
-            document.get("workspace_config_fingerprint"),
-            "Workspace config fingerprint",
-        ),
-        "queue_sha256": _required_sha256(document.get("queue_sha256"), "Queue SHA-256"),
-        "state_sha256": _required_sha256(document.get("state_sha256"), "State SHA-256"),
+        "workspace_id": workspace_id,
+        "workspace_config_fingerprint": config_fingerprint,
+        "queue_sha256": queue_sha256,
+        "state_sha256": state_sha256,
         "failure_count": failure_count,
         "records": canonical,
-        "plan_id": _required_sha256(document.get("plan_id"), "Plan ID"),
+        "plan_id": plan_id,
     }
 
 
