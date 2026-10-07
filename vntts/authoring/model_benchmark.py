@@ -10,7 +10,7 @@ import re
 import sys
 from collections import defaultdict, deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypeAlias, TypeGuard
@@ -48,7 +48,6 @@ from vntts.synthesis import (
 )
 from vntts.tts_benchmark import create_backend
 from vntts.voices import (
-    CharacterVoice,
     CharacterVoiceRegistry,
     find_default_voice_manifest,
     is_narrator,
@@ -1232,11 +1231,11 @@ def _snapshot_voice_registry(
                 }
             )
         snapshot_voices.append(
-            CharacterVoice(
-                character=voice.character,
-                speaker=voice.speaker,
-                aliases=voice.aliases,
+            replace(
+                voice,
+                reference=references[0],
                 references=tuple(references),
+                reference_root=staging_root,
             )
         )
     return CharacterVoiceRegistry(snapshot_voices), inventory

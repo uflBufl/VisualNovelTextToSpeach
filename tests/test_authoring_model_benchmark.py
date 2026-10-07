@@ -952,7 +952,7 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
 
     def test_voice_controls_are_snapshotted_once_for_every_real_model(self):
         with TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             text = "A shared exact line."
             corpus = root / "corpus.json"
             corpus.write_text(
@@ -984,6 +984,9 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
                         "Rhiannon",
                         "rhiannon",
                         references=(reference,),
+                        reference_root=root.resolve(),
+                        source_character="Original identity",
+                        reference_transcript="Exact reference line.",
                     )
                 ]
             )
@@ -991,7 +994,12 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
 
             def factory(name, received_registry, cache, **options):
                 del cache, options
-                captured_reference = received_registry.resolve("Rhiannon").references[0]
+                voice = received_registry.resolve("Rhiannon")
+                captured_reference = voice.references[0]
+                self.assertEqual(voice.reference, captured_reference)
+                self.assertEqual(voice.reference_root, captured_reference.parent.parent)
+                self.assertEqual(voice.source_character, "Original identity")
+                self.assertEqual(voice.reference_transcript, "Exact reference line.")
                 received_references.append(
                     (captured_reference, captured_reference.read_bytes())
                 )

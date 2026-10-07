@@ -49,7 +49,6 @@ from vntts.speech_backend_runtime import shutdown_speech_backend
 from vntts.synthesis import SynthesisCancellation
 from vntts.tts_benchmark import create_backend
 from vntts.voices import (
-    CharacterVoice,
     CharacterVoiceRegistry,
     pocket_tts_preset_voices,
     synthesis_character_for_line,
@@ -312,19 +311,8 @@ def _load_stable_voice_registry(
         snapshot = Path(directory) / "manifest.json"
         snapshot.write_bytes(payload)
         document, entries = load_voice_manifest(snapshot)
-    voices = [
-        CharacterVoice(
-            character=entry.character,
-            speaker=entry.speaker,
-            aliases=entry.aliases,
-            references=tuple(
-                (manifest_path.parent / reference).resolve()
-                for reference in entry.references
-            ),
-        )
-        for entry in entries
-    ]
-    return CharacterVoiceRegistry(voices), digest, document, entries
+    registry = CharacterVoiceRegistry.from_document(document, manifest_path)
+    return registry, digest, document, entries
 
 
 def _workspace_generation_controls(
