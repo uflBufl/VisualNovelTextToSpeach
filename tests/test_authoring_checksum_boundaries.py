@@ -18,7 +18,7 @@ from tests import (
 from tests import (
     test_authoring_source_reference_review as reference_fixtures,
 )
-from tests import test_authoring_voice_quality_gate as gate_fixtures
+from tests.authoring_fixtures import create_voice_quality_review
 from tests.missing_voice_reuse_fixtures import (
     create_failed_prompt_hypothesis_review,
     create_missing_voice_live_fallback_fixture,
@@ -228,8 +228,8 @@ class ChecksumBoundaryTest(unittest.TestCase):
     def test_voice_reference_read_failure_stays_a_gate_error(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            workspace, _state, queue_id, plan, decision = (
-                gate_fixtures.AuthoringVoiceQualityGateTest().create_review(root)
+            workspace, _state, queue_id, plan, decision = create_voice_quality_review(
+                root
             )
             gate = voice_quality_gate.build_voice_quality_gate(
                 workspace, plan, decision

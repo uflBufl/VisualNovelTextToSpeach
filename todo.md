@@ -576,6 +576,5 @@ Planned implementation order after approval:
 
 ## Active - Decouple composite authoring fixtures from test cases
 
-- [ ] Move accepted voice-quality cohort review builders into the existing authoring fixture owner, carrying actual CohortReviewPlan/Decision types; preserve provider/model/profile, sorted state JSON and original tuple. Migrate original and checksum tests.
 - [ ] Move source-reference report/review/story inputs and full quality publication into the existing source-reference fixture owner with real production result types and synthetic renderer contract. Preserve options, schema1/schema2 scenarios, exact bytes and hashes; consolidate the two 2x2 PNG encoders with explicit existing colors and migrate all callers.
 - [ ] Run the local selector first after all source edits, normal static gates and shared-owner disabled-rule scans; independently review exact data/patch/options/result contracts, then search all repository aliases/imports/constructors for equivalent leftovers. Commit independent repairs separately, refresh main, run branch selector and push. Remove completed TODO work and correct bounded memory.

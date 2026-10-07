@@ -23,6 +23,11 @@ from vntts_artifacts.voice_generation_queue import (
 
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.cohort_review import (
+    CohortReviewDecision,
+    CohortReviewPlan,
+    _object,
+    _object_list,
+    _required_text,
     build_cohort_review_decision,
     build_cohort_review_plan,
     write_cohort_review_plan,
@@ -427,3 +432,36 @@ def _legacy_bad_fixture(root: Path) -> tuple[Path, str, Path, Path]:
     corpus = root / "corpus-v3"
     publish_speech_robustness_corpus([reviews], [], corpus)
     return workspace, queue_id, decision_path, corpus
+
+
+def create_voice_quality_review(
+    root: Path,
+) -> tuple[Path, Path, str, CohortReviewPlan, CohortReviewDecision]:
+    workspace, state_path, queue_id = create_pending_cohort_workspace(root)
+    state = load_json_object(state_path, "voice-quality fixture state")
+    result = _object(_object(state["items"])[queue_id])
+    result.update(
+        {
+            "provider": "moss-tts",
+            "model": "model with spaces",
+            "generation_profile": "stable",
+        }
+    )
+    state_path.write_text(json.dumps(state, sort_keys=True))
+    return create_voice_quality_review_from_workspace(workspace, state_path, queue_id)
+
+
+def create_voice_quality_review_from_workspace(
+    workspace: Path, state_path: Path, queue_id: str
+) -> tuple[Path, Path, str, CohortReviewPlan, CohortReviewDecision]:
+    plan = build_cohort_review_plan(workspace)
+    cohort = _object_list(plan.document["cohorts"])[0]
+    cohort_id = _required_text(cohort["cohort_id"], "Fixture cohort ID")
+    decision = build_cohort_review_decision(
+        plan,
+        cohort_id,
+        "accepted",
+        reviewed_queue_ids=[queue_id],
+        sample_assessments={queue_id: "acceptable"},
+    )
+    return workspace, state_path, queue_id, plan, decision
