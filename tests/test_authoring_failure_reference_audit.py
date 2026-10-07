@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from tests.authoring_fixtures import create_test_workspace
+from tests.authoring_fixtures import create_failed_reference_workspace
 from vntts.authoring import reference_render_comparison
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_reference_audit import (
@@ -137,49 +137,9 @@ class _PreviewBackendFactory:
         return backend
 
 
-def create_failed_reference_workspace(root):
-    return FailureReferenceAuditTest().create_failed_workspace(root)
-
-
 class FailureReferenceAuditTest(unittest.TestCase):
     def create_failed_workspace(self, root):
-        _fixture, _imported, created = create_test_workspace(root)
-        state_path = created.directory / "generated-audio/generation-state.json"
-        state = json.loads(state_path.read_text())
-        queue_id, result = next(iter(state["items"].items()))
-        for field in ("path", "file_sha256", "quality", "review_status"):
-            result.pop(field, None)
-        result.update(
-            {
-                "status": "failed",
-                "provider": "moss-tts",
-                "model": "model",
-                "generation_profile": "stable",
-                "voice_character": "Rhiannon",
-                "synthesis_provenance_sha256": "a" * 64,
-                "failure": {
-                    "schema_version": 1,
-                    "kind": "speech_silence",
-                    "completion": "complete",
-                    "error_type": "SpeechSilenceValidationError",
-                    "speech_quality": {
-                        "leading_silence_seconds": 0.0,
-                        "trailing_silence_seconds": 0.0,
-                        "longest_internal_silence_seconds": 2.0,
-                        "silence_ratio": 0.4,
-                    },
-                    "text_features": {
-                        "word_count": 4,
-                        "character_count": 20,
-                        "sentence_boundary_count": 1,
-                        "comma_count": 0,
-                        "ellipsis_count": 0,
-                    },
-                },
-            }
-        )
-        state_path.write_text(json.dumps(state, sort_keys=True))
-        return created.directory, queue_id
+        return create_failed_reference_workspace(root)
 
     def test_invalid_reference_keeps_byte_identity_when_analysis_fails(self):
         with TemporaryDirectory() as directory:

@@ -367,10 +367,12 @@ def _render_stories(
     from r1999extractor.story_voice_review_ui import StoryVoiceReviewDialog
     from vntts_artifacts.file_integrity import sha256_file
 
-    from tests.authoring_fixtures import create_test_workspace
-    from tests.test_authoring_cohort_review import create_pending_cohort_workspace
-    from tests.test_authoring_failure_reference_audit import FailureReferenceAuditTest
-    from tests.test_authoring_legacy_reason_review import _legacy_bad_fixture
+    from tests.authoring_fixtures import (
+        _legacy_bad_fixture,
+        create_failed_reference_workspace,
+        create_pending_cohort_workspace,
+        create_test_workspace,
+    )
     from tests.test_authoring_listening import FakePlayback, write_model_reports
     from tests.test_authoring_missing_voice_reuse_review import (
         create_missing_voice_reuse_review_fixture,
@@ -2062,7 +2064,7 @@ def _render_stories(
             temporary_directory(prefix="vntts-ui-catalog-")
         )
         root = Path(temporary)
-        workspace, _queue_id = FailureReferenceAuditTest().create_failed_workspace(root)
+        workspace, _queue_id = create_failed_reference_workspace(root)
         audit = root / "audit"
         publish_failure_reference_audit(workspace, audit)
         dialog = FailureReferenceAuditDialog(audit)

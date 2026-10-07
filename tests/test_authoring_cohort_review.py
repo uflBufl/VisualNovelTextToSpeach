@@ -11,7 +11,10 @@ from unittest.mock import patch
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
 from tests import test_authoring_workbench as workbench_tests
-from tests.authoring_fixtures import create_test_workspace, write_legacy_fixture
+from tests.authoring_fixtures import (
+    create_pending_cohort_workspace,
+    write_legacy_fixture,
+)
 from tests.symlink_support import symlink_or_skip
 from vntts.authoring import workspace_inspection as inspection_module
 from vntts.authoring.bulk_generation import _canonical_sha256
@@ -29,29 +32,9 @@ from vntts.authoring.cohort_review import (
 )
 
 
-def create_pending_cohort_workspace(root):
-    return AuthoringCohortReviewTest().create_pending_workspace(root)
-
-
 class AuthoringCohortReviewTest(unittest.TestCase):
     def create_pending_workspace(self, root):
-        _fixture, _imported, created = create_test_workspace(root)
-        state_path = created.directory / "generated-audio/generation-state.json"
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-        queue_id, result = next(iter(state["items"].items()))
-        result.update(
-            {
-                "status": "generated",
-                "review_status": "pending_review",
-                "generation_profile": "stable",
-                "voice_character": "Rhiannon",
-                "prompt_applied": False,
-                "synthesis_provenance_sha256": "b" * 64,
-            }
-        )
-        state["active"] = None
-        state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
-        return created.directory, state_path, queue_id
+        return create_pending_cohort_workspace(root)
 
     def test_second_state_projection_cannot_hide_pending_items(self):
         with TemporaryDirectory() as directory:

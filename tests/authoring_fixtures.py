@@ -1,6 +1,7 @@
 """Shared authoring input fixtures for tests and the UI catalog."""
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import TypedDict
 
@@ -20,8 +21,16 @@ from vntts_artifacts.voice_generation_queue import (
     write_voice_generation_queue,
 )
 
+from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.cohort_review import (
+    build_cohort_review_decision,
+    build_cohort_review_plan,
+    write_cohort_review_plan,
+)
 from vntts.authoring.legacy_import import import_legacy_job
+from vntts.authoring.robustness_corpus import publish_speech_robustness_corpus
 from vntts.authoring.workbench import WorkspaceCreationResult, create_resume_workspace
+from vntts.authoring.workspace_foundation import load_json_object
 
 
 class LegacyJob(TypedDict):
@@ -313,3 +322,108 @@ def create_test_workspace(
         narrator_character="Rhiannon",
     )
     return fixture, imported, workspace
+
+
+def create_pending_cohort_workspace(root: Path) -> tuple[Path, Path, str]:
+    _fixture, _imported, created = create_test_workspace(root)
+    state_path = created.directory / "generated-audio/generation-state.json"
+    state = load_json_object(state_path, "fixture generation state")
+    items = state["items"]
+    assert isinstance(items, dict)
+    queue_id, result = next(iter(items.items()))
+    assert isinstance(queue_id, str)
+    assert isinstance(result, dict)
+    result.update(
+        {
+            "status": "generated",
+            "review_status": "pending_review",
+            "generation_profile": "stable",
+            "voice_character": "Rhiannon",
+            "prompt_applied": False,
+            "synthesis_provenance_sha256": "b" * 64,
+        }
+    )
+    state["active"] = None
+    state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    return created.directory, state_path, queue_id
+
+
+def create_failed_reference_workspace(root: Path) -> tuple[Path, str]:
+    _fixture, _imported, created = create_test_workspace(root)
+    state_path = created.directory / "generated-audio/generation-state.json"
+    state = load_json_object(state_path, "fixture generation state")
+    items = state["items"]
+    assert isinstance(items, dict)
+    queue_id, result = next(iter(items.items()))
+    assert isinstance(queue_id, str)
+    assert isinstance(result, dict)
+    for field in ("path", "file_sha256", "quality", "review_status"):
+        result.pop(field, None)
+    result.update(
+        {
+            "status": "failed",
+            "provider": "moss-tts",
+            "model": "model",
+            "generation_profile": "stable",
+            "voice_character": "Rhiannon",
+            "synthesis_provenance_sha256": "a" * 64,
+            "failure": {
+                "schema_version": 1,
+                "kind": "speech_silence",
+                "completion": "complete",
+                "error_type": "SpeechSilenceValidationError",
+                "speech_quality": {
+                    "leading_silence_seconds": 0.0,
+                    "trailing_silence_seconds": 0.0,
+                    "longest_internal_silence_seconds": 2.0,
+                    "silence_ratio": 0.4,
+                },
+                "text_features": {
+                    "word_count": 4,
+                    "character_count": 20,
+                    "sentence_boundary_count": 1,
+                    "comma_count": 0,
+                    "ellipsis_count": 0,
+                },
+            },
+        }
+    )
+    state_path.write_text(json.dumps(state, sort_keys=True))
+    return created.directory, queue_id
+
+
+def _legacy_bad_fixture(root: Path) -> tuple[Path, str, Path, Path]:
+    workspace, _state, queue_id = create_pending_cohort_workspace(root)
+    reviews = workspace / "cohort-reviews"
+    reviews.mkdir()
+    plan = build_cohort_review_plan(workspace)
+    write_cohort_review_plan(plan, reviews / f"plan-{plan.plan_id}.json")
+    cohorts = plan.document["cohorts"]
+    assert isinstance(cohorts, list)
+    cohort = cohorts[0]
+    assert isinstance(cohort, dict)
+    cohort_id = cohort["cohort_id"]
+    assert isinstance(cohort_id, str)
+    decision = build_cohort_review_decision(
+        plan,
+        cohort_id,
+        "rejected",
+        reviewed_queue_ids=[queue_id],
+        sample_assessments={queue_id: "bad"},
+    )
+    document = deepcopy(decision.document)
+    document["schema_version"] = 1
+    document.pop("item_review_statuses")
+    assessments = document["sample_assessments"]
+    assert isinstance(assessments, list)
+    assessment = assessments[0]
+    assert isinstance(assessment, dict)
+    assessment.pop("defect_reasons")
+    document["decision_id"] = canonical_document_sha256(
+        {key: value for key, value in document.items() if key != "decision_id"}
+    )
+    decision_path = reviews / f"decision-{document['decision_id']}.json"
+    decision_path.write_text(json.dumps(document, sort_keys=True), encoding="utf-8")
+    corpus = root / "corpus-v3"
+    publish_speech_robustness_corpus([reviews], [], corpus)
+    return workspace, queue_id, decision_path, corpus

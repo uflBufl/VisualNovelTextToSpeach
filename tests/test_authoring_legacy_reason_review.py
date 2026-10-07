@@ -1,16 +1,9 @@
 import json
 import unittest
-from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from tests.test_authoring_cohort_review import create_pending_cohort_workspace
-from vntts.authoring.authority import canonical_document_sha256
-from vntts.authoring.cohort_review import (
-    build_cohort_review_decision,
-    build_cohort_review_plan,
-    write_cohort_review_plan,
-)
+from tests.authoring_fixtures import _legacy_bad_fixture
 from vntts.authoring.legacy_reason_review import (
     LegacyReasonReviewError,
     build_legacy_reason_review,
@@ -22,33 +15,6 @@ from vntts.authoring.robustness_corpus import (
     load_speech_robustness_corpus,
     publish_speech_robustness_corpus,
 )
-
-
-def _legacy_bad_fixture(root):
-    workspace, _state, queue_id = create_pending_cohort_workspace(root)
-    reviews = workspace / "cohort-reviews"
-    reviews.mkdir()
-    plan = build_cohort_review_plan(workspace)
-    write_cohort_review_plan(plan, reviews / f"plan-{plan.plan_id}.json")
-    decision = build_cohort_review_decision(
-        plan,
-        plan.document["cohorts"][0]["cohort_id"],
-        "rejected",
-        reviewed_queue_ids=[queue_id],
-        sample_assessments={queue_id: "bad"},
-    )
-    document = deepcopy(decision.document)
-    document["schema_version"] = 1
-    document.pop("item_review_statuses")
-    document["sample_assessments"][0].pop("defect_reasons")
-    document["decision_id"] = canonical_document_sha256(
-        {key: value for key, value in document.items() if key != "decision_id"}
-    )
-    decision_path = reviews / f"decision-{document['decision_id']}.json"
-    decision_path.write_text(json.dumps(document, sort_keys=True), encoding="utf-8")
-    corpus = root / "corpus-v3"
-    publish_speech_robustness_corpus([reviews], [], corpus)
-    return workspace, queue_id, decision_path, corpus
 
 
 class LegacyReasonReviewTest(unittest.TestCase):

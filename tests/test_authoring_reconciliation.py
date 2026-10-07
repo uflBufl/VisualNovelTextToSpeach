@@ -18,9 +18,12 @@ from vntts_artifacts.voice_generation_queue import (
 )
 
 import vntts.authoring.reconciliation as reconciliation_module
-from tests.authoring_fixtures import create_test_workspace, write_legacy_fixture
+from tests.authoring_fixtures import (
+    create_pending_cohort_workspace,
+    create_test_workspace,
+    write_legacy_fixture,
+)
 from tests.symlink_support import symlink_or_skip
-from tests.test_authoring_cohort_review import create_pending_cohort_workspace
 from tests.test_authoring_source_reference_review import (
     publish_source_reference_quality_fixture,
 )
