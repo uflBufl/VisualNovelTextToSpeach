@@ -183,7 +183,13 @@ def _attempts(report: Mapping[str, object]) -> list[dict[str, object]]:
     values = report.get("attempts", [])
     if not isinstance(values, list):
         raise ValueError("Native comparison attempts must be a JSON list")
-    return [_mapping(value) for value in values]
+    attempts = [_mapping(value) for value in values]
+    for attempt in attempts:
+        for field in ("result", "raw_response"):
+            if field in attempt:
+                _mapping(attempt[field])
+        _native_process(attempt)
+    return attempts
 
 
 def _native_process(attempt: Mapping[str, object]) -> dict[str, object]:
@@ -449,6 +455,24 @@ def summarize(runs: Sequence[_Run]) -> _Summary:
     }
 
 
+def _admit_probe_run(
+    runs: list[_Run],
+    variant: str,
+    directory: str,
+    exit_code: int,
+    report: dict[str, object],
+) -> _Summary:
+    captured: _Run = {
+        "variant": variant,
+        "directory": directory,
+        "exit_code": exit_code,
+        "report": report,
+    }
+    summary = summarize((*runs, captured))
+    runs.append(captured)
+    return summary
+
+
 def run(
     options: _ComparisonOptions,
     *,
@@ -571,17 +595,11 @@ def run(
                     sampling_profiles={"stable": report["controls"]["sampling"]},
                 )
             child = _read_evidence(folder / "report.json")
-            report["runs"].append(
-                {
-                    "variant": variant,
-                    "directory": folder.name,
-                    "exit_code": code,
-                    "report": child,
-                }
-            )
             if child.get("reference_sha256") != report["reference"]["sha256"]:
                 raise ValueError("Probe did not use the comparison reference snapshot")
-            report["summary"] = summarize(report["runs"])
+            report["summary"] = _admit_probe_run(
+                report["runs"], variant, folder.name, code, child
+            )
             probe._write_json(output / "report.json", report)
             if code:
                 break

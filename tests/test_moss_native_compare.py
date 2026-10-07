@@ -519,6 +519,60 @@ class MossNativeCompareTest(unittest.TestCase):
                         names,
                     )
 
+    def test_malformed_probe_evidence_retains_failure_report_and_raw_archive(self):
+        for field, malformed in (("attempts", {"malformed": True}), ("result", True)):
+            with self.subTest(field=field), TemporaryDirectory() as temporary:
+                options = self._options(Path(temporary))
+
+                def malformed_runner(probe_options, **kwargs):
+                    code = probe.run(
+                        probe_options,
+                        backend_factory=_FakeBackend,
+                        path_check=self._path_check,
+                        **kwargs,
+                    )
+                    path = probe_options.output / "report.json"
+                    report = json.loads(path.read_text())
+                    if field == "attempts":
+                        report[field] = malformed
+                    else:
+                        report["attempts"][0][field] = malformed
+                    path.write_text(json.dumps(report), encoding="utf-8")
+                    return code
+
+                self.assertEqual(
+                    compare.run(
+                        options,
+                        probe_runner=malformed_runner,
+                        path_check=self._path_check,
+                    ),
+                    1,
+                )
+                report = json.loads((options.output / "report.json").read_text())
+                self.assertFalse(report["complete"])
+                self.assertFalse(report["all_requests_complete"])
+                self.assertEqual(report["runs"], [])
+                self.assertIn("ValueError: Native comparison", report["error"])
+                with zipfile.ZipFile(options.output.with_suffix(".zip")) as archive:
+                    names = set(archive.namelist())
+                    self.assertIn("report.json", names)
+                    self.assertIn("build.json", names)
+                    child = json.loads(archive.read("run-1-baseline/report.json"))
+                    self.assertEqual(
+                        child["attempts"]
+                        if field == "attempts"
+                        else child["attempts"][0][field],
+                        malformed,
+                    )
+                    self.assertEqual(
+                        sum(
+                            name.startswith("run-1-baseline/")
+                            and name.endswith("-raw.wav")
+                            for name in names
+                        ),
+                        3,
+                    )
+
     def test_limited_runs_finish_orchestration_but_fail_qualification_without_ratio(
         self,
     ):

@@ -979,7 +979,7 @@
       "path": "scripts/moss_native_compare.py",
       "scope": "run",
       "count": 1,
-      "maximum": 74
+      "maximum": 73
     },
     {
       "code": "PLR0915",
