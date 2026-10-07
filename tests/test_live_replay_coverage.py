@@ -227,6 +227,96 @@ class LiveReplayCoverageTest(unittest.TestCase):
                     reviews=(first, second),
                 )
 
+    def test_rejects_duplicate_or_reversed_review_mappings_without_output(self):
+        for label, mappings in (
+            ("duplicate", lambda first, _second: [first["mappings"][0]] * 2),
+            ("reversed", lambda _first, second: list(reversed(second["mappings"]))),
+        ):
+            with self.subTest(label=label), TemporaryDirectory() as directory:
+                root = Path(directory)
+                story, plan, first, second = self._fixture(root)
+                first_document = json.loads(first.read_bytes())
+                second_document = json.loads(second.read_bytes())
+                first_document["mappings"] = mappings(first_document, second_document)
+                first.write_text(json.dumps(first_document), encoding="utf-8")
+                output = root / f"{label}.json"
+
+                with self.assertRaisesRegex(
+                    LiveReplayCoverageError,
+                    "duplicated or out of plan order",
+                ):
+                    audit_live_replay_coverage(
+                        output,
+                        story_index=story,
+                        sequence_plan=plan,
+                        reviews=(first, second),
+                    )
+                self.assertFalse(output.exists())
+
+    def test_rejects_unknown_mapping_without_output(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story, plan, first, second = self._fixture(root)
+            forged = json.loads(first.read_bytes())
+            forged["mappings"][0]["event_id"] = "event-unknown"
+            first.write_text(json.dumps(forged), encoding="utf-8")
+            output = root / "unknown.json"
+
+            with self.assertRaisesRegex(
+                LiveReplayCoverageError,
+                "unknown or non-visible event",
+            ):
+                audit_live_replay_coverage(
+                    output,
+                    story_index=story,
+                    sequence_plan=plan,
+                    reviews=(first, second),
+                )
+            self.assertFalse(output.exists())
+
+    def test_boundary_review_requires_acceptance_and_preserves_source_provenance(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story, plan, first, second = self._fixture(root)
+            forged = json.loads(first.read_bytes())
+            forged["capture_boundary_review_required"] = True
+            forged["human_acceptance_recorded"] = False
+            first.write_text(json.dumps(forged), encoding="utf-8")
+            second_forged = json.loads(second.read_bytes())
+            second_forged["capture_boundary_review_required"] = True
+            second.write_text(json.dumps(second_forged), encoding="utf-8")
+            original_digest = hashlib.sha256(first.read_bytes()).hexdigest()
+            second_digest = hashlib.sha256(second.read_bytes()).hexdigest()
+
+            _output, report = audit_live_replay_coverage(
+                root / "boundary.json",
+                story_index=story,
+                sequence_plan=plan,
+                reviews=(first, second),
+            )
+
+            source = report["sources"][0]
+            self.assertEqual(source["sha256"], original_digest)
+            self.assertEqual(source["event_count"], 1)
+            self.assertEqual(source["first_event_id"], "event-1")
+            self.assertEqual(source["last_event_id"], "event-1")
+            self.assertFalse(source["human_acceptance_recorded"])
+            self.assertEqual(source["human_review_required_event_ids"], ["event-1"])
+            second_source = report["sources"][1]
+            self.assertEqual(second_source["sha256"], second_digest)
+            self.assertEqual(second_source["event_count"], 2)
+            self.assertEqual(second_source["first_event_id"], "event-2")
+            self.assertEqual(second_source["last_event_id"], "event-3")
+            self.assertFalse(second_source["human_acceptance_recorded"])
+            self.assertEqual(
+                second_source["human_review_required_event_ids"],
+                ["event-2", "event-3"],
+            )
+            self.assertEqual(
+                report["human_acceptance_pending_event_ids"],
+                ["event-1", "event-2", "event-3"],
+            )
+
     def test_rejects_missing_review_with_coverage_error(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

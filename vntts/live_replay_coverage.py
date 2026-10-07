@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from itertools import pairwise
 from pathlib import Path
+from typing import TypedDict
 
 from vntts.authoring.authority import write_json_document_no_replace
 from vntts.cleanup import temporary_directory
@@ -19,7 +20,37 @@ from vntts.live_replay_sequence_seal import (
 )
 from vntts.live_sequence import LiveSequenceEvent, LiveSequencePlan
 
-CoverageReport = dict[str, object]
+
+class CoverageAuthority(TypedDict):
+    story_index_path: str
+    story_index_sha256: str
+    sequence_plan_path: str
+    sequence_plan_sha256: str
+
+
+class CoverageSource(TypedDict):
+    path: str
+    sha256: str
+    event_count: int
+    first_event_id: str
+    last_event_id: str
+    human_acceptance_recorded: bool
+    human_review_required_event_ids: list[str]
+
+
+class CoverageReport(TypedDict):
+    schema: str
+    schema_version: int
+    authority: CoverageAuthority
+    expected_visible_event_count: int
+    covered_visible_event_count: int
+    speech_event_count: int
+    silent_event_count: int
+    missing_event_ids: list[str]
+    technical_coverage_complete: bool
+    human_acceptance_complete: bool
+    human_acceptance_pending_event_ids: list[str]
+    sources: list[CoverageSource]
 
 
 class LiveReplayCoverageError(RuntimeError):
@@ -53,87 +84,28 @@ def audit_live_replay_coverage(
         )
     _validate_visible_path(plan, visible)
     expected_ids = tuple(event.event_id for event in visible)
+    event_positions = {event_id: index for index, event_id in enumerate(expected_ids)}
     covered: set[str] = set()
     review_required: set[str] = set()
     accepted_review: set[str] = set()
-    sources: list[dict[str, object]] = []
+    sources: list[CoverageSource] = []
     selected_reviews = tuple(reviews)
     if not selected_reviews:
         raise LiveReplayCoverageError("At least one sealed sequence review is required")
     for value in selected_reviews:
-        review_path, payload = _read_coverage_file(value, "Sealed sequence review")
-        review_document = _decode_coverage_json(payload, "Sealed sequence review")
-        if (
-            review_document.get("schema") != "vntts.sequence-replay-seal-review"
-            or type(review_document.get("schema_version")) is not int
-            or review_document.get("schema_version") != 1
-            or review_document.get("sealed_replay_successful") is not True
-        ):
-            raise LiveReplayCoverageError(
-                f"Review is not successful sealed replay evidence: {review_path}"
-            )
-        authority = review_document.get("authority")
-        if not isinstance(authority, dict):
-            raise LiveReplayCoverageError(f"Review authority is missing: {review_path}")
-        if authority.get("story_index_sha256") != story_sha256:
-            raise LiveReplayCoverageError(
-                f"Review uses a different story index: {review_path}"
-            )
-        if authority.get("sequence_plan_sha256") != plan_sha256:
-            raise LiveReplayCoverageError(
-                f"Review uses a different sequence plan: {review_path}"
-            )
-        mappings = review_document.get("mappings")
-        if not isinstance(mappings, list) or not mappings:
-            raise LiveReplayCoverageError(f"Review has no mappings: {review_path}")
-        event_ids: list[str] = []
-        source_review_required: list[str] = []
-        for mapping in mappings:
-            if not isinstance(mapping, dict):
-                raise LiveReplayCoverageError(
-                    f"Review mapping is invalid: {review_path}"
-                )
-            event_id = str(mapping.get("event_id") or "")
-            if event_id not in plan.events or event_id not in expected_ids:
-                raise LiveReplayCoverageError(
-                    f"Review maps an unknown or non-visible event: {event_id!r}"
-                )
-            event = plan.events[event_id]
-            event_kind = mapping.get("event_kind")
-            if event_kind is not None and event_kind != event.kind:
-                raise LiveReplayCoverageError(
-                    f"Review event kind disagrees with the plan: {event_id!r}"
-                )
-            if mapping.get("line_id") != event.line_id:
-                raise LiveReplayCoverageError(
-                    f"Review line identity disagrees with the plan: {event_id!r}"
-                )
-            event_ids.append(event_id)
-            if mapping.get("mapping_method") != "exact-line-id":
-                source_review_required.append(event_id)
-        expected_positions = [expected_ids.index(event_id) for event_id in event_ids]
-        if expected_positions != sorted(set(expected_positions)):
-            raise LiveReplayCoverageError(
-                f"Review mappings are duplicated or out of plan order: {review_path}"
-            )
-        covered.update(event_ids)
-        if review_document.get("capture_boundary_review_required") is True:
-            source_review_required = list(event_ids)
-        review_required.update(source_review_required)
-        human_accepted = review_document.get("human_acceptance_recorded") is True
-        if human_accepted:
-            accepted_review.update(source_review_required)
-        sources.append(
-            {
-                "path": str(review_path),
-                "sha256": hashlib.sha256(payload).hexdigest(),
-                "event_count": len(event_ids),
-                "first_event_id": event_ids[0],
-                "last_event_id": event_ids[-1],
-                "human_acceptance_recorded": human_accepted,
-                "human_review_required_event_ids": source_review_required,
-            }
+        event_ids, source = _load_coverage_source(
+            value,
+            plan=plan,
+            story_sha256=story_sha256,
+            plan_sha256=plan_sha256,
+            event_positions=event_positions,
         )
+        covered.update(event_ids)
+        required = source["human_review_required_event_ids"]
+        review_required.update(required)
+        if source["human_acceptance_recorded"]:
+            accepted_review.update(required)
+        sources.append(source)
     missing = [event_id for event_id in expected_ids if event_id not in covered]
     human_pending = [
         event_id
@@ -163,6 +135,94 @@ def audit_live_replay_coverage(
         output_path, document, "coverage report", error_type=LiveReplayCoverageError
     )
     return output_path, document
+
+
+def _load_coverage_source(
+    value: str | Path,
+    *,
+    plan: LiveSequencePlan,
+    story_sha256: str,
+    plan_sha256: str,
+    event_positions: Mapping[str, int],
+) -> tuple[list[str], CoverageSource]:
+    review_path, payload = _read_coverage_file(value, "Sealed sequence review")
+    review_document = _decode_coverage_json(payload, "Sealed sequence review")
+    if (
+        review_document.get("schema") != "vntts.sequence-replay-seal-review"
+        or type(review_document.get("schema_version")) is not int
+        or review_document.get("schema_version") != 1
+        or review_document.get("sealed_replay_successful") is not True
+    ):
+        raise LiveReplayCoverageError(
+            f"Review is not successful sealed replay evidence: {review_path}"
+        )
+    authority = review_document.get("authority")
+    if not isinstance(authority, dict):
+        raise LiveReplayCoverageError(f"Review authority is missing: {review_path}")
+    if authority.get("story_index_sha256") != story_sha256:
+        raise LiveReplayCoverageError(
+            f"Review uses a different story index: {review_path}"
+        )
+    if authority.get("sequence_plan_sha256") != plan_sha256:
+        raise LiveReplayCoverageError(
+            f"Review uses a different sequence plan: {review_path}"
+        )
+    mappings = review_document.get("mappings")
+    if not isinstance(mappings, list) or not mappings:
+        raise LiveReplayCoverageError(f"Review has no mappings: {review_path}")
+    event_ids, source_review_required = _review_mappings(
+        mappings, review_path, plan=plan, event_positions=event_positions
+    )
+    if review_document.get("capture_boundary_review_required") is True:
+        source_review_required = list(event_ids)
+    return event_ids, {
+        "path": str(review_path),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "event_count": len(event_ids),
+        "first_event_id": event_ids[0],
+        "last_event_id": event_ids[-1],
+        "human_acceptance_recorded": review_document.get("human_acceptance_recorded")
+        is True,
+        "human_review_required_event_ids": source_review_required,
+    }
+
+
+def _review_mappings(
+    mappings: Sequence[object],
+    review_path: Path,
+    *,
+    plan: LiveSequencePlan,
+    event_positions: Mapping[str, int],
+) -> tuple[list[str], list[str]]:
+    event_ids: list[str] = []
+    source_review_required: list[str] = []
+    for mapping in mappings:
+        if not isinstance(mapping, dict):
+            raise LiveReplayCoverageError(f"Review mapping is invalid: {review_path}")
+        event_id = str(mapping.get("event_id") or "")
+        if event_id not in plan.events or event_id not in event_positions:
+            raise LiveReplayCoverageError(
+                f"Review maps an unknown or non-visible event: {event_id!r}"
+            )
+        event = plan.events[event_id]
+        event_kind = mapping.get("event_kind")
+        if event_kind is not None and event_kind != event.kind:
+            raise LiveReplayCoverageError(
+                f"Review event kind disagrees with the plan: {event_id!r}"
+            )
+        if mapping.get("line_id") != event.line_id:
+            raise LiveReplayCoverageError(
+                f"Review line identity disagrees with the plan: {event_id!r}"
+            )
+        event_ids.append(event_id)
+        if mapping.get("mapping_method") != "exact-line-id":
+            source_review_required.append(event_id)
+    positions = [event_positions[event_id] for event_id in event_ids]
+    if any(left >= right for left, right in pairwise(positions)):
+        raise LiveReplayCoverageError(
+            f"Review mappings are duplicated or out of plan order: {review_path}"
+        )
+    return event_ids, source_review_required
 
 
 def _read_coverage_file(value: str | Path, label: str) -> tuple[Path, bytes]:

@@ -402,13 +402,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/live_replay_coverage.py",
-      "scope": "audit_live_replay_coverage",
-      "count": 1,
-      "maximum": 20
-    },
-    {
-      "code": "C901",
       "path": "vntts/live_replay_sequence_seal.py",
       "scope": "_map_dialogue",
       "count": 1,
@@ -859,13 +852,6 @@
       "code": "PLR0912",
       "path": "vntts/live_replay_capture_recover.py",
       "scope": "recover_live_replay_capture",
-      "count": 1,
-      "maximum": 19
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/live_replay_coverage.py",
-      "scope": "audit_live_replay_coverage",
       "count": 1,
       "maximum": 19
     },
@@ -1351,13 +1337,6 @@
       "scope": "recover_live_replay_capture",
       "count": 1,
       "maximum": 87
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/live_replay_coverage.py",
-      "scope": "audit_live_replay_coverage",
-      "count": 1,
-      "maximum": 68
     },
     {
       "code": "PLR0915",
