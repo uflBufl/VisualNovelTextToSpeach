@@ -160,8 +160,55 @@ class MossNativeCompareTest(unittest.TestCase):
         self.assertTrue(compare.summarize(runs)["owned_servers_confirmed_stopped"])
         runs[0]["report"]["server_shutdown"]["confirmed_exited"] = False
         self.assertFalse(compare.summarize(runs)["owned_servers_confirmed_stopped"])
+        for value in ("stopped", 1, [], {}):
+            with self.subTest(value=value):
+                runs[0]["report"]["server_shutdown"]["confirmed_exited"] = value
+                self.assertIsNone(
+                    compare.summarize(runs)["owned_servers_confirmed_stopped"]
+                )
         runs[0]["report"].clear()
         self.assertIsNone(compare.summarize(runs)["owned_servers_confirmed_stopped"])
+
+    def test_summary_keeps_invalid_observations_unavailable(self):
+        for peak in ("4096", True, float("nan"), 1.5, -1):
+            with self.subTest(peak=peak):
+                runs = [
+                    {
+                        "variant": variant,
+                        "report": {
+                            "compute": 7,
+                            "startup_seconds": float("nan"),
+                            "attempts": [
+                                {
+                                    "text": text,
+                                    "completion": "complete",
+                                    "elapsed_seconds": True,
+                                    "result": {"cache_source": "fresh-generation"},
+                                    "raw_response": {"http_status": 200, "sha256": 17},
+                                    "native": {
+                                        "resources": {
+                                            "native_process": {"rss_bytes_peak": peak}
+                                        }
+                                    },
+                                }
+                                for _, text in probe.TEXTS
+                            ],
+                        },
+                    }
+                    for variant in compare.ORDER
+                ]
+                summary = compare.summarize(runs)
+                self.assertIsNone(summary["same_reported_compute"])
+                for startup in summary["startup"].values():
+                    self.assertIsNone(startup["startup_seconds_median"])
+                for case in summary["cases"]:
+                    self.assertIsNone(case["candidate_over_baseline"])
+                    self.assertIsNone(case["raw_wav_identity"])
+                    for variant in ("baseline", "candidate"):
+                        self.assertIsNone(case[variant]["elapsed_seconds_median"])
+                        self.assertIsNone(
+                            case[variant]["observed_native_rss_peak_bytes"]
+                        )
 
     def test_codec_threads_rejects_wrong_worker_count_before_startup(self):
         with TemporaryDirectory() as temporary:

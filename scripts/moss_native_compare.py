@@ -6,15 +6,113 @@ import math
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from statistics import median
-from types import SimpleNamespace
+from typing import NotRequired, Protocol, TypedDict
 
 from scripts import moss_native_pause_probe as probe
 from vntts.moss_cpp_backend import MossCppVoiceRouterBackend, moss_cpp_paths
 from vntts.moss_cpp_installation import _extract_runtime
 from vntts.runtime_config import initialize_voice_registry
-from vntts.settings import load_app_settings
+from vntts.settings import AppSettings, load_app_settings
+
+
+class _ComparisonOptions(argparse.Namespace):
+    baseline: Path | None
+    candidate: Path | None
+    downloads: Path
+    experiment: str
+    model: Path | None
+    reference: Path | None
+    output: Path | None
+    gpu_layers: int
+
+
+class _ProbeRunner(Protocol):
+    def __call__(
+        self,
+        options: probe._ProbeOptions,
+        *,
+        sampling_profiles: probe._SamplingProfiles,
+    ) -> int: ...
+
+
+class _InputIdentity(TypedDict):
+    path: str
+    bytes: int
+    mtime_ns: int
+    sha256: str
+
+
+class _Run(TypedDict):
+    variant: str
+    report: dict[str, object]
+    directory: NotRequired[str]
+    exit_code: NotRequired[int]
+
+
+type _Metric = int | float
+
+
+class _Startup(TypedDict):
+    startup_seconds_median: _Metric | None
+
+
+class _ComparisonRow(TypedDict):
+    complete_fresh_attempts: bool
+    elapsed_seconds_median: _Metric | None
+    raw_wav_hashes: list[str | None]
+    phases_seconds_median: dict[str, _Metric | None]
+    observed_native_rss_peak_bytes: int | None
+    native_avg_cores_used_median: _Metric | None
+
+
+class _Case(TypedDict):
+    case: str
+    phase: str
+    baseline: _ComparisonRow
+    candidate: _ComparisonRow
+    candidate_over_baseline: float | None
+    raw_wav_identity: bool | None
+
+
+class _Summary(TypedDict):
+    startup: dict[str, _Startup]
+    cases: list[_Case]
+    same_reported_compute: bool | None
+    owned_servers_confirmed_stopped: bool | None
+    qualification: str
+    output_code_identity: str
+
+
+class _Controls(TypedDict):
+    seed: int
+    gpu_layers: int
+    aux_cpu: int
+    context: int
+    cache: str
+    sampling: dict[str, float]
+
+
+class _ComparisonReport(TypedDict):
+    schema: str
+    schema_version: int
+    order: list[str]
+    runs: list[_Run]
+    complete: bool
+    controls: _Controls
+    limitations: list[str]
+    reference: NotRequired[_InputIdentity]
+    reference_preflight: NotRequired[probe.ReferenceQualityReport]
+    inputs: NotRequired[dict[str, _InputIdentity]]
+    build_manifests: NotRequired[dict[str, dict[str, object] | None]]
+    summary: NotRequired[_Summary]
+    interrupted: NotRequired[bool]
+    error: NotRequired[str]
+    all_requests_complete: NotRequired[bool]
+    exit_code: NotRequired[int]
+
 
 ORDER = ("baseline", "candidate", "candidate", "baseline")
 EXPERIMENTS = {
@@ -26,7 +124,7 @@ EXPERIMENTS = {
 }
 
 
-def _parser():
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--experiment",
@@ -70,22 +168,60 @@ def _parser():
     return parser
 
 
-def _check_builds(builds):
-    if all(builds.values()):
+def _mapping(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise ValueError("Native comparison evidence must be a JSON object")
+    return value
+
+
+def _read_evidence(path: Path) -> dict[str, object]:
+    payload: object = json.loads(path.read_text(encoding="utf-8-sig"))
+    return _mapping(payload)
+
+
+def _attempts(report: Mapping[str, object]) -> list[dict[str, object]]:
+    values = report.get("attempts", [])
+    if not isinstance(values, list):
+        raise ValueError("Native comparison attempts must be a JSON list")
+    return [_mapping(value) for value in values]
+
+
+def _native_process(attempt: Mapping[str, object]) -> dict[str, object]:
+    native = _mapping(attempt.get("native") or {})
+    resources = _mapping(native.get("resources") or {})
+    return _mapping(resources.get("native_process", {}))
+
+
+def _rss_peak(attempt: Mapping[str, object]) -> int | None:
+    value = _native_process(attempt).get("rss_bytes_peak")
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        else None
+    )
+
+
+def _output_directory(path: Path | None) -> Path:
+    if path is None:
+        raise ValueError("Native comparison requires an output directory")
+    return path.expanduser().resolve()
+
+
+def _check_builds(builds: Mapping[str, dict[str, object] | None]) -> None:
+    baseline, candidate = builds["baseline"], builds["candidate"]
+    if baseline and candidate:
         keys = ["upstream", "llama", "vntts", "patch_sha256"]
         for key in ("local_gpu_patch_sha256", "aux_threads_patch_sha256"):
-            if any(key in build for build in builds.values()):
+            if any(key in build for build in (baseline, candidate)):
                 keys.append(key)
         for key in keys:
-            if not builds["baseline"].get(key) or builds["baseline"].get(key) != builds[
-                "candidate"
-            ].get(key):
+            if not baseline.get(key) or baseline.get(key) != candidate.get(key):
                 raise ValueError(
                     f"Build manifests differ at {key}; use artifacts from the same workflow run"
                 )
 
 
-def prepare_downloads(options):
+def prepare_downloads(options: _ComparisonOptions) -> None:
     """Set up the existing comparison without starting a model server."""
     if bool(options.baseline) != bool(options.candidate):
         raise ValueError("Provide both --baseline and --candidate, or neither")
@@ -109,7 +245,7 @@ def prepare_downloads(options):
     work = Path(tempfile.mkdtemp(prefix="moss-native-", dir=downloads))
     print(f"Comparison work folder: {work}", flush=True)
     if not options.baseline:
-        builds = {}
+        builds: dict[str, dict[str, object] | None] = {}
         for label, (variant, _) in variants.items():
             print(
                 f"Preparing {label}: checking and extracting the downloaded ZIP...",
@@ -128,9 +264,7 @@ def prepare_downloads(options):
                 )
             runtime = work / variant / "runtime"
             _extract_runtime(inner, runtime, None)
-            build = json.loads(
-                (runtime / "VNTTS-BUILD.json").read_text(encoding="utf-8-sig")
-            )
+            build = _read_evidence(runtime / "VNTTS-BUILD.json")
             if build.get("variant") != variant or not build.get(
                 "local_gpu_patch_sha256"
             ):
@@ -167,7 +301,7 @@ def prepare_downloads(options):
         options.output = work / "comparison"
 
 
-def _identity(path):
+def _identity(path: Path) -> _InputIdentity:
     path = path.resolve()
     stat = path.stat()
     return {
@@ -178,13 +312,13 @@ def _identity(path):
     }
 
 
-def _unchanged(identity):
+def _unchanged(identity: _InputIdentity) -> None:
     stat = Path(identity["path"]).stat()
     if (stat.st_size, stat.st_mtime_ns) != (identity["bytes"], identity["mtime_ns"]):
         raise ValueError(f"Input changed during comparison: {identity['path']}")
 
 
-def _median(values):
+def _median(values: Sequence[object]) -> _Metric | None:
     finite = [
         x
         for x in values
@@ -196,9 +330,9 @@ def _median(values):
     return median(finite) if finite and len(finite) == len(values) else None
 
 
-def summarize(runs):
+def summarize(runs: Sequence[_Run]) -> _Summary:
     """Summarize matching cases only; failed/limited output is never a speed win."""
-    groups = {}
+    groups: dict[str, _Startup] = {}
     for variant in ("baseline", "candidate"):
         selected = [run for run in runs if run["variant"] == variant]
         groups[variant] = {
@@ -206,21 +340,22 @@ def summarize(runs):
                 [run["report"].get("startup_seconds") for run in selected]
             )
         }
-    comparisons = []
+    comparisons: list[_Case] = []
     for index, (label, text) in enumerate(probe.TEXTS):
-        rows = {}
+        rows: dict[str, _ComparisonRow] = {}
         for variant in groups:
             attempts = [
                 attempt
                 for run in runs
                 if run["variant"] == variant
-                for attempt in run["report"].get("attempts", [])
+                for attempt in _attempts(run["report"])
                 if attempt["text"] == text
             ]
             valid = len(attempts) == 2 and all(
                 item["completion"] == "complete"
-                and item.get("result", {}).get("cache_source") == "fresh-generation"
-                and item.get("raw_response", {}).get("http_status") == 200
+                and _mapping(item.get("result", {})).get("cache_source")
+                == "fresh-generation"
+                and _mapping(item.get("raw_response", {})).get("http_status") == 200
                 and not item.get("raw_quality_error")
                 for item in attempts
             )
@@ -232,11 +367,20 @@ def summarize(runs):
                 if valid
                 else None,
                 "raw_wav_hashes": [
-                    item.get("raw_response", {}).get("sha256") for item in attempts
+                    value
+                    if isinstance(
+                        value := _mapping(item.get("raw_response", {})).get("sha256"),
+                        str,
+                    )
+                    else None
+                    for item in attempts
                 ],
                 "phases_seconds_median": {
                     key: _median(
-                        [(item.get("native") or {}).get(key) for item in attempts]
+                        [
+                            _mapping(item.get("native") or {}).get(key)
+                            for item in attempts
+                        ]
                     )
                     if valid
                     else None
@@ -251,23 +395,12 @@ def summarize(runs):
                     )
                 },
                 "observed_native_rss_peak_bytes": max(
-                    (
-                        ((item.get("native") or {}).get("resources") or {})
-                        .get("native_process", {})
-                        .get("rss_bytes_peak")
-                        or 0
-                        for item in attempts
-                    ),
+                    (_rss_peak(item) or 0 for item in attempts),
                     default=0,
                 )
                 or None,
                 "native_avg_cores_used_median": _median(
-                    [
-                        ((item.get("native") or {}).get("resources") or {})
-                        .get("native_process", {})
-                        .get("avg_cores_used")
-                        for item in attempts
-                    ]
+                    [_native_process(item).get("avg_cores_used") for item in attempts]
                 )
                 if valid
                 else None,
@@ -279,16 +412,28 @@ def summarize(runs):
             {
                 "case": label,
                 "phase": "process-cold" if index == 0 else "warm",
-                **rows,
+                "baseline": baseline,
+                "candidate": candidate,
                 "candidate_over_baseline": b / a if a and b is not None else None,
                 "raw_wav_identity": len(set(hashes)) == 1
                 if len(hashes) == 4 and None not in hashes
                 else None,
             }
         )
-    compute = [run["report"].get("compute") for run in runs]
+    compute = [
+        value if isinstance(value := run["report"].get("compute"), str) else None
+        for run in runs
+    ]
     stopped = [
-        run["report"].get("server_shutdown", {}).get("confirmed_exited") for run in runs
+        value
+        if isinstance(
+            value := _mapping(run["report"].get("server_shutdown", {})).get(
+                "confirmed_exited"
+            ),
+            bool,
+        )
+        else None
+        for run in runs
     ]
     return {
         "startup": groups,
@@ -305,21 +450,21 @@ def summarize(runs):
 
 
 def run(
-    options,
+    options: _ComparisonOptions,
     *,
-    probe_runner=probe.run,
-    path_check=moss_cpp_paths,
-    settings_loader=load_app_settings,
-    registry_initializer=initialize_voice_registry,
-):
-    output = options.output.expanduser().resolve()
+    probe_runner: _ProbeRunner = probe.run,
+    path_check: Callable[[str | Path | None], tuple[Path, Path, Path]] = moss_cpp_paths,
+    settings_loader: Callable[[], AppSettings] = load_app_settings,
+    registry_initializer: probe._RegistryInitializer = initialize_voice_registry,
+) -> int:
+    output = _output_directory(options.output)
     archive = output.parent / f"{output.name}.zip"
     if output.exists() or archive.exists():
         raise ValueError(
             "Output directory or archive already exists; choose a new --output"
         )
     output.mkdir(parents=True)
-    report = {
+    report: _ComparisonReport = {
         "schema": "vntts.native-build-comparison",
         "schema_version": 1,
         "order": list(ORDER),
@@ -364,7 +509,7 @@ def run(
                 "Reference preflight failed: "
                 + ", ".join(preflight["rejection_reasons"])
             )
-        model_name = options.model if options.model is not None else settings.tts_model
+        model_name = probe._model_name(options.model, settings)
         paths = {}
         for variant in ("baseline", "candidate"):
             with probe._configured_native_paths(
@@ -384,15 +529,11 @@ def run(
             "model": _identity(model),
             "sidecar": _identity(sidecar),
         }
-        builds = {}
+        builds: dict[str, dict[str, object] | None] = {}
         for variant in ("baseline", "candidate"):
             directory = paths[variant][0].parent
             manifest = directory / "VNTTS-BUILD.json"
-            builds[variant] = (
-                json.loads(manifest.read_text(encoding="utf-8-sig"))
-                if manifest.is_file()
-                else None
-            )
+            builds[variant] = _read_evidence(manifest) if manifest.is_file() else None
             for file in sorted(directory.iterdir()):
                 if file.is_file() and (
                     file.suffix.lower() == ".dll" or file.name == "VNTTS-BUILD.json"
@@ -418,7 +559,7 @@ def run(
                 f"[{index}/4] {variant}: fresh server, 1 process-cold + 2 warm phrases",
                 flush=True,
             )
-            probe_options = SimpleNamespace(
+            probe_options = probe._ProbeOptions(
                 reference=snapshot,
                 model=model,
                 executable=paths[variant][0],
@@ -429,7 +570,7 @@ def run(
                     probe_options,
                     sampling_profiles={"stable": report["controls"]["sampling"]},
                 )
-            child = json.loads((folder / "report.json").read_text(encoding="utf-8"))
+            child = _read_evidence(folder / "report.json")
             report["runs"].append(
                 {
                     "variant": variant,
@@ -474,9 +615,9 @@ def run(
     return code
 
 
-def main(argv=None):
+def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
-    options = parser.parse_args(argv)
+    options = parser.parse_args(argv, namespace=_ComparisonOptions())
     try:
         prepare_downloads(options)
         return run(options)
