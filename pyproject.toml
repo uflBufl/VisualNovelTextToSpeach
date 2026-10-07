@@ -141,19 +141,7 @@ extend-select = [
 
 [tool.mypy]
 python_version = "3.14"
-files = [
-    "vntts",
-    "scripts/run_changed_unittests.py",
-    "scripts/run_ci_unittests.py",
-    "scripts/check_ruff_complexity.py",
-    "scripts/smoke_speech_runtime.py",
-    "scripts/moss_clone_probe.py",
-    "scripts/moss_native_pause_probe.py",
-    "scripts/moss_native_compare.py",
-    "scripts/dependency_audit.py",
-    "scripts/dependency_report.py",
-    "scripts/verify_windows_release_matrix.py",
-]
+files = ["vntts", "scripts"]
 explicit_package_bases = true
 follow_imports = "normal"
 ignore_missing_imports = true
