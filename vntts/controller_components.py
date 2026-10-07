@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterable, Mapping
-from concurrent.futures import Executor
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
 from vntts.auto_advance_policy import auto_advance_control_state
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
+from vntts.cleanup import cleanup_on_exit
 from vntts.dialog import is_empty, speak_dialog
 from vntts.dialog_capture import (
     DiagnosticSnapshot,
@@ -256,10 +257,10 @@ class RuntimeLifecycleComponent:
 
     def start(self) -> bool:
         controller = self.controller
-        if controller.is_ready:
-            return True
         if controller.shutdown_requested.is_set():
             return False
+        if controller.is_ready:
+            return True
         use_xtts = controller.settings.speech_backend == "coqui-xtts"
         controller.status_handler(
             {
@@ -273,7 +274,7 @@ class RuntimeLifecycleComponent:
         if not self._initialize_backend(use_xtts):
             return False
         if controller.shutdown_requested.is_set():
-            controller._stop_tts()
+            self._stop_backend()
             return False
 
         try:
@@ -414,7 +415,7 @@ class RuntimeLifecycleComponent:
                 controller.error_handler,
             )
             if voice_router is None:
-                controller._stop_tts()
+                self._stop_backend()
                 return False
             if not _is_xtts_voice_router(voice_router):
                 raise TypeError("XTTS voice router does not implement typed playback")
@@ -689,44 +690,85 @@ class RuntimeLifecycleComponent:
                 controller.error_handler(error)
             controller.live_reader = None
 
-        executors = self._shutdown_executors(wait=not live_reader_timed_out)
         if live_reader_timed_out:
-
-            def finish_shutdown() -> None:
-                try:
-                    for executor in executors:
-                        executor.shutdown(wait=True)
-                finally:
-                    controller._stop_tts()
-                    controller.shutdown_complete.set()
-
-            Thread(
-                target=finish_shutdown, name="tts-shutdown-drain", daemon=True
-            ).start()
+            # Even a failed nonblocking cancellation must leave a drain owner.
+            with cleanup_on_exit(
+                self._start_shutdown_drain, description="Background shutdown drain"
+            ):
+                self._shutdown_executors(wait=False)
         else:
-            controller._stop_tts()
+            self._finish_shutdown()
+
+    def _start_shutdown_drain(self) -> None:
+        Thread(
+            target=self._finish_shutdown_async, name="tts-shutdown-drain", daemon=True
+        ).start()
+
+    def _finish_shutdown_async(self) -> None:
+        try:
+            self._finish_shutdown()
+        except Exception as error:
+            self.controller.error_handler(error)
+
+    def _finish_shutdown(self) -> None:
+        controller = self.controller
+        self._shutdown_executors(wait=True)
+        if self._stop_backend():
             controller.shutdown_complete.set()
 
-    def _shutdown_executors(self, *, wait: bool) -> list[Executor]:
+    def _stop_backend(self) -> bool:
         controller = self.controller
-        pending: list[Executor] = []
-        for attribute in (
-            "capture_executor",
-            "ocr_executor",
-            "speech_executor",
-            "playback_executor",
-        ):
-            executor = getattr(controller, attribute)
-            if executor is not None:
-                executor.shutdown(
-                    wait=wait,
-                    cancel_futures=not wait,
+        released = False
+        try:
+            with ExitStack() as cleanup:
+                for operation in ("shutdown", "stop"):
+                    release = getattr(controller.tts, operation, None)
+                    if callable(release):
+                        cleanup.enter_context(
+                            cleanup_on_exit(
+                                release, description=f"Speech backend {operation}"
+                            )
+                        )
+            released = True
+        except Exception as error:
+            controller.error_handler(error)
+        finally:
+            if not released:
+                with self._shutdown_lock:
+                    self._shutdown_started.set()
+                    controller.shutdown_requested.set()
+        if released:
+            controller.tts = None
+            controller.voice_router = None
+            controller.speech_backend = None
+        return released
+
+    def _shutdown_executors(self, *, wait: bool) -> None:
+        with ExitStack() as cleanup:
+            for attribute in reversed(
+                (
+                    "capture_executor",
+                    "ocr_executor",
+                    "speech_executor",
+                    "playback_executor",
                 )
-                if not wait:
-                    pending.append(executor)
-                setattr(controller, attribute, None)
-        controller.schedule_dialog_read = None
-        return pending
+            ):
+                cleanup.enter_context(
+                    cleanup_on_exit(
+                        partial(self._shutdown_executor, attribute, wait=wait),
+                        description=f"{attribute} shutdown",
+                    )
+                )
+        self.controller.schedule_dialog_read = None
+
+    def _shutdown_executor(self, attribute: str, *, wait: bool) -> None:
+        executor = getattr(self.controller, attribute)
+        if executor is not None:
+            executor.shutdown(wait=wait, cancel_futures=not wait)
+            # A nonblocking shutdown only requests release. Keep the owner until
+            # its blocking drain succeeds, including when that drain raises.
+            if wait:
+                setattr(self.controller, attribute, None)
 
 
 @dataclass(frozen=True)

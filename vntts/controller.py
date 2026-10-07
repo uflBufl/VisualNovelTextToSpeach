@@ -3737,23 +3737,6 @@ class AppController:
             self.last_diagnostic = snapshot
         self.diagnostic_handler(snapshot)
 
-    def _stop_tts(self) -> None:
-        active_tts = self.tts
-        if active_tts is not None and hasattr(active_tts, "stop"):
-            try:
-                active_tts.stop()
-            except Exception as error:
-                self.error_handler(error)
-        shutdown = getattr(active_tts, "shutdown", None)
-        if callable(shutdown):
-            try:
-                shutdown()
-            except Exception as error:
-                self.error_handler(error)
-        self.tts = None
-        self.voice_router = None
-        self.speech_backend = None
-
     def _interrupt_speech(self) -> bool | None:
         if self.tts is not None and hasattr(self.tts, "stop"):
             return bool(self.tts.stop())
