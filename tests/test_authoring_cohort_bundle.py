@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import vntts.authoring.cohort_bundle as cohort_bundle_module
-from tests import test_authoring_cohort_review
+from tests.authoring_fixtures import create_pending_cohort_workspace
 from tests.symlink_support import symlink_or_skip
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.cohort_bundle import (
@@ -27,11 +27,10 @@ from vntts.authoring.cohort_bundle import (
 
 class AuthoringCohortBundleTest(unittest.TestCase):
     def create_sources(self, root):
-        fixture = test_authoring_cohort_review.AuthoringCohortReviewTest()
-        first, first_state, first_queue = fixture.create_pending_workspace(
+        first, first_state, first_queue = create_pending_cohort_workspace(
             root / "first"
         )
-        second, second_state, second_queue = fixture.create_pending_workspace(
+        second, second_state, second_queue = create_pending_cohort_workspace(
             root / "second"
         )
         return (

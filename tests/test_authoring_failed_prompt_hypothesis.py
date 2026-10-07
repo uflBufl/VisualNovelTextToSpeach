@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from vntts_artifacts.file_integrity import sha256_file
 
-from tests import test_authoring_missing_voice_reuse as reuse_fixtures
+from tests.missing_voice_reuse_fixtures import create_missing_voice_reuse_workspace
 from vntts.authoring.failed_prompt_hypothesis import (
     FailedPromptHypothesisError,
     publish_failed_prompt_hypothesis_selection,
@@ -40,8 +40,7 @@ def write_wav(path):
 
 class AuthoringFailedPromptHypothesisTest(unittest.TestCase):
     def create_review(self, root, *, tamper_prompt=False):
-        helper = reuse_fixtures.AuthoringMissingVoiceReuseTest()
-        fixture, _imported, workspace = helper.create_workspace(
+        fixture, _imported, workspace = create_missing_voice_reuse_workspace(
             root,
             text="What happened? You're hurt.",
             missing_voice_policy={

@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import tests.test_authoring_failure_reference_audit as fixtures
 import vntts.authoring.listening as listening
+from tests.authoring_fixtures import create_failed_reference_workspace
 from vntts.authoring import reference_render_comparison
 from vntts.authoring.failure_reference_audit import publish_failure_reference_audit
 from vntts.authoring.listening import load_listening_session
@@ -22,9 +23,7 @@ from vntts.authoring.reference_render_comparison import (
 
 class ReferenceRenderListeningContractTest(unittest.TestCase):
     def _comparison(self, root: Path):
-        workspace, queue_id = (
-            fixtures.FailureReferenceAuditTest().create_failed_workspace(root)
-        )
+        workspace, queue_id = create_failed_reference_workspace(root)
         audit_root = root / "audit"
         audit = publish_failure_reference_audit(workspace, audit_root, seed=0)
         audit_document = json.loads((audit_root / "audit.json").read_text())

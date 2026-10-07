@@ -6,7 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from tests import test_authoring_missing_voice_reuse as reuse_fixtures
+from tests.missing_voice_reuse_fixtures import create_missing_voice_reuse_workspace
 from vntts.authoring import failed_control_carry as carry_module
 from vntts.authoring.bulk_generation import load_generation_state
 from vntts.authoring.failed_control_carry import (
@@ -18,9 +18,7 @@ from vntts.authoring.workbench import create_resume_workspace
 
 class AuthoringFailedControlCarryTest(unittest.TestCase):
     def create_source_and_target(self, root, *, target_narrator="Centurion"):
-        fixture, imported, base = (
-            reuse_fixtures.AuthoringMissingVoiceReuseTest().create_workspace(root)
-        )
+        fixture, imported, base = create_missing_voice_reuse_workspace(root)
         base_workspace = json.loads((base / "workspace.json").read_text())
         run = base_workspace["run_config"]
         policy = {

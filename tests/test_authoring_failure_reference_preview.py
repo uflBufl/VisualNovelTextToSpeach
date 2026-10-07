@@ -7,10 +7,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from tests.authoring_fixtures import create_failed_reference_workspace
 from tests.test_authoring_failure_reference_audit import (
     _CollectedResult,
     _PreviewBackendFactory,
-    create_failed_reference_workspace,
 )
 from vntts.authoring.failure_reference_audit import (
     FailureReferenceAuditError,

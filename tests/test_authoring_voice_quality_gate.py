@@ -6,8 +6,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import vntts.authoring.voice_quality_gate as voice_quality_gate_module
-from tests import test_authoring_cohort_review
-from tests.authoring_fixtures import create_test_workspace
+from tests.authoring_fixtures import (
+    create_pending_cohort_workspace,
+    create_test_workspace,
+)
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.cohort_review import (
     build_cohort_review_decision,
@@ -38,8 +40,7 @@ class AuthoringVoiceQualityGateTest(unittest.TestCase):
         )
 
     def create_review(self, root):
-        fixture = test_authoring_cohort_review.AuthoringCohortReviewTest()
-        workspace, state_path, queue_id = fixture.create_pending_workspace(root)
+        workspace, state_path, queue_id = create_pending_cohort_workspace(root)
         state = json.loads(state_path.read_text())
         result = state["items"][queue_id]
         result.update(

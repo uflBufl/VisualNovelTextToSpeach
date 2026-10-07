@@ -21,7 +21,7 @@ try:
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
 
-    from tests import test_authoring_cohort_review
+    from tests.authoring_fixtures import create_pending_cohort_workspace
     from vntts.authoring.cohort_bundle import (
         build_cohort_review_bundle,
         execute_cohort_bundle_decision,
@@ -83,15 +83,13 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
         self.fail("Timed out waiting for Qt bundle work")
 
     def create_bundle(self, root):
-        fixture = test_authoring_cohort_review.AuthoringCohortReviewTest()
-        first = fixture.create_pending_workspace(root / "first")[0]
-        second = fixture.create_pending_workspace(root / "second")[0]
+        first = create_pending_cohort_workspace(root / "first")[0]
+        second = create_pending_cohort_workspace(root / "second")[0]
         return build_cohort_review_bundle((first, second))
 
     def create_quality_gated_bundle(self, root, *, mismatch=False):
-        fixture = test_authoring_cohort_review.AuthoringCohortReviewTest()
-        first, first_state, queue_id = fixture.create_pending_workspace(root / "first")
-        second, second_state, _second_queue = fixture.create_pending_workspace(
+        first, first_state, queue_id = create_pending_cohort_workspace(root / "first")
+        second, second_state, _second_queue = create_pending_cohort_workspace(
             root / "second"
         )
         for state_path in (first_state, second_state):

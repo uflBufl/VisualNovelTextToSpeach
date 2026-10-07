@@ -16,7 +16,7 @@ try:
     from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtWidgets import QApplication
 
-    from tests import test_authoring_failure_reference_audit
+    from tests.authoring_fixtures import create_failed_reference_workspace
     from vntts.authoring.failure_reference_audit import (
         load_failure_reference_decisions,
         prepare_failure_reference_audio,
@@ -108,8 +108,7 @@ class FailureReferenceAuditUiTest(unittest.TestCase):
         self.fail("Timed out waiting for failed-reference audit work")
 
     def create_audit(self, root):
-        fixture = test_authoring_failure_reference_audit.FailureReferenceAuditTest()
-        workspace, _queue_id = fixture.create_failed_workspace(root)
+        workspace, _queue_id = create_failed_reference_workspace(root)
         output = root / "audit"
         publish_failure_reference_audit(workspace, output)
         return output
