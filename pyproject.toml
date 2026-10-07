@@ -148,6 +148,8 @@ files = [
     "scripts/check_ruff_complexity.py",
     "scripts/smoke_speech_runtime.py",
     "scripts/moss_clone_probe.py",
+    "scripts/moss_native_pause_probe.py",
+    "scripts/moss_native_compare.py",
     "scripts/dependency_audit.py",
     "scripts/dependency_report.py",
     "scripts/verify_windows_release_matrix.py",
