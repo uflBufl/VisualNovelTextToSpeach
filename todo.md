@@ -576,5 +576,4 @@ Planned implementation order after approval:
 
 ## Active - Finish shared listening and generation fixture ownership
 
-- [ ] Include all shared `tests/*_fixtures.py` owners in the normal MyPy gate using its supported file glob; current imports alone do not include the new bulk fixture as a strict root. Preserve directory-wide vntts/scripts targets; verify future matching owners join without a per-file allowlist. The configuration change requires the selector full-suite gate.
 - [ ] Run the local selector first after source freezes, configured Ruff/format/MyPy/complexity/lock checks, shared-owner disabled-rule inventory and baseline byte/contract witnesses. Independently review ownership and all direct/alias/multiline callers, expand matching pure helpers across the repository, commit each repair separately, fetch main and run branch selector before push. Remove completed TODO work and update bounded memory.

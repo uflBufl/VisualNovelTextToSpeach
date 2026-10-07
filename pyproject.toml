@@ -141,7 +141,7 @@ extend-select = [
 
 [tool.mypy]
 python_version = "3.14"
-files = ["vntts", "scripts"]
+files = ["vntts", "scripts", "tests/*_fixtures.py"]
 explicit_package_bases = true
 follow_imports = "normal"
 ignore_missing_imports = true
