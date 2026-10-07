@@ -4,14 +4,12 @@
 from __future__ import annotations
 
 import argparse
-import html
 import json
 import os
 import socket
 import sys
 import time
 import wave
-from collections import defaultdict
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,69 +24,13 @@ if TYPE_CHECKING:
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CATALOG = PROJECT_ROOT / "ui-catalog.json"
 DEFAULT_OUTPUT = PROJECT_ROOT / ".codex" / "ui-catalog"
+sys.path.insert(0, str(PROJECT_ROOT))
 
-
-def load_catalog(path: Path) -> dict[str, Any]:
-    document = json.loads(path.read_text(encoding="utf-8"))
-    if document.get("schema_version") != 1:
-        raise ValueError("ui-catalog.json must use schema_version 1")
-    contracts = document.get("contracts")
-    surfaces = document.get("surfaces")
-    if not isinstance(contracts, dict) or not isinstance(surfaces, list):
-        raise ValueError("catalog requires contracts and surfaces")
-
-    surface_ids = _validate_surface_definitions(surfaces, contracts)
-    _validate_surface_links(surfaces, surface_ids)
-    return document
-
-
-def _validate_surface_definitions(
-    surfaces: list[dict[str, Any]], contracts: dict[str, Any]
-) -> set[str]:
-    surface_ids: set[str] = set()
-    story_ids: set[str] = set()
-    for surface in surfaces:
-        surface_id = _required_text(surface, "id")
-        if surface_id in surface_ids:
-            raise ValueError(f"duplicate surface id: {surface_id}")
-        surface_ids.add(surface_id)
-        for field in ("title", "family", "audience", "mission", "canonical_owner"):
-            _required_text(surface, field)
-        for contract_id in surface.get("contracts", []):
-            if contract_id not in contracts:
-                raise ValueError(
-                    f"{surface_id} references unknown contract: {contract_id}"
-                )
-        for story in surface.get("stories", []):
-            story_id = _required_text(story, "id")
-            if story_id in story_ids:
-                raise ValueError(f"duplicate story id: {story_id}")
-            story_ids.add(story_id)
-            _required_text(story, "title")
-            _required_text(story, "state")
-    return surface_ids
-
-
-def _validate_surface_links(
-    surfaces: list[dict[str, Any]], surface_ids: set[str]
-) -> None:
-    for surface in surfaces:
-        surface_id = surface["id"]
-        for related_id in surface.get("related", []):
-            if related_id not in surface_ids:
-                raise ValueError(
-                    f"{surface_id} references unknown related surface: {related_id}"
-                )
-        owner = surface["canonical_owner"]
-        if owner not in surface_ids:
-            raise ValueError(f"{surface_id} references unknown owner: {owner}")
-
-
-def _required_text(value: dict[str, Any], field: str) -> str:
-    result = value.get(field)
-    if not isinstance(result, str) or not result.strip():
-        raise ValueError(f"catalog field {field!r} must be non-empty text")
-    return result
+from vntts.ui_catalog import (  # noqa: E402
+    UICatalog,
+    _write_catalog,
+    load_catalog,
+)
 
 
 def _set_long_authoring_review(dialog: Any, state: str) -> None:
@@ -170,10 +112,9 @@ def _source_reference_review(state: str) -> SourceReferenceQualityDialog:
 
 
 def _render_stories(
-    catalog: dict[str, Any], output: Path, selected_surface: str | None
+    catalog: UICatalog, output: Path, selected_surface: str | None
 ) -> dict[str, str]:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    sys.path.insert(0, str(PROJECT_ROOT))
 
     from PIL import Image, ImageDraw, ImageFont
     from PySide6.QtCore import QPoint, QSettings, QSignalBlocker, QTimer
@@ -2276,148 +2217,6 @@ def _render_stories(
                 widget.deleteLater()
                 app.processEvents()
     return captured
-
-
-def _review_packet(
-    catalog: dict[str, Any], surface: dict[str, Any], captured: dict[str, str]
-) -> dict[str, Any]:
-    by_id = {item["id"]: item for item in catalog["surfaces"]}
-    related_ids = list(
-        dict.fromkeys([surface["canonical_owner"], *surface.get("related", [])])
-    )
-
-    def public_surface(value: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "id": value["id"],
-            "title": value["title"],
-            "family": value["family"],
-            "audience": value["audience"],
-            "mission": value["mission"],
-            "canonical_owner": value["canonical_owner"],
-            "related": list(value.get("related", [])),
-            "contracts": [
-                {"id": contract_id, "rule": catalog["contracts"][contract_id]}
-                for contract_id in value.get("contracts", [])
-            ],
-            "stories": [
-                {
-                    "id": story["id"],
-                    "title": story["title"],
-                    "state": story["state"],
-                    "screenshot": captured.get(story["id"]),
-                }
-                for story in value.get("stories", [])
-            ],
-        }
-
-    return {
-        "review_boundary": (
-            "Review product behavior and visible interface only. Do not infer or "
-            "request implementation details."
-        ),
-        "target": public_surface(surface),
-        "related_surfaces": [
-            public_surface(by_id[surface_id])
-            for surface_id in related_ids
-            if surface_id != surface["id"]
-        ],
-    }
-
-
-def _write_catalog(
-    catalog: dict[str, Any], output: Path, captured: dict[str, str]
-) -> None:
-    packets = output / "review-packets"
-    packets.mkdir(parents=True, exist_ok=True)
-    for surface in catalog["surfaces"]:
-        packet = _review_packet(catalog, surface, captured)
-        (packets / f"{surface['id']}.json").write_text(
-            json.dumps(packet, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-
-    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for surface in catalog["surfaces"]:
-        groups[surface["family"]].append(surface)
-
-    navigation: list[str] = []
-    sections: list[str] = []
-    for family, surfaces in groups.items():
-        navigation.append(f"<h3>{html.escape(family)}</h3><ul>")
-        sections.append(f"<section><h2>{html.escape(family)}</h2>")
-        for surface in surfaces:
-            surface_id = surface["id"]
-            navigation.append(
-                f'<li><a href="#{html.escape(surface_id)}">'
-                f"{html.escape(surface['title'])}</a></li>"
-            )
-            owner = surface["canonical_owner"]
-            relations = ", ".join(surface.get("related", [])) or "None"
-            contracts = "".join(
-                "<li><strong>"
-                + html.escape(contract_id)
-                + ":</strong> "
-                + html.escape(catalog["contracts"][contract_id])
-                + "</li>"
-                for contract_id in surface.get("contracts", [])
-            )
-            stories = []
-            for story in surface.get("stories", []):
-                screenshot = captured.get(story["id"])
-                image = (
-                    f'<a href="{html.escape(screenshot)}"><img src="{html.escape(screenshot)}" '
-                    f'alt="{html.escape(story["title"])}"></a>'
-                    if screenshot
-                    else '<div class="missing">Map only: deterministic render not added yet.</div>'
-                )
-                stories.append(
-                    '<article class="story">'
-                    f"<h4>{html.escape(story['title'])}</h4>"
-                    f"<p>{html.escape(story['state'])}</p>{image}</article>"
-                )
-            if not stories:
-                stories.append(
-                    '<div class="missing">Mapped relationship; render when this surface is next changed.</div>'
-                )
-            sections.append(
-                f'<article class="surface" id="{html.escape(surface_id)}">'
-                f"<header><div><h3>{html.escape(surface['title'])}</h3>"
-                f"<p>{html.escape(surface['mission'])}</p></div>"
-                f'<a class="packet" href="review-packets/{html.escape(surface_id)}.json">Astra packet</a></header>'
-                '<dl class="meta">'
-                f"<dt>Audience</dt><dd>{html.escape(surface['audience'])}</dd>"
-                f"<dt>Canonical owner</dt><dd>{html.escape(owner)}</dd>"
-                f"<dt>Related</dt><dd>{html.escape(relations)}</dd></dl>"
-                f'<ul class="contracts">{contracts}</ul>'
-                f'<div class="stories">{"".join(stories)}</div></article>'
-            )
-        navigation.append("</ul>")
-        sections.append("</section>")
-
-    page = f"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>{html.escape(catalog["title"])}</title>
-<style>
-:root {{ color-scheme: dark; font: 15px/1.5 system-ui, sans-serif; background:#171717; color:#eee; }}
-* {{ box-sizing:border-box; }} body {{ margin:0; }} a {{ color:#8fcbff; }}
-nav {{ position:fixed; inset:0 auto 0 0; width:270px; overflow:auto; padding:20px; background:#202020; border-right:1px solid #444; }}
-nav h1 {{ font-size:18px; margin:0 0 20px; }} nav h3 {{ margin:18px 0 4px; color:#bbb; font-size:12px; text-transform:uppercase; }}
-nav ul {{ list-style:none; margin:0; padding:0; }} nav li {{ margin:5px 0; }}
-main {{ margin-left:270px; padding:28px; max-width:1500px; }} main > p {{ color:#bbb; max-width:850px; }}
-section > h2 {{ margin-top:42px; border-bottom:1px solid #444; padding-bottom:8px; }}
-.surface {{ background:#252525; border:1px solid #444; border-radius:12px; margin:18px 0; padding:20px; }}
-.surface header {{ display:flex; gap:20px; align-items:start; justify-content:space-between; }} h3,h4,p {{ margin-top:0; }}
-.packet {{ white-space:nowrap; border:1px solid #666; border-radius:7px; padding:6px 10px; text-decoration:none; }}
-.meta {{ display:grid; grid-template-columns:max-content 1fr; gap:4px 14px; }} .meta dt {{ color:#aaa; }} .meta dd {{ margin:0; }}
-.contracts {{ padding-left:20px; color:#ccc; }} .stories {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(360px,1fr)); gap:16px; margin-top:18px; }}
-.story {{ background:#1b1b1b; border-radius:9px; padding:14px; }} .story img {{ display:block; width:100%; height:auto; border:1px solid #555; border-radius:6px; }}
-.missing {{ color:#aaa; border:1px dashed #555; border-radius:7px; padding:12px; }}
-@media (max-width:850px) {{ nav {{ position:static; width:auto; }} main {{ margin:0; padding:18px; }} .stories {{ grid-template-columns:1fr; }} }}
-</style></head><body>
-<nav><h1>{html.escape(catalog["title"])}</h1>{"".join(navigation)}</nav>
-<main><h1>Interface catalog</h1><p>One product map, shared visual contracts and reproducible states of the real Qt widgets. Use each Astra packet with the target screenshots; it deliberately contains no source-code context.</p>{"".join(sections)}</main>
-</body></html>"""
-    (output / "index.html").write_text(page, encoding="utf-8")
 
 
 def main() -> int:

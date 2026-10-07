@@ -993,7 +993,7 @@
       "path": "scripts/render_ui_catalog.py",
       "scope": "_render_stories",
       "count": 1,
-      "maximum": 948
+      "maximum": 947
     },
     {
       "code": "PLR0915",
