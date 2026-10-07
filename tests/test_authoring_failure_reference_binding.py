@@ -7,8 +7,8 @@ from unittest.mock import patch
 import vntts.authoring.workbench as workbench_module
 import vntts.authoring.workspace_creation as workspace_creation_module
 from tests.authoring_fixtures import create_failed_reference_workspace
+from tests.bulk_generation_fixtures import SyntheticRenderer
 from tests.symlink_support import symlink_or_skip
-from tests.test_authoring_bulk_generation import SyntheticRenderer
 from vntts.authoring import (
     failure_reference_audit as failure_audit_module,
 )

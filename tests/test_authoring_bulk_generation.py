@@ -1,6 +1,5 @@
 import hashlib
 import json
-import math
 import os
 import socket
 import unittest
@@ -16,10 +15,15 @@ from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import GeneratedAudioIndex
-from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 
 import vntts.authoring.bulk_generation as bulk_module
 import vntts.authoring.generation_lease as generation_lease_module
+from tests.bulk_generation_fixtures import (
+    SyntheticRenderer,
+    audio_samples,
+    queue_item,
+    write_queue,
+)
 from tests.symlink_support import symlink_or_skip
 from vntts.audio_cache import PersistentAudioCache
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
@@ -56,94 +60,6 @@ from vntts.synthesis import (
     SynthesisTiming,
 )
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
-
-
-def queue_item(name="one", *, action="generate", character="Hero", text=None):
-    text = text or f"Exact text for {name}."
-    text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    return {
-        "record_type": "generation_item",
-        "queue_id": f"line:{name}:{text_hash[:16]}",
-        "line_id": f"line:{name}",
-        "text_sha256": text_hash,
-        "text": text,
-        "speaker": character,
-        "voice_character": character,
-        "action": action,
-        "prompt_adapters": {"generic": f"Delivery for {name}"},
-    }
-
-
-def write_queue(path, items):
-    return write_voice_generation_queue(
-        path,
-        {
-            "game": "Synthetic Game",
-            "language": "en",
-        },
-        items,
-    )
-
-
-def audio_samples(sample_rate=16_000):
-    indexes = np.arange(sample_rate // 4, dtype=np.float32)
-    return (0.25 * np.sin(2 * math.pi * 220 * indexes / sample_rate)).astype(np.float32)
-
-
-class SyntheticRenderer:
-    name = "synthetic"
-    model_name = "synthetic-v1"
-
-    def __init__(
-        self,
-        outcomes=None,
-        *,
-        inspect_state=None,
-        diagnostics_backend=None,
-        pcm=None,
-        result_sample_rate=16_000,
-    ):
-        self.outcomes = list(outcomes or [SynthesisCompletion.COMPLETE])
-        self.requests = []
-        self.inspect_state = inspect_state
-        self.diagnostics_backend = diagnostics_backend
-        self.pcm = pcm
-        self.result_sample_rate = result_sample_rate
-        self.stop_calls = 0
-
-    def render(self, request):
-        self.requests.append(request)
-        if self.inspect_state is not None:
-            self.inspect_state(request)
-        outcome = (
-            self.outcomes.pop(0) if self.outcomes else SynthesisCompletion.COMPLETE
-        )
-        if isinstance(outcome, BaseException):
-            raise outcome
-        pcm = audio_samples() if self.pcm is None else self.pcm
-
-        def produce():
-            yield SynthesisChunk(pcm, 16_000, 0, 1.0)
-            return SynthesisResult(
-                pcm=pcm,
-                sample_rate=self.result_sample_rate,
-                completion=outcome,
-                limits=SynthesisLimits(256, 180.0),
-                timing=SynthesisTiming(1.0, 2.0),
-                diagnostics=SynthesisDiagnostics(
-                    backend=self.diagnostics_backend or self.name,
-                    cache_source="fresh-generation",
-                    generation_profile=request.generation_profile,
-                    seed=request.seed,
-                    chunk_count=1,
-                    sample_count=len(pcm),
-                ),
-            )
-
-        return SynthesisChunkStream(produce())
-
-    def stop(self):
-        self.stop_calls += 1
 
 
 class CacheAwareSyntheticRenderer:

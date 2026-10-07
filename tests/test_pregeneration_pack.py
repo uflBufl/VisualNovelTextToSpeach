@@ -25,7 +25,7 @@ from vntts_artifacts.voice_generation_queue import (
 )
 from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_manifest
 
-from tests.test_authoring_bulk_generation import SyntheticRenderer
+from tests.bulk_generation_fixtures import SyntheticRenderer
 from vntts.authoring.audio_events import audio_event_plan_for_record
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,

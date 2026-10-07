@@ -1196,7 +1196,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             )
 
     def test_offline_pocket_fallback_carries_exact_failure_with_fresh_seed_space(self):
-        from tests.test_authoring_bulk_generation import SyntheticRenderer
+        from tests.bulk_generation_fixtures import SyntheticRenderer
         from vntts.authoring.bulk_generation import (
             load_generation_state,
             run_bulk_generation,
@@ -1370,7 +1370,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertEqual(source_state_after, source_state_before)
 
     def test_automatic_unresolved_authority_unlocks_exact_early_pocket_fallback(self):
-        from tests.test_authoring_bulk_generation import (
+        from tests.bulk_generation_fixtures import (
             SyntheticRenderer,
             audio_samples,
         )
@@ -1526,7 +1526,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertTrue(fallback_unchanged)
 
     def test_sentence_repair_carries_exact_current_failure_between_workspaces(self):
-        from tests.test_authoring_bulk_generation import SyntheticRenderer
+        from tests.bulk_generation_fixtures import SyntheticRenderer
         from vntts.authoring.bulk_generation import (
             load_generation_state,
             run_bulk_generation,
@@ -1637,7 +1637,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         )
 
     def test_sentence_repair_carries_typed_internal_silence_failure(self):
-        from tests.test_authoring_bulk_generation import (
+        from tests.bulk_generation_fixtures import (
             SyntheticRenderer,
             audio_samples,
         )
@@ -1710,7 +1710,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertEqual(source_state_after, source_state_before)
 
     def test_inline_pause_repair_carries_exact_internal_silence_failure(self):
-        from tests.test_authoring_bulk_generation import (
+        from tests.bulk_generation_fixtures import (
             SyntheticRenderer,
             audio_samples,
         )
@@ -1832,7 +1832,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         )
 
     def test_exhausted_inline_pause_failure_moves_to_one_typed_pocket_attempt(self):
-        from tests.test_authoring_bulk_generation import (
+        from tests.bulk_generation_fixtures import (
             SyntheticRenderer,
             audio_samples,
         )
@@ -2040,7 +2040,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         )
 
     def test_exhausted_raw_inline_pause_failure_moves_to_pocket(self):
-        from tests.test_authoring_bulk_generation import (
+        from tests.bulk_generation_fixtures import (
             SyntheticRenderer,
             audio_samples,
         )
@@ -2152,7 +2152,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertEqual(source_state_after, source_state_before)
 
     def test_bounded_seed_repair_carries_provider_attempts_and_stops_at_three(self):
-        from tests.test_authoring_bulk_generation import SyntheticRenderer
+        from tests.bulk_generation_fixtures import SyntheticRenderer
         from vntts.authoring.bulk_generation import (
             load_generation_state,
             publish_generated_manifest,
@@ -2314,7 +2314,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         )
 
     def test_bounded_successor_preserves_prior_sentence_repair_strategy(self):
-        from tests.test_authoring_bulk_generation import SyntheticRenderer
+        from tests.bulk_generation_fixtures import SyntheticRenderer
         from vntts.authoring.bulk_generation import (
             load_generation_state,
             publish_generated_manifest,
@@ -2412,7 +2412,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         )
 
     def test_outcome_merge_copies_only_exact_reviewed_repair_and_is_idempotent(self):
-        from tests.test_authoring_bulk_generation import SyntheticRenderer
+        from tests.bulk_generation_fixtures import SyntheticRenderer
         from vntts.authoring.bulk_generation import (
             load_generation_state,
             run_bulk_generation,
@@ -2597,7 +2597,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 )
 
     def test_outcome_merge_accepts_direct_reviewed_bounded_seed_repair(self):
-        from tests.test_authoring_bulk_generation import SyntheticRenderer
+        from tests.bulk_generation_fixtures import SyntheticRenderer
         from vntts.authoring.bulk_generation import (
             load_generation_state,
             publish_generated_manifest,
@@ -2684,7 +2684,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertEqual([request.seed for request in success.requests], [1])
 
     def test_reconciliation_merges_only_its_exact_terminal_source(self):
-        from tests.test_authoring_bulk_generation import SyntheticRenderer
+        from tests.bulk_generation_fixtures import SyntheticRenderer
         from vntts.authoring.bulk_generation import (
             load_generation_state,
             run_bulk_generation,
@@ -4121,7 +4121,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 for item in list_review_items(created.directory)
                 if item.queue_id == rhiannon.queue_id
             )
-            from tests.test_authoring_bulk_generation import SyntheticRenderer
+            from tests.bulk_generation_fixtures import SyntheticRenderer
             from vntts.authoring.bulk_generation import (
                 load_generation_state,
                 run_bulk_generation,

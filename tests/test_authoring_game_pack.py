@@ -1,7 +1,6 @@
 import hashlib
 import io
 import json
-import math
 import shutil
 import tempfile
 import unittest
@@ -10,7 +9,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import numpy as np
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
@@ -26,6 +24,7 @@ from vntts_artifacts.voice_manifest import write_voice_manifest
 
 import vntts.authoring.bulk_generation as bulk_generation_module
 import vntts.authoring.game_pack as game_pack_module
+from tests.bulk_generation_fixtures import audio_samples
 from tests.symlink_support import symlink_or_skip
 from tests.test_authoring_render_hypothesis_review import write_comparison
 from vntts.authoring.bulk_generation import (
@@ -69,11 +68,6 @@ from vntts.synthesis import (
     SynthesisResult,
     SynthesisTiming,
 )
-
-
-def audio_samples(sample_rate=16_000):
-    indexes = np.arange(sample_rate // 4, dtype=np.float32)
-    return (0.25 * np.sin(2 * math.pi * 220 * indexes / sample_rate)).astype(np.float32)
 
 
 class SyntheticRenderer:

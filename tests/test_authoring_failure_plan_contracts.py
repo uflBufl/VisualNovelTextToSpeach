@@ -6,10 +6,10 @@ from unittest.mock import patch
 
 from vntts_artifacts.file_integrity import sha256_file
 
-import tests.test_authoring_bulk_generation as generation_fixture
 import tests.test_authoring_specialist_failure_plan as specialist_fixture
 import vntts.authoring.failure_regeneration as regeneration
 import vntts.authoring.specialist_failure_plan as specialist
+from tests.bulk_generation_fixtures import queue_item, write_queue
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import LEGACY_STATE_SCHEMA
 from vntts.authoring.cohort_review import CohortReviewError
@@ -116,8 +116,8 @@ class FailurePlanContractsTest(unittest.TestCase):
     def regeneration_fixture(self, root):
         workspace = {"workspace_id": "fixture", "config_fingerprint": "a" * 64}
         (root / "workspace.json").write_text(json.dumps(workspace))
-        item = generation_fixture.queue_item("legacy")
-        queue = generation_fixture.write_queue(root / "queue.jsonl", [item])
+        item = queue_item("legacy")
+        queue = write_queue(root / "queue.jsonl", [item])
         generated = root / "generated-audio"
         generated.mkdir()
         state = generated / "generation-state.json"

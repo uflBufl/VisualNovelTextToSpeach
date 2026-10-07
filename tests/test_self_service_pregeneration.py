@@ -15,7 +15,7 @@ from PySide6.QtGui import QPixmap  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog, QSizePolicy  # noqa: E402
 
-from tests.test_authoring_bulk_generation import SyntheticRenderer  # noqa: E402
+from tests.bulk_generation_fixtures import SyntheticRenderer  # noqa: E402
 from tests.test_pregeneration_setup import (  # noqa: E402
     ManualThreadPool,
     write_story_index,
