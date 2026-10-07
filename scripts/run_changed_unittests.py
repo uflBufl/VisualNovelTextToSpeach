@@ -6,6 +6,7 @@ import importlib.util
 import subprocess
 import sys
 from collections import defaultdict, deque
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from scripts.run_ci_unittests import main as run_unittests
@@ -15,18 +16,18 @@ SOURCE_DIRS = ("vntts", "scripts", "tests")
 FULL_SUITE_FILES = {"pyproject.toml", "uv.lock", ".python-version", "tests/__init__.py"}
 
 
-def _git(*arguments):
+def _git(*arguments: str) -> bytes:
     return subprocess.check_output(["git", *arguments], cwd=ROOT)
 
 
-def changed_paths(base):
+def changed_paths(base: str) -> set[str]:
     commit = _git("merge-base", "HEAD", base).decode().strip()
     tracked = _git("diff", "--name-only", "-z", "--no-renames", commit)
     untracked = _git("ls-files", "--others", "--exclude-standard", "-z")
     return {value.decode() for value in (tracked + untracked).split(b"\0") if value}
 
 
-def _module_name(path):
+def _module_name(path: str | Path) -> str | None:
     parts = Path(path).with_suffix("").parts
     if not parts or parts[0] not in SOURCE_DIRS:
         return None
@@ -35,22 +36,23 @@ def _module_name(path):
     return ".".join(parts)
 
 
-def _module_files():
+def _module_files() -> dict[str, Path]:
     return {
-        _module_name(path.relative_to(ROOT)): path
+        name: path
         for directory in SOURCE_DIRS
         for path in (ROOT / directory).rglob("*.py")
+        if (name := _module_name(path.relative_to(ROOT))) is not None
     }
 
 
-def _add_known_module(found, known, name):
+def _add_known_module(found: set[str], known: set[str], name: str) -> None:
     while name:
         if name in known:
             found.add(name)
         name = name.rpartition(".")[0]
 
 
-def _import_names(node, package):
+def _import_names(node: ast.AST, package: str) -> Iterable[str]:
     if isinstance(node, ast.Import):
         return (alias.name for alias in node.names)
     if isinstance(node, ast.ImportFrom):
@@ -63,9 +65,9 @@ def _import_names(node, package):
     return ()
 
 
-def _imports(path, module, known):
+def _imports(path: Path, module: str, known: set[str]) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    found = set()
+    found: set[str] = set()
     package = module if path.name == "__init__.py" else module.rpartition(".")[0]
     for node in ast.walk(tree):
         for name in _import_names(node, package):
@@ -73,7 +75,7 @@ def _imports(path, module, known):
     return found
 
 
-def _changed_modules(changed):
+def _changed_modules(changed: set[str]) -> tuple[set[str] | None, str | None]:
     full = sorted(changed & FULL_SUITE_FILES)
     if full:
         return None, f"shared configuration changed: {', '.join(full)}"
@@ -99,15 +101,19 @@ def _changed_modules(changed):
     return result, None
 
 
-def _reverse_dependencies(modules, known):
-    reverse = defaultdict(set)
+def _reverse_dependencies(
+    modules: Mapping[str, Path], known: set[str]
+) -> defaultdict[str, set[str]]:
+    reverse: defaultdict[str, set[str]] = defaultdict(set)
     for module, path in modules.items():
         for imported in _imports(path, module, known):
             reverse[imported].add(module)
     return reverse
 
 
-def _reachable_modules(reverse, starts):
+def _reachable_modules(
+    reverse: defaultdict[str, set[str]], starts: Iterable[str]
+) -> set[str]:
     reached = set(starts)
     queue = deque(starts)
     while queue:
@@ -117,7 +123,9 @@ def _reachable_modules(reverse, starts):
     return reached
 
 
-def select_test_modules(changed, modules=None):
+def select_test_modules(
+    changed: set[str], modules: Mapping[str, Path] | None = None
+) -> tuple[list[str] | None, str | None]:
     changed_modules, reason = _changed_modules(changed)
     if changed_modules is None:
         return None, reason
@@ -149,7 +157,7 @@ def select_test_modules(changed, modules=None):
     return selected, None
 
 
-def main(arguments=None):
+def main(arguments: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", default="origin/main", help="branch comparison ref")
     parser.add_argument("--local", action="store_true", help="compare only with HEAD")

@@ -158,6 +158,12 @@ class CiUnitTestRunnerTest(unittest.TestCase):
             runner.assert_not_called()
         self.assertIn("Exact test inventory is malformed", output.getvalue())
 
+    def test_discovery_rejects_an_executed_suite_with_empty_slots(self):
+        suite = unittest.TestSuite()
+        suite._tests = [None]
+        with self.assertRaisesRegex(ValueError, "empty test slot"):
+            tuple(_flatten_suite(suite))
+
     def test_exact_inventory_executes_each_named_test_once(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "tests.json"

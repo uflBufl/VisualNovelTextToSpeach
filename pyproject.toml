@@ -141,7 +141,13 @@ extend-select = [
 
 [tool.mypy]
 python_version = "3.14"
-files = ["vntts"]
+files = [
+    "vntts",
+    "scripts/run_changed_unittests.py",
+    "scripts/run_ci_unittests.py",
+    "scripts/check_ruff_complexity.py",
+]
+explicit_package_bases = true
 follow_imports = "normal"
 ignore_missing_imports = true
 disallow_untyped_defs = true

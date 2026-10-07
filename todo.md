@@ -573,3 +573,7 @@ Planned implementation order after approval:
 ## Active - Continue cleanup ownership expansion
 
 - [ ] **Remaining native acquisition boundaries:** qualify `_launch_owned_process` and Windows job initialization separately from the completed server-resource cleanup. Trace real Windows API failure behavior before changing guards; keep suspended-child ownership and the existing two-second wait budget. Gate: failed job acquisition plus kill/wait failures preserves the acquisition error and leaves no runnable child; retain real-Windows qualification where mocks cannot prove ownership.
+
+## Investigate remaining script type coverage
+
+- [ ] Qualify MyPy candidates for the other script tools before expanding beyond the three test/quality owners: native probes, runtime smoke and UI catalog currently expose errors when checked, and UI catalog follows deliberately untyped test fixtures. Use `--explicit-package-bases` to avoid double-naming scripts; distinguish actual shared data-contract problems from fixture/third-party boundaries. Next gate: inspect those owners/callers, preserve direct-script/module invocation, choose intended checker coverage, then enable each completed stage without ignores or manual duplicate checks. Raw candidates: `.codex/investigations/test-tooling-oct07-types-all.log` (not a defect inventory).

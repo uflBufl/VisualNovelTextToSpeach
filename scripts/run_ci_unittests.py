@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
 
 from vntts.cleanup import cleanup_on_exit, temporary_directory
@@ -32,11 +33,11 @@ SHARD_TIMEOUTS = {
 }
 
 
-def escape_workflow_command(value):
+def escape_workflow_command(value: str) -> str:
     return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
 
-def workflow_failure_details(value):
+def workflow_failure_details(value: str) -> str:
     if len(value) <= 4_000:
         return value
     prefix = value[:2_500]
@@ -46,7 +47,7 @@ def workflow_failure_details(value):
     return prefix + last_test + "\n... output truncated ...\n" + value[-tail_size:]
 
 
-def workflow_failure_sections(value):
+def workflow_failure_sections(value: str) -> tuple[str, ...]:
     return tuple(
         section.strip()
         for section in re.split(r"^={70}\r?$", value, flags=re.MULTILINE)
@@ -54,15 +55,22 @@ def workflow_failure_sections(value):
     )
 
 
-def _flatten_suite(suite):
+def _flatten_suite(suite: unittest.TestSuite) -> Iterator[unittest.TestCase]:
     for value in suite:
         if isinstance(value, unittest.TestSuite):
             yield from _flatten_suite(value)
+        elif value is None:
+            raise ValueError("Unittest discovery contains an empty test slot")
         else:
             yield value
 
 
-def partition_ui_test_ids(test_ids):
+type _TestIds = tuple[str, ...]
+
+
+def partition_ui_test_ids(
+    test_ids: Iterable[str],
+) -> tuple[_TestIds, _TestIds, _TestIds, _TestIds]:
     """Assign every exact test once, isolating the crash-prone Qt app module."""
     values = list(test_ids)
     if len(values) != len(set(values)):
@@ -91,7 +99,7 @@ def partition_ui_test_ids(test_ids):
     return app, assets, ocr, remainder
 
 
-def _isolate_pregeneration_tests(test_ids):
+def _isolate_pregeneration_tests(test_ids: Sequence[str]) -> tuple[_TestIds, _TestIds]:
     isolated = tuple(
         value
         for value in test_ids
@@ -101,7 +109,7 @@ def _isolate_pregeneration_tests(test_ids):
     return isolated, tuple(value for value in test_ids if value not in isolated_set)
 
 
-def _run_exact_test_file(path):
+def _run_exact_test_file(path: str | Path) -> int:
     try:
         test_ids = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
@@ -127,7 +135,7 @@ def _run_exact_test_file(path):
     return 0 if result.wasSuccessful() else 1
 
 
-def _run_shard(system, name, inventory):
+def _run_shard(system: str, name: str, inventory: Path) -> int:
     command = [
         sys.executable,
         "-u",
@@ -181,7 +189,9 @@ def _run_shard(system, name, inventory):
     return 0
 
 
-def _run_sharded_full_discovery(system, selected_modules=None):
+def _run_sharded_full_discovery(
+    system: str, selected_modules: Sequence[str] | None = None
+) -> int:
     suite = unittest.defaultTestLoader.discover("tests", top_level_dir=".")
     test_ids = tuple(value.id() for value in _flatten_suite(suite))
     if selected_modules is not None:
@@ -237,7 +247,7 @@ def _run_sharded_full_discovery(system, selected_modules=None):
     return 0
 
 
-def main(arguments=None):
+def main(arguments: list[str] | None = None) -> int:
     arguments = sys.argv[1:] if arguments is None else arguments
     if arguments[:1] == ["--shard"]:
         if len(arguments) != 3:

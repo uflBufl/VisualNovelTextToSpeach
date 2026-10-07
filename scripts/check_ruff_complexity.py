@@ -36,8 +36,8 @@ def _scope_at_line(tree: ast.AST, line: int) -> str | None:
             for child in node.body:
                 visit(child, (*parents, node.name))
             return
-        for child in ast.iter_child_nodes(node):
-            visit(child, parents)
+        for descendant in ast.iter_child_nodes(node):
+            visit(descendant, parents)
 
     visit(tree)
     matches = [scope for start, end, scope in scopes if start <= line <= end]
@@ -81,7 +81,7 @@ def _finding_identity(
 
 
 class _Allowance(NamedTuple):
-    count: int
+    occurrences: int
     maximum: int
 
 
@@ -145,14 +145,14 @@ def check_findings(
         current[identity] += 1
         metrics[identity] = max(metric, metrics.get(identity, 0))
     unexpected = sorted(
-        (identity, count, allowed.get(identity, _Allowance(0, 0)).count)
+        (identity, count, allowed.get(identity, _Allowance(0, 0)).occurrences)
         for identity, count in current.items()
-        if count > allowed.get(identity, _Allowance(0, 0)).count
+        if count > allowed.get(identity, _Allowance(0, 0)).occurrences
     )
     stale = sorted(
-        (identity, allowance.count, current[identity])
+        (identity, allowance.occurrences, current[identity])
         for identity, allowance in allowed.items()
-        if current[identity] < allowance.count
+        if current[identity] < allowance.occurrences
     )
     failures = [
         f"new Ruff complexity finding: {code} {path} {scope} ({count} > {allowed})"
