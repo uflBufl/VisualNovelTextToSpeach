@@ -465,17 +465,24 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             self.assertFalse(dialog.isVisible())
 
     def test_catalog_completion_persists_a_valid_accepted_decision(self):
-        from scripts.render_ui_catalog import _source_reference_review
+        from contextlib import ExitStack
 
-        dialog = _source_reference_review("complete")
-        try:
-            self.assertIsNone(dialog.current)
-            persisted = load_source_reference_quality_review(dialog.session_path)
-            self.assertEqual(persisted["completed_count"], 1)
-            self.assertEqual(persisted["variants"][0]["decision"]["decision"], "accept")
-        finally:
-            dialog.close()
-            dialog._catalog_temporary_directory.cleanup()
+        from scripts.render_ui_catalog import (
+            _close_catalog_widget,
+            _source_reference_review,
+        )
+
+        with ExitStack() as resources:
+            dialog = _source_reference_review("complete", resources)
+            try:
+                self.assertIsNone(dialog.current)
+                persisted = load_source_reference_quality_review(dialog.session_path)
+                self.assertEqual(persisted["completed_count"], 1)
+                self.assertEqual(
+                    persisted["variants"][0]["decision"]["decision"], "accept"
+                )
+            finally:
+                _close_catalog_widget(dialog)
 
     def test_complete_message_remains_visible_with_large_text(self):
         with TemporaryDirectory() as directory:

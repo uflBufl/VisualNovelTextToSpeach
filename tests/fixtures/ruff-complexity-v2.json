@@ -993,21 +993,21 @@
       "path": "scripts/render_ui_catalog.py",
       "scope": "_render_stories",
       "count": 1,
-      "maximum": 946
+      "maximum": 924
     },
     {
       "code": "PLR0915",
       "path": "scripts/render_ui_catalog.py",
       "scope": "_render_stories.offline_preparation",
       "count": 1,
-      "maximum": 94
+      "maximum": 92
     },
     {
       "code": "PLR0915",
       "path": "scripts/render_ui_catalog.py",
       "scope": "_render_stories.voice_editor",
       "count": 1,
-      "maximum": 60
+      "maximum": 57
     },
     {
       "code": "PLR0915",

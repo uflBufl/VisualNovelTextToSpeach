@@ -10,22 +10,26 @@ import socket
 import sys
 import time
 import wave
+from contextlib import ExitStack
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Callable, Never
 from unittest.mock import Mock, patch
 
 if TYPE_CHECKING:
+    from PySide6.QtWidgets import QApplication, QWidget
+
     from vntts.authoring.source_reference_quality_ui import SourceReferenceQualityDialog
+    from vntts.authoring.workbench_ui import AuthoringWorkbenchDialog
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CATALOG = PROJECT_ROOT / "ui-catalog.json"
 DEFAULT_OUTPUT = PROJECT_ROOT / ".codex" / "ui-catalog"
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from vntts.cleanup import cleanup_on_exit, temporary_directory  # noqa: E402
 from vntts.ui_catalog import (  # noqa: E402
     UICatalog,
     _write_catalog,
@@ -33,10 +37,12 @@ from vntts.ui_catalog import (  # noqa: E402
 )
 
 
-def _set_long_authoring_review(dialog: Any, state: str) -> None:
+def _set_long_authoring_review(dialog: AuthoringWorkbenchDialog, state: str) -> None:
     if not state.startswith("review-long-names"):
         return
     first = dialog._selected_review_item()
+    assert first is not None
+    assert dialog.summary is not None
     dialog._all_reviews = (
         replace(
             first,
@@ -60,13 +66,20 @@ def _set_long_authoring_review(dialog: Any, state: str) -> None:
         dialog.review_table.setCurrentCell(1, 7)
 
 
-def _prepare_catalog_screenshot(widget: Any, story_id: str, app: Any) -> None:
+def _prepare_catalog_screenshot(
+    widget: QWidget, story_id: str, app: QApplication
+) -> None:
+    from vntts.authoring.workbench_ui import AuthoringWorkbenchDialog
+    from vntts.pregeneration_ui import OfflineAudioPreparationDialog
+
     if story_id == "offline-preparation.voice-confirmation-compact-scrolled":
+        assert isinstance(widget, OfflineAudioPreparationDialog)
         widget.content_scroll.verticalScrollBar().setValue(
             widget.content_scroll.verticalScrollBar().maximum()
         )
         app.processEvents()
     if story_id == "offline-preparation.voice-confirmation-compact-last-route":
+        assert isinstance(widget, OfflineAudioPreparationDialog)
         widget.content_scroll.verticalScrollBar().setValue(
             widget.content_scroll.verticalScrollBar().maximum()
         )
@@ -76,20 +89,39 @@ def _prepare_catalog_screenshot(widget: Any, story_id: str, app: Any) -> None:
         )
         app.processEvents()
     if story_id == "authoring-workbench.review-play-focus":
+        assert isinstance(widget, AuthoringWorkbenchDialog)
         widget.review_play.setFocus()
         app.processEvents()
 
 
-def _source_reference_review(state: str) -> SourceReferenceQualityDialog:
+def _close_catalog_widget(widget: QWidget) -> None:
+    from PySide6.QtCore import QCoreApplication, QEvent, QTimer
+    from PySide6.QtWidgets import QApplication
+
+    from vntts.ocr_corrections_ui import OCRCorrectionsDialog
+
+    for timer in widget.findChildren(QTimer):
+        timer.stop()
+    if isinstance(widget, OCRCorrectionsDialog):
+        widget._initial_rows = widget._all_table_rows()
+    widget.close()
+    widget.deleteLater()
+    QCoreApplication.sendPostedEvents(widget, QEvent.Type.DeferredDelete)
+    QApplication.processEvents()
+
+
+def _source_reference_review(
+    state: str, resources: ExitStack
+) -> SourceReferenceQualityDialog:
     from PySide6.QtMultimedia import QMediaPlayer
 
     from tests.test_authoring_source_reference_quality_ui import write_quality_session
     from vntts.authoring.source_reference_quality_ui import SourceReferenceQualityDialog
 
-    temporary = TemporaryDirectory(prefix="vntts-ui-catalog-")
-    session = write_quality_session(Path(temporary.name))
+    temporary = resources.enter_context(temporary_directory(prefix="vntts-ui-catalog-"))
+    session = write_quality_session(Path(temporary))
     dialog = SourceReferenceQualityDialog(session)
-    dialog._catalog_temporary_directory = temporary
+
     current = dialog.current
     assert current is not None
     if state == "heard":
@@ -129,10 +161,17 @@ def _render_stories(
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
     from PIL import Image, ImageDraw, ImageFont
-    from PySide6.QtCore import QPoint, QSettings, QSignalBlocker, QTimer
+    from PySide6.QtCore import (
+        QPoint,
+        QRunnable,
+        QSettings,
+        QSignalBlocker,
+        QThreadPool,
+        QTimer,
+    )
     from PySide6.QtGui import QColor, QPalette, QTextCursor
     from PySide6.QtMultimedia import QMediaPlayer
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
     from r1999extractor.story_voice_candidates import REPORT_SCHEMA, REPORT_VERSION
     from r1999extractor.story_voice_review_ui import StoryVoiceReviewDialog
     from vntts_artifacts.file_integrity import sha256_file
@@ -192,7 +231,7 @@ def _render_stories(
     from vntts.game_narrator_ui import GameNarratorDialog
     from vntts.history import DialogueHistory
     from vntts.history_ui import DialogueHistoryDialog
-    from vntts.macos_ui import MacOSPermissionsDialog
+    from vntts.macos_ui import MacOSPermissionsDialog, PermissionStatus
     from vntts.ocr import DialogRegion, OCRResult, UncertainFrameRecorder
     from vntts.ocr_corrections import OCRCorrectionStore
     from vntts.ocr_corrections_ui import OCRCorrectionsDialog
@@ -215,7 +254,11 @@ def _render_stories(
     from vntts.support_ui import SupportCenterDialog
     from vntts.voice_library import VoiceLibrary
 
-    app = QApplication.instance() or QApplication(["vntts-ui-catalog"])
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication(["vntts-ui-catalog"])
+    if not isinstance(app, QApplication):
+        raise RuntimeError("UI catalog requires a QApplication instance")
     app.setStyle("Fusion")
     palette = QPalette()
     palette.setColor(QPalette.ColorRole.Window, QColor("#272727"))
@@ -258,7 +301,7 @@ def _render_stories(
             target.setframerate(16_000)
             target.writeframes(b"\x00\x00" * 1_600)
 
-    def dashboard_stories() -> Any:
+    def dashboard_stories() -> ControlDashboard:
         dashboard = ControlDashboard(settings)
         dashboard.resize(1040, 760)
         dashboard.set_status("Ready. Choose a prepared story or start live reading.")
@@ -266,7 +309,7 @@ def _render_stories(
         dashboard.show_stories()
         return dashboard
 
-    def dashboard_reading() -> Any:
+    def dashboard_reading() -> ControlDashboard:
         dashboard = ControlDashboard(settings)
         dashboard.resize(1040, 760)
         dashboard.set_status("Reading the selected game window.")
@@ -293,12 +336,12 @@ def _render_stories(
         dashboard.show_reading()
         return dashboard
 
-    def dashboard_setup() -> Any:
+    def dashboard_setup() -> ControlDashboard:
         dashboard = dashboard_stories()
         dashboard.setup_more_button.setChecked(True)
         return dashboard
 
-    def dashboard_loading() -> Any:
+    def dashboard_loading() -> ControlDashboard:
         dashboard = ControlDashboard(settings)
         dashboard.resize(1040, 760)
         dashboard.show_reading()
@@ -307,32 +350,32 @@ def _render_stories(
         dashboard.set_auto_advance_configuration(settings, busy=True)
         return dashboard
 
-    def dashboard_waiting() -> Any:
+    def dashboard_waiting() -> ControlDashboard:
         dashboard = dashboard_reading()
         dashboard.set_status("Waiting for dialogue in the selected game window.")
         dashboard.set_runtime_controls(RuntimeControlState(ready=True, live=True))
         return dashboard
 
-    def dashboard_auto_advance_off() -> Any:
+    def dashboard_auto_advance_off() -> ControlDashboard:
         dashboard = dashboard_reading()
         dashboard.set_configuration(
             replace(settings, auto_advance_enabled=False, auto_advance_key="right")
         )
         return dashboard
 
-    def dashboard_auto_advance_unavailable() -> Any:
+    def dashboard_auto_advance_unavailable() -> ControlDashboard:
         dashboard = dashboard_reading()
         dashboard.set_configuration(replace(settings, capture_mode="screen"))
         return dashboard
 
-    def dashboard_auto_advance_manual() -> Any:
+    def dashboard_auto_advance_manual() -> ControlDashboard:
         dashboard = dashboard_reading()
         dashboard.set_configuration(
             replace(settings, live_sequence_mode="audio-manual")
         )
         return dashboard
 
-    def dashboard_auto_advance_unavailable_compact() -> Any:
+    def dashboard_auto_advance_unavailable_compact() -> ControlDashboard:
         dashboard = dashboard_auto_advance_unavailable()
         dashboard.resize(620, 440)
         font = dashboard.font()
@@ -340,12 +383,12 @@ def _render_stories(
         dashboard.setFont(font)
         return dashboard
 
-    def dashboard_auto_advance_focus() -> Any:
+    def dashboard_auto_advance_focus() -> ControlDashboard:
         dashboard = dashboard_long_values()
         QTimer.singleShot(0, dashboard.auto_advance_check.setFocus)
         return dashboard
 
-    def dashboard_auto_advance_settings_route() -> Any:
+    def dashboard_auto_advance_settings_route() -> ControlDashboard:
         dashboard = dashboard_reading()
         dashboard.setup_more_button.setChecked(True)
         dashboard.resize(620, 440)
@@ -354,7 +397,7 @@ def _render_stories(
         dashboard.setFont(font)
         return dashboard
 
-    def dashboard_paused() -> Any:
+    def dashboard_paused() -> ControlDashboard:
         dashboard = dashboard_reading()
         dashboard.set_status(
             "Speech paused during speaker recovery. Stop reading ends speech now."
@@ -367,19 +410,19 @@ def _render_stories(
         dashboard.set_paused(True)
         return dashboard
 
-    def dashboard_stopped() -> Any:
+    def dashboard_stopped() -> ControlDashboard:
         dashboard = dashboard_reading()
         dashboard.set_status("Reading stopped. The last dialogue remains available.")
         dashboard.set_runtime_controls(RuntimeControlState(ready=True, replayable=True))
         dashboard.set_live(False)
         return dashboard
 
-    def dashboard_technical() -> Any:
+    def dashboard_technical() -> ControlDashboard:
         dashboard = dashboard_reading()
         dashboard.details_toggle.setChecked(True)
         return dashboard
 
-    def dashboard_story_recovery() -> Any:
+    def dashboard_story_recovery() -> ControlDashboard:
         dashboard = dashboard_reading()
         dashboard.set_sequence_status(
             LiveSequenceStatus(
@@ -394,7 +437,7 @@ def _render_stories(
         )
         return dashboard
 
-    def dashboard_story_manual() -> Any:
+    def dashboard_story_manual() -> ControlDashboard:
         dashboard = dashboard_reading()
         dashboard.set_sequence_status(
             LiveSequenceStatus(
@@ -407,7 +450,7 @@ def _render_stories(
         )
         return dashboard
 
-    def dashboard_long_values() -> Any:
+    def dashboard_long_values() -> ControlDashboard:
         dashboard = dashboard_reading()
         dashboard.resize(620, 440)
         font = dashboard.font()
@@ -419,7 +462,7 @@ def _render_stories(
         )
         return dashboard
 
-    def dashboard_long_capture() -> Any:
+    def dashboard_long_capture() -> ControlDashboard:
         dashboard = dashboard_long_values()
         dashboard.set_configuration(
             replace(
@@ -430,7 +473,7 @@ def _render_stories(
         dashboard.set_speech_identity(settings, narrator="Centurion")
         return dashboard
 
-    def dashboard_long_values_scrolled() -> Any:
+    def dashboard_long_values_scrolled() -> ControlDashboard:
         dashboard = dashboard_long_capture()
         dashboard.voice.setText(
             "Believer IV voice from a long user-provided reference recording"
@@ -446,7 +489,7 @@ def _render_stories(
         )
         return dashboard
 
-    def compact_sequence_recovery() -> Any:
+    def compact_sequence_recovery() -> CompactController:
         compact = CompactController(platform="win32")
         compact.set_runtime_controls(
             RuntimeControlState(ready=True, live=True, paused=True)
@@ -464,7 +507,7 @@ def _render_stories(
         )
         return compact
 
-    def dashboard_voice_saved() -> Any:
+    def dashboard_voice_saved() -> ControlDashboard:
         dashboard = ControlDashboard(settings)
         dashboard.resize(1040, 760)
         dashboard.set_status(
@@ -475,9 +518,11 @@ def _render_stories(
         dashboard.show_voices()
         return dashboard
 
-    def settings_speech() -> Any:
-        temporary = TemporaryDirectory(prefix="vntts-ui-catalog-")
-        reference = Path(temporary.name) / "reference.wav"
+    def settings_speech() -> SettingsDialog:
+        temporary = resources.enter_context(
+            temporary_directory(prefix="vntts-ui-catalog-")
+        )
+        reference = Path(temporary) / "reference.wav"
         reference.touch()
         dialog = SettingsDialog(
             settings.updated(
@@ -485,14 +530,14 @@ def _render_stories(
                 screenshot_directory="/Users/Player/Screenshots",
                 ocr_diagnostics_directory="/Users/Player/OCR Diagnostics",
             ),
-            voice_library=VoiceLibrary(Path(temporary.name) / "voice-library"),
+            voice_library=VoiceLibrary(Path(temporary) / "voice-library"),
         )
-        dialog._catalog_temporary_directory = temporary
+
         dialog.resize(760, 600)
         dialog.section_navigation.setCurrentIndex(2)
         return dialog
 
-    def settings_validation_error() -> Any:
+    def settings_validation_error() -> SettingsDialog:
         dialog = settings_speech()
         dialog.advanced_narrator.setChecked(True)
         dialog.narrator_reference.setText("/missing/voice-reference.wav")
@@ -501,7 +546,7 @@ def _render_stories(
 
     def settings_section(
         index: int, *, advanced: bool = False, compact: bool = False
-    ) -> Any:
+    ) -> SettingsDialog:
         dialog = settings_speech()
         dialog.section_navigation.setCurrentIndex(index)
         dialog.advanced_settings.setChecked(advanced)
@@ -512,7 +557,7 @@ def _render_stories(
             dialog.setFont(font)
         return dialog
 
-    def settings_capture_window() -> Any:
+    def settings_capture_window() -> SettingsDialog:
         dialog = settings_section(1)
         dialog.capture_mode.setCurrentIndex(dialog.capture_mode.findData("window"))
         dialog.game_window.setCurrentText(
@@ -520,12 +565,12 @@ def _render_stories(
         )
         return dialog
 
-    def settings_checkbox_focus() -> Any:
+    def settings_checkbox_focus() -> SettingsDialog:
         dialog = settings_section(4)
         QTimer.singleShot(0, dialog.warm_up_voices.setFocus)
         return dialog
 
-    def settings_compact_advanced_scrolled() -> Any:
+    def settings_compact_advanced_scrolled() -> SettingsDialog:
         dialog = settings_section(2, advanced=True, compact=True)
         dialog.show()
         app.processEvents()
@@ -533,11 +578,14 @@ def _render_stories(
         scrollbar.setValue(scrollbar.maximum())
         return dialog
 
-    def readiness(state: str) -> Any:
-        class IdlePool:
-            def start(self, _task: Any) -> None:
-                pass
+    class IdlePool(QThreadPool):
+        def start(
+            self, task: QRunnable | Callable[..., object], /, priority: int | None = 0
+        ) -> None:
+            # Catalog snapshots intentionally retain a pending operation without dispatch.
+            pass
 
+    def readiness(state: str) -> ReadinessDialog:
         dialog = ReadinessDialog(
             settings.updated(ocr_language="jpn")
             if state == "non-english-ocr"
@@ -604,7 +652,7 @@ def _render_stories(
             dialog.setFont(font)
         return dialog
 
-    def onboarding(state: str) -> Any:
+    def onboarding(state: str) -> OnboardingWizard:
         wizard = OnboardingWizard(
             settings.updated(onboarding_completed=False),
             diagnostics=Mock(),
@@ -619,7 +667,9 @@ def _render_stories(
             mode = wizard.configuration_page.capture_mode
             mode.setCurrentIndex(mode.findData("screen"))
         elif state.startswith("diagnostics") or state == "compact-error":
-            wizard.diagnostics_page.runner.start = Mock()
+            resources.enter_context(
+                patch.object(wizard.diagnostics_page.runner, "start", return_value=0)
+            )
             wizard.show_page(1)
             if state != "diagnostics-loading":
                 wizard.diagnostics_page._checks_finished(
@@ -651,8 +701,8 @@ def _render_stories(
             wizard.setFont(font)
         return wizard
 
-    def macos_permissions(state: str) -> Any:
-        status = {
+    def macos_permissions(state: str) -> MacOSPermissionsDialog:
+        status: PermissionStatus = {
             "screen_capture": state == "granted",
             "accessibility": state == "granted",
         }
@@ -671,7 +721,7 @@ def _render_stories(
             dialog.setFont(font)
         return dialog
 
-    def asset_manager(state: str) -> Any:
+    def asset_manager(state: str) -> AssetManagerDialog:
         model_manager = Mock()
         model_manager.model_path.return_value = Path(
             "/Users/Player/Library/Application Support/VNTTS/models/xtts_v2"
@@ -720,7 +770,7 @@ def _render_stories(
             dialog.setFont(font)
         return dialog
 
-    def game_profiles(state: str) -> Any:
+    def game_profiles(state: str) -> GameProfilesDialog:
         region = DialogRegion(0.1, 0.6, 0.8, 0.3)
         active = GameProfile.from_settings(
             "Reverse: 1999",
@@ -754,7 +804,7 @@ def _render_stories(
             dialog.setFont(font)
         return dialog
 
-    def voice_import(state: str) -> Any:
+    def voice_import(state: str) -> VoiceImportDialog:
         dialog = VoiceImportDialog()
         dialog.resize(580, 220)
         if state != "empty":
@@ -779,7 +829,7 @@ def _render_stories(
             dialog.setFont(font)
         return dialog
 
-    def calibration(state: str) -> Any:
+    def calibration(state: str) -> DialogRegionOverlay | CalibrationReviewDialog:
         scene = Image.new("RGB", (800, 450), "#272936")
         painter = ImageDraw.Draw(scene)
         painter.rectangle((75, 275, 730, 420), fill="#141822", outline="#7a8198")
@@ -799,7 +849,7 @@ def _render_stories(
             if state == "overlay-save-failure":
                 overlay.save_error = "Unable to save the dialogue area: disk full"
             return overlay
-        pool = Mock()
+        pool = IdlePool()
         dialog = CalibrationReviewDialog(
             scene.crop((85, 285, 735, 425)), thread_pool=pool
         )
@@ -830,7 +880,7 @@ def _render_stories(
         failed: bool = False,
         compact_long_values: bool = False,
         narrator_fallback: bool = False,
-    ) -> Any:
+    ) -> ControlDashboard | GameNarratorDialog:
         dashboard = ControlDashboard(settings)
         dashboard.resize(
             820 if compact_long_values else 1180,
@@ -838,19 +888,20 @@ def _render_stories(
         )
         importer = Mock()
         importer.selected_installation_root.return_value = None
-        pool = Mock()
-        pool.start.side_effect = lambda _task: None
+        pool = IdlePool()
         previews = Mock()
         previews.backend.runtime_status = "Apple GPU · model loaded"
-        temporary = TemporaryDirectory(prefix="vntts-ui-catalog-")
-        dashboard._catalog_temporary_directory = temporary
+        temporary = resources.enter_context(
+            temporary_directory(prefix="vntts-ui-catalog-")
+        )
+
         panel = GameNarratorDialog(
             settings,
             importer=importer,
             preview_service=previews,
             thread_pool=pool,
             player=Mock(),
-            voice_library=VoiceLibrary(Path(temporary.name) / "voice-library"),
+            voice_library=VoiceLibrary(Path(temporary) / "voice-library"),
         )
         panel._initializing = True
         long_role = "The Extremely Long Character Name Used to Verify Layout"
@@ -903,10 +954,12 @@ def _render_stories(
             "Technical reference checks passed; voice quality is yours to judge."
         )
         panel._prepared[panel.references.currentData()] = (
-            Path(temporary.name) / "reference-manifest.json"
+            Path(temporary) / "reference-manifest.json"
         )
         panel._initializing = False
-        panel._engine_available = lambda: True
+        resources.enter_context(
+            patch.object(panel, "_engine_available", return_value=True)
+        )
         panel._update()
         panel.status.setText(
             "Choose a voice for this role. Nothing changes until you save."
@@ -937,7 +990,6 @@ def _render_stories(
 
             QTimer.singleShot(0, finish_with_error)
         if narrator_fallback:
-            panel._catalog_temporary_directory = temporary
             panel.resize(940, 620)
             return panel
         dashboard.embed_narrator(panel)
@@ -946,7 +998,7 @@ def _render_stories(
         )
         return dashboard
 
-    def unknown_speaker_prompt(*, long_name: bool = False) -> Any:
+    def unknown_speaker_prompt(*, long_name: bool = False) -> QMessageBox:
         speaker = "The Keeper of the Moonlit Observatory" if long_name else "Selone"
         prompt, _choose, _continue, _cancel = build_unknown_speaker_prompt(speaker)
         if long_name:
@@ -955,7 +1007,7 @@ def _render_stories(
             prompt.setFont(font)
         return prompt
 
-    def story_match_recovery(*, larger_text: bool = False) -> Any:
+    def story_match_recovery(*, larger_text: bool = False) -> QMessageBox:
         prompt, _read, _stories, _stop = build_story_match_recovery_prompt(
             "The visible dialogue does not match the prepared story at this point."
         )
@@ -966,9 +1018,11 @@ def _render_stories(
             prompt.setMaximumWidth(620)
         return prompt
 
-    def offline_preparation(state: str) -> Any:
-        temporary = TemporaryDirectory(prefix="vntts-ui-catalog-")
-        root = Path(temporary.name)
+    def offline_preparation(state: str) -> OfflineAudioPreparationDialog:
+        temporary = resources.enter_context(
+            temporary_directory(prefix="vntts-ui-catalog-")
+        )
+        root = Path(temporary)
         story_index = root / "story-index.jsonl"
         story_index.touch()
         chapters = (
@@ -1028,8 +1082,7 @@ def _render_stories(
         )
         importer = Mock()
         importer.availability.return_value = ImporterAvailability(True, "Ready")
-        pool = Mock()
-        pool.start.side_effect = lambda _task: None
+        pool = IdlePool()
         discovery = None if state == "loading" else lambda: ContentDiscovery((content,))
         offline_settings = settings.updated(
             speech_backend="pocket-tts",
@@ -1060,7 +1113,7 @@ def _render_stories(
             preview_player=Mock(),
             automatic_activation=True,
         )
-        dialog._catalog_temporary_directory = temporary
+
         dialog.resize(1040, 760)
         if state == "loading":
             return dialog
@@ -1273,7 +1326,7 @@ def _render_stories(
         dialog.continue_button.setFocus()
         return dialog
 
-    def voice_audition(state: str) -> Any:
+    def voice_audition(state: str) -> OfflineAudioPreparationDialog:
         dialog = offline_preparation("confirmation")
         dialog._inspect_character_voice()
         panel = dialog.voice_panel
@@ -1282,7 +1335,14 @@ def _render_stories(
         elif state == "alternate-phrase":
             panel.preview_phrase.setCurrentIndex(1)
         elif state == "preview-ready":
-            preview = Path(dialog._catalog_temporary_directory.name) / "preview.wav"
+            preview = (
+                Path(
+                    resources.enter_context(
+                        temporary_directory(prefix="vntts-ui-catalog-")
+                    )
+                )
+                / "preview.wav"
+            )
             write_silent_wav(preview)
             panel._preview_finished(
                 SimpleNamespace(path=preview, audio_sha256=sha256_file(preview)), None
@@ -1303,9 +1363,9 @@ def _render_stories(
             panel._decision_finished(None, OSError("Application data is read-only."))
         return dialog
 
-    def ocr_review(state: str) -> Any:
-        temporary = TemporaryDirectory()
-        directory = Path(temporary.name)
+    def ocr_review(state: str) -> QDialog:
+        temporary = resources.enter_context(temporary_directory())
+        directory = Path(temporary)
         if state != "empty":
             size = (1200, 1000) if state == "enlarged-long" else (640, 200)
             image = Image.new("RGB", size, "#282b33")
@@ -1339,13 +1399,18 @@ def _render_stories(
             "game",
             "Reverse: 1999",
         )
-        dialog._catalog_temporary_directory = temporary
+
         if state in {"enlarged-screenshot", "enlarged-long"}:
             enlarged = dialog._screenshot_dialog()
             if enlarged is None:
                 raise RuntimeError("OCR review screenshot could not be enlarged")
-            enlarged._catalog_temporary_directory = temporary
-            enlarged._catalog_owner = dialog
+
+            resources.enter_context(
+                cleanup_on_exit(
+                    lambda: _close_catalog_widget(dialog),
+                    description="Catalog popup owner cleanup",
+                )
+            )
             return enlarged
         if state in {"corrected", "all-games", "saving", "save-failure", "compact"}:
             dialog.corrected_character.setText("Marcus")
@@ -1358,8 +1423,13 @@ def _render_stories(
         if state == "resolve-confirm":
             dialog.corrected_character.setText("Marcus")
             confirmation = dialog._dismissal_dialog()
-            confirmation._catalog_temporary_directory = temporary
-            confirmation._catalog_owner = dialog
+
+            resources.enter_context(
+                cleanup_on_exit(
+                    lambda: _close_catalog_widget(dialog),
+                    description="Catalog popup owner cleanup",
+                )
+            )
             return confirmation
         elif state == "saving":
             dialog._write_active = True
@@ -1379,9 +1449,11 @@ def _render_stories(
             dialog.resize(730, 560)
         return dialog
 
-    def ocr_corrections(state: str = "profile-rules") -> Any:
-        temporary = TemporaryDirectory()
-        directory = Path(temporary.name)
+    def ocr_corrections(
+        state: str = "profile-rules",
+    ) -> OCRCorrectionsDialog | QMessageBox:
+        temporary = resources.enter_context(temporary_directory())
+        directory = Path(temporary)
         profile_rules = {
             "Mareus": "Marcus",
             "Hello tiniekeeper.": "Hello timekeeper.",
@@ -1398,7 +1470,7 @@ def _render_stories(
             profile_entries={"game": profile_rules},
         )
         dialog = OCRCorrectionsDialog("game", "Reverse: 1999", store)
-        dialog._catalog_temporary_directory = temporary
+
         if state == "validation":
             dialog._append_row(dialog.global_table, "Unclear", "")
             dialog._append_row(dialog.profile_table, "Mareus", "Different")
@@ -1414,8 +1486,13 @@ def _render_stories(
         elif state == "unsaved-close":
             dialog._append_row(dialog.profile_table, "Vertln", "Vertin")
             confirmation = dialog._discard_dialog()
-            confirmation._catalog_temporary_directory = temporary
-            confirmation._catalog_owner = dialog
+
+            resources.enter_context(
+                cleanup_on_exit(
+                    lambda: _close_catalog_widget(dialog),
+                    description="Catalog popup owner cleanup",
+                )
+            )
             return confirmation
         elif state == "compact":
             font = dialog.font()
@@ -1424,7 +1501,7 @@ def _render_stories(
             dialog.resize(560, 400)
         return dialog
 
-    def dialogue_history(state: str) -> Any:
+    def dialogue_history(state: str) -> DialogueHistoryDialog:
         history = DialogueHistory(
             clock=lambda: datetime(2026, 9, 22, 12, 34, tzinfo=timezone.utc)
         )
@@ -1460,7 +1537,7 @@ def _render_stories(
             dialog.resize(600, 420)
         return dialog
 
-    def diagnostics(state: str) -> Any:
+    def diagnostics(state: str) -> DiagnosticsDialog:
         dialog = DiagnosticsDialog()
         if state != "empty":
             capture = Image.new("RGB", (760, 190), "#171a20")
@@ -1515,7 +1592,7 @@ def _render_stories(
             dialog.resize(620, 460)
         return dialog
 
-    def support_center(state: str) -> Any:
+    def support_center(state: str) -> SupportCenterDialog:
         events: list[dict[str, str]] = []
         if state != "empty":
             events.extend(
@@ -1552,9 +1629,11 @@ def _render_stories(
             dialog.resize(640, 440)
         return dialog
 
-    def authoring_workbench(state: str) -> Any:
-        temporary = TemporaryDirectory(prefix="vntts-ui-catalog-")
-        root = Path(temporary.name)
+    def authoring_workbench(state: str) -> AuthoringWorkbenchDialog:
+        temporary = resources.enter_context(
+            temporary_directory(prefix="vntts-ui-catalog-")
+        )
+        root = Path(temporary)
         workspace = create_test_workspace(root)[2].directory
         state_path = workspace / "generated-audio" / "generation-state.json"
         document = json.loads(state_path.read_text(encoding="utf-8"))
@@ -1618,7 +1697,7 @@ def _render_stories(
             settings=QSettings(str(root / "ui.ini"), QSettings.Format.IniFormat),
             synchronous_projection=True,
         )
-        dialog._catalog_temporary_directory = temporary
+
         _set_long_authoring_review(dialog, state)
         if state == "filtered-empty":
             dialog.review_status.setCurrentText("Awaiting review")
@@ -1639,21 +1718,23 @@ def _render_stories(
             )
         return dialog
 
-    def cohort_review(state: str) -> Any:
-        temporary = TemporaryDirectory(prefix="vntts-ui-catalog-")
-        root = Path(temporary.name)
+    def cohort_review(state: str) -> CohortReviewBundleDialog:
+        temporary = resources.enter_context(
+            temporary_directory(prefix="vntts-ui-catalog-")
+        )
+        root = Path(temporary)
         first = create_pending_cohort_workspace(root / "first")[0]
         second = create_pending_cohort_workspace(root / "second")[0]
         bundle = build_cohort_review_bundle((first, second))
         if state == "load-failure":
 
-            def fail_load(_bundle: object) -> None:
+            def fail_load(_bundle: object) -> Never:
                 raise ValueError("The sample manifest could not be read")
 
             dialog = CohortReviewBundleDialog(bundle, sample_loader=fail_load)
         else:
             dialog = CohortReviewBundleDialog(bundle)
-        dialog._catalog_temporary_directory = temporary
+
         deadline = time.monotonic() + 3
         while dialog._load_active and time.monotonic() < deadline:
             app.processEvents()
@@ -1683,9 +1764,11 @@ def _render_stories(
             dialog._update_actions()
         return dialog
 
-    def legacy_reason_review(state: str) -> Any:
-        temporary = TemporaryDirectory(prefix="vntts-ui-catalog-")
-        root = Path(temporary.name)
+    def legacy_reason_review(state: str) -> LegacyReasonReviewDialog:
+        temporary = resources.enter_context(
+            temporary_directory(prefix="vntts-ui-catalog-")
+        )
+        root = Path(temporary)
         _workspace, _queue_id, _decision, corpus = _legacy_bad_fixture(root)
         review = build_legacy_reason_review(corpus, root)
         if state in {"compact", "compact-reasons"}:
@@ -1720,7 +1803,7 @@ def _render_stories(
                 else Mock(return_value=(root / "decision.json",))
             ),
         )
-        dialog._catalog_temporary_directory = temporary
+
         if state in {
             "heard",
             "selected",
@@ -1745,9 +1828,11 @@ def _render_stories(
             QTimer.singleShot(0, dialog.reason_controls["other_or_unclear"].setFocus)
         return dialog
 
-    def character_story_review(state: str) -> Any:
-        temporary = TemporaryDirectory(prefix="vntts-ui-catalog-")
-        root = Path(temporary.name)
+    def character_story_review(state: str) -> StoryVoiceReviewDialog:
+        temporary = resources.enter_context(
+            temporary_directory(prefix="vntts-ui-catalog-")
+        )
+        root = Path(temporary)
         references = root / "references"
         references.mkdir()
         portraits = root / "portraits"
@@ -1810,7 +1895,7 @@ def _render_stories(
             encoding="utf-8",
         )
         dialog = StoryVoiceReviewDialog(report, portrait_directory=portraits)
-        dialog._catalog_temporary_directory = temporary
+
         dialog.recommended_only.setChecked(False)
         if state.startswith("compact"):
             font = dialog.font()
@@ -1823,9 +1908,11 @@ def _render_stories(
             )
         return dialog
 
-    def missing_voice_review(state: str) -> Any:
-        temporary = TemporaryDirectory(prefix="vntts-ui-catalog-")
-        root = Path(temporary.name)
+    def missing_voice_review(state: str) -> MissingVoiceReuseReviewDialog:
+        temporary = resources.enter_context(
+            temporary_directory(prefix="vntts-ui-catalog-")
+        )
+        root = Path(temporary)
         statuses = (
             ("failed", "failed")
             if state == "none"
@@ -1844,7 +1931,7 @@ def _render_stories(
                 plan_path, evidence, root / "review", seed=7
             )
         dialog = MissingVoiceReuseReviewDialog(session_path)
-        dialog._catalog_temporary_directory = temporary
+
         if state == "compared" and dialog._cohort is not None:
             for candidate in dialog.bundle["candidates"]:
                 dialog.session["heard"].append(
@@ -1862,14 +1949,16 @@ def _render_stories(
             dialog.resize(dialog.minimumSize())
         return dialog
 
-    def failed_reference_review(state: str) -> Any:
-        temporary = TemporaryDirectory(prefix="vntts-ui-catalog-")
-        root = Path(temporary.name)
+    def failed_reference_review(state: str) -> FailureReferenceAuditDialog:
+        temporary = resources.enter_context(
+            temporary_directory(prefix="vntts-ui-catalog-")
+        )
+        root = Path(temporary)
         workspace, _queue_id = FailureReferenceAuditTest().create_failed_workspace(root)
         audit = root / "audit"
         publish_failure_reference_audit(workspace, audit)
         dialog = FailureReferenceAuditDialog(audit)
-        dialog._catalog_temporary_directory = temporary
+
         if state == "heard":
             group = dialog._current_group()
             if group is not None:
@@ -1887,9 +1976,11 @@ def _render_stories(
             dialog.resize(dialog.minimumSize())
         return dialog
 
-    def blind_listening(state: str) -> Any:
-        temporary = TemporaryDirectory(prefix="vntts-ui-catalog-")
-        root = Path(temporary.name)
+    def blind_listening(state: str) -> ModelListeningDialog:
+        temporary = resources.enter_context(
+            temporary_directory(prefix="vntts-ui-catalog-")
+        )
+        root = Path(temporary)
         session = create_listening_session_from_reports(
             write_model_reports(root, item_count=1), root / "session"
         )
@@ -1897,7 +1988,7 @@ def _render_stories(
         dialog = ModelListeningDialog(
             session, auto_play=False, playback_factory=lambda: playback
         )
-        dialog._catalog_temporary_directory = temporary
+
         if state == "heard":
             for side in ("a", "b"):
                 dialog.play(side)
@@ -1915,11 +2006,13 @@ def _render_stories(
             dialog.resize(dialog.minimumSize())
         return dialog
 
-    def terminal_conflict_review(state: str) -> Any:
-        temporary = TemporaryDirectory(prefix="vntts-ui-catalog-")
-        directory = TerminalConflictReviewUiTest().create_review(Path(temporary.name))
+    def terminal_conflict_review(state: str) -> TerminalConflictReviewDialog:
+        temporary = resources.enter_context(
+            temporary_directory(prefix="vntts-ui-catalog-")
+        )
+        directory = TerminalConflictReviewUiTest().create_review(Path(temporary))
         dialog = TerminalConflictReviewDialog(directory)
-        dialog._catalog_temporary_directory = temporary
+
         if state == "heard":
             dialog._heard = {
                 candidate["candidate_id"] for candidate in dialog._display_candidates
@@ -1939,7 +2032,7 @@ def _render_stories(
             dialog.resize(dialog.minimumSize())
         return dialog
 
-    renderers: dict[str, Callable[[], Any]] = {
+    renderers: dict[str, Callable[[], QWidget]] = {
         "dashboard.stories-ready": dashboard_stories,
         "dashboard.reading-loading": dashboard_loading,
         "dashboard.reading-active": dashboard_reading,
@@ -2143,12 +2236,18 @@ def _render_stories(
         "failed-reference-review.heard": lambda: failed_reference_review("heard"),
         "failed-reference-review.preview": lambda: failed_reference_review("preview"),
         "failed-reference-review.compact": lambda: failed_reference_review("compact"),
-        "source-reference-review.pending": lambda: _source_reference_review("pending"),
-        "source-reference-review.heard": lambda: _source_reference_review("heard"),
-        "source-reference-review.complete": lambda: _source_reference_review(
-            "complete"
+        "source-reference-review.pending": lambda: _source_reference_review(
+            "pending", resources
         ),
-        "source-reference-review.compact": lambda: _source_reference_review("compact"),
+        "source-reference-review.heard": lambda: _source_reference_review(
+            "heard", resources
+        ),
+        "source-reference-review.complete": lambda: _source_reference_review(
+            "complete", resources
+        ),
+        "source-reference-review.compact": lambda: _source_reference_review(
+            "compact", resources
+        ),
         "blind-listening.pending": lambda: blind_listening("pending"),
         "blind-listening.heard": lambda: blind_listening("heard"),
         "blind-listening.complete": lambda: blind_listening("complete"),
@@ -2197,24 +2296,20 @@ def _render_stories(
             renderer = renderers.get(story_id)
             if renderer is None:
                 continue
-            widget = renderer()
-            try:
-                widget.show()
-                app.processEvents()
-                _prepare_catalog_screenshot(widget, story_id, app)
-                image_name = f"{story_id}.png"
-                image_path = screenshots / image_name
-                if not widget.grab().save(str(image_path)):
-                    raise RuntimeError(f"could not save {image_path}")
-                captured[story_id] = f"screenshots/{image_name}"
-            finally:
-                for timer in widget.findChildren(QTimer):
-                    timer.stop()
-                if isinstance(widget, OCRCorrectionsDialog):
-                    widget._initial_rows = widget._all_table_rows()
-                widget.close()
-                widget.deleteLater()
-                app.processEvents()
+            with ExitStack() as resources:
+                widget = renderer()
+                with cleanup_on_exit(
+                    lambda: _close_catalog_widget(widget),
+                    description="Catalog widget cleanup",
+                ):
+                    widget.show()
+                    app.processEvents()
+                    _prepare_catalog_screenshot(widget, story_id, app)
+                    image_name = f"{story_id}.png"
+                    image_path = screenshots / image_name
+                    if not widget.grab().save(str(image_path)):
+                        raise RuntimeError(f"could not save {image_path}")
+                    captured[story_id] = f"screenshots/{image_name}"
     return captured
 
 

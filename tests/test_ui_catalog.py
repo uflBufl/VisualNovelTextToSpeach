@@ -5,9 +5,84 @@ import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from textwrap import dedent
 
 
 class UiCatalogTest(unittest.TestCase):
+    def test_catalog_resource_failures_keep_primary_error_and_release_files(
+        self,
+    ) -> None:
+        root = Path(__file__).resolve().parents[1]
+        script = dedent(r"""
+            from contextlib import ExitStack, contextmanager
+            from pathlib import Path
+            from tempfile import TemporaryDirectory
+            from unittest.mock import patch
+            from PySide6.QtWidgets import QApplication
+            from shiboken6 import isValid
+            from scripts import render_ui_catalog as catalog
+
+            app = QApplication.instance() or QApplication([])
+            directories = []
+            closed = []
+            temporary = catalog.temporary_directory
+            close = catalog._close_catalog_widget
+
+            @contextmanager
+            def tracked_directory(**kwargs):
+                with temporary(**kwargs) as directory:
+                    directories.append(Path(directory))
+                    yield directory
+
+            primary = ValueError("screenshot preparation failed")
+            def fail_screenshot(*args):
+                raise primary
+
+            def fail_cleanup(widget):
+                assert all(path.exists() for path in directories)
+                close(widget)
+                assert not isValid(widget)
+                closed.append(widget)
+                assert all(path.exists() for path in directories)
+                raise OSError("widget cleanup failure")
+
+            document = catalog.load_catalog(catalog.DEFAULT_CATALOG)
+            surface = next(item for item in document["surfaces"] if item["id"] == "settings")
+            document["surfaces"] = [{**surface, "related": [], "stories": [surface["stories"][0]]}]
+            with TemporaryDirectory() as output:
+                with patch.object(catalog, "temporary_directory", tracked_directory), patch.object(catalog, "_prepare_catalog_screenshot", fail_screenshot), patch.object(catalog, "_close_catalog_widget", fail_cleanup):
+                    try:
+                        catalog._render_stories(document, Path(output), "settings")
+                    except ValueError as error:
+                        assert error is primary
+                        assert any("widget cleanup failure" in note for note in error.__notes__)
+                    else:
+                        raise AssertionError("screenshot failure was lost")
+            assert len(closed) == 1
+            assert directories and all(not path.exists() for path in directories)
+
+            directories.clear()
+            construction = ValueError("dialog construction failed")
+            with patch.object(catalog, "temporary_directory", tracked_directory), patch("vntts.authoring.source_reference_quality_ui.SourceReferenceQualityDialog", side_effect=construction):
+                try:
+                    with ExitStack() as resources:
+                        catalog._source_reference_review("pending", resources)
+                except ValueError as error:
+                    assert error is construction
+                else:
+                    raise AssertionError("construction failure was lost")
+            assert directories and all(not path.exists() for path in directories)
+        """)
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=root,
+            env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_history_catalog_renders_every_event_driven_state(self) -> None:
         root = Path(__file__).resolve().parents[1]
         with TemporaryDirectory() as directory:
