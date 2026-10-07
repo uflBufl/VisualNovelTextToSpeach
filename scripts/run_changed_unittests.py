@@ -118,10 +118,12 @@ def _reachable_modules(reverse, starts):
 
 
 def select_test_modules(changed, modules=None):
-    modules = _module_files() if modules is None else modules
     changed_modules, reason = _changed_modules(changed)
-    if reason:
+    if changed_modules is None:
         return None, reason
+    if not changed_modules:
+        return [], None
+    modules = _module_files() if modules is None else modules
 
     known = set(modules) | changed_modules
     try:
