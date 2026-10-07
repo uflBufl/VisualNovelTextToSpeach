@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -12,6 +11,7 @@ from vntts.authoring.reconciliation import (
     build_authoring_reconciliation,
     write_authoring_reconciliation,
 )
+from vntts.cli import print_json
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -61,7 +61,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "report_id": report.report_id,
             "summary": report.document["summary"],
         }
-    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+    print_json(payload, ensure_ascii=False)
     return 0
 
 

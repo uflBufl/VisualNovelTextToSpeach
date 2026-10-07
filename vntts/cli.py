@@ -1,9 +1,14 @@
 """Small, explicit helpers shared by VNTTS command entry points."""
 
+import json
 import sys
 from collections.abc import Iterable
 from pathlib import Path
 from typing import NamedTuple
+
+
+def print_json(value: object, *, ensure_ascii: bool = True) -> None:
+    print(json.dumps(value, ensure_ascii=ensure_ascii, indent=2, sort_keys=True))
 
 
 def cli_exit_code(successful: object) -> int:

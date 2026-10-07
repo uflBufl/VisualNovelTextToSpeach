@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 from contextlib import nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
@@ -45,6 +44,7 @@ from vntts.authoring.source_reference_bindings import (
     queue_voice_overrides_from_manifest,
 )
 from vntts.cleanup import temporary_directory
+from vntts.cli import print_json
 from vntts.speech_backend_runtime import shutdown_speech_backend
 from vntts.synthesis import SynthesisCancellation
 from vntts.tts_benchmark import create_backend
@@ -755,22 +755,18 @@ def run_generation(
 
 def _generate(arguments: argparse.Namespace) -> int:
     result = run_generation(arguments)
-    print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+    print_json(result.to_dict())
     return 0
 
 
 def _handle_review(arguments: argparse.Namespace) -> int:
     review_generation_item(arguments.state, arguments.queue_id, arguments.decision)
-    print(
-        json.dumps(
-            {
-                "queue_id": arguments.queue_id,
-                "decision": arguments.decision,
-                "state": str(arguments.state.expanduser().resolve()),
-            },
-            indent=2,
-            sort_keys=True,
-        )
+    print_json(
+        {
+            "queue_id": arguments.queue_id,
+            "decision": arguments.decision,
+            "state": str(arguments.state.expanduser().resolve()),
+        }
     )
     return 0
 
@@ -787,13 +783,13 @@ def _handle_live_fallback(arguments: argparse.Namespace) -> int:
         evidence_workspaces=arguments.evidence_workspace,
         evidence_reviews=arguments.evidence_review,
     )
-    print(json.dumps(decision, indent=2, sort_keys=True))
+    print_json(decision)
     return 0
 
 
 def _handle_publish(arguments: argparse.Namespace) -> int:
     manifest = publish_generated_manifest(arguments.state)
-    print(json.dumps({"manifest": str(manifest)}, indent=2, sort_keys=True))
+    print_json({"manifest": str(manifest)})
     return 0
 
 
@@ -818,28 +814,22 @@ def _handle_status(arguments: argparse.Namespace) -> int:
     counts["live_fallback"] = sum(
         isinstance(item.get("live_fallback"), dict) for item in items.values()
     )
-    print(
-        json.dumps(
-            {
-                **counts,
-                "active": state.get("active"),
-                "queue_sha256": state["queue_sha256"],
-                "schema": state["schema"],
-                "state": str(arguments.state.expanduser().resolve()),
-            },
-            indent=2,
-            sort_keys=True,
-        )
+    print_json(
+        {
+            **counts,
+            "active": state.get("active"),
+            "queue_sha256": state["queue_sha256"],
+            "schema": state["schema"],
+            "state": str(arguments.state.expanduser().resolve()),
+        }
     )
     return 0
 
 
-def _print_document(value: object) -> None:
-    print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
-
-
 def _handle_failure_report(arguments: argparse.Namespace) -> int:
-    _print_document(generation_failure_report(arguments.state, arguments.queue))
+    print_json(
+        generation_failure_report(arguments.state, arguments.queue), ensure_ascii=False
+    )
     return 0
 
 
@@ -852,12 +842,15 @@ def _handle_specialist_failure_plan(arguments: argparse.Namespace) -> int:
     plan = build_specialist_failure_plan(arguments.workspace)
     if arguments.output is not None:
         write_specialist_failure_plan(plan, arguments.output)
-    _print_document(plan.to_dict())
+    print_json(plan.to_dict(), ensure_ascii=False)
     return 0
 
 
 def _handle_failure_repair_plan(arguments: argparse.Namespace) -> int:
-    _print_document(generation_failure_repair_plan(arguments.state, arguments.queue))
+    print_json(
+        generation_failure_repair_plan(arguments.state, arguments.queue),
+        ensure_ascii=False,
+    )
     return 0
 
 
@@ -870,7 +863,7 @@ def _handle_pending_resolution_plan(arguments: argparse.Namespace) -> int:
     plan = build_pending_resolution_plan(arguments.workspace)
     if arguments.output is not None:
         write_pending_resolution_plan(plan, arguments.output)
-    _print_document(plan.to_dict())
+    print_json(plan.to_dict(), ensure_ascii=False)
     return 0
 
 
@@ -886,7 +879,7 @@ def _handle_pending_regeneration_command(arguments: argparse.Namespace) -> int:
         batch_index=arguments.batch_index,
         batch_size=arguments.batch_size,
     )
-    _print_document(command.to_dict())
+    print_json(command.to_dict(), ensure_ascii=False)
     return 0
 
 
@@ -899,7 +892,7 @@ def _handle_failure_regeneration_plan(arguments: argparse.Namespace) -> int:
     plan = build_failure_regeneration_plan(arguments.workspace)
     if arguments.output is not None:
         write_failure_regeneration_plan(plan, arguments.output)
-    _print_document(plan.to_dict())
+    print_json(plan.to_dict(), ensure_ascii=False)
     return 0
 
 
@@ -915,7 +908,7 @@ def _handle_failure_regeneration_command(arguments: argparse.Namespace) -> int:
         batch_index=arguments.batch_index,
         batch_size=arguments.batch_size,
     )
-    _print_document(command.to_dict())
+    print_json(command.to_dict(), ensure_ascii=False)
     return 0
 
 

@@ -104,7 +104,7 @@ class AuthoringCliVoiceQualityTest(unittest.TestCase):
         plan = object()
         decision = object()
         gate = Mock()
-        gate.to_dict.return_value = {"gate": "exact"}
+        gate.to_dict.return_value = {"z": ["é"], "gate": "точный"}
         output = StringIO()
         with (
             patch.object(
@@ -135,7 +135,9 @@ class AuthoringCliVoiceQualityTest(unittest.TestCase):
         load_decision.assert_called_once_with(Path("decision.json"))
         build.assert_called_once_with(Path("workspace"), plan, decision)
         write.assert_called_once_with(gate, Path("gate.json"))
-        self.assertEqual(json.loads(output.getvalue()), {"gate": "exact"})
+        self.assertEqual(
+            output.getvalue(), '{\n  "gate": "точный",\n  "z": [\n    "é"\n  ]\n}\n'
+        )
 
     def test_repair_plan_preserves_implicit_and_explicit_profiles(self):
         for configured, expected in (

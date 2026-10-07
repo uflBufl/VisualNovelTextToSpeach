@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 from vntts.authoring.audio_event_composition import (
@@ -35,6 +34,7 @@ from vntts.authoring.workbench import (
     create_audio_event_composition_workspace,
     default_workspaces_root,
 )
+from vntts.cli import print_json
 
 AudioEventCompositionError = _AudioEventCompositionError
 AudioEventReviewError = _AudioEventReviewError
@@ -197,18 +197,14 @@ def handle(arguments: argparse.Namespace) -> int:
             arguments.composition,
             arguments.workspaces_root,
         )
-        print(
-            json.dumps(
-                {
-                    "created": workspace_result.created,
-                    "workspace": str(workspace_result.directory),
-                },
-                indent=2,
-                sort_keys=True,
-            )
+        print_json(
+            {
+                "created": workspace_result.created,
+                "workspace": str(workspace_result.directory),
+            }
         )
         return 0
     else:
         raise ValueError(f"Unsupported audio-event command: {arguments.command!r}")
-    print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+    print_json(result.to_dict())
     return 0

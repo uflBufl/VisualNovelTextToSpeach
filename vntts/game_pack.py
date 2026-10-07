@@ -2,7 +2,6 @@
 
 import argparse
 import hashlib
-import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
@@ -16,6 +15,7 @@ from vntts_artifacts.story_index import (
     StoryIndexError,
 )
 
+from vntts.cli import print_json
 from vntts.path_safety import contained_path, safe_relative_path
 from vntts.settings import AppSettings
 from vntts.source_audio_semantics import (
@@ -244,32 +244,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         imported = import_game_pack(arguments.game_pack)
     except GamePackError as error:
         parser.error(str(error))
-    print(
-        json.dumps(
-            {
-                "game_pack": str(imported.pack.manifest_path),
-                "game_id": imported.pack.game_id,
-                "game_version": imported.pack.game_version,
-                "story_index": str(imported.story_index),
-                "voice_manifest": str(imported.voice_manifest),
-                "generated_audio_manifest": (
-                    str(imported.generated_audio_manifest)
-                    if imported.generated_audio_manifest is not None
-                    else None
-                ),
-                "live_sequence_plan": (
-                    str(imported.live_sequence_plan)
-                    if imported.live_sequence_plan is not None
-                    else None
-                ),
-                "source_audio_semantic_evidence": (
-                    str(imported.source_audio_semantic_evidence)
-                    if imported.source_audio_semantic_evidence is not None
-                    else None
-                ),
-            },
-            indent=2,
-            sort_keys=True,
-        )
+    print_json(
+        {
+            "game_pack": str(imported.pack.manifest_path),
+            "game_id": imported.pack.game_id,
+            "game_version": imported.pack.game_version,
+            "story_index": str(imported.story_index),
+            "voice_manifest": str(imported.voice_manifest),
+            "generated_audio_manifest": (
+                str(imported.generated_audio_manifest)
+                if imported.generated_audio_manifest is not None
+                else None
+            ),
+            "live_sequence_plan": (
+                str(imported.live_sequence_plan)
+                if imported.live_sequence_plan is not None
+                else None
+            ),
+            "source_audio_semantic_evidence": (
+                str(imported.source_audio_semantic_evidence)
+                if imported.source_audio_semantic_evidence is not None
+                else None
+            ),
+        }
     )
     return 0

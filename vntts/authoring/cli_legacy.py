@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 from vntts.authoring.legacy_import import (
@@ -20,6 +19,7 @@ from vntts.authoring.listening_import import (
     import_listening_session,
     inspect_listening_session,
 )
+from vntts.cli import print_json
 
 COMMANDS = frozenset(
     {
@@ -78,16 +78,12 @@ def configure_parsers(
 
 
 def _print_import_result(result: LegacyImportResult | ListeningImportResult) -> None:
-    print(
-        json.dumps(
-            {
-                "destination": str(result.destination),
-                "created": result.created,
-                "summary": result.manifest["summary"],
-            },
-            indent=2,
-            sort_keys=True,
-        )
+    print_json(
+        {
+            "destination": str(result.destination),
+            "created": result.created,
+            "summary": result.manifest["summary"],
+        }
     )
 
 
@@ -95,47 +91,39 @@ def handle(arguments: argparse.Namespace) -> int:
     result: LegacyImportResult | ListeningImportResult
     if arguments.command == "discover-legacy":
         candidates = discover_legacy_jobs(arguments.jobs_root)
-        print(
-            json.dumps(
-                [
-                    {
-                        "job_directory": str(candidate.job_directory),
-                        "kind": candidate.kind,
-                        "title": candidate.title,
-                        "status": candidate.status,
-                        "queue_items": candidate.queue_items,
-                        "generated_items": candidate.generated_items,
-                        "compatible": candidate.compatible,
-                        "compatibility_error": candidate.compatibility_error,
-                        "diagnostics": list(candidate.diagnostics),
-                    }
-                    for candidate in candidates
-                ],
-                indent=2,
-                sort_keys=True,
-            )
+        print_json(
+            [
+                {
+                    "job_directory": str(candidate.job_directory),
+                    "kind": candidate.kind,
+                    "title": candidate.title,
+                    "status": candidate.status,
+                    "queue_items": candidate.queue_items,
+                    "generated_items": candidate.generated_items,
+                    "compatible": candidate.compatible,
+                    "compatibility_error": candidate.compatibility_error,
+                    "diagnostics": list(candidate.diagnostics),
+                }
+                for candidate in candidates
+            ]
         )
         return 0
     if arguments.command == "inspect-standalone":
         plan = inspect_standalone_generation(arguments.queue, arguments.output)
-        print(json.dumps(plan.summary, indent=2, sort_keys=True))
+        print_json(plan.summary)
         return 0
     if arguments.command == "inspect-listening":
         inspection = inspect_listening_session(arguments.session_directory)
-        print(
-            json.dumps(
-                {
-                    "session_directory": str(inspection.session_directory),
-                    "trial_count": inspection.trial_count,
-                    "completed_count": inspection.completed_count,
-                    "audio_count": inspection.audio_count,
-                    "report_present": inspection.report_present,
-                    "logical_identity": inspection.logical_identity,
-                    "source_fingerprint": inspection.source_fingerprint,
-                },
-                indent=2,
-                sort_keys=True,
-            )
+        print_json(
+            {
+                "session_directory": str(inspection.session_directory),
+                "trial_count": inspection.trial_count,
+                "completed_count": inspection.completed_count,
+                "audio_count": inspection.audio_count,
+                "report_present": inspection.report_present,
+                "logical_identity": inspection.logical_identity,
+                "source_fingerprint": inspection.source_fingerprint,
+            }
         )
         return 0
     if arguments.command == "import-standalone":

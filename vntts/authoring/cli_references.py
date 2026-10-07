@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 from vntts.authoring.failure_reference_audit import publish_failure_reference_audit
@@ -52,6 +51,7 @@ from vntts.authoring.workbench import (
     create_failure_reference_workspace,
     default_workspaces_root,
 )
+from vntts.cli import print_json
 
 COMMANDS = frozenset(
     {
@@ -420,11 +420,11 @@ def _handle_failure_reference(arguments: argparse.Namespace) -> int:
             seed=arguments.seed,
             queue_ids=arguments.queue_id,
         )
-        print(json.dumps(audit.to_dict(), indent=2, sort_keys=True))
+        print_json(audit.to_dict())
         return 0
     if arguments.command == "failure-reference-binding":
         binding = publish_failure_reference_binding(arguments.audit, arguments.output)
-        print(json.dumps(binding.to_dict(), indent=2, sort_keys=True))
+        print_json(binding.to_dict())
         return 0
     if arguments.command == "create-failure-reference-workspace":
         workspace = create_failure_reference_workspace(
@@ -432,12 +432,8 @@ def _handle_failure_reference(arguments: argparse.Namespace) -> int:
             arguments.binding,
             arguments.workspaces_root,
         )
-        print(
-            json.dumps(
-                {"workspace": str(workspace.directory), "created": workspace.created},
-                indent=2,
-                sort_keys=True,
-            )
+        print_json(
+            {"workspace": str(workspace.directory), "created": workspace.created}
         )
         return 0
     raise AssertionError(f"Unhandled reference command: {arguments.command}")
@@ -454,7 +450,7 @@ def _handle_missing_voice_reuse(arguments: argparse.Namespace) -> int:
             inline_pause_ms=arguments.inline_pause_ms,
         )
         write_missing_voice_reuse_plan(plan, arguments.output)
-        print(json.dumps(plan.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
+        print_json(plan.to_dict(), ensure_ascii=False)
         return 0
     if arguments.command == "missing-voice-reuse-candidate-workspace":
         candidate_workspace = prepare_missing_voice_reuse_candidate_workspace(
@@ -464,14 +460,7 @@ def _handle_missing_voice_reuse(arguments: argparse.Namespace) -> int:
             arguments.inputs_root,
             arguments.workspaces_root,
         )
-        print(
-            json.dumps(
-                candidate_workspace.to_dict(),
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            )
-        )
+        print_json(candidate_workspace.to_dict(), ensure_ascii=False)
         return 0
     if arguments.command == "missing-voice-reuse-candidate-command":
         command = build_missing_voice_reuse_candidate_command(
@@ -479,7 +468,7 @@ def _handle_missing_voice_reuse(arguments: argparse.Namespace) -> int:
             arguments.candidate_id,
             arguments.workspace,
         )
-        print(json.dumps({"command": list(command)}, indent=2, sort_keys=True))
+        print_json({"command": list(command)})
         return 0
     if arguments.command == "missing-voice-reuse-review":
         session_path = build_missing_voice_reuse_review(
@@ -489,36 +478,28 @@ def _handle_missing_voice_reuse(arguments: argparse.Namespace) -> int:
             seed=arguments.seed,
         )
         bundle, progress = load_missing_voice_reuse_review(session_path)
-        print(
-            json.dumps(
-                {
-                    "session": str(session_path),
-                    "bundle_id": bundle["bundle_id"],
-                    "candidate_count": bundle["candidate_count"],
-                    "cohort_count": bundle["cohort_count"],
-                    "completed_count": missing_voice_reuse_review_progress(
-                        bundle, progress
-                    )[0],
-                },
-                indent=2,
-                sort_keys=True,
-            )
+        print_json(
+            {
+                "session": str(session_path),
+                "bundle_id": bundle["bundle_id"],
+                "candidate_count": bundle["candidate_count"],
+                "cohort_count": bundle["cohort_count"],
+                "completed_count": missing_voice_reuse_review_progress(
+                    bundle, progress
+                )[0],
+            }
         )
         return 0
     if arguments.command == "missing-voice-reuse-review-status":
         bundle, session = load_missing_voice_reuse_review(arguments.session)
         completed, total = missing_voice_reuse_review_progress(bundle, session)
-        print(
-            json.dumps(
-                {
-                    "bundle_id": bundle["bundle_id"],
-                    "completed_count": completed,
-                    "total_count": total,
-                    "remaining_count": total - completed,
-                },
-                indent=2,
-                sort_keys=True,
-            )
+        print_json(
+            {
+                "bundle_id": bundle["bundle_id"],
+                "completed_count": completed,
+                "total_count": total,
+                "remaining_count": total - completed,
+            }
         )
         return 0
     if arguments.command == "missing-voice-reuse-review-ui":
@@ -531,7 +512,7 @@ def _handle_missing_voice_reuse(arguments: argparse.Namespace) -> int:
         reuse_binding = publish_missing_voice_reuse_binding(
             arguments.plan, arguments.session, arguments.output
         )
-        print(json.dumps(reuse_binding.to_dict(), indent=2, sort_keys=True))
+        print_json(reuse_binding.to_dict())
         return 0
     raise AssertionError(f"Unhandled reference command: {arguments.command}")
 
@@ -546,7 +527,7 @@ def _handle_missing_voice_authority(arguments: argparse.Namespace) -> int:
                 arguments.accept_known_role_narrator_fallback
             ),
         )
-        print(json.dumps(live_fallback.to_dict(), indent=2, sort_keys=True))
+        print_json(live_fallback.to_dict())
         return 0
     if arguments.command == "known-role-reuse-binding":
         known_role_binding = publish_known_role_reuse_binding(
@@ -557,7 +538,7 @@ def _handle_missing_voice_authority(arguments: argparse.Namespace) -> int:
             arguments.output,
             accept_known_role_reuse=arguments.accept_known_role_reuse,
         )
-        print(json.dumps(known_role_binding.to_dict(), indent=2, sort_keys=True))
+        print_json(known_role_binding.to_dict())
         return 0
     if arguments.command == "portrait-alias-plan":
         portrait_alias_plan = build_portrait_alias_plan(
@@ -565,38 +546,25 @@ def _handle_missing_voice_authority(arguments: argparse.Namespace) -> int:
             max_dhash_distance=arguments.max_dhash_distance,
         )
         write_portrait_alias_plan(portrait_alias_plan, arguments.output)
-        print(
-            json.dumps(
-                portrait_alias_plan.to_dict(),
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            )
-        )
+        print_json(portrait_alias_plan.to_dict(), ensure_ascii=False)
         return 0
     if arguments.command == "portrait-alias-decision":
         decision = build_portrait_alias_decision(
             load_portrait_alias_plan(arguments.plan), arguments.accept_suggestion
         )
         write_portrait_alias_decision(decision, arguments.output)
-        print(
-            json.dumps(decision.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
-        )
+        print_json(decision.to_dict(), ensure_ascii=False)
         return 0
     raise AssertionError(f"Unhandled reference command: {arguments.command}")
 
 
 def _handle_source_references(arguments: argparse.Namespace) -> int:
     if arguments.command == "reference-report":
-        print(
-            json.dumps(
-                inspect_voice_reference_candidates(
-                    arguments.voice_manifest, arguments.character
-                ),
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            )
+        print_json(
+            inspect_voice_reference_candidates(
+                arguments.voice_manifest, arguments.character
+            ),
+            ensure_ascii=False,
         )
         return 0
     if arguments.command == "select-reference":
@@ -606,7 +574,7 @@ def _handle_source_references(arguments: argparse.Namespace) -> int:
             arguments.reference_number,
             arguments.output,
         )
-        print(json.dumps(selection.to_dict(), indent=2, sort_keys=True))
+        print_json(selection.to_dict())
         return 0
     if arguments.command == "import-reference-review":
         source_plan = import_source_reference_review(
@@ -615,19 +583,19 @@ def _handle_source_references(arguments: argparse.Namespace) -> int:
             arguments.story_index,
             arguments.output,
         )
-        print(json.dumps(source_plan.to_dict(), indent=2, sort_keys=True))
+        print_json(source_plan.to_dict())
         return 0
     if arguments.command == "build-reference-evaluation":
         evaluation = publish_source_reference_evaluation(
             arguments.plan, arguments.output
         )
-        print(json.dumps(evaluation.to_dict(), indent=2, sort_keys=True))
+        print_json(evaluation.to_dict())
         return 0
     if arguments.command == "build-reference-listening-reports":
         listening_reports = publish_source_reference_listening_reports(
             arguments.evaluation, arguments.state, arguments.output
         )
-        print(json.dumps(listening_reports.to_dict(), indent=2, sort_keys=True))
+        print_json(listening_reports.to_dict())
         return 0
     if arguments.command == "build-reference-bindings":
         source_bindings = publish_source_reference_bindings(
@@ -639,7 +607,7 @@ def _handle_source_references(arguments: argparse.Namespace) -> int:
             quality_review=arguments.quality_review,
             base_characters=arguments.base_characters,
         )
-        print(json.dumps(source_bindings.to_dict(), indent=2, sort_keys=True))
+        print_json(source_bindings.to_dict())
         return 0
     if arguments.command == "extend-reference-bindings":
         successor = publish_source_reference_binding_successor(
@@ -649,7 +617,7 @@ def _handle_source_references(arguments: argparse.Namespace) -> int:
             arguments.narrator_character,
             arguments.output,
         )
-        print(json.dumps(successor.to_dict(), indent=2, sort_keys=True))
+        print_json(successor.to_dict())
         return 0
     if arguments.command == "retire-reference-bindings":
         retirement = publish_source_reference_binding_retirement(
@@ -658,6 +626,6 @@ def _handle_source_references(arguments: argparse.Namespace) -> int:
             arguments.output,
             reason=arguments.reason,
         )
-        print(json.dumps(retirement.to_dict(), indent=2, sort_keys=True))
+        print_json(retirement.to_dict())
         return 0
     raise AssertionError(f"Unhandled reference command: {arguments.command}")

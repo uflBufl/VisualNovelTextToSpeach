@@ -72,6 +72,7 @@ from vntts.authoring.voice_quality_gate import (
     load_voice_quality_gate,
 )
 from vntts.authoring.workbench import prepare_review_audio, review_technical_summary
+from vntts.cli import print_json
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.qt_dialogs import CloseGuardedDialog
 
@@ -2295,9 +2296,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         except Exception as error:
             print(str(error), file=sys.stderr)
             return 1
-        print(
-            json.dumps(status.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
-        )
+        print_json(status.to_dict(), ensure_ascii=False)
         return 0
     return launch_cohort_review_bundle(
         arguments.bundle,

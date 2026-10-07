@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 from vntts.authoring.asr_model import (
@@ -22,6 +21,7 @@ from vntts.authoring.robustness_corpus import (
     load_speech_robustness_corpus,
     publish_speech_robustness_corpus,
 )
+from vntts.cli import print_json
 
 COMMANDS = frozenset(
     {
@@ -121,21 +121,17 @@ def _handle(arguments: argparse.Namespace) -> int:
             arguments.failure_workspace,
             arguments.output,
         )
-        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        print_json(result.to_dict())
         return 0
     if arguments.command == "speech-robustness-check":
         corpus = load_speech_robustness_corpus(arguments.directory)
-        print(
-            json.dumps(
-                {
-                    "directory": str(corpus.directory),
-                    "corpus_id": corpus.corpus_id,
-                    "sample_count": corpus.sample_count,
-                    "failure_count": corpus.failure_count,
-                },
-                indent=2,
-                sort_keys=True,
-            )
+        print_json(
+            {
+                "directory": str(corpus.directory),
+                "corpus_id": corpus.corpus_id,
+                "sample_count": corpus.sample_count,
+                "failure_count": corpus.failure_count,
+            }
         )
         return 0
     if arguments.command == "speech-robustness-asr":
@@ -169,29 +165,19 @@ def _handle(arguments: argparse.Namespace) -> int:
             ),
         )
         write_speech_robustness_asr_report(report, output)
-        print(
-            json.dumps(
-                {
-                    "output": str(output),
-                    "report_id": report.report_id,
-                    "summary": report.document["summary"],
-                },
-                indent=2,
-                sort_keys=True,
-            )
+        print_json(
+            {
+                "output": str(output),
+                "report_id": report.report_id,
+                "summary": report.document["summary"],
+            }
         )
         return 0
     if arguments.command == "asr-model-install":
-        print(
-            json.dumps(
-                install_managed_asr_model(source=arguments.source),
-                indent=2,
-                sort_keys=True,
-            )
-        )
+        print_json(install_managed_asr_model(source=arguments.source))
         return 0
     if arguments.command == "asr-model-status":
-        print(json.dumps(managed_asr_status(), indent=2, sort_keys=True))
+        print_json(managed_asr_status())
         return 0
     raise SpeechRobustnessCommandError(
         f"No speech-robustness handler for {arguments.command!r}"

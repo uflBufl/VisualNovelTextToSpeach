@@ -1,10 +1,12 @@
 import argparse
 import json
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
-from vntts.authoring.cli import COMMAND_FAMILIES, create_parser
+from vntts.authoring.cli import COMMAND_FAMILIES, create_parser, main
 from vntts.authoring.cli_contract import (
     _normalized,
     parser_contract,
@@ -14,6 +16,21 @@ from vntts.authoring.cli_dispatch import CommandFamily, dispatch_command
 
 
 class AuthoringCliDispatchTest(unittest.TestCase):
+    def test_model_status_preserves_ascii_escaping_sorted_keys_and_newline(self):
+        output = StringIO()
+        with (
+            patch(
+                "vntts.authoring.cli_speaker_identity.managed_speaker_identity_status",
+                return_value={"z": ["é"], "name": "точный"},
+            ),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(main(["speaker-identity-model-status"]), 0)
+        self.assertEqual(
+            output.getvalue(),
+            '{\n  "name": "\\u0442\\u043e\\u0447\\u043d\\u044b\\u0439",\n  "z": [\n    "\\u00e9"\n  ]\n}\n',
+        )
+
     def test_contract_normalizes_absolute_and_relative_path_defaults(self):
         self.assertEqual(
             _normalized(Path.cwd() / "different-user" / "authoring" / "workspaces"),

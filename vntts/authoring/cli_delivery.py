@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import argparse
-import json
 
 from vntts.authoring.delivery import LEGACY_ENGLISH_POLICY, apply_delivery_policy
+from vntts.cli import print_json
 
 COMMANDS = frozenset({"annotate-delivery"})
 
@@ -35,22 +35,18 @@ def handle(arguments: argparse.Namespace) -> int:
         },
         LEGACY_ENGLISH_POLICY,
     )
-    print(
-        json.dumps(
-            {
-                "annotation": {
-                    key: application.record[key]
-                    for key in (
-                        "annotation_version",
-                        "emotion",
-                        "delivery",
-                        "prompt_adapters",
-                    )
-                },
-                "provenance": application.provenance,
+    print_json(
+        {
+            "annotation": {
+                key: application.record[key]
+                for key in (
+                    "annotation_version",
+                    "emotion",
+                    "delivery",
+                    "prompt_adapters",
+                )
             },
-            indent=2,
-            sort_keys=True,
-        )
+            "provenance": application.provenance,
+        }
     )
     return 0

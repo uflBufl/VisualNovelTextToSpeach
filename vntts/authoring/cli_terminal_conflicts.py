@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 from vntts.authoring.terminal_conflict_resolution import (
@@ -29,6 +28,7 @@ from vntts.authoring.terminal_conflict_workspace import (
     merge_terminal_conflict_resolution,
 )
 from vntts.authoring.workbench import default_workspaces_root
+from vntts.cli import print_json
 
 TerminalConflictResolutionError = _TerminalConflictResolutionError
 TerminalConflictReviewError = _TerminalConflictReviewError
@@ -121,5 +121,5 @@ def handle(arguments: argparse.Namespace) -> int:
         raise ValueError(
             f"Unsupported terminal-conflict command: {arguments.command!r}"
         )
-    print(json.dumps(payload, indent=2, sort_keys=True))
+    print_json(payload)
     return 0

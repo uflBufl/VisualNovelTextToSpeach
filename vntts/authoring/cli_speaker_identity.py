@@ -27,6 +27,7 @@ from vntts.authoring.speaker_identity_model import (
     managed_speaker_identity_status,
     resolve_managed_speaker_identity_model,
 )
+from vntts.cli import print_json
 
 COMMANDS = frozenset(
     {
@@ -85,7 +86,7 @@ def handle(arguments: argparse.Namespace) -> int:
     if arguments.command == "speaker-identity-inventory":
         inventory_document = build_reference_inventory(arguments.manifest)
         write_reference_inventory(inventory_document, arguments.output)
-        _print(
+        print_json(
             {
                 "output": str(arguments.output.resolve()),
                 **_summary(inventory_document),
@@ -97,13 +98,15 @@ def handle(arguments: argparse.Namespace) -> int:
         draft = _read_pair_draft(arguments.pairs)
         labels_document = build_labelled_pairs(inventory, draft)
         write_labelled_pairs(labels_document, arguments.output)
-        _print({"output": str(arguments.output.resolve()), **_summary(labels_document)})
+        print_json(
+            {"output": str(arguments.output.resolve()), **_summary(labels_document)}
+        )
         return 0
     if arguments.command == "speaker-identity-model-install":
-        _print(install_managed_speaker_identity_model(source=arguments.source))
+        print_json(install_managed_speaker_identity_model(source=arguments.source))
         return 0
     if arguments.command == "speaker-identity-model-status":
-        _print(managed_speaker_identity_status())
+        print_json(managed_speaker_identity_status())
         return 0
     if arguments.command == "speaker-identity-evaluate":
         inventory = load_reference_inventory(arguments.inventory)
@@ -121,7 +124,9 @@ def handle(arguments: argparse.Namespace) -> int:
             installed_model_descriptor(),
         )
         write_speaker_identity_report(report_document, arguments.output)
-        _print({"output": str(arguments.output.resolve()), **_summary(report_document)})
+        print_json(
+            {"output": str(arguments.output.resolve()), **_summary(report_document)}
+        )
         return 0
     raise SpeakerIdentityError(f"No speaker-identity handler for {arguments.command!r}")
 
@@ -155,10 +160,6 @@ def _summary(document: Mapping[str, object]) -> dict[str, object]:
         )
         if key in document
     }
-
-
-def _print(document: object) -> None:
-    print(json.dumps(document, indent=2, sort_keys=True))
 
 
 __all__ = [

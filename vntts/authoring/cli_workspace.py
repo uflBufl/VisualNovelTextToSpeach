@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 from vntts.authoring.cli_generation_options import (
@@ -20,6 +19,7 @@ from vntts.authoring.workbench import (
     default_workspaces_root,
     merge_workspace_outcomes,
 )
+from vntts.cli import print_json
 
 COMMANDS = frozenset(
     {
@@ -119,16 +119,12 @@ def configure_parsers(
 
 
 def print_workspace_result(result: WorkspaceCreationResult, **extra: object) -> None:
-    print(
-        json.dumps(
-            {
-                "directory": str(result.directory),
-                "created": result.created,
-                **extra,
-            },
-            indent=2,
-            sort_keys=True,
-        )
+    print_json(
+        {
+            "directory": str(result.directory),
+            "created": result.created,
+            **extra,
+        }
     )
 
 

@@ -49,6 +49,7 @@ from vntts.authoring.review_context_ui import (
     review_model_label,
     review_scroll_area,
 )
+from vntts.cli import print_json
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.qt_dialogs import CloseGuardedDialog
 
@@ -1053,7 +1054,7 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as error:
             print(f"Unable to inspect failed-reference audit: {error}", file=sys.stderr)
             return 1
-        print(json.dumps(progress, indent=2, sort_keys=True))
+        print_json(progress)
         return 0
     return launch_failure_reference_audit(Path(arguments[0]))
 
