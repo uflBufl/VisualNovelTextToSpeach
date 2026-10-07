@@ -114,6 +114,18 @@ def _source_reference_review(state: str) -> SourceReferenceQualityDialog:
 def _render_stories(
     catalog: UICatalog, output: Path, selected_surface: str | None
 ) -> dict[str, str]:
+    surfaces = {surface["id"]: surface for surface in catalog["surfaces"]}
+    allowed_surfaces = set(surfaces)
+    if selected_surface:
+        if selected_surface not in surfaces:
+            raise ValueError(f"unknown surface: {selected_surface}")
+        target = surfaces[selected_surface]
+        allowed_surfaces = {
+            selected_surface,
+            target["canonical_owner"],
+            *target.get("related", []),
+        }
+
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
     from PIL import Image, ImageDraw, ImageFont
@@ -2176,18 +2188,6 @@ def _render_stories(
             "compact-actions"
         ),
     }
-    surfaces = {surface["id"]: surface for surface in catalog["surfaces"]}
-    allowed_surfaces = set(surfaces)
-    if selected_surface:
-        if selected_surface not in surfaces:
-            raise ValueError(f"unknown surface: {selected_surface}")
-        target = surfaces[selected_surface]
-        allowed_surfaces = {
-            selected_surface,
-            target["canonical_owner"],
-            *target.get("related", []),
-        }
-
     captured: dict[str, str] = {}
     for surface in catalog["surfaces"]:
         if surface["id"] not in allowed_surfaces:
@@ -2230,7 +2230,6 @@ def main() -> int:
     if arguments.validate_only:
         print(f"Validated {len(catalog['surfaces'])} surfaces.")
         return 0
-    arguments.output.mkdir(parents=True, exist_ok=True)
     captured = _render_stories(catalog, arguments.output, arguments.surface)
     _write_catalog(catalog, arguments.output, captured)
     print(

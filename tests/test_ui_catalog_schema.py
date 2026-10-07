@@ -86,6 +86,32 @@ class UiCatalogSchemaTest(unittest.TestCase):
                 packet,
             )
 
+    def test_unknown_surface_preserves_existing_output(self) -> None:
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "output"
+            screenshot = output / "screenshots" / "previous.png"
+            screenshot.parent.mkdir(parents=True)
+            screenshot.write_bytes(b"prior render")
+            for target in (output, Path(directory) / "new-output"):
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "scripts/render_ui_catalog.py",
+                        "--output",
+                        str(target),
+                        "--surface",
+                        "unknown",
+                    ],
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("unknown surface: unknown", result.stderr)
+                self.assertEqual(screenshot.read_bytes(), b"prior render")
+            self.assertFalse((Path(directory) / "new-output").exists())
+
     def test_cli_rejects_bad_catalog_before_creating_output(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "catalog.json"
