@@ -1480,6 +1480,12 @@ class LiveReplayTest(unittest.TestCase):
                     side_effect=lambda **_kwargs: Mock(),
                 ),
                 patch("vntts.live_replay.Event.wait", return_value=True),
+                # This ordering test submits no work: explicitly release its
+                # snapshots rather than leave a fake controller's gate pending.
+                patch(
+                    "vntts.live_replay._ReplaySnapshots.close",
+                    lambda owner: owner._remove_directories(),
+                ),
                 self.assertRaises(OSError) as caught,
             ):
                 LiveReplayRunner(corpus).run()

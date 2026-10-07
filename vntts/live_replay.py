@@ -8,14 +8,17 @@ import io
 import json
 import math
 import os
+import shutil
 import stat
 from collections import Counter
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass
+from functools import partial
 from pathlib import Path, PurePosixPath
-from threading import Condition, Event, Lock, RLock
+from tempfile import mkdtemp
+from threading import Condition, Event, Lock, RLock, Thread
 from time import monotonic
 from typing import NotRequired, Protocol, TypeAlias, TypedDict
 
@@ -614,6 +617,147 @@ class ReplayAppController(AppController):
         return self.replay_frame_source.advance()
 
 
+class _ReplaySnapshots:
+    """Retain replay files until the worker owner confirms safe release."""
+
+    def __init__(self) -> None:
+        self.directories: list[str] = []
+        self.wait_for: Event | None = None
+
+    def create_directory(self, prefix: str) -> str:
+        directory = mkdtemp(prefix=prefix)
+        self.directories.append(directory)
+        return directory
+
+    def close(self) -> None:
+        if not self.directories:
+            return
+        completed = self.wait_for
+        if completed is None or completed.is_set():
+            self._remove_directories()
+            return
+        try:
+            Thread(
+                target=partial(self._close_after_drain, completed),
+                name="replay-snapshot-release",
+                daemon=True,
+            ).start()
+        except BaseException as error:
+            error.add_note(f"Replay snapshots retained: {self.directories}")
+            raise
+
+    def _close_after_drain(self, completed: Event) -> None:
+        if completed.wait() and completed.is_set():
+            self._remove_directories()
+
+    def _remove_directories(self) -> None:
+        with ExitStack() as cleanup:
+            for directory in reversed(tuple(self.directories)):
+                cleanup.enter_context(
+                    cleanup_on_exit(
+                        partial(self._remove_directory, directory),
+                        description=f"Replay snapshot {directory}",
+                    )
+                )
+
+    def _remove_directory(self, directory: str) -> None:
+        try:
+            shutil.rmtree(directory)
+        except BaseException as error:
+            error.add_note(f"Replay snapshot retained: {directory}")
+            raise
+        self.directories.remove(directory)
+
+
+@contextmanager
+def _replay_snapshot_directory(
+    prefix: str, snapshots: _ReplaySnapshots | None
+) -> Generator[str, None, None]:
+    if snapshots is None:
+        with owned_temporary_directory(prefix=prefix) as directory:
+            yield directory
+    else:
+        yield snapshots.create_directory(prefix)
+
+
+def _shutdown_replay_executors(
+    executors: Sequence[ThreadPoolExecutor], *, wait: bool, cancel_futures: bool
+) -> None:
+    with ExitStack() as cleanup:
+        for executor in reversed(executors):
+            cleanup.enter_context(
+                cleanup_on_exit(
+                    partial(
+                        executor.shutdown, wait=wait, cancel_futures=cancel_futures
+                    ),
+                    description="Replay executor shutdown",
+                )
+            )
+
+
+def _shutdown_legacy_replay(
+    frame_source: ReplayFrameSource,
+    reader: LiveDialogReader,
+    executors: Sequence[ThreadPoolExecutor],
+    router: GeneratedAudioFallbackBackend,
+    completed: Event,
+) -> None:
+    stops_succeeded = False
+    reader_stop_confirmed = False
+
+    def seal_reader() -> None:
+        nonlocal reader_stop_confirmed
+        try:
+            reader.shutdown()
+        finally:
+            reader_stop_confirmed = (
+                reader.shutdown_started is True and reader.stop_event.is_set() is True
+            )
+
+    def stop_reader() -> None:
+        nonlocal reader_stop_confirmed
+        reader.stop()
+        reader_stop_confirmed = True
+
+    def finish(*, cancel_futures: bool = True) -> None:
+        _shutdown_replay_executors(executors, wait=True, cancel_futures=cancel_futures)
+        if reader_stop_confirmed:
+            # Joined workers no longer use snapshots, even if router.stop fails.
+            with cleanup_on_exit(completed.set, description="Replay drain completion"):
+                router.stop()
+
+    def defer() -> None:
+        with cleanup_on_exit(
+            lambda: Thread(
+                target=partial(finish, cancel_futures=False),
+                name="replay-shutdown-drain",
+                daemon=True,
+            ).start(),
+            description="Background replay drain",
+        ):
+            _shutdown_replay_executors(executors, wait=False, cancel_futures=True)
+
+    def drain() -> None:
+        wait_succeeded = False
+
+        def finish_or_defer() -> None:
+            if wait_succeeded:
+                finish()
+            else:
+                with cleanup_on_exit(defer, description="Deferred replay shutdown"):
+                    seal_reader()
+
+        with cleanup_on_exit(finish_or_defer, description="Replay pipeline drain"):
+            if stops_succeeded:
+                reader.wait()
+                wait_succeeded = True
+
+    with cleanup_on_exit(drain, description="Legacy replay drain"):
+        with cleanup_on_exit(stop_reader, description="Legacy reader stop"):
+            frame_source.stop()
+        stops_succeeded = True
+
+
 class LiveReplayRunner:
     def __init__(
         self,
@@ -638,15 +782,21 @@ class LiveReplayRunner:
         self.audio_source_policy = audio_source_policy
 
     def run(self) -> ReplayReport:
-        with (
-            _generated_audio_index_snapshot(
-                self.corpus.generated_audio_manifest
-            ) as generated_audio_index,
-            _live_sequence_snapshot(self.corpus.live_sequence) as sequence,
-        ):
-            if sequence is not None:
-                return self._run_sequence(generated_audio_index, *sequence)
-            return self._run_legacy(generated_audio_index)
+        snapshots = _ReplaySnapshots()
+        with cleanup_on_exit(snapshots.close, description="Replay snapshot cleanup"):
+            with (
+                _generated_audio_index_snapshot(
+                    self.corpus.generated_audio_manifest, snapshots=snapshots
+                ) as generated_audio_index,
+                _live_sequence_snapshot(
+                    self.corpus.live_sequence, snapshots=snapshots
+                ) as sequence,
+            ):
+                if sequence is not None:
+                    return self._run_sequence(
+                        generated_audio_index, *sequence, snapshots
+                    )
+                return self._run_legacy(generated_audio_index, snapshots)
 
     def _provenance(self) -> dict[str, object]:
         manifest = self.corpus.generated_audio_manifest
@@ -700,7 +850,9 @@ class LiveReplayRunner:
         return live_backend, library, audio_output, router
 
     def _run_legacy(
-        self, generated_audio_index: GeneratedAudioIndex | None
+        self,
+        generated_audio_index: GeneratedAudioIndex | None,
+        snapshots: _ReplaySnapshots,
     ) -> ReplayReport:
         frame_source = ReplayFrameSource(self.corpus.dialogue)
         resolver = ChapterVoicePreloader.from_document(self.corpus.story_document)
@@ -873,7 +1025,19 @@ class LiveReplayRunner:
             max_speech_jobs=1,
             first_pcm_on_prepare=True,
         )
-        try:
+        drained = Event()
+        snapshots.wait_for = drained
+        with cleanup_on_exit(
+            partial(
+                _shutdown_legacy_replay,
+                frame_source,
+                reader,
+                executors,
+                router,
+                drained,
+            ),
+            description="Legacy replay shutdown",
+        ):
             reader.start()
             completed = frame_source.completed.wait(self.timeout_seconds)
             if not completed:
@@ -882,15 +1046,6 @@ class LiveReplayRunner:
                         f"Live replay timed out after {self.timeout_seconds:g} seconds"
                     )
                 )
-        finally:
-            frame_source.stop()
-            reader.stop()
-            try:
-                reader.wait()
-            finally:
-                for executor in executors:
-                    executor.shutdown(wait=True, cancel_futures=True)
-                router.stop()
 
         frame_consumption = frame_source.snapshot()
         observed = _group_played_dialogue(played)
@@ -941,6 +1096,7 @@ class LiveReplayRunner:
         resolver: ChapterVoicePreloader,
         story_index_path: Path,
         plan_path: Path,
+        snapshots: _ReplaySnapshots,
     ) -> ReplayReport:
         binding = self.corpus.live_sequence
         if binding is None:
@@ -1207,7 +1363,7 @@ class LiveReplayRunner:
             tracker_options=dict(live_configuration["tracker_options"]),
         )
         controller.live_reader = reader
-        controller._set_backend_live_mode(True)
+        snapshots.wait_for = controller.shutdown_complete
         with cleanup_on_exit(
             controller.shutdown, description="Replay controller cleanup"
         ):
@@ -1964,6 +2120,8 @@ def _generated_audio_artifact_bindings(
 @contextmanager
 def _generated_audio_index_snapshot(
     binding: GeneratedAudioManifestBinding | None,
+    *,
+    snapshots: _ReplaySnapshots | None = None,
 ) -> Generator[GeneratedAudioIndex | None, None, None]:
     if binding is None:
         yield None
@@ -1985,7 +2143,9 @@ def _generated_audio_index_snapshot(
     )
     if current_artifacts != binding.artifacts:
         raise ValueError("Generated audio inventory changed after corpus validation")
-    with owned_temporary_directory(prefix="vntts-live-replay-") as temporary_directory:
+    with _replay_snapshot_directory(
+        "vntts-live-replay-", snapshots
+    ) as temporary_directory:
         snapshot_root = Path(temporary_directory)
         snapshot_manifest = snapshot_root / "generated-audio.json"
         for artifact in binding.artifacts:
@@ -2010,6 +2170,8 @@ def _generated_audio_index_snapshot(
 @contextmanager
 def _live_sequence_snapshot(
     binding: LiveReplaySequenceBinding | None,
+    *,
+    snapshots: _ReplaySnapshots | None = None,
 ) -> Generator[
     tuple[LiveSequencePlan, ChapterVoicePreloader, Path, Path] | None,
     None,
@@ -2034,7 +2196,9 @@ def _live_sequence_snapshot(
         raise ValueError("Live replay sequence plan changed after corpus validation")
     if story_path != binding.story_index.path or plan_path != binding.plan.path:
         raise ValueError("Live replay sequence authority changed after validation")
-    with owned_temporary_directory(prefix="vntts-live-replay-sequence-") as directory:
+    with _replay_snapshot_directory(
+        "vntts-live-replay-sequence-", snapshots
+    ) as directory:
         root = Path(directory)
         snapshot_story = root / "story-index.jsonl"
         snapshot_plan = root / "live-sequence.json"

@@ -342,7 +342,7 @@
       "path": "vntts/live_replay.py",
       "scope": "LiveReplayRunner._run_legacy",
       "count": 1,
-      "maximum": 14
+      "maximum": 13
     },
     {
       "code": "C901",
@@ -1336,7 +1336,7 @@
       "path": "vntts/live_replay.py",
       "scope": "LiveReplayRunner._run_legacy",
       "count": 1,
-      "maximum": 66
+      "maximum": 58
     },
     {
       "code": "PLR0915",
