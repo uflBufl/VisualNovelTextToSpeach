@@ -188,13 +188,23 @@ class PairwiseStats(TypedDict):
     neither_acceptable: int
 
 
+class ReportPairwise(TypedDict):
+    left_model: str
+    right_model: str
+    trials: int
+    left_wins: int
+    right_wins: int
+    ties: int
+    neither_acceptable: NotRequired[int]
+
+
 class ReportFields(TypedDict):
     complete: bool
     completed_trials: int
     pending_trials: int
     manual_selection_required: bool
     models: list[ReportModel]
-    pairwise: list[dict[str, object]]
+    pairwise: list[ReportPairwise]
 
 
 class ListeningTrial(TypedDict):
@@ -1215,23 +1225,21 @@ def _report_model(value: ModelStats, supports_acceptability: bool) -> ReportMode
 
 def _report_pairwise(
     pairwise: Mapping[tuple[str, str], PairwiseStats], supports_acceptability: bool
-) -> list[dict[str, object]]:
-    return [
-        {
+) -> list[ReportPairwise]:
+    reports: list[ReportPairwise] = []
+    for (left, right), values in sorted(pairwise.items()):
+        report: ReportPairwise = {
             "left_model": left,
             "right_model": right,
-            **(
-                values
-                if supports_acceptability
-                else {
-                    field: value
-                    for field, value in values.items()
-                    if field != "neither_acceptable"
-                }
-            ),
+            "trials": values["trials"],
+            "left_wins": values["left_wins"],
+            "right_wins": values["right_wins"],
+            "ties": values["ties"],
         }
-        for (left, right), values in sorted(pairwise.items())
-    ]
+        if supports_acceptability:
+            report["neither_acceptable"] = values["neither_acceptable"]
+        reports.append(report)
+    return reports
 
 
 def _load_model_report(
