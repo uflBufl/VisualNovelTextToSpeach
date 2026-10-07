@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Literal, Protocol
 
 from vntts_artifacts.generated_audio import load_generated_audio_document
-from vntts_artifacts.story_index import StoryIndexRecord, load_story_index_document
+from vntts_artifacts.story_index import StoryIndexRecord
 
 from vntts.chapter_voice_preload import _validated_source_audio_line_ids
 from vntts.cleanup import temporary_directory
@@ -99,7 +99,9 @@ def _load_pack(
     if path not in cache:
         imported = import_game_pack(path)
         _raise_if_cancelled(cancellation)
-        document = load_story_index_document(imported.story_index)
+        document = load_verified_story_index_document(
+            imported.story_index, imported.pack.story_index.sha256
+        )
         library = (
             GeneratedAudioLibrary(
                 load_generated_audio_document(imported.generated_audio_manifest),

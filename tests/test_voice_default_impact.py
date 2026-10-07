@@ -9,10 +9,14 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.game_pack import write_game_pack
 from vntts_artifacts.generated_audio import write_generated_audio_manifest
 from vntts_artifacts.hashing import text_sha256
-from vntts_artifacts.story_index import load_story_index_document, write_story_index
+from vntts_artifacts.story_index import write_story_index
 from vntts_artifacts.voice_manifest import write_voice_manifest
 
-from vntts.pregeneration_setup import PregenerationJobStore, inspect_story_index
+from vntts.pregeneration_setup import (
+    PregenerationJobStore,
+    inspect_story_index,
+    load_verified_story_index_document,
+)
 from vntts.pregeneration_voices import PregenerationVoiceError, VoiceDecisionStore
 from vntts.settings import AppSettings
 from vntts.voice_default_impact import inspect_voice_default_impact
@@ -148,8 +152,8 @@ class VoiceDefaultImpactTest(unittest.TestCase):
                 path: path.read_bytes() for path in root.rglob("*") if path.is_file()
             }
             with patch(
-                "vntts.voice_default_impact.load_story_index_document",
-                wraps=load_story_index_document,
+                "vntts.voice_default_impact.load_verified_story_index_document",
+                wraps=load_verified_story_index_document,
             ) as parse:
                 result = inspect_voice_default_impact(
                     content,
@@ -162,7 +166,10 @@ class VoiceDefaultImpactTest(unittest.TestCase):
                 )
             self.assertEqual(
                 [Path(call.args[0]).resolve() for call in parse.call_args_list],
-                [(pack / "story-index.jsonl").resolve()],
+                [
+                    content.story_index.resolve(),
+                    (pack / "story-index.jsonl").resolve(),
+                ],
             )
             self.assertEqual(result[0].changed_line_ids, ("changed",))
             self.assertEqual(
