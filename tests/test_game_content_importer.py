@@ -184,8 +184,47 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                             importer._saved_story_inputs_changed(story, malformed)
                         )
 
+    def test_narrator_banks_replacement_cannot_publish_names_under_old_digest(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story = write_story_index(root)
+            banks = root / "narrator-banks.json"
+            original = b'["Rhiannon"]'
+            banks.write_bytes(original)
+            story_checksum = sha256_file(story)
+            banks_checksum = sha256_file(banks)
+            read_bytes, read_text = Path.read_bytes, Path.read_text
+
+            def replaced_read(reader, path, *args, **kwargs):
+                if path != banks:
+                    return reader(path, *args, **kwargs)
+                banks.write_bytes(b'["Unbound character"]')
+                try:
+                    return reader(path, *args, **kwargs)
+                finally:
+                    banks.write_bytes(original)
+
+            with (
+                patch.object(
+                    Path, "read_bytes", lambda path: replaced_read(read_bytes, path)
+                ),
+                patch.object(
+                    Path,
+                    "read_text",
+                    lambda path, *args, **kwargs: replaced_read(
+                        read_text, path, *args, **kwargs
+                    ),
+                ),
+                self.assertRaisesRegex(GameContentImportError, "banks changed while"),
+            ):
+                Reverse1999GameImporter._cached_narrator_characters(
+                    story, banks, story_checksum, banks_checksum
+                )
+            self.assertEqual(banks.read_bytes(), original)
+            self.assertFalse((root / "narrator-characters.json").exists())
+
     def test_optional_voice_caches_require_integer_versions(self):
-        for version in (1, True, 1.0):
+        for version in (1, 2, True, 1.0, 2.0):
             with self.subTest(version=version), TemporaryDirectory() as directory:
                 root = Path(directory)
                 story = write_story_index(root)
@@ -199,7 +238,9 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 with self.subTest(cache="playable"):
                     self.assertEqual(
                         _cached_playable_voice_roles(story),
-                        {"cached"} if type(version) is int else {"centurion"},
+                        {"cached"}
+                        if type(version) is int and version == 2
+                        else {"centurion"},
                     )
                 atomic_write_json(
                     root / "narrator-characters.json",
@@ -215,7 +256,9 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 )
                 self.assertEqual(
                     names,
-                    ("Cached",) if type(version) is int else ("Centurion", "Rhiannon"),
+                    ("Cached",)
+                    if type(version) is int and version == 2
+                    else ("Centurion", "Rhiannon"),
                 )
 
     def test_narrator_cache_rejects_changed_inputs_before_publication(self):
@@ -1251,7 +1294,7 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                     cache.write_text(json.dumps(saved_roles), encoding="utf-8")
 
                     with patch(
-                        "vntts.game_content_importer.load_story_index_document",
+                        "vntts.game_content_importer.load_story_index_snapshot",
                         side_effect=AssertionError("reference index was reparsed"),
                     ):
                         self.assertEqual(

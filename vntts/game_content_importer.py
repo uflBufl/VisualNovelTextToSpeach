@@ -864,7 +864,7 @@ class Reverse1999GameImporter:
             names = saved["characters"]
             if (
                 type(saved["version"]) is int
-                and saved["version"] == 1
+                and saved["version"] == 2
                 and saved["story_index_sha256"] == index_sha256
                 and saved["narrator_banks_sha256"] == banks_sha256
                 and isinstance(names, list)
@@ -873,9 +873,12 @@ class Reverse1999GameImporter:
                 return tuple(names)
         except OSError, ValueError, KeyError, TypeError:
             pass
+        banks_payload = narrator_banks.read_bytes()
+        if hashlib.sha256(banks_payload).hexdigest() != banks_sha256:
+            raise GameContentImportError("Narrator banks changed while being read")
         characters = {
             normalize_character_name(name): name
-            for name in json.loads(narrator_banks.read_text(encoding="utf-8"))
+            for name in json.loads(banks_payload.decode("utf-8"))
             if not is_narrator(name)
         }
         if sha256_file(narrator_banks) != banks_sha256:
@@ -893,7 +896,7 @@ class Reverse1999GameImporter:
             atomic_write_json(
                 cache,
                 {
-                    "version": 1,
+                    "version": 2,
                     "story_index_sha256": index_sha256,
                     "narrator_banks_sha256": banks_sha256,
                     "characters": result,
@@ -1222,7 +1225,7 @@ def _cached_playable_voice_roles(index: Path) -> set[str]:
             roles = saved.get("roles")
             if (
                 type(saved.get("version")) is int
-                and saved.get("version") == 1
+                and saved.get("version") == 2
                 and saved.get("index_sha256") == checksum
                 and isinstance(roles, list)
                 and all(
@@ -1243,7 +1246,7 @@ def _cached_playable_voice_roles(index: Path) -> set[str]:
     with suppress(OSError):
         atomic_write_json(
             cache,
-            {"version": 1, "index_sha256": checksum, "roles": sorted(available)},
+            {"version": 2, "index_sha256": checksum, "roles": sorted(available)},
         )
     return available
 
