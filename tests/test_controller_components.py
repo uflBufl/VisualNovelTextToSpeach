@@ -382,6 +382,7 @@ class RuntimeLifecycleTest(unittest.TestCase):
             "error_handler": controller.error_handler,
             "capture_target": controller.capture_target,
             "speech_handler": controller._enqueue_dialog,
+            "shutdown_requested": controller.shutdown_requested,
             "minimum_confidence": 80,
             "uncertain_frame_recorder": controller.uncertain_frame_recorder,
             "diagnostic_handler": controller._publish_diagnostic,

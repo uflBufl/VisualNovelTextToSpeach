@@ -1299,6 +1299,10 @@ class MainTest(unittest.TestCase):
         live_reader_factory.assert_called_once()
         session_id = controller.live_reader_session_id
         self.assertEqual(UUID(session_id).hex, session_id)
+        self.assertIs(
+            live_reader_factory.call_args.kwargs["shutdown_requested"],
+            controller.shutdown_requested,
+        )
         pipeline = live_reader_factory.call_args.kwargs["pipeline_event_handler"]
         self.assertEqual(pipeline.keywords["session_id"], session_id)
         schedule_dialog_read.assert_called_once_with(
@@ -1309,6 +1313,7 @@ class MainTest(unittest.TestCase):
             error_handler=controller.error_handler,
             capture_target=None,
             speech_handler=controller._enqueue_dialog,
+            shutdown_requested=controller.shutdown_requested,
             minimum_confidence=60,
             uncertain_frame_recorder=None,
             diagnostic_handler=controller._publish_diagnostic,
@@ -1485,7 +1490,7 @@ class MainTest(unittest.TestCase):
 
         controller.shutdown()
 
-        reader.emergency_stop.assert_called_once_with()
+        reader.shutdown.assert_called_once_with()
         reader.wait.assert_called_once_with(timeout_seconds=5.0)
         reader.stop.assert_not_called()
         reader.clear_queue.assert_not_called()

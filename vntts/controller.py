@@ -162,7 +162,7 @@ class _Executor(Protocol):
         self, callback: Callable[..., object], /, *args: object, **kwargs: object
     ) -> _ExecutorFuture: ...
 
-    def shutdown(self, wait: bool = True) -> None: ...
+    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None: ...
 
 
 class _VoiceRouter(Protocol):
@@ -337,10 +337,12 @@ class _ScheduledDialogRead:
         submit: Callable[[Callable[[str, str], object]], _DialogReadFuture],
         deliver: Callable[[str, str], object],
         live_reader: _LiveReaderState | None,
+        shutdown_requested: Event | None = None,
     ) -> None:
         self._submit = submit
         self._deliver = deliver
         self._live_reader = live_reader
+        self._shutdown_requested = shutdown_requested
         self._active_read: _DialogReadFuture | None = None
         self._generation = 0
         self._lock = RLock()
@@ -362,6 +364,11 @@ class _ScheduledDialogRead:
 
     def __call__(self) -> bool:
         with self._lock:
+            if (
+                self._shutdown_requested is not None
+                and self._shutdown_requested.is_set()
+            ):
+                return False
             if self._live_reader is not None and self._live_reader.is_running:
                 print("Stop live reading before requesting a one-time read")
                 return False
@@ -374,7 +381,10 @@ class _ScheduledDialogRead:
 
             def guarded_deliver(character: str, text: str) -> object:
                 with self._lock:
-                    if generation != self._generation:
+                    if generation != self._generation or (
+                        self._shutdown_requested is not None
+                        and self._shutdown_requested.is_set()
+                    ):
                         return False
                     return self._deliver(character, text)
 
@@ -388,6 +398,7 @@ def create_dialog_read_scheduler(
     screenshot_directory: str | Path,
     *,
     live_reader: _LiveReaderState | None = None,
+    shutdown_requested: Event | None = None,
     error_handler: Callable[[Exception], object] | None = None,
     capture_target: object | None = None,
     speech_handler: Callable[..., object] | None = None,
@@ -423,7 +434,7 @@ def create_dialog_read_scheduler(
             region=region_provider() if region_provider is not None else None,
         )
 
-    return _ScheduledDialogRead(submit, deliver, live_reader)
+    return _ScheduledDialogRead(submit, deliver, live_reader, shutdown_requested)
 
 
 @dataclass(frozen=True)
@@ -1090,24 +1101,29 @@ class AppController:
             return None
         return UncertainFrameRecorder(self.settings.ocr_diagnostics_directory)
 
+    def _finish_observed_dialogue(self) -> bool:
+        self.history.finish_current()
+        with self.story_cursor_lock:
+            if (
+                self.story_cursor is not None
+                and is_live_sequence_audio_mode(self.settings.live_sequence_mode)
+                and self.story_cursor.state
+                not in {
+                    StoryCursorState.UNSYNCHRONIZED,
+                    StoryCursorState.ANCHORING,
+                }
+            ):
+                return False
+        self.dialog_handler("Narrator", "")
+        return True
+
     def _dialog_observed(
         self, character: str | None, text: str
     ) -> DialogObservationDecision:
+        if self.shutdown_requested.is_set():
+            return False
         if not text:
-            self.history.finish_current()
-            with self.story_cursor_lock:
-                if (
-                    self.story_cursor is not None
-                    and is_live_sequence_audio_mode(self.settings.live_sequence_mode)
-                    and self.story_cursor.state
-                    not in {
-                        StoryCursorState.UNSYNCHRONIZED,
-                        StoryCursorState.ANCHORING,
-                    }
-                ):
-                    return False
-            self.dialog_handler("Narrator", "")
-            return True
+            return self._finish_observed_dialogue()
         observed_character = character or "Narrator"
         character = self._canonical_observed_character(character, text)
         canonical_routing = False
@@ -2755,6 +2771,8 @@ class AppController:
         ):
             return False
         with self.voice_prime_lock:
+            if self.shutdown_requested.is_set():
+                return False
             if key in self.primed_voice_keys:
                 return False
             self.primed_voice_keys.add(key)
@@ -2788,6 +2806,8 @@ class AppController:
             self.error_handler(error)
 
     def _enqueue_dialog(self, character: str, text: str) -> bool:
+        if self.shutdown_requested.is_set():
+            return False
         canonical_character = self._canonical_observed_character(character, text)
         resolved_text = self._resolve_early_indexed_dialogue(canonical_character, text)
         if resolved_text is not None:

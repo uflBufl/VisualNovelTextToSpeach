@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterable, Mapping
-from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 from functools import partial
@@ -14,7 +13,7 @@ from typing import TYPE_CHECKING, Callable, Protocol, TypeGuard, runtime_checkab
 from uuid import uuid4
 
 if TYPE_CHECKING:
-    from vntts.controller import AppController, _ExecutorFuture
+    from vntts.controller import AppController, _Executor, _ExecutorFuture
 
 from vntts.auto_advance_policy import auto_advance_control_state
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
@@ -494,6 +493,7 @@ class RuntimeLifecycleComponent:
             prepare_chunk=controller._prepare_live_chunk,
             play_prepared=controller._play_live_chunk,
             report_error=controller.error_handler,
+            shutdown_requested=controller.shutdown_requested,
             interrupt_speech=controller._interrupt_speech,
             dialog_observed=controller._dialog_observed,
             focus_probe=controller._is_game_focused,
@@ -647,6 +647,7 @@ class RuntimeLifecycleComponent:
             error_handler=controller.error_handler,
             capture_target=controller.capture_target,
             speech_handler=controller._enqueue_dialog,
+            shutdown_requested=controller.shutdown_requested,
             minimum_confidence=controller.settings.ocr_minimum_confidence,
             uncertain_frame_recorder=controller.uncertain_frame_recorder,
             diagnostic_handler=controller._publish_diagnostic,
@@ -669,51 +670,110 @@ class RuntimeLifecycleComponent:
                 return
             self._shutdown_started.set()
             controller.shutdown_requested.set()
-        live_reader_timed_out = False
-        with controller.voice_prime_lock:
-            voice_prime_futures = tuple(controller.voice_prime_futures)
-        for future in voice_prime_futures:
-            future.cancel()
-        schedule = controller.schedule_dialog_read
-        if schedule is not None:
-            schedule.cancel()
-        controller._interrupt_speech()
-        controller._set_backend_live_mode(False)
-        if controller.live_reader is not None:
-            controller.live_reader.emergency_stop()
+        reader = controller.live_reader
+        reader_stop_confirmed = reader is None
+        cancellations_succeeded = False
+
+        def stop_reader() -> None:
+            nonlocal reader_stop_confirmed
+            if reader is None:
+                return
             try:
-                controller.live_reader.wait(timeout_seconds=5.0)
-            except FutureTimeoutError as error:
-                live_reader_timed_out = True
-                controller.error_handler(error)
-            except Exception as error:
-                controller.error_handler(error)
-            controller.live_reader = None
+                reader.shutdown()
+            except BaseException:
+                reader_stop_confirmed = (
+                    reader.shutdown_started is True
+                    and reader.stop_event.is_set() is True
+                )
+                raise
+            reader_stop_confirmed = True
 
-        if live_reader_timed_out:
-            # Even a failed nonblocking cancellation must leave a drain owner.
-            with cleanup_on_exit(
-                self._start_shutdown_drain, description="Background shutdown drain"
+        def drain() -> None:
+            self._drain_shutdown(
+                reader_stop_confirmed=reader_stop_confirmed,
+                defer=not cancellations_succeeded,
+            )
+
+        with cleanup_on_exit(drain, description="Controller pipeline drain"):
+            self._cancel_pending_work(stop_reader)
+            cancellations_succeeded = True
+
+    def _cancel_pending_work(self, stop_reader: Callable[[], None]) -> None:
+        controller = self.controller
+        with ExitStack() as cleanup:
+            for release, description in (
+                (stop_reader, "Reader shutdown"),
+                (
+                    partial(controller._set_backend_live_mode, False),
+                    "Backend live mode",
+                ),
+                (controller._interrupt_speech, "Speech interruption"),
             ):
-                self._shutdown_executors(wait=False)
-        else:
-            self._finish_shutdown()
+                cleanup.enter_context(cleanup_on_exit(release, description=description))
+            schedule = controller.schedule_dialog_read
+            if schedule is not None:
+                cleanup.enter_context(
+                    cleanup_on_exit(
+                        schedule.cancel, description="Scheduled read cancellation"
+                    )
+                )
+            with controller.voice_prime_lock:
+                futures = tuple(controller.voice_prime_futures)
+            for future in reversed(futures):
+                cleanup.enter_context(
+                    cleanup_on_exit(
+                        future.cancel, description="Voice prime cancellation"
+                    )
+                )
 
-    def _start_shutdown_drain(self) -> None:
+    def _drain_shutdown(self, *, reader_stop_confirmed: bool, defer: bool) -> None:
+        controller = self.controller
+        defer = defer or not reader_stop_confirmed
+
+        def finish() -> None:
+            if defer:
+                with cleanup_on_exit(
+                    partial(
+                        self._start_shutdown_drain,
+                        reader_stop_confirmed=reader_stop_confirmed,
+                    ),
+                    description="Background shutdown drain",
+                ):
+                    self._shutdown_executors(wait=False)
+            else:
+                self._finish_shutdown(reader_stop_confirmed=reader_stop_confirmed)
+
+        with cleanup_on_exit(finish, description="Executor and backend drain"):
+            if controller.live_reader is not None:
+                try:
+                    controller.live_reader.wait(timeout_seconds=5.0)
+                except BaseException as error:
+                    defer = True
+                    if isinstance(error, Exception):
+                        controller.error_handler(error)
+                    else:
+                        raise
+
+    def _start_shutdown_drain(self, *, reader_stop_confirmed: bool) -> None:
         Thread(
-            target=self._finish_shutdown_async, name="tts-shutdown-drain", daemon=True
+            target=partial(
+                self._finish_shutdown_async, reader_stop_confirmed=reader_stop_confirmed
+            ),
+            name="tts-shutdown-drain",
+            daemon=True,
         ).start()
 
-    def _finish_shutdown_async(self) -> None:
+    def _finish_shutdown_async(self, *, reader_stop_confirmed: bool) -> None:
         try:
-            self._finish_shutdown()
+            self._finish_shutdown(reader_stop_confirmed=reader_stop_confirmed)
         except Exception as error:
             self.controller.error_handler(error)
 
-    def _finish_shutdown(self) -> None:
+    def _finish_shutdown(self, *, reader_stop_confirmed: bool) -> None:
         controller = self.controller
         self._shutdown_executors(wait=True)
-        if self._stop_backend():
+        if reader_stop_confirmed and self._stop_backend():
+            controller.live_reader = None
             controller.shutdown_complete.set()
 
     def _stop_backend(self) -> bool:
@@ -762,7 +822,7 @@ class RuntimeLifecycleComponent:
         self.controller.schedule_dialog_read = None
 
     def _shutdown_executor(self, attribute: str, *, wait: bool) -> None:
-        executor = getattr(self.controller, attribute)
+        executor: _Executor | None = getattr(self.controller, attribute)
         if executor is not None:
             executor.shutdown(wait=wait, cancel_futures=not wait)
             # A nonblocking shutdown only requests release. Keep the owner until
@@ -777,6 +837,8 @@ class LiveSessionComponent:
 
     def read_once(self) -> bool:
         controller = self.controller
+        if controller.shutdown_requested.is_set() is True:
+            return False
         reader = controller.live_reader
         schedule = controller.schedule_dialog_read
         if reader is None or schedule is None or reader.is_running:
@@ -789,6 +851,8 @@ class LiveSessionComponent:
 
     def identify_scope(self) -> bool:
         controller = self.controller
+        if controller.shutdown_requested.is_set() is True:
+            return False
         if not controller.is_ready or controller.is_live_running:
             return False
         voice_router = controller.voice_router
@@ -849,7 +913,7 @@ class LiveSessionComponent:
     def toggle(self) -> bool:
         controller = self.controller
         reader = controller.live_reader
-        if reader is None:
+        if reader is None or controller.shutdown_requested.is_set() is True:
             return False
         starting = not reader.is_running
         if starting and not self._voice_preflight_allows_start():
@@ -944,6 +1008,8 @@ class LiveSessionComponent:
 
     def repeat_last_speech(self) -> bool:
         controller = self.controller
+        if controller.shutdown_requested.is_set() is True:
+            return False
         reader = controller.live_reader
         if reader is None:
             return False

@@ -1,11 +1,13 @@
 from collections.abc import Callable, Iterable
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from threading import Condition, Event, RLock, Timer
 from time import monotonic
 from typing import Literal, ParamSpec, Protocol, TypeAlias, TypeVar
 
+from vntts.cleanup import cleanup_on_exit
 from vntts.live_tracking import IncrementalDialogTracker, SpeechChunk
 from vntts.live_tracking import TrackerProbe as TrackerProbe
 from vntts.live_tracking import TrackerResolver as TrackerResolver
@@ -239,6 +241,7 @@ class LiveDialogReader:
         max_speech_jobs: int = 2,
         interrupt_on_dialog_replacement: bool = False,
         first_pcm_on_prepare: bool = True,
+        shutdown_requested: Event | None = None,
     ) -> None:
         self.capture_executor = capture_executor
         self.speech_executor = speech_executor
@@ -321,11 +324,7 @@ class LiveDialogReader:
         self.max_speech_jobs = max_speech_jobs
         self.interrupt_on_dialog_replacement = bool(interrupt_on_dialog_replacement)
         self.first_pcm_on_prepare = bool(first_pcm_on_prepare)
-        self.state_lock = RLock()
-        self.pause_condition = Condition(self.state_lock)
-        self.stop_event = Event()
-        self.capture_future: Future[object] | None = None
-        self.ocr_future: Future[object] | None = None
+        self._initialize_worker_state(shutdown_requested)
         self.active_generation = 0
         self._explicit_generation_offset = 0
         self.suppressed_generation: int | None = None
@@ -375,6 +374,19 @@ class LiveDialogReader:
         self.next_capture_interval = interval_seconds
         self.pipeline_metrics = LivePipelineMetrics()
 
+    def _initialize_worker_state(self, shutdown_requested: Event | None) -> None:
+        self.state_lock = RLock()
+        self.pause_condition = Condition(self.state_lock)
+        self.stop_event = Event()
+        self.shutdown_requested = shutdown_requested or Event()
+        self.shutdown_started = False
+        self.capture_future: Future[object] | None = None
+        self.ocr_future: Future[object] | None = None
+
+    @property
+    def is_shutting_down(self) -> bool:
+        return self.shutdown_started or self.shutdown_requested.is_set()
+
     @property
     def is_running(self) -> bool:
         with self.state_lock:
@@ -400,6 +412,8 @@ class LiveDialogReader:
 
     def start(self) -> bool:
         with self.state_lock:
+            if self.is_shutting_down:
+                return False
             if self.capture_future is not None and not self.capture_future.done():
                 return False
             restarting = self.capture_future is not None or self.ocr_future is not None
@@ -411,6 +425,8 @@ class LiveDialogReader:
                 self.report_error(error)
                 return False
         with self.state_lock:
+            if self.is_shutting_down:
+                return False
             self.emergency_stopped = False
             self.stop_event = Event()
             self.active_generation = 0
@@ -473,12 +489,12 @@ class LiveDialogReader:
                 return False
             self.stop_event.set()
             self.paused = False
-            self._cancel_auto_advance_locked()
             self.pending_auto_advance_generation = None
             self.auto_advance_attempts = 0
             self.auto_advance_focus_wait_generation = None
             self.auto_advance_visual_wait_generation = None
             self.pause_condition.notify_all()
+            self._cancel_auto_advance_locked()
         return True
 
     def set_auto_advance(self, callback: Callable[[], object] | None) -> bool:
@@ -575,6 +591,8 @@ class LiveDialogReader:
 
     def enqueue(self, character: str, text: str, *, line_id: str | None = None) -> bool:
         with self.state_lock:
+            if self.is_shutting_down:
+                return False
             generation = self.active_generation + 1
             # Explicit lines advance the shared queue without advancing the OCR tracker.
             self._explicit_generation_offset += 1
@@ -625,30 +643,37 @@ class LiveDialogReader:
         return True
 
     def clear_queue(self) -> bool:
-        with self.pause_condition:
-            self.suppressed_generation = self.active_generation
-            futures = tuple(self.speech_futures)
-            had_paused_chunks = bool(self.paused_chunks)
-            had_deferred_chunk = self.deferred_chunk is not None
-            self.paused_chunks = []
-            self.deferred_chunk = None
-            has_current_speech = self.current_chunk is not None
-            self.pause_condition.notify_all()
-            self._cancel_auto_advance_locked()
-            self.pending_auto_advance_generation = None
-            self.auto_advance_attempts = 0
-            self.auto_advance_blocked_generation = None
-            self.auto_advance_block_reason = None
-            self.auto_advance_focus_wait_generation = None
-            self.auto_advance_visual_wait_generation = None
-        for future in futures:
-            future.cancel()
-        # A preparation future may already be running before it becomes
-        # ``current_chunk``. Future.cancel() cannot stop that work, so notify
-        # the backend as well; otherwise application shutdown can wait forever
-        # for the speech executor after the user presses Quit.
-        if has_current_speech or futures:
-            self._interrupt_speech()
+        with ExitStack() as cleanup:
+            with self.pause_condition:
+                self.suppressed_generation = self.active_generation
+                futures = tuple(self.speech_futures)
+                had_paused_chunks = bool(self.paused_chunks)
+                had_deferred_chunk = self.deferred_chunk is not None
+                self.paused_chunks = []
+                self.deferred_chunk = None
+                has_current_speech = self.current_chunk is not None
+                self.pending_auto_advance_generation = None
+                self.auto_advance_attempts = 0
+                self.auto_advance_blocked_generation = None
+                self.auto_advance_block_reason = None
+                self.auto_advance_focus_wait_generation = None
+                self.auto_advance_visual_wait_generation = None
+                self.pause_condition.notify_all()
+                # Cancellation cannot stop running synthesis. Interrupt it after
+                # attempting every queued future, outside the reader lock.
+                if has_current_speech or futures:
+                    cleanup.enter_context(
+                        cleanup_on_exit(
+                            self._interrupt_speech, description="Speech interruption"
+                        )
+                    )
+                for future in reversed(futures):
+                    cleanup.enter_context(
+                        cleanup_on_exit(
+                            future.cancel, description="Queued speech cancellation"
+                        )
+                    )
+                self._cancel_auto_advance_locked()
         return (
             has_current_speech
             or bool(futures)
@@ -656,25 +681,29 @@ class LiveDialogReader:
             or had_deferred_chunk
         )
 
+    def shutdown(self) -> None:
+        """Seal this reader permanently before attempting fallible cancellation."""
+        with cleanup_on_exit(self.emergency_stop, description="Reader emergency stop"):
+            with self.pause_condition:
+                self.shutdown_started = True
+                self.stop_event.set()
+
     def emergency_stop(self) -> bool:
-        with self.pause_condition:
-            was_running = (
-                self.capture_future is not None and not self.capture_future.done()
-            )
-            self.emergency_stopped = True
-            self.stop_event.set()
-            self._cancel_auto_advance_locked()
-            self.pending_auto_advance_generation = None
-            self.auto_advance_attempts = 0
-            self.auto_advance_focus_wait_generation = None
-            self.auto_advance_visual_wait_generation = None
-            self.pause_condition.notify_all()
-        cleared = self.clear_queue()
-        self.release_waiters()
+        with cleanup_on_exit(self.release_waiters, description="Reader waiter release"):
+            with self.pause_condition:
+                was_running = (
+                    self.capture_future is not None and not self.capture_future.done()
+                )
+                self.emergency_stopped = True
+                self.stop_event.set()
+                self.pause_condition.notify_all()
+            cleared = self.clear_queue()
         return was_running or cleared
 
     def resume_after_emergency(self) -> bool:
         with self.state_lock:
+            if self.is_shutting_down:
+                return False
             was_stopped = self.emergency_stopped
             self.emergency_stopped = False
         return was_stopped
@@ -691,6 +720,8 @@ class LiveDialogReader:
             )
             while (
                 self.paused
+                and not self.emergency_stopped
+                and not self.is_shutting_down
                 and (
                     chunk.generation == self.active_generation or finish_active_playback
                 )
@@ -698,7 +729,11 @@ class LiveDialogReader:
             ):
                 self.pause_condition.wait()
             return (
-                (chunk.generation == self.active_generation or finish_active_playback)
+                not self.emergency_stopped
+                and not self.is_shutting_down
+                and (
+                    chunk.generation == self.active_generation or finish_active_playback
+                )
                 and (
                     self.sealed_generation != chunk.generation
                     or finish_active_playback
@@ -1315,7 +1350,11 @@ class LiveDialogReader:
     def _schedule(self, chunks: Iterable[SpeechChunk]) -> None:
         for chunk in chunks:
             with self.pause_condition:
-                if self.emergency_stopped or chunk.generation < self.active_generation:
+                if (
+                    self.emergency_stopped
+                    or self.is_shutting_down
+                    or chunk.generation < self.active_generation
+                ):
                     continue
                 if (
                     self.sealed_generation == chunk.generation
