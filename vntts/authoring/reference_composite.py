@@ -110,7 +110,6 @@ class _CompositeReviewSources:
 
 @dataclass(frozen=True)
 class _CompositeSelection:
-    report_payload: bytes
     report_sha256: str
     source_bank_sha256: str
     candidates: list[JsonObject]
@@ -563,7 +562,6 @@ def _load_composite_selection(
     if len(source_bank_sha256s) != 1:
         raise ReferenceCompositeError("Composite clips disagree on source bank bytes")
     return _CompositeSelection(
-        report_payload,
         report_sha256,
         next(iter(source_bank_sha256s)),
         selected,
