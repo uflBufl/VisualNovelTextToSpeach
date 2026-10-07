@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt, QTimer  # noqa: E402
+from PySide6.QtCore import Qt, QThreadPool, QTimer  # noqa: E402
 from PySide6.QtGui import QCloseEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
@@ -210,6 +210,9 @@ class AssetManagerDialogTest(unittest.TestCase):
     def test_model_verification_can_finish_after_close_without_updating_ui(self):
         started = Event()
         release = Event()
+        pool = QThreadPool()
+        self.addCleanup(pool.waitForDone, 3000)
+        self.addCleanup(release.set)
         model_manager = Mock()
         model_manager.model_path.return_value = Path("managed/model")
 
@@ -223,6 +226,7 @@ class AssetManagerDialogTest(unittest.TestCase):
             AppSettings(speech_backend="coqui-xtts"),
             model_manager=model_manager,
             voice_manager=Mock(),
+            thread_pool=pool,
         )
         dialog.verify_model()
         self.wait_for(started.is_set)
@@ -232,7 +236,8 @@ class AssetManagerDialogTest(unittest.TestCase):
         self.assertTrue(close_event.isAccepted())
         self.assertFalse(dialog.model_runner.active)
         release.set()
-        self.wait_for(lambda: not dialog.model_runner.active)
+        self.assertTrue(pool.waitForDone(3000))
+        self.application.processEvents()
         self.assertEqual(dialog.model_status.text(), "Verifying model checksums...")
 
     def test_default_pocket_backend_offers_only_character_voice_assets(self):
@@ -565,6 +570,9 @@ class AssetManagerDialogTest(unittest.TestCase):
             second.write_text("{}", encoding="utf-8")
             started = Event()
             release = Event()
+            pool = QThreadPool()
+            self.addCleanup(pool.waitForDone, 3000)
+            self.addCleanup(release.set)
             voice_manager = Mock()
 
             def validate(path):
@@ -581,6 +589,7 @@ class AssetManagerDialogTest(unittest.TestCase):
                 AppSettings(),
                 model_manager=model_manager,
                 voice_manager=voice_manager,
+                thread_pool=pool,
             )
             heartbeat = []
             dialog.voice_manifest.setText(str(first))
@@ -601,7 +610,8 @@ class AssetManagerDialogTest(unittest.TestCase):
             dialog.voice_manifest.setText(str(second))
             dialog.validate_voice_manifest()
             release.set()
-            self.wait_for(lambda: not dialog.manifest_runner.active)
+            self.assertTrue(pool.waitForDone(3000))
+            self.application.processEvents()
 
             self.assertEqual(
                 dialog._validated_manifest_identity,
