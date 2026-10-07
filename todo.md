@@ -573,7 +573,3 @@ Planned implementation order after approval:
 ## Active - Continue cleanup ownership expansion
 
 - [ ] **Remaining native acquisition boundaries:** qualify `_launch_owned_process` and Windows job initialization separately from the completed server-resource cleanup. Trace real Windows API failure behavior before changing guards; keep suspended-child ownership and the existing two-second wait budget. Gate: failed job acquisition plus kill/wait failures preserves the acquisition error and leaves no runnable child; retain real-Windows qualification where mocks cannot prove ownership.
-
-## Active - Finish shared pregeneration and playback fixture ownership
-
-- [ ] Freeze source and run the local selector first, normal Ruff/format/MyPy/complexity/lock gates, exact baseline byte/return/array witnesses and independent review. Expand equivalent imports across the repository, commit each repair separately, remove verified TODO steps, fetch fresh main and run the branch selector before the authorized push. Update bounded memory after successful gates.
