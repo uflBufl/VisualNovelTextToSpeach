@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import socket
@@ -23,6 +24,8 @@ if TYPE_CHECKING:
 
     from vntts.authoring.source_reference_quality_ui import SourceReferenceQualityDialog
     from vntts.authoring.workbench_ui import AuthoringWorkbenchDialog
+    from vntts.pregeneration_queue import PregenerationInput
+    from vntts.pregeneration_setup import GameContent, PregenerationJob
     from vntts.support import RuntimeSupportLog
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -125,6 +128,177 @@ def _catalog_support_log(state: str) -> RuntimeSupportLog:
             )
     recorded_at = datetime(2026, 9, 22, 13, 0, tzinfo=timezone.utc)
     return events
+
+
+def _catalog_offline_content(root: Path) -> GameContent:
+    from vntts_artifacts.file_integrity import sha256_file
+    from vntts_artifacts.story_index import write_story_index_document
+
+    from vntts.pregeneration_setup import GameContent, StorySelection
+
+    story_index = root / "story-index.jsonl"
+    chapters = (
+        StorySelection(
+            "chapter-7",
+            "Chapter 7 - The long night",
+            "chapter",
+            0,
+            tuple(f"chapter-7:{index}" for index in range(18)),
+            18,
+            18,
+            3,
+            15,
+            3,
+            ("Narrator", "Believer IV", "Centurion"),
+            ("Narrator", "Believer IV", "Centurion"),
+            1_400,
+        ),
+        StorySelection(
+            "chapter-8",
+            "Chapter 8 - The road ahead",
+            "chapter",
+            1,
+            tuple(f"chapter-8:{index}" for index in range(24)),
+            24,
+            24,
+            5,
+            19,
+            4,
+            ("Narrator", "Believer IV", "Centurion", "Selone"),
+            ("Narrator", "Believer IV", "Centurion", "Selone"),
+            1_900,
+        ),
+        StorySelection(
+            "side-story",
+            "A long side-story title that still has to remain readable",
+            "character_story",
+            2,
+            tuple(f"side-story:{index}" for index in range(12)),
+            12,
+            12,
+            2,
+            10,
+            2,
+            ("Narrator", "Selone"),
+            ("Narrator", "Selone"),
+            900,
+        ),
+    )
+    write_story_index_document(
+        story_index,
+        {"game": "Reverse: 1999", "language": "en"},
+        [
+            {
+                "record_type": "line",
+                "line_id": line_id,
+                "chapter": selection.selection_id,
+                "sequence": index + 1,
+                "speaker": selection.speakers[index % len(selection.speakers)],
+                "text": f"Catalog dialogue {line_id}.",
+                "kind": "dialogue",
+                "source_audio_status": "available"
+                if index < selection.original_audio_lines
+                else "absent",
+                "speakable": True,
+            }
+            for selection in chapters
+            for index, line_id in enumerate(selection.line_ids)
+        ],
+    )
+    return GameContent(
+        "reverse1999",
+        "Reverse: 1999",
+        "3.7",
+        story_index,
+        sha256_file(story_index),
+        chapters,
+    )
+
+
+def _catalog_generation_input(job: PregenerationJob) -> PregenerationInput:
+    from vntts_artifacts.file_integrity import sha256_file
+    from vntts_artifacts.story_index import write_story_index_document
+    from vntts_artifacts.voice_generation_queue import (
+        expected_voice_generation_queue_id,
+        write_voice_generation_queue,
+    )
+    from vntts_artifacts.voice_manifest import write_voice_manifest
+
+    from vntts.document_identity import canonical_document_sha256
+    from vntts.pregeneration_queue import PregenerationInput
+    from vntts.pregeneration_setup import load_verified_story_index_document
+
+    source = Path(job.story_index)
+    story = load_verified_story_index_document(source, job.story_index_sha256)
+    selected = set(job.selected_line_ids)
+    records = [record for record in story.records if record.line_id in selected]
+    directory = source.parent / "generation-input"
+    directory.mkdir()
+    story_path = directory / "story-index.jsonl"
+    voice_path = directory / "voice-manifest.json"
+    queue_path = directory / "queue.jsonl"
+    write_story_index_document(
+        story_path, story.metadata, [r.to_record() for r in records]
+    )
+    write_voice_manifest(
+        voice_path,
+        {
+            "version": 2,
+            "voices": [
+                {
+                    "character": "Narrator",
+                    "speaker": "alba",
+                    "aliases": [],
+                    "references": [],
+                }
+            ],
+        },
+    )
+    items = []
+    for record in records:
+        if record.source_audio_status != "absent":
+            continue
+        text_sha256 = hashlib.sha256(record.text.encode()).hexdigest()
+        items.append(
+            {
+                "record_type": "generation_item",
+                "queue_id": expected_voice_generation_queue_id(
+                    record.line_id, text_sha256
+                ),
+                "line_id": record.line_id,
+                "text": record.text,
+                "text_sha256": text_sha256,
+                "speaker": record.speaker,
+                "voice_character": "Narrator",
+                "action": "generate",
+                "prompt_adapters": {},
+                "sequence": record.sequence,
+            }
+        )
+    write_voice_generation_queue(
+        queue_path, {"game": job.game, "language": story.metadata["language"]}, items
+    )
+    hashes = {
+        "story": sha256_file(story_path),
+        "voices": sha256_file(voice_path),
+        "queue": sha256_file(queue_path),
+    }
+    return PregenerationInput(
+        identity=canonical_document_sha256(hashes),
+        directory=directory,
+        story_index=story_path,
+        voice_manifest=voice_path,
+        queue=queue_path,
+        queue_sha256=hashes["queue"],
+        queue_items=len(items),
+        ready_items=len(items),
+        narrator_fallback_roles=tuple(
+            sorted({r.speaker for r in records if r.speaker != "Narrator"})
+        ),
+        story_index_sha256=hashes["story"],
+        voice_manifest_sha256=hashes["voices"],
+        source_audio_semantic_evidence_sha256=None,
+    )
 
 
 def _source_reference_review(
@@ -258,9 +432,7 @@ def _render_stories(
     from vntts.pregeneration_generation import OfflineGenerationProgress
     from vntts.pregeneration_setup import (
         ContentDiscovery,
-        GameContent,
         PregenerationJobStore,
-        StorySelection,
     )
     from vntts.pregeneration_ui import OfflineAudioPreparationDialog
     from vntts.pregeneration_voices import VoiceCandidate, VoiceGroup, VoicePlan
@@ -1040,63 +1212,7 @@ def _render_stories(
             temporary_directory(prefix="vntts-ui-catalog-")
         )
         root = Path(temporary)
-        story_index = root / "story-index.jsonl"
-        story_index.touch()
-        chapters = (
-            StorySelection(
-                "chapter-7",
-                "Chapter 7 - The long night",
-                "chapter",
-                0,
-                tuple(f"chapter-7:{index}" for index in range(18)),
-                18,
-                18,
-                3,
-                15,
-                3,
-                ("Narrator", "Believer IV", "Centurion"),
-                ("Narrator", "Believer IV", "Centurion"),
-                1_400,
-            ),
-            StorySelection(
-                "chapter-8",
-                "Chapter 8 - The road ahead",
-                "chapter",
-                1,
-                tuple(f"chapter-8:{index}" for index in range(24)),
-                24,
-                24,
-                5,
-                19,
-                4,
-                ("Narrator", "Believer IV", "Centurion", "Selone"),
-                ("Narrator", "Believer IV", "Centurion", "Selone"),
-                1_900,
-            ),
-            StorySelection(
-                "side-story",
-                "A long side-story title that still has to remain readable",
-                "character_story",
-                2,
-                tuple(f"side-story:{index}" for index in range(12)),
-                12,
-                12,
-                2,
-                10,
-                2,
-                ("Narrator", "Selone"),
-                ("Narrator", "Selone"),
-                900,
-            ),
-        )
-        content = GameContent(
-            "reverse1999",
-            "Reverse: 1999",
-            "3.7",
-            story_index,
-            "a" * 64,
-            chapters,
-        )
+        content = _catalog_offline_content(root)
         importer = Mock()
         importer.availability.return_value = ImporterAvailability(True, "Ready")
         pool = IdlePool()
@@ -1144,10 +1260,8 @@ def _render_stories(
             dialog.continue_button.setFocus()
             return dialog
 
-        dialog._job = SimpleNamespace(
-            story_index_sha256=content.story_index_sha256,
-            selected_story_ids=("chapter-7", "chapter-8"),
-            estimate=SimpleNamespace(original_audio_lines=8, selected_lines=42),
+        dialog._job = dialog.job_store.create_or_resume(
+            content, ("chapter-7", "chapter-8")
         )
         dialog._story_selection_drafts[content.story_index_sha256] = {
             "chapter-7",
@@ -1177,7 +1291,7 @@ def _render_stories(
                 reference_duration_seconds=8.7,
             )
             plan = VoicePlan(
-                "catalog-job",
+                dialog._job.job_id,
                 "2026-09-22T00:00:00+00:00",
                 content.story_index_sha256,
                 None,
@@ -1283,7 +1397,7 @@ def _render_stories(
             dialog.continue_button.setFocus()
             return dialog
 
-        dialog._generation_input = SimpleNamespace(ready_items=34)
+        dialog._generation_input = _catalog_generation_input(dialog._job)
         dialog.generating = True
         dialog.step.setText("Step 3 of 4 - Generate and check audio")
         dialog.cancel_button.setText("Cancel generation")
@@ -1326,12 +1440,8 @@ def _render_stories(
             return dialog
 
         dialog.generating = False
-        dialog._generation_result = SimpleNamespace(
-            generated=34,
-            failed=0,
-            other_terminal=0,
-        )
         dialog._stop_generation_progress()
+        dialog._render_generation_progress(OfflineGenerationProgress(generated=34))
         dialog._show_final_handoff(
             approved=34, live_fallbacks=0, story_lines=42, omissions=0
         )

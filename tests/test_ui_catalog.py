@@ -9,6 +9,55 @@ from textwrap import dedent
 
 
 class UiCatalogTest(unittest.TestCase):
+    def test_offline_catalog_inputs_match_selected_lines_and_captured_files(
+        self,
+    ) -> None:
+        from vntts_artifacts.file_integrity import sha256_file
+        from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
+        from vntts_artifacts.voice_manifest import load_voice_manifest
+
+        from scripts.render_ui_catalog import (
+            _catalog_generation_input,
+            _catalog_offline_content,
+        )
+        from vntts.pregeneration_setup import (
+            PregenerationJobStore,
+            load_verified_story_index_document,
+        )
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = _catalog_offline_content(root)
+            store = PregenerationJobStore(root / "jobs")
+            job = store.create_or_resume(content, ("chapter-7", "chapter-8"))
+            self.assertEqual(store.load(job.job_id), job)
+            prepared = _catalog_generation_input(job)
+            story = load_verified_story_index_document(
+                prepared.story_index, prepared.story_index_sha256
+            )
+            queue = VoiceGenerationQueue.load(prepared.queue)
+            load_voice_manifest(prepared.voice_manifest)
+            self.assertEqual(
+                {r.line_id for r in story.records}, set(job.selected_line_ids)
+            )
+            expected = {
+                r.line_id for r in story.records if r.source_audio_status == "absent"
+            }
+            self.assertEqual({item.line_id for item in queue.items}, expected)
+            self.assertEqual(len(story.records), job.estimate.selected_lines)
+            self.assertEqual(
+                (job.estimate.selected_lines, job.estimate.original_audio_lines),
+                (42, 8),
+            )
+            self.assertEqual(
+                (len(queue.items), prepared.queue_items, prepared.ready_items),
+                (34, 34, 34),
+            )
+            self.assertEqual(sha256_file(prepared.queue), prepared.queue_sha256)
+            self.assertEqual(
+                sha256_file(prepared.voice_manifest), prepared.voice_manifest_sha256
+            )
+
     def test_catalog_resource_failures_keep_primary_error_and_release_files(
         self,
     ) -> None:

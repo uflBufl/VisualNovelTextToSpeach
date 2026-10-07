@@ -993,14 +993,14 @@
       "path": "scripts/render_ui_catalog.py",
       "scope": "_render_stories",
       "count": 1,
-      "maximum": 921
+      "maximum": 918
     },
     {
       "code": "PLR0915",
       "path": "scripts/render_ui_catalog.py",
       "scope": "_render_stories.offline_preparation",
       "count": 1,
-      "maximum": 91
+      "maximum": 88
     },
     {
       "code": "PLR0915",
