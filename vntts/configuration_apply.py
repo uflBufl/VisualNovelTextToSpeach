@@ -233,7 +233,7 @@ class ConfigurationApplyMixin:
         self.set_status("Runtime configuration apply is already completing")
 
     def _configuration_apply_finished(
-        self, result: tuple[bool, bool], error: Exception | None
+        self, result: tuple[bool, bool] | None, error: Exception | None
     ) -> None:
         generation = self._configuration_generation
         self._configuration_generation = None
@@ -250,6 +250,7 @@ class ConfigurationApplyMixin:
                 f"{error}. Restart the application to apply them."
             )
             return
+        assert result is not None
         current, applied = result
         if not current:
             return

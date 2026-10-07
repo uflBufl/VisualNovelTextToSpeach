@@ -419,7 +419,7 @@ class AssetManagerDialog(QDialog):
         return str(path), after, str(validated)
 
     def _manifest_validation_finished(
-        self, result: ManifestValidationResult, error: Exception | None
+        self, result: ManifestValidationResult | None, error: Exception | None
     ) -> None:
         self._set_manifest_validation_pending(False)
         selected = self.voice_manifest.text().strip()
@@ -435,6 +435,7 @@ class AssetManagerDialog(QDialog):
             self.voice_manifest.selectAll()
             self.voice_progress.setValue(0)
             return
+        assert result is not None
         path, digest, validated = result
         try:
             selected_path = str(Path(selected).expanduser().resolve())

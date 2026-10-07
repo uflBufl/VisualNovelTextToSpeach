@@ -3010,7 +3010,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
 
     def _onboarding_test_finished(
-        self, result: tuple[bool, str], error: Exception | None
+        self, result: tuple[bool, str] | None, error: Exception | None
     ) -> None:
         generation = self._onboarding_test_generation
         self._onboarding_test_generation = None
@@ -3020,6 +3020,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if error is not None:
             result = False, format_runtime_error(error)
         self.set_ready(self.controller.is_ready)
+        assert result is not None
         self.signals.onboarding_test_finished.emit(*result)
 
     def cancel_onboarding_download(self) -> None:

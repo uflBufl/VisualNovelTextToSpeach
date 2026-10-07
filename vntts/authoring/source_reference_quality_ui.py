@@ -715,12 +715,13 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         return variant_id, token, record["audio_sha256"], payload
 
     def _playback_prepared(
-        self, result: PlaybackPayload, error: Exception | None
+        self, result: PlaybackPayload | None, error: Exception | None
     ) -> None:
         if error is not None:
             self.status.setText(f"Playback blocked: {error}")
             self.stop.setEnabled(False)
             return
+        assert result is not None
         variant_id, token, digest, payload = result
         if self.current is None or self.current["variant_id"] != variant_id:
             self.status.setText("Playback cancelled: review card changed")
@@ -839,9 +840,10 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         )
 
     def _decision_finished(
-        self, result: _QualitySession, error: Exception | None
+        self, result: _QualitySession | None, error: Exception | None
     ) -> None:
         if error is None:
+            assert result is not None
             self._load_next(result)
         else:
             self.status.setText(
