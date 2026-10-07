@@ -184,7 +184,9 @@ def _attempt_name(index, profile, label):
     return f"attempt-{index:02d}-{profile}-{label}"
 
 
-def _saved_narrator_reference(settings, registry_initializer, voice_library):
+def _saved_narrator_reference(settings, registry_initializer, voice_library=None):
+    if voice_library is None:
+        voice_library = application_voice_library()
     registry = registry_initializer(settings, voice_library=voice_library)
     voice = registry.resolve("Narrator") if registry is not None else None
     references = () if voice is None else tuple(voice.references)

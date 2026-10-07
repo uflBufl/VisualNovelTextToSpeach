@@ -17,7 +17,10 @@ from scripts import moss_native_compare as compare
 from scripts import moss_native_pause_probe as probe
 from tests.test_moss_native_pause_probe import _FakeBackend, clean_wav_bytes
 from vntts.services.tts_engine import TTSConfigurationError
+from vntts.settings import AppSettings
 from vntts.synthesis import SynthesisCachePolicy, SynthesisCompletion
+from vntts.voice_library import VoiceLibrary
+from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 
 class _FailedBackend(_FakeBackend):
@@ -362,6 +365,51 @@ class MossNativeCompareTest(unittest.TestCase):
                         f"{run['directory']}/{attempt['files']['raw_wav']['path']}",
                         names,
                     )
+
+    def test_omitted_reference_uses_saved_narrator_for_all_four_runs(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            options = self._options(root)
+            reference = options.reference
+            options.reference = None
+            registry = CharacterVoiceRegistry(
+                [CharacterVoice("Narrator", "saved-narrator", reference)]
+            )
+            settings = AppSettings(tts_model=str(options.model))
+            library = VoiceLibrary(root / "library")
+            runner = partial(
+                probe.run, backend_factory=_FakeBackend, path_check=self._path_check
+            )
+            _FakeBackend.instances.clear()
+            with (
+                patch.object(
+                    probe, "application_voice_library", return_value=library
+                ) as lookup,
+                patch.object(
+                    compare, "initialize_voice_registry", return_value=registry
+                ) as initialize,
+            ):
+                code = compare.run(
+                    options,
+                    probe_runner=runner,
+                    path_check=self._path_check,
+                    settings_loader=lambda: settings,
+                    registry_initializer=initialize,
+                )
+            self.assertEqual(code, 0)
+            lookup.assert_called_once_with()
+            initialize.assert_called_once_with(settings, voice_library=library)
+            report = json.loads((options.output / "report.json").read_text())
+            self.assertTrue(report["all_requests_complete"])
+            self.assertEqual(len(_FakeBackend.instances), 4)
+            self.assertEqual(
+                (options.output / "reference-input.wav").read_bytes(),
+                reference.read_bytes(),
+            )
+            self.assertEqual(
+                {run["report"]["reference_sha256"] for run in report["runs"]},
+                {hashlib.sha256(reference.read_bytes()).hexdigest()},
+            )
 
     def test_mismatched_build_manifests_stop_before_generation(self):
         for key in ("vntts", "local_gpu_patch_sha256"):
