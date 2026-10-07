@@ -373,7 +373,7 @@ def _render_stories(
         create_pending_cohort_workspace,
         create_test_workspace,
     )
-    from tests.test_authoring_listening import FakePlayback, write_model_reports
+    from tests.listening_fixtures import FakePlayback, write_model_reports
     from tests.test_authoring_missing_voice_reuse_review import (
         create_missing_voice_reuse_review_fixture,
     )
