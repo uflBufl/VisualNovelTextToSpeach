@@ -56,9 +56,11 @@ from vntts.pregeneration_setup import (
     PregenerationJob,
     PregenerationJobStore,
     PreparationEstimate,
+    _cached_story_index_document,
     inspect_story_index,
 )
 from vntts.source_audio_semantics import SourceAudioSemanticEvidenceError
+from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.synthesis import SynthesisCompletion
 from vntts.versioned_json import write_versioned_json
 
@@ -842,9 +844,11 @@ class OfflinePackPublisherTest(unittest.TestCase):
             )
             base = publisher.publish(job, inputs, result)
             publisher = OfflinePackPublisher(base_pack=base.manifest)
+            _cached_story_index_document.cache_clear()
+            self.addCleanup(_cached_story_index_document.cache_clear)
             with patch(
-                "vntts.pregeneration_pack.load_story_index_document",
-                wraps=load_story_index_document,
+                "vntts.pregeneration_setup.load_story_index_snapshot",
+                wraps=load_story_index_snapshot,
             ) as story_load:
                 unchanged = publisher.inspect_changes(job, inputs)
             self.assertEqual(
@@ -1120,6 +1124,11 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 story.metadata,
                 records,
             )
+
+            with self.assertRaisesRegex(
+                OfflinePackError, "Prepared story index changed"
+            ):
+                OfflinePackPublisher().inspect_changes(job, generation_input)
 
             with self.assertRaisesRegex(
                 OfflinePackError, "Prepared story index changed"

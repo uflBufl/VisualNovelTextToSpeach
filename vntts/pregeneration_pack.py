@@ -32,7 +32,6 @@ from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
     StoryIndexRecord,
-    load_story_index_document,
     write_story_index_document,
 )
 from vntts_artifacts.voice_generation_queue import (
@@ -238,7 +237,9 @@ def _story_audio_pack(
     if manifest_path is None:
         return _StoryAudioPack(None, explicit, None, {}, frozenset(), None)
     imported = imported_pack or import_game_pack(manifest_path)
-    story = load_story_index_document(imported.story_index)
+    story = load_verified_story_index_document(
+        imported.story_index, imported.pack.story_index.sha256
+    )
     library = (
         GeneratedAudioLibrary(
             load_generated_audio_document(imported.generated_audio_manifest),
@@ -312,7 +313,12 @@ class OfflinePackPublisher:
         """Read-only forecast using the same validated base and resume state as publication."""
         _raise_if_cancelled(cancel_event)
         phase_started, cpu_started = perf_counter(), process_time()
-        story = load_story_index_document(generation_input.story_index)
+        try:
+            story = load_verified_story_index_document(
+                generation_input.story_index, generation_input.story_index_sha256
+            )
+        except (OSError, StoryIndexError, ValueError) as error:
+            raise OfflinePackError("Prepared story index changed") from error
         base, _source = _load_incremental_base(self.base_pack, job, story)
         _record_acceptance_phase("base-load", phase_started, cpu_started)
         phase_started, cpu_started = perf_counter(), process_time()
@@ -409,7 +415,9 @@ class OfflinePackPublisher:
         phase_started, cpu_started = perf_counter(), process_time()
         try:
             _verify_prepared_inputs(generation_input)
-            story = load_story_index_document(generation_input.story_index)
+            story = load_verified_story_index_document(
+                generation_input.story_index, generation_input.story_index_sha256
+            )
             state_document, state_sha256, state_payload = load_json_object_snapshot(
                 generation_result.state,
                 "generation state",
@@ -1061,7 +1069,9 @@ def _load_incremental_base(
             )
         except ValueError as error:
             raise OfflinePackError("Selected source story changed") from error
-        base_story = load_story_index_document(imported.story_index)
+        base_story = load_verified_story_index_document(
+            imported.story_index, imported.pack.story_index.sha256
+        )
     except (GamePackError, OSError, StoryIndexError, ValueError) as error:
         raise OfflinePackError(
             f"Unable to inspect the active offline pack: {error}"
@@ -1089,8 +1099,12 @@ def _write_cumulative_story(
     generation_input: PregenerationInput,
     story_copy: Path,
 ) -> tuple[StoryIndexDocument, Path | None, SourceAudioSemanticEvidence | None]:
-    base_story = load_story_index_document(base.story_index)
-    current_story = load_story_index_document(generation_input.story_index)
+    base_story = load_verified_story_index_document(
+        base.story_index, base.pack.story_index.sha256
+    )
+    current_story = load_verified_story_index_document(
+        generation_input.story_index, generation_input.story_index_sha256
+    )
     selected_ids = {
         *(record.line_id for record in base_story.records),
         *(record.line_id for record in current_story.records),
@@ -1545,7 +1559,11 @@ def _load_existing(
     extension = imported.pack.extensions.get("vntts.self-service")
     if not isinstance(extension, dict) or extension.get("identity") != identity:
         raise OfflinePackError("Existing offline pack identity changed")
-    story_lines = len(load_story_index_document(imported.story_index).records)
+    story_lines = len(
+        load_verified_story_index_document(
+            imported.story_index, imported.pack.story_index.sha256
+        ).records
+    )
     declared_story_lines = extension.get("story_line_count", story_lines)
     if type(declared_story_lines) is not int or declared_story_lines != story_lines:
         raise OfflinePackError("Existing offline pack coverage changed")

@@ -9,6 +9,7 @@ from tempfile import TemporaryDirectory
 from threading import Event
 from unittest.mock import Mock, patch
 
+from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import write_story_index_document
 
 from vntts.pregeneration_generation import (
@@ -16,8 +17,10 @@ from vntts.pregeneration_generation import (
     OfflineGenerationError,
     OfflineGenerationResult,
     OfflineGenerationWorker,
+    _static_ready_line_ids,
 )
 from vntts.pregeneration_queue import PregenerationInput
+from vntts.pregeneration_setup import load_verified_story_index_document
 from vntts.pregeneration_voices import VoicePlan
 
 
@@ -181,6 +184,7 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                     },
                 ],
             )
+            inputs = replace(inputs, story_index_sha256=sha256_file(inputs.story_index))
             output = inputs.directory.parent / (
                 f"generation-output-{inputs.identity[:16]}"
             )
@@ -233,7 +237,7 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 current = replace(
                     inputs,
                     identity=revision * 64,
-                    story_index_sha256=revision * 64,
+                    story_index_sha256=sha256_file(inputs.story_index),
                 )
                 output = current.directory.parent / (
                     f"generation-output-{current.identity[:16]}"
@@ -246,6 +250,49 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 self.assertEqual(
                     worker.inspect_progress(current).ready_line_ids, (line_id,)
                 )
+
+    def test_static_ready_lines_require_the_bound_story_snapshot(self):
+        with TemporaryDirectory() as directory:
+            story = Path(directory) / "story-index.jsonl"
+            metadata = {"game": "Synthetic", "language": "en"}
+            records = [
+                {
+                    "record_type": "line",
+                    "line_id": "silent",
+                    "chapter": "1",
+                    "sequence": 1,
+                    "speaker": "Ada",
+                    "text": "A silent cue.",
+                    "kind": "dialogue",
+                    "speakable": False,
+                }
+            ]
+            write_story_index_document(story, metadata, records)
+            expected_sha256 = sha256_file(story)
+            _static_ready_line_ids.cache_clear()
+            self.addCleanup(_static_ready_line_ids.cache_clear)
+            self.assertEqual(
+                _static_ready_line_ids(story, expected_sha256), ("silent",)
+            )
+
+            changed = [dict(records[0], text="Changed silent cue.")]
+            write_story_index_document(story, metadata, changed)
+            _static_ready_line_ids.cache_clear()
+            self.assertEqual(_static_ready_line_ids(story, expected_sha256), ())
+
+            write_story_index_document(story, metadata, records)
+            _static_ready_line_ids.cache_clear()
+            with patch(
+                "vntts.pregeneration_generation.load_verified_story_index_document",
+                wraps=load_verified_story_index_document,
+            ) as load_verified:
+                self.assertEqual(
+                    _static_ready_line_ids(story, expected_sha256), ("silent",)
+                )
+                self.assertEqual(
+                    _static_ready_line_ids(story, expected_sha256), ("silent",)
+                )
+            self.assertEqual(load_verified.call_count, 1)
 
     def test_missing_progress_is_not_a_report_of_zero_completed_work(self):
         with TemporaryDirectory() as directory:

@@ -16,7 +16,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Protocol
 
-from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
+from vntts_artifacts.story_index import StoryIndexError
 
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_manifest import RUNTIME_PROGRESS_MANIFEST_NAME
@@ -38,6 +38,7 @@ from vntts.pregeneration_queue import PregenerationInput
 from vntts.pregeneration_setup import (
     PregenerationSetupError,
     estimate_generation_resources,
+    load_verified_story_index_document,
 )
 from vntts.pregeneration_voices import VoicePlan
 from vntts.subprocess_utils import last_output_line, terminate_process
@@ -504,7 +505,7 @@ def _static_ready_line_ids(
 ) -> tuple[str, ...]:
     """Return immutable source/non-spoken routes that need no generated WAV."""
     try:
-        story = load_story_index_document(story_index)
+        story = load_verified_story_index_document(story_index, story_index_sha256)
     except OSError, StoryIndexError, TypeError, ValueError:
         return ()
     completion = story.metadata.get("source_audio_completion")
