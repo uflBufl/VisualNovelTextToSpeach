@@ -140,8 +140,8 @@ class _PocketTTSModelFactory(Protocol):
 
 
 class _MossGeneratedChunk(Protocol):
-    audio: object
-    generation_limited: object
+    @property
+    def audio(self) -> object: ...
 
 
 class _MossTTSModel(Protocol):

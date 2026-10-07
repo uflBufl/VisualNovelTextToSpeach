@@ -5,17 +5,23 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from collections.abc import Iterable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import mlx.core as mx
 import numpy as np
 from mlx_audio.audio_io import write as write_audio
 from mlx_audio.tts import load
+from numpy.typing import NDArray
 
 from vntts.moss_compat import install_moss_quantized_codec_compat
 
+if TYPE_CHECKING:
+    from vntts.speech_backend import _MossGeneratedChunk
 
-def _collect(results) -> np.ndarray:
+
+def _collect(results: Iterable[_MossGeneratedChunk]) -> NDArray[np.float32]:
     chunks = []
     for result in results:
         audio = result.audio

@@ -68,8 +68,7 @@ def _load_cuda_qwen_model(model_path: str) -> _CudaQwenModel:
     )
 
 
-class _QwenGeneratedResult(Protocol):
-    audio: object
+class _QwenGeneratedResult(_MossGeneratedChunk, Protocol):
     token_count: int
 
 
@@ -106,7 +105,7 @@ class _QwenTTSModelFactory(Protocol):
 @dataclass
 class _QwenGeneratedChunk:
     audio: object
-    generation_limited: object
+    generation_limited: bool
 
 
 def _require_qwen_model(model: object) -> _QwenTTSModel:
