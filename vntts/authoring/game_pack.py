@@ -65,6 +65,7 @@ from vntts.authoring.generation_state import (
 from vntts.authoring.publication import (
     AtomicPublicationError,
     generation_publication_leases,
+    no_replace_destination,
     staged_directory,
 )
 from vntts.authoring.publication import (
@@ -2005,9 +2006,7 @@ def _new_destination(value: str | Path) -> Path:
         raise FinalGamePackError(
             "Final game-pack destination requires a directory name"
         )
-    if not candidate.is_absolute():
-        candidate = Path.cwd() / candidate
-    return candidate.parent.resolve() / candidate.name
+    return no_replace_destination(candidate)
 
 
 def _path_exists(path: str | Path) -> bool:

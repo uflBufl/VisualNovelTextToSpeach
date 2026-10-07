@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from vntts.cleanup import temporary_directory
+from vntts.path_safety import no_replace_destination as no_replace_destination
 
 if TYPE_CHECKING:
     from vntts.authoring.generation_lease import GenerationLease
@@ -19,12 +20,6 @@ if TYPE_CHECKING:
 
 class AtomicPublicationError(RuntimeError):
     """Raised when the platform cannot provide no-replace publication."""
-
-
-def no_replace_destination(value: str | Path) -> Path:
-    """Canonicalize the parent while preserving the leaf for atomic no-replace."""
-    requested = Path(value).expanduser()
-    return requested.parent.resolve() / requested.name
 
 
 @contextmanager

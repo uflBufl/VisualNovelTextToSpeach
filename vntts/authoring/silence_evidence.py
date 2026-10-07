@@ -12,6 +12,7 @@ from durable_file import atomic_write_json, sha256_file
 
 from vntts.authoring.publication import (
     AtomicPublicationError,
+    no_replace_destination,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -201,9 +202,7 @@ def _new_directory(value: str | Path) -> Path:
         raise SilenceFailureEvidenceError(
             "Silence-failure evidence requires a directory name"
         )
-    if not path.is_absolute():
-        path = Path.cwd() / path
-    return path.parent.resolve() / path.name
+    return no_replace_destination(path)
 
 
 def _rename_no_replace(source: Path, destination: Path) -> None:

@@ -13,7 +13,7 @@ from pathlib import Path
 
 from vntts.cleanup import cleanup_on_exit
 from vntts.document_identity import canonical_document_sha256
-from vntts.path_safety import contained_regular_file
+from vntts.path_safety import contained_regular_file, no_replace_destination
 
 
 class AuthoringAuthorityError(RuntimeError):
@@ -143,8 +143,7 @@ def write_json_document_no_replace(
     error_type: type[Exception] = AuthoringAuthorityError,
 ) -> Path:
     """Atomically publish one JSON document while refusing replacement."""
-    requested = Path(output).expanduser()
-    path = requested.parent.resolve() / requested.name
+    path = no_replace_destination(output)
     payload = (
         json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     ).encode("utf-8")

@@ -180,6 +180,7 @@ from vntts.authoring.missing_voice_policy import (
     MissingVoicePolicy,
     MissingVoicePolicyError,
 )
+from vntts.authoring.publication import no_replace_destination
 from vntts.authoring.silence_evidence import publish_silence_failure_evidence
 from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
 from vntts.authoring.speech_quality import (
@@ -2911,9 +2912,7 @@ def _silence_failure_evidence_directory(
     directory = Path(value).expanduser()
     if not directory.name or directory.name in {".", ".."}:
         raise BulkGenerationError("Silence-failure evidence requires a directory name")
-    if not directory.is_absolute():
-        directory = Path.cwd() / directory
-    directory = directory.parent.resolve() / directory.name
+    directory = no_replace_destination(directory)
     try:
         directory.relative_to(output_directory)
     except ValueError:

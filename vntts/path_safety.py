@@ -3,6 +3,12 @@
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 
 
+def no_replace_destination(value: str | Path) -> Path:
+    """Canonicalize the parent while preserving the leaf for atomic no-replace."""
+    requested = Path(value).expanduser()
+    return requested.parent.resolve() / requested.name
+
+
 def safe_relative_path(
     value: object,
     label: str,
@@ -67,4 +73,9 @@ def contained_regular_file(
     return path
 
 
-__all__ = ["contained_path", "contained_regular_file", "safe_relative_path"]
+__all__ = [
+    "contained_path",
+    "contained_regular_file",
+    "no_replace_destination",
+    "safe_relative_path",
+]

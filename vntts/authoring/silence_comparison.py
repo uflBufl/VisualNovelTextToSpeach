@@ -32,7 +32,11 @@ from vntts.authoring.listening import (
     _create_listening_session_from_captured_reports,
     create_listening_session_from_reports,
 )
-from vntts.authoring.publication import rename_directory_no_replace, staged_directory
+from vntts.authoring.publication import (
+    no_replace_destination,
+    rename_directory_no_replace,
+    staged_directory,
+)
 from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.document_identity import is_lowercase_sha256
 
@@ -1035,9 +1039,7 @@ def _new_directory(value: str | Path) -> Path:
     path = Path(value).expanduser()
     if not path.name or path.name in {".", ".."}:
         raise SilenceComparisonError("Silence comparison requires a directory name")
-    if not path.is_absolute():
-        path = Path.cwd() / path
-    return path.parent.resolve() / path.name
+    return no_replace_destination(path)
 
 
 def _contained_file(root: Path, relative: object) -> Path:
