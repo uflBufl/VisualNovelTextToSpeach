@@ -1011,6 +1011,7 @@ def _validate_candidate_bundle_identity(
     claimed = bundle.get("bundle_id")
     if (
         bundle.get("schema") != MISSING_VOICE_REUSE_CANDIDATE_BUNDLE_SCHEMA
+        or type(bundle.get("schema_version")) is not int
         or bundle.get("schema_version") != MISSING_VOICE_REUSE_CANDIDATE_BUNDLE_VERSION
         or bundle.get("plan_id") != document["plan_id"]
         or bundle.get("candidate_id") != candidate["candidate_id"]

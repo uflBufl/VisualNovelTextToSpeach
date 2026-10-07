@@ -132,14 +132,14 @@
       "path": "vntts/authoring/missing_voice_reuse_binding.py",
       "scope": "_validate_binding_bundle",
       "count": 1,
-      "maximum": 14
+      "maximum": 12
     },
     {
       "code": "C901",
       "path": "vntts/authoring/missing_voice_reuse_binding.py",
       "scope": "publish_missing_voice_reuse_binding",
       "count": 1,
-      "maximum": 24
+      "maximum": 23
     },
     {
       "code": "C901",
@@ -704,16 +704,9 @@
     {
       "code": "PLR0912",
       "path": "vntts/authoring/missing_voice_reuse_binding.py",
-      "scope": "_validate_binding_bundle",
-      "count": 1,
-      "maximum": 13
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/missing_voice_reuse_binding.py",
       "scope": "publish_missing_voice_reuse_binding",
       "count": 1,
-      "maximum": 23
+      "maximum": 22
     },
     {
       "code": "PLR0912",
@@ -1210,7 +1203,7 @@
       "path": "vntts/authoring/missing_voice_reuse_binding.py",
       "scope": "publish_missing_voice_reuse_binding",
       "count": 1,
-      "maximum": 107
+      "maximum": 104
     },
     {
       "code": "PLR0915",

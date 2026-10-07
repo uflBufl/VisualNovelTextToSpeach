@@ -782,6 +782,7 @@ def load_missing_voice_reuse_review(
     bundle_plan = _object(bundle.get("plan"), "Missing-voice review plan")
     if (
         key.get("schema") != REVIEW_KEY_SCHEMA
+        or type(key.get("schema_version")) is not int
         or key.get("schema_version") != REVIEW_VERSION
         or key.get("plan_id") != bundle_plan.get("plan_id")
     ):

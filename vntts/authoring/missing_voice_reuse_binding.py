@@ -52,6 +52,7 @@ from vntts.authoring.workbench import (
     contained_workspace_path,
     safe_workspace_relative_path,
 )
+from vntts.authoring.workspace_foundation import load_json_object
 from vntts.document_identity import file_sha256
 from vntts.voices import voice_manifest_entries_at_path
 
@@ -119,11 +120,18 @@ def publish_missing_voice_reuse_binding(
             "Every missing-voice cohort requires a completed review decision"
         )
     key_path = session_path.with_name(".blind-key.json")
-    try:
-        key = json.loads(key_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise MissingVoiceReuseBindingError(str(error)) from error
-    candidate_by_label = {value["label"]: value for value in key.get("candidates", [])}
+    key = load_json_object(
+        key_path,
+        "Missing-voice blind key",
+        error_type=MissingVoiceReuseBindingError,
+        object_label="Missing-voice blind key",
+    )
+    candidate_by_label = {
+        _text_field(value, "label", "Missing-voice blind candidate label"): value
+        for value in _object_list(
+            key.get("candidates", []), "Missing-voice blind key candidates"
+        )
+    }
     planned_candidate_by_id = {
         _text_field(value, "candidate_id", "Missing-voice candidate ID"): value
         for value in document["candidates"]
@@ -401,12 +409,15 @@ def _validate_binding_bundle(
     expected_binding: JsonObject,
 ) -> None:
     directory = Path(directory).resolve()
-    try:
-        bundle = json.loads((directory / "bundle.json").read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise MissingVoiceReuseBindingError(str(error)) from error
+    bundle = load_json_object(
+        directory / "bundle.json",
+        "Missing-voice binding bundle",
+        error_type=MissingVoiceReuseBindingError,
+        object_label="Missing-voice binding bundle",
+    )
     if (
         bundle.get("schema") != MISSING_VOICE_REUSE_BINDING_BUNDLE_SCHEMA
+        or type(bundle.get("schema_version")) is not int
         or bundle.get("schema_version") != MISSING_VOICE_REUSE_BINDING_BUNDLE_VERSION
         or bundle.get("plan_id") != plan["plan_id"]
         or bundle.get("bundle_id")
@@ -455,12 +466,15 @@ def _validate_binding_bundle(
         raise MissingVoiceReuseBindingError(
             "Missing-voice binding inventory is incomplete"
         )
-    try:
-        decision = json.loads((directory / "decision.json").read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise MissingVoiceReuseBindingError(str(error)) from error
+    decision = load_json_object(
+        directory / "decision.json",
+        "Missing-voice binding decision",
+        error_type=MissingVoiceReuseBindingError,
+        object_label="Missing-voice binding decision",
+    )
     if (
         decision.get("schema") != MISSING_VOICE_REUSE_DECISION_SCHEMA
+        or type(decision.get("schema_version")) is not int
         or decision.get("schema_version") != MISSING_VOICE_REUSE_DECISION_VERSION
         or decision.get("binding") != expected_binding
         or decision.get("decision_id")

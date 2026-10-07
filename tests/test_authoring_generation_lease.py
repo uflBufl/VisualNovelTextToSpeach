@@ -1,11 +1,16 @@
+import json
 import subprocess
 import sys
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import psutil
 
 from vntts.authoring.generation_lease import (
+    BulkGenerationError,
+    GenerationLease,
     inspect_process_status,
     process_is_alive,
     process_started_at,
@@ -54,6 +59,34 @@ class ProcessInspectionTests(unittest.TestCase):
 
         self.assertEqual(inspect_process_status(child.pid), "dead")
         self.assertFalse(process_is_alive(child.pid))
+
+    def test_generation_lease_schema_version_requires_exact_integer(self):
+        with TemporaryDirectory() as directory:
+            output = Path(directory)
+            lease_path = output / ".generation-lease.json"
+            for version in (True, 1.0):
+                lease_path.write_bytes(
+                    json.dumps(
+                        {
+                            "schema": "vntts.authoring-generation-lease",
+                            "schema_version": version,
+                            "queue_sha256": "1" * 64,
+                            "pid": 123,
+                        }
+                    ).encode()
+                )
+                before = lease_path.read_bytes()
+                lease = GenerationLease(
+                    output, "1" * 64, process_checker=lambda _pid: False
+                )
+                with (
+                    self.subTest(version=version),
+                    self.assertRaisesRegex(
+                        BulkGenerationError, "Unrecognized generation lease"
+                    ),
+                ):
+                    lease.__enter__()
+                self.assertEqual(lease_path.read_bytes(), before)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ from vntts_artifacts.voice_manifest import load_voice_manifest
 from tests.test_authoring_missing_voice_live_fallback import (
     create_missing_voice_live_fallback_fixture,
 )
+from vntts.authoring import known_role_reuse as known_role_module
 from vntts.authoring.known_role_reuse import (
     KnownRoleReuseError,
     publish_known_role_reuse_binding,
@@ -195,6 +196,31 @@ class AuthoringKnownRoleReuseTest(unittest.TestCase):
             composed[KNOWN_ROLE_REUSE_BINDING_FIELD]["queue_voice_overrides"],
             {queue_id: "Rhiannon"},
         )
+
+    def test_bundle_schema_version_requires_exact_integer(self):
+        body = {
+            "schema": known_role_module.KNOWN_ROLE_REUSE_BUNDLE_SCHEMA,
+            "schema_version": 1,
+            "decision_id": known_role_module.canonical_document_sha256({}),
+            "inventory": [{"path": "manifest.json", "sha256": "1" * 64}],
+        }
+        valid = {**body, "bundle_id": known_role_module.canonical_document_sha256(body)}
+        self.assertEqual(
+            known_role_module._validated_bundle_inventory(valid, {}), body["inventory"]
+        )
+        for version in (True, 1.0):
+            invalid_body = {**body, "schema_version": version}
+            invalid = {
+                **invalid_body,
+                "bundle_id": known_role_module.canonical_document_sha256(invalid_body),
+            }
+            with (
+                self.subTest(version=version),
+                self.assertRaisesRegex(
+                    KnownRoleReuseError, "bundle identity is invalid"
+                ),
+            ):
+                known_role_module._validated_bundle_inventory(invalid, {})
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ from tests.test_authoring_missing_voice_reuse import (
     build_missing_voice_reuse_plan_fixture,
     create_missing_voice_reuse_workspace,
 )
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.missing_voice_reuse import write_missing_voice_reuse_plan
 from vntts.authoring.missing_voice_reuse_review import (
     AUTOMATIC_UNRESOLVED_ORIGIN,
@@ -418,6 +419,51 @@ class AuthoringMissingVoiceReuseReviewTest(unittest.TestCase):
 
             with self.assertRaisesRegex(MissingVoiceReuseReviewError, "audio changed"):
                 load_missing_voice_reuse_review(session_path)
+
+    def test_blind_key_schema_version_requires_exact_integer(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan_path, evidence, snapshots, _queue_id = self.fixture(root)
+            with patch(
+                "vntts.authoring.missing_voice_reuse_review._load_candidate_workspace",
+                side_effect=lambda _plan, _candidate, path: snapshots[
+                    Path(path).resolve()
+                ],
+            ):
+                session_path = build_missing_voice_reuse_review(
+                    plan_path, evidence, root / "review"
+                )
+            session_root = session_path.parent
+            key_path = session_root / ".blind-key.json"
+            bundle_path = session_root / "bundle.json"
+            session_file = session_root / "session.json"
+            original = {
+                path: path.read_bytes()
+                for path in (key_path, bundle_path, session_file)
+            }
+            for version in (True, 1.0):
+                key = json.loads(original[key_path].decode())
+                key["schema_version"] = version
+                key_path.write_text(json.dumps(key), encoding="utf-8")
+                bundle = json.loads(original[bundle_path].decode())
+                bundle["blind_key_sha256"] = sha256_file(key_path)
+                bundle["bundle_id"] = canonical_document_sha256(
+                    {key: value for key, value in bundle.items() if key != "bundle_id"}
+                )
+                bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+                session = json.loads(original[session_file].decode())
+                session["bundle_id"] = bundle["bundle_id"]
+                session["bundle_sha256"] = sha256_file(bundle_path)
+                session_file.write_text(json.dumps(session), encoding="utf-8")
+                with (
+                    self.subTest(version=version),
+                    self.assertRaisesRegex(
+                        MissingVoiceReuseReviewError, "blind key is invalid"
+                    ),
+                ):
+                    load_missing_voice_reuse_review(session_path)
+                for path, payload in original.items():
+                    path.write_bytes(payload)
 
 
 if __name__ == "__main__":

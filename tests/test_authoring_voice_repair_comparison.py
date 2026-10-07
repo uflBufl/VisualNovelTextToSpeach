@@ -363,6 +363,101 @@ class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
                     root / "candidate-workspaces",
                 )
 
+    def test_candidate_json_encoding_and_shape_fail_as_domain_errors(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, imported, workspace_result = create_test_workspace(root / "seed")
+            source_state = (
+                workspace_result.directory / "generated-audio/generation-state.json"
+            )
+            state = json.loads(source_state.read_text(encoding="utf-8"))
+            state["active"] = None
+            _queue_id, result = next(iter(state["items"].items()))
+            result["status"] = "generated"
+            result["review_status"] = "rejected"
+            source_state.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            plan = build_voice_repair_comparison_plan(
+                workspace_result.directory, "Rhiannon"
+            )
+            candidate_id = plan.document["candidates"][0]["candidate_id"]
+            prepared = prepare_voice_repair_candidate_workspace(
+                plan,
+                candidate_id,
+                imported,
+                root / "candidate-inputs",
+                root / "candidate-workspaces",
+            )
+            bundle_path = prepared.input_directory / "bundle.json"
+            bundle = bundle_path.read_bytes()
+            bundle_path.write_bytes(b"\xff")
+            with self.assertRaisesRegex(
+                VoiceRepairComparisonError,
+                "Unable to load voice repair candidate input",
+            ):
+                prepare_voice_repair_candidate_workspace(
+                    plan,
+                    candidate_id,
+                    imported,
+                    root / "candidate-inputs",
+                    root / "candidate-workspaces",
+                )
+            bundle_path.write_bytes(bundle)
+            for schema_version in (True, 1.0):
+                bundle_document = json.loads(bundle)
+                bundle_document["schema_version"] = schema_version
+                bundle_document["bundle_id"] = _canonical_sha256(
+                    {
+                        key: value
+                        for key, value in bundle_document.items()
+                        if key != "bundle_id"
+                    }
+                )
+                bundle_path.write_text(json.dumps(bundle_document), encoding="utf-8")
+                with self.assertRaisesRegex(
+                    VoiceRepairComparisonError, "input conflicts"
+                ):
+                    prepare_voice_repair_candidate_workspace(
+                        plan,
+                        candidate_id,
+                        imported,
+                        root / "candidate-inputs",
+                        root / "candidate-workspaces",
+                    )
+                bundle_path.write_bytes(bundle)
+
+            manifest_path = prepared.input_directory / "manifest.json"
+            manifest = manifest_path.read_bytes()
+            for replacement, message in (
+                (b"\xff", "Unable to load candidate voice manifest"),
+                (b"[]", "Candidate manifest binding changed"),
+            ):
+                manifest_path.write_bytes(replacement)
+                bundle_document = json.loads(bundle)
+                manifest_entry = next(
+                    item
+                    for item in bundle_document["inventory"]
+                    if item["path"] == "manifest.json"
+                )
+                manifest_entry["sha256"] = hashlib.sha256(replacement).hexdigest()
+                bundle_document["bundle_id"] = _canonical_sha256(
+                    {
+                        key: value
+                        for key, value in bundle_document.items()
+                        if key != "bundle_id"
+                    }
+                )
+                bundle_path.write_text(json.dumps(bundle_document), encoding="utf-8")
+                with self.assertRaisesRegex(VoiceRepairComparisonError, message):
+                    prepare_voice_repair_candidate_workspace(
+                        plan,
+                        candidate_id,
+                        imported,
+                        root / "candidate-inputs",
+                        root / "candidate-workspaces",
+                    )
+                bundle_path.write_bytes(bundle)
+            manifest_path.write_bytes(manifest)
+
     def test_candidate_input_symlink_fails_closed(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

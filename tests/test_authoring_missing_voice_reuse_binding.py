@@ -4,6 +4,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from vntts_artifacts.file_integrity import sha256_file
+
 from tests.test_authoring_missing_voice_reuse import (
     build_failed_missing_voice_reuse_plan_fixture,
     create_missing_voice_reuse_workspace,
@@ -12,6 +14,7 @@ from tests.test_authoring_missing_voice_reuse_review import (
     create_missing_voice_reuse_review_fixture,
 )
 from vntts.authoring import missing_voice_reuse_binding as binding_module
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.missing_voice_reuse import write_missing_voice_reuse_plan
 from vntts.authoring.missing_voice_reuse_binding import (
     MissingVoiceReuseBindingError,
@@ -238,6 +241,108 @@ class AuthoringMissingVoiceReuseBindingTest(unittest.TestCase):
                 publish_missing_voice_reuse_binding(
                     plan_path, session_path, root / "binding"
                 )
+
+    def test_blind_key_mutation_preserves_domain_errors(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan_path, session_path, _queue_id = self.create_failed_review(root)
+            key_path = session_path.with_name(".blind-key.json")
+            original_key = key_path.read_bytes()
+            load_review = binding_module.load_missing_voice_reuse_review
+            output = root / "binding"
+            for replacement in ([], {"candidates": None}, {"candidates": [{}]}):
+
+                def change_key(path):
+                    review = load_review(path)
+                    key_path.write_text(json.dumps(replacement), encoding="utf-8")
+                    return review
+
+                with self.subTest(key=replacement):
+                    with patch.object(
+                        binding_module, "load_missing_voice_reuse_review", change_key
+                    ):
+                        with self.assertRaisesRegex(
+                            MissingVoiceReuseBindingError, "Missing-voice blind"
+                        ):
+                            publish_missing_voice_reuse_binding(
+                                plan_path, session_path, output
+                            )
+                    self.assertFalse(output.exists())
+                key_path.write_bytes(original_key)
+
+    def test_binding_bundle_json_object_shape_is_required(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "bundle.json").write_text("[]", encoding="utf-8")
+            with self.assertRaisesRegex(
+                MissingVoiceReuseBindingError, "binding bundle.*JSON object"
+            ):
+                binding_module._validate_binding_bundle(root, {}, {})
+
+    def test_existing_binding_rejects_non_integer_bundle_and_decision_versions(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan_path, session_path, queue_id = self.create_review(root)
+            bundle, _session = load_missing_voice_reuse_review(session_path)
+            cohort = bundle["cohorts"][0]
+            selected = cohort["complete_candidate_labels"][0]
+            record_missing_voice_reuse_heard(
+                session_path, cohort["cohort_id"], queue_id, selected
+            )
+            record_missing_voice_reuse_decision(
+                session_path, cohort["cohort_id"], selected
+            )
+            output = publish_missing_voice_reuse_binding(
+                plan_path, session_path, root / "binding"
+            ).directory
+            bundle_path = output / "bundle.json"
+            decision_path = output / "decision.json"
+            originals = {
+                path: path.read_bytes() for path in (bundle_path, decision_path)
+            }
+            for path, field, message in (
+                (bundle_path, "schema_version", "bundle identity is invalid"),
+                (decision_path, "schema_version", "decision identity changed"),
+            ):
+                for version in (True, 1.0):
+                    bundle_document = json.loads(originals[bundle_path].decode())
+                    decision_document = json.loads(originals[decision_path].decode())
+                    if path == bundle_path:
+                        bundle_document[field] = version
+                    else:
+                        decision_document[field] = version
+                        decision_document["decision_id"] = canonical_document_sha256(
+                            {
+                                key: value
+                                for key, value in decision_document.items()
+                                if key != "decision_id"
+                            }
+                        )
+                        decision_path.write_text(
+                            json.dumps(decision_document), encoding="utf-8"
+                        )
+                    for item in bundle_document["inventory"]:
+                        if item["path"] == "decision.json":
+                            item["sha256"] = sha256_file(decision_path)
+                    bundle_document["bundle_id"] = canonical_document_sha256(
+                        {
+                            key: value
+                            for key, value in bundle_document.items()
+                            if key != "bundle_id"
+                        }
+                    )
+                    bundle_path.write_text(
+                        json.dumps(bundle_document), encoding="utf-8"
+                    )
+                    with (
+                        self.subTest(path=path.name, version=version),
+                        self.assertRaisesRegex(MissingVoiceReuseBindingError, message),
+                    ):
+                        publish_missing_voice_reuse_binding(
+                            plan_path, session_path, output
+                        )
+                    for restore_path, payload in originals.items():
+                        restore_path.write_bytes(payload)
 
 
 if __name__ == "__main__":

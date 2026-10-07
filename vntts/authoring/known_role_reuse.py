@@ -691,6 +691,7 @@ def _validated_bundle_inventory(
     body = {key: value for key, value in bundle.items() if key != "bundle_id"}
     if (
         bundle.get("schema") != KNOWN_ROLE_REUSE_BUNDLE_SCHEMA
+        or type(bundle.get("schema_version")) is not int
         or bundle.get("schema_version") != KNOWN_ROLE_REUSE_BUNDLE_VERSION
         or bundle.get("bundle_id") != canonical_document_sha256(body)
         or bundle.get("decision_id") != canonical_document_sha256(decision_body)

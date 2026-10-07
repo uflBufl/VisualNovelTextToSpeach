@@ -206,6 +206,7 @@ class GenerationLease:
                         ) from error
                     if (
                         not isinstance(parsed, dict)
+                        or type(parsed.get("schema_version")) is not int
                         or parsed.get("schema") != LEASE_SCHEMA
                         or parsed.get("schema_version") != LEASE_VERSION
                         or not isinstance(parsed.get("queue_sha256"), str)

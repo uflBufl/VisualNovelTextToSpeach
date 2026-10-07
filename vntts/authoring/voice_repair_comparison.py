@@ -807,7 +807,7 @@ def _candidate_bundle(directory: Path) -> JsonObject:
         raise VoiceRepairComparisonError("Candidate bundle document is unsafe")
     try:
         bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise VoiceRepairComparisonError(
             f"Unable to load voice repair candidate input: {error}"
         ) from error
@@ -821,7 +821,10 @@ def _validate_candidate_bundle_identity(
 ) -> None:
     if bundle.get("schema") != VOICE_REPAIR_CANDIDATE_BUNDLE_SCHEMA:
         raise VoiceRepairComparisonError("Voice repair candidate input conflicts")
-    if bundle.get("schema_version") != VOICE_REPAIR_CANDIDATE_BUNDLE_VERSION:
+    if (
+        type(bundle.get("schema_version")) is not int
+        or bundle.get("schema_version") != VOICE_REPAIR_CANDIDATE_BUNDLE_VERSION
+    ):
         raise VoiceRepairComparisonError("Voice repair candidate input conflicts")
     if bundle.get("plan_id") != _required_text(
         document.get("plan_id"), "Comparison plan ID"
@@ -891,10 +894,12 @@ def _validate_candidate_manifest(
 ) -> None:
     try:
         manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise VoiceRepairComparisonError(
             f"Unable to load candidate voice manifest: {error}"
         ) from error
+    if not isinstance(manifest, dict):
+        raise VoiceRepairComparisonError("Candidate manifest binding changed")
     if manifest.get(VOICE_REPAIR_CANDIDATE_MANIFEST_FIELD) != (
         _candidate_manifest_binding(document, candidate)
     ):

@@ -607,6 +607,34 @@ class AuthoringMissingVoiceReuseTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(target_mode, "failed")
 
+    def test_candidate_bundle_schema_version_requires_exact_integer(self):
+        body = {
+            "schema": reuse_module.MISSING_VOICE_REUSE_CANDIDATE_BUNDLE_SCHEMA,
+            "schema_version": 1,
+            "plan_id": "plan",
+            "candidate_id": "candidate",
+            "inventory": [],
+        }
+        valid = {**body, "bundle_id": reuse_module.canonical_document_sha256(body)}
+        reuse_module._validate_candidate_bundle_identity(
+            valid, {"plan_id": "plan"}, {"candidate_id": "candidate"}
+        )
+        for version in (True, 1.0):
+            invalid_body = {**body, "schema_version": version}
+            invalid = {
+                **invalid_body,
+                "bundle_id": reuse_module.canonical_document_sha256(invalid_body),
+            }
+            with (
+                self.subTest(version=version),
+                self.assertRaisesRegex(
+                    MissingVoiceReuseError, "candidate bundle identity is invalid"
+                ),
+            ):
+                reuse_module._validate_candidate_bundle_identity(
+                    invalid, {"plan_id": "plan"}, {"candidate_id": "candidate"}
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
