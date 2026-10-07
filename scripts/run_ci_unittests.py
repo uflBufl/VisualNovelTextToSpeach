@@ -111,6 +111,7 @@ def _run_exact_test_file(path):
         not isinstance(test_ids, list)
         or not test_ids
         or any(not isinstance(value, str) or not value for value in test_ids)
+        or len(test_ids) != len(set(test_ids))
     ):
         print("Exact test inventory is malformed", file=sys.stderr)
         return 2
@@ -254,6 +255,7 @@ def main(arguments=None):
         modules = arguments[1:]
         if not modules or any(not value.startswith("tests.test_") for value in modules):
             return 2
+        modules = list(dict.fromkeys(modules))
         system = platform.system()
         if system in SHARD_TIMEOUTS:
             return _run_sharded_full_discovery(system, modules)

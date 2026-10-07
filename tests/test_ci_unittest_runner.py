@@ -1,5 +1,6 @@
 import json
 import subprocess
+import sys
 import unittest
 from contextlib import redirect_stderr
 from io import StringIO
@@ -139,6 +140,24 @@ class CiUnitTestRunnerTest(unittest.TestCase):
         self.assertEqual(result, 2)
         self.assertIn("Unable to load exact test inventory", output.getvalue())
 
+    def test_duplicate_exact_inventory_is_rejected_before_loading_or_running(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "tests.json"
+            name = f"{__name__}.CiUnitTestRunnerTest.test_partition_assigns_every_test_exactly_once"
+            path.write_text(json.dumps([name, name]), encoding="utf-8")
+            output = StringIO()
+            with (
+                patch(
+                    "scripts.run_ci_unittests.unittest.defaultTestLoader.loadTestsFromNames"
+                ) as load,
+                patch("scripts.run_ci_unittests.unittest.TextTestRunner") as runner,
+                redirect_stderr(output),
+            ):
+                self.assertEqual(main(["--exact-test-ids-file", str(path)]), 2)
+            load.assert_not_called()
+            runner.assert_not_called()
+        self.assertIn("Exact test inventory is malformed", output.getvalue())
+
     def test_exact_inventory_executes_each_named_test_once(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "tests.json"
@@ -250,6 +269,34 @@ class CiUnitTestRunnerTest(unittest.TestCase):
             )
         run.assert_called_once()
         self.assertEqual(run.call_args.args[0][-3:-1], ["--shard", "qt-app"])
+
+    def test_selected_modules_are_forwarded_once_in_first_seen_order(self):
+        selected = ["tests.test_alpha", "tests.test_beta"]
+        for system in ("Darwin", "Windows", "Linux"):
+            with (
+                self.subTest(system=system),
+                patch("scripts.run_ci_unittests.platform.system", return_value=system),
+                patch(
+                    "scripts.run_ci_unittests._run_sharded_full_discovery",
+                    return_value=0,
+                ) as sharded,
+                patch(
+                    "scripts.run_ci_unittests.subprocess.run",
+                    return_value=Mock(returncode=0, stdout=""),
+                ) as run,
+            ):
+                self.assertEqual(main(["--selected", *selected, selected[0]]), 0)
+                if system == "Linux":
+                    sharded.assert_not_called()
+                    run.assert_called_once_with(
+                        [sys.executable, "-u", "-m", "unittest", *selected],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                    )
+                else:
+                    sharded.assert_called_once_with(system, selected)
+                    run.assert_not_called()
 
     def test_selected_modules_reject_unknown_names_before_running(self):
         test_ids = (
