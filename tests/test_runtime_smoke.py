@@ -3,7 +3,7 @@ import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import yaml
 
@@ -34,6 +34,17 @@ class RuntimeSmokeTest(unittest.TestCase):
 
     def test_cuda_candidates_exercise_production_refusal_without_model_loading(self):
         for backend in ("moss-tts-delay", "moss-soundeffect-v2"):
+            torch = FakeTorch(available=False)
+            tensor_operation = Mock(
+                side_effect=AssertionError(
+                    "A runtime smoke test must not execute tensors"
+                )
+            )
+            torch.bfloat16 = "bfloat16"
+            torch.float32 = "float32"
+            torch.manual_seed = tensor_operation
+            torch.no_grad = tensor_operation
+            torch.cuda.manual_seed_all = tensor_operation
             with (
                 self.subTest(backend=backend),
                 patch("sys.prefix", str(ROOT / "backends" / backend / ".venv")),
@@ -42,11 +53,12 @@ class RuntimeSmokeTest(unittest.TestCase):
                     "vntts.speech_worker.resolve_speech_runtime_paths", return_value=()
                 ),
                 patch("vntts.speech_worker.probe_speech_runtime", return_value={}),
-                patch.dict("sys.modules", {"torch": FakeTorch(available=False)}),
+                patch.dict("sys.modules", {"torch": torch}),
                 patch("scripts.smoke_speech_runtime._forbid_model_loading") as loading,
             ):
                 self.assertIn("no_cuda", check_runtime(backend))
                 loading.assert_not_called()
+                tensor_operation.assert_not_called()
                 for torch in (
                     FakeTorch(),
                     FakeTorch(available=False, cuda_runtime=None),

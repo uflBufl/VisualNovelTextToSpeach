@@ -8,6 +8,7 @@ import sys
 from importlib.metadata import version
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Literal, Never, TypedDict
 
 from vntts.cleanup import temporary_directory
 from vntts.runtime_paths import RUNTIME_ENVIRONMENT_VARIABLES
@@ -16,7 +17,24 @@ ROOT = Path(__file__).resolve().parents[1]
 CUDA_BACKENDS = {"moss-tts-delay", "moss-soundeffect-v2", "qwen-tts"}
 
 
-def _forbid_model_loading(*_args, **_kwargs):
+class _RuntimeReport(TypedDict, total=False):
+    runtime: str
+    python: str
+    package_version: str
+    worker_dependencies: dict[str, object]
+    unavailable_metal: str
+    torch: str
+    cuda_runtime: str
+    no_cuda: str
+    schema: str
+    backend: str
+    model_rendered: bool
+    status: Literal["passed", "failed", "hardware-unavailable"]
+    error_type: str
+    error: str
+
+
+def _forbid_model_loading(*_args: object, **_kwargs: object) -> Never:
     raise RuntimeError("A dependency smoke test must never load model weights")
 
 
@@ -33,11 +51,16 @@ def _qwen_without_cuda() -> str:
     raise RuntimeError("CUDA backend failed to refuse model startup")
 
 
-def check_runtime(backend, *, allow_unavailable_metal=False):
+def check_runtime(
+    backend: str, *, allow_unavailable_metal: bool = False
+) -> _RuntimeReport:
     runtime = ROOT / "backends" / backend / ".venv"
     if Path(sys.prefix).resolve() != runtime.resolve():
         raise RuntimeError(f"Run this check with the isolated {backend} environment")
-    report = {"runtime": str(runtime), "python": platform.python_version()}
+    report: _RuntimeReport = {
+        "runtime": str(runtime),
+        "python": platform.python_version(),
+    }
     if backend == "moss-soundeffect-v2":
         # The pipeline needs CUDA. Its CPU-host gate checks installed metadata and
         # real Torch, not GPU-only pipeline imports or model quality.
@@ -80,7 +103,6 @@ def check_runtime(backend, *, allow_unavailable_metal=False):
                 MossTTSDelayVoiceRouterBackend(
                     CharacterVoiceRegistry(),
                     require_cuda=True,
-                    torch_module=torch,
                     auto_model=loader,
                     auto_processor=loader,
                 )
@@ -114,7 +136,7 @@ def check_runtime(backend, *, allow_unavailable_metal=False):
     return report
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "backend", choices=[*RUNTIME_ENVIRONMENT_VARIABLES, "moss-soundeffect-v2"]
@@ -128,7 +150,7 @@ def main(argv=None):
     arguments = parser.parse_args(argv)
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
-    report = {
+    report: _RuntimeReport = {
         "schema": "vntts.runtime-smoke-v1",
         "backend": arguments.backend,
         "model_rendered": False,
@@ -145,7 +167,11 @@ def main(argv=None):
         )
     except Exception as error:
         report.update(
-            status="failed", error_type=type(error).__name__, error=str(error)
+            {
+                "status": "failed",
+                "error_type": type(error).__name__,
+                "error": str(error),
+            }
         )
     payload = json.dumps(report, indent=2, sort_keys=True)
     arguments.output.parent.mkdir(parents=True, exist_ok=True)
