@@ -21,7 +21,8 @@ from vntts.authoring.cohort_review import (
 )
 from vntts.authoring.source_reference_quality import (
     SourceReferenceQualityError,
-    load_source_reference_quality_review,
+    _read_json,
+    validate_source_reference_quality_review_document,
 )
 from vntts.authoring.workspace_foundation import contained_regular_file
 
@@ -124,12 +125,14 @@ def build_portrait_alias_plan(
     """Suggest same-character expression aliases without granting authority."""
     _validate_dhash_distance(max_dhash_distance)
     path = Path(quality_review_path).expanduser().resolve()
-    payload = _read(path, "source-reference quality review")
-    source_sha256 = hashlib.sha256(payload).hexdigest()
     try:
-        review = load_source_reference_quality_review(path)
+        payload, review_document = _read_json(path, "source-reference quality review")
+        review = validate_source_reference_quality_review_document(
+            review_document, path.parent
+        )
     except SourceReferenceQualityError as error:
         raise PortraitAliasError(str(error)) from error
+    source_sha256 = hashlib.sha256(payload).hexdigest()
     variants = _eligible_portrait_variants(path, review)
     suggestions = _portrait_alias_suggestions(variants, max_dhash_distance)
     body: _PortraitAliasPlanBody = {

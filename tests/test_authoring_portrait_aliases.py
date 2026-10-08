@@ -65,6 +65,50 @@ class PortraitAliasesTest(unittest.TestCase):
                         decision.document,
                     )
 
+    def test_planner_does_not_bind_other_review_decisions_to_captured_hash(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            portraits = root / "portraits"
+            portraits.mkdir()
+            for name in ("adult", "young"):
+                write_test_png(portraits / f"{name}.png", red=120)
+            _plan, _evaluation, _generation, quality = (
+                publish_source_reference_quality_fixture(
+                    root, portrait_directory=portraits, shared_portrait_bank=True
+                )
+            )
+            rejected = quality.session.read_bytes()
+            for card in load_source_reference_quality_review(quality.session)[
+                "variants"
+            ]:
+                record_source_reference_quality_decision(
+                    quality.session, card["variant_id"], "accept"
+                )
+            accepted = quality.session.read_bytes()
+            quality.session.write_bytes(rejected)
+            read_bytes = Path.read_bytes
+            reads = 0
+
+            def read_other_review(path):
+                nonlocal reads
+                if path != quality.session:
+                    return read_bytes(path)
+                reads += 1
+                if reads != 2:
+                    return read_bytes(path)
+                path.write_bytes(accepted)
+                try:
+                    return read_bytes(path)
+                finally:
+                    path.write_bytes(rejected)
+
+            with patch.object(Path, "read_bytes", read_other_review):
+                with self.assertRaisesRegex(
+                    aliases.PortraitAliasError, "changed while"
+                ):
+                    aliases.build_portrait_alias_plan(quality.session)
+            self.assertEqual(quality.session.read_bytes(), rejected)
+
     def test_pair_search_only_visits_same_voice_families(self):
         variants = []
         for family in range(20):
