@@ -55,6 +55,29 @@ def canonical_sha256(value):
 
 
 class RenderHypothesisReviewTest(unittest.TestCase):
+    def test_non_finite_review_identity_uses_record_and_review_errors(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            comparison = root / "comparison"
+            queue_id = write_comparison(comparison)
+            output = root / "review"
+            publish_render_hypothesis_review(
+                comparison, queue_id, "reference-02", output
+            )
+            path = output / "review.json"
+            original = json.loads(path.read_text())
+            for value in (float("nan"), float("inf"), float("-inf")):
+                for loader, error_type in (
+                    (load_render_hypothesis_record, RenderHypothesisRecordError),
+                    (load_render_hypothesis_review, RenderHypothesisReviewError),
+                ):
+                    with self.subTest(value=value, loader=loader.__name__):
+                        path.write_text(json.dumps({**original, "seed": value}))
+                        with self.assertRaisesRegex(error_type, "identity is invalid"):
+                            loader(output)
+            path.write_text(json.dumps(original))
+            self.assertEqual(load_render_hypothesis_review(output).queue_id, queue_id)
+
     def test_accepted_hypothesis_imports_into_fresh_audit_and_binding(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

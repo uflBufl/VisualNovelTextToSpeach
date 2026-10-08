@@ -180,7 +180,13 @@ def _validate_review(
             "result",
         }
     }
-    if review["review_id"] != canonical_document_sha256(identity):
+    try:
+        review_id = canonical_document_sha256(identity)
+    except (TypeError, ValueError) as error:
+        raise RenderHypothesisRecordError(
+            f"Render hypothesis review identity is invalid: {error}"
+        ) from error
+    if review["review_id"] != review_id:
         raise RenderHypothesisRecordError("Render hypothesis review ID changed")
     if (
         comparison.sha256 != review["comparison_sha256"]
