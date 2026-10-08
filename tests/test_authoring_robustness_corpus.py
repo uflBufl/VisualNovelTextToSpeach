@@ -100,6 +100,48 @@ def _canonical_sha256(document):
 
 
 class AuthoringRobustnessCorpusTest(unittest.TestCase):
+    def test_supported_corpus_versions_preserve_optional_summary_fields(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state_path, queue_id = _pending_workspace(root / "reviewed")
+            _decision(workspace, queue_id)
+            result = publish_speech_robustness_corpus(
+                [workspace / "cohort-reviews"], [], root / "corpus"
+            )
+            current = load_speech_robustness_corpus(result.directory).to_dict()
+            for version in (1, 2, 3):
+                with self.subTest(version=version):
+                    document = json.loads(json.dumps(current))
+                    document["schema_version"] = version
+                    for sample in document["samples"]:
+                        if version < 3:
+                            del sample["human_defect_reasons"]
+                        if version < 2:
+                            for field in (
+                                "queue_sha256",
+                                "text",
+                                "speaker",
+                                "voice_character",
+                                "text_timing",
+                            ):
+                                del sample[field]
+                    if version < 3:
+                        del document["summary"]["human_defect_reasons"]
+                    if version < 2:
+                        del document["summary"]["text_timing_signals"]
+                        del document["summary"]["text_timing_signal_human_labels"]
+                    document["corpus_id"] = _canonical_sha256(
+                        {
+                            key: value
+                            for key, value in document.items()
+                            if key != "corpus_id"
+                        }
+                    )
+                    (result.directory / "corpus.json").write_text(json.dumps(document))
+                    loaded = load_speech_robustness_corpus(result.directory)
+                    self.assertEqual(loaded.document, document)
+                    self.assertEqual(loaded.sample_count, 1)
+
     def test_asr_summary_counts_and_groups_share_one_traversal(self):
         class CountedRecords(list):
             iterations = 0

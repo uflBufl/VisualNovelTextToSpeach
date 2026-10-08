@@ -1025,7 +1025,10 @@ def _build_sources(
 
 
 def _counts(
-    samples: Sequence[JsonDocument], failures: Sequence[JsonDocument]
+    samples: Sequence[JsonDocument],
+    failures: Sequence[JsonDocument],
+    *,
+    version: int = SPEECH_ROBUSTNESS_CORPUS_VERSION,
 ) -> JsonDocument:
     labels = Counter(
         _required_text(row.get("human_label"), "Human label") for row in samples
@@ -1063,22 +1066,25 @@ def _counts(
             "Analysis signals",
         )
     )
-    timing_signals = Counter(
-        signal
-        for row in samples
-        for signal in _string_list(
-            _object_field(row, "text_timing", "Sample text timing").get("signals"),
-            "Timing signals",
+    timing_signals: Counter[str] = Counter()
+    timing_signal_labels: Counter[tuple[str, str]] = Counter()
+    if version >= 2:
+        timing_signals = Counter(
+            signal
+            for row in samples
+            for signal in _string_list(
+                _object_field(row, "text_timing", "Sample text timing").get("signals"),
+                "Timing signals",
+            )
         )
-    )
-    timing_signal_labels = Counter(
-        (signal, _required_text(row.get("human_label"), "Human label"))
-        for row in samples
-        for signal in _string_list(
-            _object_field(row, "text_timing", "Sample text timing").get("signals"),
-            "Timing signals",
+        timing_signal_labels = Counter(
+            (signal, _required_text(row.get("human_label"), "Human label"))
+            for row in samples
+            for signal in _string_list(
+                _object_field(row, "text_timing", "Sample text timing").get("signals"),
+                "Timing signals",
+            )
         )
-    )
     defect_reasons = Counter(
         reason
         for row in samples
@@ -1436,7 +1442,7 @@ def _validate_document(document: JsonDocument) -> JsonDocument:
     )
     if document.get("corpus_id") != expected_id:
         raise SpeechRobustnessCorpusError("Robustness corpus identity is invalid")
-    if document.get("summary") != _counts(samples, failures):
+    if document.get("summary") != _counts(samples, failures, version=version):
         raise SpeechRobustnessCorpusError("Robustness corpus summary is invalid")
     _validate_artifacts(artifacts)
     _validate_samples(samples, version)
