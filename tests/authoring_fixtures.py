@@ -38,6 +38,7 @@ from vntts.authoring.cohort_review import (
     build_cohort_review_plan,
     write_cohort_review_plan,
 )
+from vntts.authoring.generation_manifest import write_generated_manifest_from_state
 from vntts.authoring.legacy_import import import_legacy_job
 from vntts.authoring.robustness_corpus import publish_speech_robustness_corpus
 from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
@@ -748,3 +749,61 @@ def write_authority(
         }
     path.write_text(json.dumps(document, sort_keys=True), encoding="utf-8")
     return path
+
+
+def create_explicit_fallback_merge_fixture(root: Path) -> tuple[Path, Path, str]:
+    fixture, imported, base = create_test_workspace(root)
+    base_directory = base.directory
+    source = create_resume_workspace(
+        imported,
+        root / "workspaces",
+        story_index=base_directory / "inputs/story-index.jsonl",
+        voice_manifest=base_directory / "inputs/voice/manifest.json",
+        narrator_character="Rhiannon",
+        backend="moss-tts",
+        model="model with spaces",
+        generation_profile="fallback-source",
+    ).directory
+    queue_id = fixture["queue_id"]
+    source_state = source / "generated-audio/generation-state.json"
+    source_document = load_json_object(source_state, "source fixture state")
+    removed_source = _object(_object(source_document["items"]).pop(queue_id))
+    source_document["active"] = None
+    (
+        source
+        / "generated-audio"
+        / _required_text(removed_source["path"], "Fixture audio path")
+    ).unlink()
+    source_state.write_text(
+        json.dumps(source_document, sort_keys=True), encoding="utf-8"
+    )
+    write_generated_manifest_from_state(
+        source_document,
+        source / "generated-audio",
+        source / "generated-audio/manifest.json",
+    )
+    bulk_generation_module.authorize_live_fallback(
+        source_state,
+        source / "queue.jsonl",
+        queue_id,
+        reason="reference_unavailable_after_audit",
+        model="pocket-tts",
+    )
+
+    base_state_path = base_directory / "generated-audio/generation-state.json"
+    base_state = load_json_object(base_state_path, "base fixture state")
+    removed = _object(_object(base_state["items"]).pop(queue_id))
+    base_state["active"] = None
+    audio = (
+        base_directory
+        / "generated-audio"
+        / _required_text(removed["path"], "Fixture audio path")
+    )
+    audio.unlink()
+    base_state_path.write_text(json.dumps(base_state, sort_keys=True), encoding="utf-8")
+    write_generated_manifest_from_state(
+        base_state,
+        base_directory / "generated-audio",
+        base_directory / "generated-audio/manifest.json",
+    )
+    return base_directory, source, queue_id

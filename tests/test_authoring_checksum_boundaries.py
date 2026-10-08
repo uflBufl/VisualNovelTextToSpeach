@@ -5,9 +5,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from tests import (
-    test_authoring_explicit_fallback_merge as merge_fixtures,
-)
 from tests import test_authoring_queue_builder as builder_fixtures
 from tests import (
     test_authoring_queue_extension as queue_fixtures,
@@ -15,7 +12,10 @@ from tests import (
 from tests import (
     test_authoring_reviewed_waveform_publication as waveform_fixtures,
 )
-from tests.authoring_fixtures import create_voice_quality_review
+from tests.authoring_fixtures import (
+    create_explicit_fallback_merge_fixture,
+    create_voice_quality_review,
+)
 from tests.missing_voice_reuse_fixtures import (
     create_failed_prompt_hypothesis_review,
     create_missing_voice_live_fallback_fixture,
@@ -59,9 +59,7 @@ class ChecksumBoundaryTest(unittest.TestCase):
     def test_explicit_fallback_missing_queue_stays_a_workbench_error(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            base, source, queue_id = (
-                merge_fixtures.ExplicitFallbackMergeTests()._fixture(root)
-            )
+            base, source, queue_id = create_explicit_fallback_merge_fixture(root)
             self._disappear_after(
                 explicit_fallback_merge,
                 "load_stable_workspace_generation_state",
