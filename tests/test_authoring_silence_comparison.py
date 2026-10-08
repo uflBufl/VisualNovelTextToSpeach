@@ -15,6 +15,7 @@ from tests.authoring_fixtures import (
     write_silence_comparison_sample,
 )
 from tests.symlink_support import symlink_or_skip
+from vntts.authoring import silence_comparison as comparison_module
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.listening import load_listening_session
 from vntts.authoring.silence_comparison import (
@@ -51,6 +52,27 @@ class AuthoringSilenceComparisonTest(unittest.TestCase):
             loaded_session = load_listening_session(session)
             self.assertEqual(loaded_session["trial_count"], 1)
             self.assertEqual(set(loaded_session["trials"][0]["audio"]), {"a", "b"})
+
+    def test_racing_publication_preserves_competitor_and_uses_domain_error(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sample = write_silence_comparison_sample(root)
+            output = root / "comparison"
+            rename = comparison_module.rename_directory_no_replace
+
+            def race(staging, destination):
+                destination.mkdir()
+                (destination / "competitor").write_bytes(b"unchanged")
+                return rename(staging, destination)
+
+            with mock.patch.object(
+                comparison_module, "rename_directory_no_replace", side_effect=race
+            ):
+                with self.assertRaises(SilenceComparisonError):
+                    publish_silence_comparison((sample,), output)
+            self.assertEqual((output / "competitor").read_bytes(), b"unchanged")
+            self.assertEqual(list(output.iterdir()), [output / "competitor"])
+            self.assertEqual(list(root.glob(".comparison.staging-*")), [])
 
     def test_loader_rejects_tampered_or_escaping_artifacts(self):
         with tempfile.TemporaryDirectory() as temporary:
