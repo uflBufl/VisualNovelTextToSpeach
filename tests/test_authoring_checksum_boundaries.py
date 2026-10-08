@@ -5,8 +5,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 
-from tests import test_authoring_queue_extension as queue_fixtures
 from tests.authoring_fixtures import (
     create_explicit_fallback_merge_fixture,
     create_reviewed_waveform_fixture,
@@ -14,6 +14,7 @@ from tests.authoring_fixtures import (
     queue_builder_story_record,
     write_queue_builder_inputs,
 )
+from tests.bulk_generation_fixtures import additive_queue_item
 from tests.missing_voice_reuse_fixtures import (
     create_failed_prompt_hypothesis_review,
     create_missing_voice_live_fallback_fixture,
@@ -146,11 +147,11 @@ class ChecksumBoundaryTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             metadata = {"game": "Reverse: 1999", "language": "en"}
-            base = queue_fixtures.write_voice_generation_queue(
-                root / "base.jsonl", metadata, [queue_fixtures.item(1)]
+            base = write_voice_generation_queue(
+                root / "base.jsonl", metadata, [additive_queue_item(1)]
             )
-            extension = queue_fixtures.write_voice_generation_queue(
-                root / "extension.jsonl", metadata, [queue_fixtures.item(2)]
+            extension = write_voice_generation_queue(
+                root / "extension.jsonl", metadata, [additive_queue_item(2)]
             )
             loader = queue_extension.VoiceGenerationQueue.load
 

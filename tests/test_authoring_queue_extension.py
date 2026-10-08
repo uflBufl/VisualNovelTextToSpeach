@@ -1,4 +1,3 @@
-import hashlib
 import json
 import unittest
 from pathlib import Path
@@ -10,6 +9,7 @@ from vntts_artifacts.voice_generation_queue import (
     write_voice_generation_queue,
 )
 
+from tests.bulk_generation_fixtures import additive_queue_item as item
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.queue_extension import (
     FIELD,
@@ -17,23 +17,6 @@ from vntts.authoring.queue_extension import (
     publish_additive_generation_queue,
     validate_additive_generation_queue,
 )
-
-
-def item(sequence, text=None):
-    text = text or f"Line {sequence}."
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    return {
-        "record_type": "generation_item",
-        "queue_id": f"line:{sequence}:{digest[:16]}",
-        "line_id": f"line:{sequence}",
-        "text_sha256": digest,
-        "text": text,
-        "speaker": "Rhiannon",
-        "voice_character": "Rhiannon",
-        "action": "generate",
-        "sequence": sequence,
-        "story_order": 1000 + sequence,
-    }
 
 
 class QueueExtensionTest(unittest.TestCase):

@@ -118,3 +118,20 @@ class SyntheticRenderer:
 
     def stop(self) -> None:
         self.stop_calls += 1
+
+
+def additive_queue_item(sequence: int, text: str | None = None) -> dict[str, object]:
+    text = text or f"Line {sequence}."
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return {
+        "record_type": "generation_item",
+        "queue_id": f"line:{sequence}:{digest[:16]}",
+        "line_id": f"line:{sequence}",
+        "text_sha256": digest,
+        "text": text,
+        "speaker": "Rhiannon",
+        "voice_character": "Rhiannon",
+        "action": "generate",
+        "sequence": sequence,
+        "story_order": 1000 + sequence,
+    }
