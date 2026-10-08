@@ -185,8 +185,8 @@ def publish_render_hypothesis_review(
     review_id = canonical_document_sha256(identity)
     output.parent.mkdir(parents=True, exist_ok=True)
     with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
-        _stage_review(staging, comparison_snapshot, snapshots, identity, review_id)
-        _assert_publish_snapshots(comparison_snapshot, snapshots)
+        _stage_review(staging, snapshots, identity, review_id)
+        _assert_publish_snapshots(snapshots)
         try:
             rename_directory_no_replace(staging, output)
         except (AtomicPublicationError, OSError) as error:
@@ -346,13 +346,12 @@ def _review_identity(
 
 def _stage_review(
     staging: Path,
-    comparison_snapshot: AuthoritySnapshot,
     snapshots: _ReviewSnapshots,
     identity: JsonObject,
     review_id: str,
 ) -> None:
     (staging / "audio").mkdir(parents=True)
-    (staging / "comparison.json").write_bytes(comparison_snapshot.payload)
+    (staging / "comparison.json").write_bytes(snapshots.comparison.payload)
     (staging / "arm-report.json").write_bytes(snapshots.report.payload)
     reference_relative = f"audio/reference.{identity['reference_format']}"
     (staging / reference_relative).write_bytes(snapshots.reference.payload)
@@ -370,12 +369,10 @@ def _stage_review(
     load_render_hypothesis_review(staging)
 
 
-def _assert_publish_snapshots(
-    comparison_snapshot: AuthoritySnapshot, snapshots: _ReviewSnapshots
-) -> None:
+def _assert_publish_snapshots(snapshots: _ReviewSnapshots) -> None:
     try:
         for snapshot, label in (
-            (comparison_snapshot, "reference render comparison"),
+            (snapshots.comparison, "reference render comparison"),
             (snapshots.report, "reference render arm report"),
             (snapshots.reference, "reference control"),
             (snapshots.result, "render result"),
