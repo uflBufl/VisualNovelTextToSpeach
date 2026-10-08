@@ -487,6 +487,8 @@ def create_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     options = create_parser().parse_args(argv)
+    from vntts.authoring.reference_composite import ReferenceCompositeError
+
     try:
         if options.command == "create-composite":
             from vntts.authoring.reference_composite import (
@@ -551,7 +553,12 @@ def main(argv: list[str] | None = None) -> int:
         if error.name and error.name.startswith("PySide6"):
             return _exit_code(cli_error("Qt UI is not installed"))
         raise
-    except (SourceReferenceQualityError, OSError, json.JSONDecodeError) as error:
+    except (
+        SourceReferenceQualityError,
+        ReferenceCompositeError,
+        OSError,
+        json.JSONDecodeError,
+    ) as error:
         return _exit_code(cli_error(error))
 
 

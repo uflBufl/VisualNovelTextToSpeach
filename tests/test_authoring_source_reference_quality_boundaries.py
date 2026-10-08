@@ -1,5 +1,7 @@
+import io
 import json
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -7,6 +9,7 @@ from unittest.mock import patch
 from tests.source_reference_fixtures import publish_source_reference_quality_fixture
 from vntts.authoring import source_reference_quality
 from vntts.authoring.publication import AtomicPublicationError
+from vntts.authoring.reference_composite import ReferenceCompositeError
 from vntts.authoring.source_reference_quality import (
     SourceReferenceQualityError,
     load_source_reference_quality_review,
@@ -15,6 +18,29 @@ from vntts.authoring.source_reference_quality import (
 
 
 class SourceReferenceQualityBoundariesTest(unittest.TestCase):
+    def test_composite_quality_cli_reports_its_domain_error(self):
+        errors = io.StringIO()
+        with (
+            patch(
+                "vntts.authoring.reference_composite.publish_composite_quality_review",
+                side_effect=ReferenceCompositeError("Composite publication failed"),
+            ),
+            redirect_stderr(errors),
+        ):
+            result = source_reference_quality.main(
+                [
+                    "create-composite",
+                    "--composite",
+                    "composite",
+                    "--state",
+                    "state.json",
+                    "--output",
+                    "output",
+                ]
+            )
+        self.assertEqual(result, 1)
+        self.assertEqual(errors.getvalue(), "Composite publication failed\n")
+
     def test_quality_publication_requires_exact_integer_media_identity(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
