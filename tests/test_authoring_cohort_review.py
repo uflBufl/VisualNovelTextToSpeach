@@ -16,6 +16,7 @@ from tests.authoring_fixtures import (
     write_legacy_fixture,
 )
 from tests.symlink_support import symlink_or_skip
+from vntts.authoring import cohort_review as cohort_review_module
 from vntts.authoring import workspace_inspection as inspection_module
 from vntts.authoring.bulk_generation import _canonical_sha256
 from vntts.authoring.cli import main as authoring_main
@@ -182,6 +183,46 @@ class AuthoringCohortReviewTest(unittest.TestCase):
         self.assertEqual(cohort["items"][0]["pace_advisories"], [])
         self.assertTrue(cohort["items"][0]["sampled"])
         self.assertEqual(first.plan_id, first.document["plan_id"])
+
+    def test_sampling_reads_records_once_and_preserves_attention_and_expansion(self):
+        class CountedRecords(list):
+            def __iter__(self):
+                self.traversals += 1
+                return super().__iter__()
+
+        values = [
+            {
+                "queue_id": f"{bucket}-{index}",
+                "length_bucket": bucket,
+                "technical_flags": ["pause"] if index == 0 else [],
+            }
+            for bucket in ("short", "medium", "long")
+            for index in range(7)
+        ]
+        attention = {f"{bucket}-0" for bucket in ("short", "medium", "long")}
+        previous = attention
+        for count in range(1, 6):
+            with self.subTest(count=count):
+                records = CountedRecords(values)
+                records.traversals = 0
+                sampled = cohort_review_module._sample_cohort_queue_ids(
+                    "a" * 64, records, count
+                )
+                self.assertEqual(records.traversals, 1)
+                self.assertTrue(previous.issubset(sampled))
+                self.assertEqual(len(sampled), 3 * (count + 1))
+                self.assertEqual(
+                    sampled,
+                    cohort_review_module._sample_cohort_queue_ids(
+                        "a" * 64, tuple(reversed(values)), count
+                    ),
+                )
+                for bucket in ("short", "medium", "long"):
+                    self.assertEqual(
+                        sum(queue_id.startswith(bucket) for queue_id in sampled),
+                        count + 1,
+                    )
+                previous = sampled
 
     def test_plan_selection_accepts_iterables_and_preserves_exact_identity(self):
         with TemporaryDirectory() as directory:

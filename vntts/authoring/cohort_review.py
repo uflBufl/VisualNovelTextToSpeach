@@ -319,17 +319,20 @@ def _sample_cohort_queue_ids(
     clean_samples_per_bucket: int,
 ) -> set[str]:
     """Select technical-attention WAVs and deterministic clean bucket samples."""
-    sampled = {
-        _required_text(value["queue_id"], "Queue ID")
-        for value in records
-        if value["technical_flags"]
+    sampled: set[str] = set()
+    clean_by_bucket: dict[str, list[str]] = {
+        bucket: [] for bucket in ("short", "medium", "long")
     }
-    for bucket in ("short", "medium", "long"):
-        eligible = [
-            _required_text(value["queue_id"], "Queue ID")
-            for value in records
-            if not value["technical_flags"] and value["length_bucket"] == bucket
-        ]
+    for value in records:
+        if value["technical_flags"]:
+            sampled.add(_required_text(value["queue_id"], "Queue ID"))
+        else:
+            bucket = value["length_bucket"]
+            if isinstance(bucket, str) and bucket in clean_by_bucket:
+                clean_by_bucket[bucket].append(
+                    _required_text(value["queue_id"], "Queue ID")
+                )
+    for eligible in clean_by_bucket.values():
         eligible.sort(
             key=lambda queue_id: (
                 hashlib.sha256(f"{cohort_id}\0{queue_id}".encode("utf-8")).hexdigest(),
