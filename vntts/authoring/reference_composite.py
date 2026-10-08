@@ -34,6 +34,7 @@ from vntts.authoring.generation_state import (
 )
 from vntts.authoring.publication import (
     no_replace_destination,
+    publication_errors,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -138,6 +139,7 @@ class _CompositeClipInput:
 _file_sha256 = partial(file_sha256, error_type=ReferenceCompositeError)
 
 
+@publication_errors(ReferenceCompositeError)
 def publish_composite_quality_review(
     composite_directory: PathInput,
     state_path: PathInput,
@@ -418,6 +420,7 @@ def _verify_snapshots(snapshots: list[Snapshot], error_prefix: str) -> None:
             raise ReferenceCompositeError(f"{error_prefix}: {source.name}")
 
 
+@publication_errors(ReferenceCompositeError)
 def publish_exact_bank_reference_composite(
     report_path: PathInput,
     character: object,

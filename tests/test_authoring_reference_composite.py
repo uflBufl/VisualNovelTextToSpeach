@@ -1,6 +1,7 @@
 import hashlib
 import json
 import unittest
+from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -13,8 +14,10 @@ from tests.source_reference_fixtures import (
     write_exact_bank_composite_report,
     write_reference_composite_wav,
 )
+from vntts.authoring import reference_composite
 from vntts.authoring import source_reference_quality_records as quality_records
 from vntts.authoring.bulk_generation import run_bulk_generation
+from vntts.authoring.publication import AtomicPublicationError
 from vntts.authoring.reference_composite import (
     COMPOSITE_SCHEMA,
     ReferenceCompositeError,
@@ -28,6 +31,68 @@ from vntts.authoring.source_reference_quality_records import capture_quality_out
 
 
 class AuthoringReferenceCompositeTest(unittest.TestCase):
+    def test_composite_publishers_preserve_racing_outputs_and_cleanup(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            report = write_exact_bank_composite_report(root)
+            publish_composite = partial(
+                publish_exact_bank_reference_composite,
+                report,
+                "Hotelier",
+                "505401.png",
+                "hotelier.bnk",
+            )
+            composite = publish_composite(root / "composite")
+            generation = run_bulk_generation(
+                composite.directory / "queue.jsonl",
+                root / "generation",
+                CompositeRenderer(),
+                provider="synthetic",
+                model="synthetic-v1",
+                generation_profile="stable",
+            )
+            rename = reference_composite.rename_directory_no_replace
+            for name, publish in (
+                ("composite", publish_composite),
+                (
+                    "quality",
+                    partial(
+                        publish_composite_quality_review,
+                        composite.directory,
+                        generation.state,
+                    ),
+                ),
+            ):
+                with self.subTest(publisher=name):
+                    original_paths = set(root.iterdir())
+                    output = root / f"racing-{name}"
+
+                    def race(staging: Path, destination: Path) -> None:
+                        destination.mkdir()
+                        (destination / "sentinel").write_bytes(b"competitor output")
+                        rename(staging, destination)
+
+                    with (
+                        patch.object(
+                            reference_composite,
+                            "rename_directory_no_replace",
+                            side_effect=race,
+                        ),
+                        self.assertRaisesRegex(
+                            ReferenceCompositeError,
+                            "Publication destination already exists",
+                        ) as caught,
+                    ):
+                        publish(output)
+                    self.assertIsInstance(
+                        caught.exception.__cause__, AtomicPublicationError
+                    )
+                    self.assertEqual(set(output.iterdir()), {output / "sentinel"})
+                    self.assertEqual(
+                        (output / "sentinel").read_bytes(), b"competitor output"
+                    )
+                    self.assertEqual(set(root.iterdir()), original_paths | {output})
+
     def test_publishes_all_exact_clips_and_checksum_ledger(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
