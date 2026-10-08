@@ -1,5 +1,9 @@
 # TODO
 
+## Investigate source-reference listening report state capture
+
+- [ ] In source_reference_review._load_evaluation_generation / publish_source_reference_listening_reports, prove whether loaded generation-state semantics can differ from the later recorded state SHA. Use the existing public evaluation/generation fixture: supply a different admissible model on generated items only during load_generation_state, restore original bytes, and check report model versus recorded original SHA. If this survives existing evidence validation, use captured _read_json plus load_generation_state_from_snapshot and carry its payload SHA; preserve final freshness and audio/source/variant checks, then expand the verified repair. Queue/voice metadata-only alternatives were inspected and excluded: consumed identities are constrained by comparison/evaluation checks; do not treat their similar syntax as a defect.
+
 ## Qualify remaining model dependency risks
 
 - [ ] Trace whether root Coqui/XTTS, Chatterbox, MOSS SoundEffect and MOSS Delay
@@ -560,7 +564,9 @@ Planned implementation order after approval:
 
 ## Investigate intermittent macOS Qt test crash
 
-- [ ] Reproduce/bisect the October 8 remainder SIGSEGV at `tests.test_history.DialogueHistoryDialogTest.test_slow_replay_keeps_qt_responsive_and_reports_completion` after the preceding exact full-discovery prefix. Preserve the latest 3565-selected-test crash prefix in `.codex/investigations/model-quality-oct08-local-complete.log` and the prior `.codex/investigations/queue-oct08-local-verified.log`; identical branch selection and an earlier local selection passed, so causality is not established. Gate: narrowed repeatable Qt/pooled-thread owner sequence and a deterministic lifetime regression; a successful retry does not resolve it.
+- [ ] Qualify the October 9 expanded portrait-selector callback exceptions against the original main and narrow cleanup sequence before any UI patch: source_reference_quality_ui delayed ensureWidgetVisible used a deleted QScrollArea; pregeneration_audition_ui._play_original received a non-buffer payload during a test mock. Retain portrait-oct09-local-expanded.log and prove baseline/current ownership or mock lifetime before choosing a production fix; keep native history replay SIGSEGV investigation separate.
+
+- [ ] Reproduce/bisect the October 8 remainder SIGSEGV at `tests.test_history.DialogueHistoryDialogTest.test_slow_replay_keeps_qt_responsive_and_reports_completion` after the preceding exact full-discovery prefix. The October 9 portrait audit selector (196modules) reproduced the same slow-history-replay SIGSEGV; preserve `.codex/investigations/portrait-oct09-local.log` with the prior prefix. Preserve the latest 3565-selected-test crash prefix in `.codex/investigations/model-quality-oct08-local-complete.log` and the prior `.codex/investigations/queue-oct08-local-verified.log`; identical branch selection and an earlier local selection passed, so causality is not established. Gate: narrowed repeatable Qt/pooled-thread owner sequence and a deterministic lifetime regression; a successful retry does not resolve it.
 
 - [ ] Reproduce/bisect the October 7 qt-assets SIGSEGV at `test_model_verification_can_finish_after_close_without_updating_ui`: native stack enters QObjectWrapper disconnectNotify during QDialog child destruction. Compare the exact 21-test shard on main and the cancellation branch; four fresh main processes passed, so causality is not established. Keep `.codex/investigations/assets-native-oct07.log`; gate: a narrowed repeatable teardown sequence and an explicit owner-lifetime check, without treating a successful retry as a native crash fix.
 
