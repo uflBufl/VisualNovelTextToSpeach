@@ -2,6 +2,7 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event, Thread
 from unittest.mock import patch
 
 from vntts_artifacts.file_integrity import sha256_file
@@ -14,6 +15,11 @@ from tests.missing_voice_reuse_fixtures import (
     create_missing_voice_reuse_binding_review,
     create_missing_voice_reuse_review_fixture,
     create_missing_voice_reuse_workspace,
+)
+from vntts.authoring import missing_voice_reuse_review as review_module
+from vntts.authoring.advisory_lock import (
+    AdvisoryLockBusyError,
+    exclusive_advisory_lock,
 )
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.missing_voice_reuse import write_missing_voice_reuse_plan
@@ -32,6 +38,141 @@ from vntts.authoring.missing_voice_reuse_review import (
 class AuthoringMissingVoiceReuseReviewTest(unittest.TestCase):
     def fixture(self, root, statuses=("generated", "failed")):
         return create_missing_voice_reuse_review_fixture(root, statuses=statuses)
+
+    def _race_review_writers(self, session_path, first_call, second_call):
+        publishing = Event()
+        release = Event()
+        outcomes = {}
+        write_json = review_module.atomic_write_json
+
+        def pause_first_publication(path, *args, **kwargs):
+            if Path(path) == session_path and not publishing.is_set():
+                publishing.set()
+                if not release.wait(10):
+                    raise AssertionError("Review writer was not released")
+            return write_json(path, *args, **kwargs)
+
+        def save(name, operation):
+            try:
+                outcomes[name] = operation()
+            except Exception as error:
+                outcomes[name] = error
+
+        first = Thread(target=save, args=("first", first_call))
+        second = Thread(target=save, args=("second", second_call))
+        with patch.object(review_module, "atomic_write_json", pause_first_publication):
+            first.start()
+            try:
+                self.assertTrue(publishing.wait(10))
+                with self.assertRaises(AdvisoryLockBusyError):
+                    with exclusive_advisory_lock(
+                        session_path.with_name(f".{session_path.name}.guard")
+                    ):
+                        self.fail("Review writer did not hold the shared guard")
+                second.start()
+            finally:
+                release.set()
+                first.join(10)
+                if second.ident is not None:
+                    second.join(10)
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(set(outcomes), {"first", "second"})
+        return outcomes
+
+    def test_concurrent_heard_saves_merge_and_replay_is_idempotent(self):
+        with TemporaryDirectory() as directory:
+            _plan, session_path, queue_id = create_missing_voice_reuse_binding_review(
+                Path(directory), statuses=("generated", "generated")
+            )
+            bundle, _session = load_missing_voice_reuse_review(session_path)
+            cohort_id = bundle["cohorts"][0]["cohort_id"]
+            first_label, second_label = [
+                candidate["label"] for candidate in bundle["candidates"]
+            ]
+            outcomes = self._race_review_writers(
+                session_path,
+                lambda: record_missing_voice_reuse_heard(
+                    session_path, cohort_id, queue_id, first_label
+                ),
+                lambda: record_missing_voice_reuse_heard(
+                    session_path, cohort_id, queue_id, second_label
+                ),
+            )
+            self.assertFalse(
+                any(isinstance(value, Exception) for value in outcomes.values())
+            )
+            _bundle, session = load_missing_voice_reuse_review(session_path)
+            self.assertEqual(
+                {(record["queue_id"], record["label"]) for record in session["heard"]},
+                {(queue_id, first_label), (queue_id, second_label)},
+            )
+            self.assertIsNone(session["decisions"][0]["decision"])
+            before = session_path.read_bytes()
+            record_missing_voice_reuse_heard(
+                session_path, cohort_id, queue_id, first_label
+            )
+            self.assertEqual(session_path.read_bytes(), before)
+
+    def test_concurrent_terminal_saves_preserve_first_decision(self):
+        with TemporaryDirectory() as directory:
+            _plan, session_path, queue_id = create_missing_voice_reuse_binding_review(
+                Path(directory), statuses=("generated", "generated")
+            )
+            bundle, _session = load_missing_voice_reuse_review(session_path)
+            cohort_id = bundle["cohorts"][0]["cohort_id"]
+            for candidate in bundle["candidates"]:
+                record_missing_voice_reuse_heard(
+                    session_path, cohort_id, queue_id, candidate["label"]
+                )
+            first_label = bundle["candidates"][0]["label"]
+            heard = load_missing_voice_reuse_review(session_path)[1]["heard"]
+            outcomes = self._race_review_writers(
+                session_path,
+                lambda: record_missing_voice_reuse_decision(
+                    session_path, cohort_id, first_label
+                ),
+                lambda: record_missing_voice_reuse_decision(
+                    session_path, cohort_id, "neither"
+                ),
+            )
+            self.assertNotIsInstance(outcomes["first"], Exception)
+            self.assertIsInstance(outcomes["second"], MissingVoiceReuseReviewError)
+            self.assertIn("already has a decision", str(outcomes["second"]))
+            _bundle, session = load_missing_voice_reuse_review(session_path)
+            self.assertEqual(session["decisions"][0]["decision"], first_label)
+            self.assertEqual(session["heard"], heard)
+
+    def test_busy_guard_uses_review_error_for_both_writers(self):
+        with TemporaryDirectory() as directory:
+            _plan, session_path, queue_id = create_missing_voice_reuse_binding_review(
+                Path(directory)
+            )
+            bundle, _session = load_missing_voice_reuse_review(session_path)
+            cohort_id = bundle["cohorts"][0]["cohort_id"]
+            label = bundle["cohorts"][0]["complete_candidate_labels"][0]
+            before = session_path.read_bytes()
+            for writer, arguments in (
+                (
+                    record_missing_voice_reuse_heard,
+                    (session_path, cohort_id, queue_id, label),
+                ),
+                (record_missing_voice_reuse_decision, (session_path, cohort_id, label)),
+            ):
+                with (
+                    self.subTest(writer=writer.__name__),
+                    patch.object(
+                        review_module,
+                        "exclusive_advisory_lock",
+                        side_effect=AdvisoryLockBusyError("guard busy"),
+                    ),
+                    self.assertRaisesRegex(
+                        MissingVoiceReuseReviewError, "guard busy"
+                    ) as raised,
+                ):
+                    writer(*arguments)
+                self.assertIsInstance(raised.exception.__cause__, AdvisoryLockBusyError)
+                self.assertEqual(session_path.read_bytes(), before)
 
     def test_non_finite_bundle_identity_uses_review_error(self):
         with TemporaryDirectory() as directory:

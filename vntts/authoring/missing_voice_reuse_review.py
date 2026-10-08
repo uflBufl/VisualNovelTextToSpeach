@@ -15,6 +15,10 @@ from typing import NotRequired, TypeAlias, TypedDict
 
 from durable_file import atomic_write_json, sha256_file
 
+from vntts.authoring.advisory_lock import (
+    AdvisoryLockBusyError,
+    exclusive_advisory_lock,
+)
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.missing_voice_reuse import (
     MISSING_VOICE_REUSE_PLAN_SCHEMA,
@@ -25,7 +29,7 @@ from vntts.authoring.missing_voice_reuse import (
     load_missing_voice_reuse_plan,
 )
 from vntts.authoring.private_files import private_file_is_restricted
-from vntts.authoring.publication import staged_directory
+from vntts.authoring.publication import publication_errors, staged_directory
 from vntts.authoring.source_reference_bindings import (
     MISSING_VOICE_REUSE_BINDING_FIELD,
 )
@@ -793,57 +797,89 @@ def record_missing_voice_reuse_heard(
     session_path: str | Path, cohort_id: str, queue_id: str, label: str
 ) -> ReviewSession:
     """Record that one exact generated opaque arm has started playback."""
-    bundle, session = load_missing_voice_reuse_review(session_path)
-    cohort = _cohort(bundle, cohort_id)
-    if queue_id not in {sample["queue_id"] for sample in cohort["samples"]}:
-        raise MissingVoiceReuseReviewError("Review sample is outside the cohort")
-    sample = _public_sample(bundle, label, queue_id)
-    if sample["status"] != "generated":
-        raise MissingVoiceReuseReviewError("A failed review arm cannot be heard")
-    record: HeardRecord = {"cohort_id": cohort_id, "queue_id": queue_id, "label": label}
-    if record not in session["heard"]:
-        session["heard"].append(record)
-        session["heard"].sort(
-            key=lambda value: (
-                value["cohort_id"],
-                value["queue_id"],
-                value["label"],
-            )
-        )
-        session["updated_at"] = _utc_now()
-        atomic_write_json(Path(session_path).resolve(), session, sort_keys=True)
-    return session
+    session_path = Path(session_path).expanduser().resolve()
+    try:
+        with (
+            publication_errors(MissingVoiceReuseReviewError),
+            exclusive_advisory_lock(
+                session_path.with_name(f".{session_path.name}.guard"), blocking=True
+            ),
+        ):
+            bundle, session = load_missing_voice_reuse_review(session_path)
+            cohort = _cohort(bundle, cohort_id)
+            if queue_id not in {sample["queue_id"] for sample in cohort["samples"]}:
+                raise MissingVoiceReuseReviewError(
+                    "Review sample is outside the cohort"
+                )
+            sample = _public_sample(bundle, label, queue_id)
+            if sample["status"] != "generated":
+                raise MissingVoiceReuseReviewError(
+                    "A failed review arm cannot be heard"
+                )
+            record: HeardRecord = {
+                "cohort_id": cohort_id,
+                "queue_id": queue_id,
+                "label": label,
+            }
+            if record not in session["heard"]:
+                session["heard"].append(record)
+                session["heard"].sort(
+                    key=lambda value: (
+                        value["cohort_id"],
+                        value["queue_id"],
+                        value["label"],
+                    )
+                )
+                session["updated_at"] = _utc_now()
+                atomic_write_json(session_path, session, sort_keys=True)
+            return session
+    except AdvisoryLockBusyError as error:
+        raise MissingVoiceReuseReviewError(str(error)) from error
 
 
 def record_missing_voice_reuse_decision(
     session_path: str | Path, cohort_id: str, decision: str
 ) -> ReviewSession:
     """Record one candidate or neither after every available arm was heard."""
-    bundle, session = load_missing_voice_reuse_review(session_path)
-    cohort = _cohort(bundle, cohort_id)
-    if decision not in cohort["decision_options"]:
-        raise MissingVoiceReuseReviewError("Review decision is not available")
-    record = next(
-        value for value in session["decisions"] if value["cohort_id"] == cohort_id
-    )
-    if record["decision"] is not None:
-        raise MissingVoiceReuseReviewError("Review cohort already has a decision")
-    required_heard = _available_heard_keys(bundle, cohort)
-    observed = {
-        (value["queue_id"], value["label"])
-        for value in session["heard"]
-        if value["cohort_id"] == cohort_id
-    }
-    if observed != required_heard:
-        raise MissingVoiceReuseReviewError(
-            "Every available cohort sample must be heard before deciding"
-        )
-    record["decision"] = decision
-    record["decided_at"] = _utc_now()
-    session["updated_at"] = _utc_now()
-    atomic_write_json(Path(session_path).resolve(), session, sort_keys=True)
-    load_missing_voice_reuse_review(session_path)
-    return session
+    session_path = Path(session_path).expanduser().resolve()
+    try:
+        with (
+            publication_errors(MissingVoiceReuseReviewError),
+            exclusive_advisory_lock(
+                session_path.with_name(f".{session_path.name}.guard"), blocking=True
+            ),
+        ):
+            bundle, session = load_missing_voice_reuse_review(session_path)
+            cohort = _cohort(bundle, cohort_id)
+            if decision not in cohort["decision_options"]:
+                raise MissingVoiceReuseReviewError("Review decision is not available")
+            record = next(
+                value
+                for value in session["decisions"]
+                if value["cohort_id"] == cohort_id
+            )
+            if record["decision"] is not None:
+                raise MissingVoiceReuseReviewError(
+                    "Review cohort already has a decision"
+                )
+            required_heard = _available_heard_keys(bundle, cohort)
+            observed = {
+                (value["queue_id"], value["label"])
+                for value in session["heard"]
+                if value["cohort_id"] == cohort_id
+            }
+            if observed != required_heard:
+                raise MissingVoiceReuseReviewError(
+                    "Every available cohort sample must be heard before deciding"
+                )
+            record["decision"] = decision
+            record["decided_at"] = _utc_now()
+            session["updated_at"] = _utc_now()
+            atomic_write_json(session_path, session, sort_keys=True)
+            load_missing_voice_reuse_review(session_path)
+            return session
+    except AdvisoryLockBusyError as error:
+        raise MissingVoiceReuseReviewError(str(error)) from error
 
 
 def missing_voice_reuse_review_progress(
