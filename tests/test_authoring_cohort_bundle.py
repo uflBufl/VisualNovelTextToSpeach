@@ -23,6 +23,11 @@ from vntts.authoring.cohort_bundle import (
     refresh_cohort_review_bundle,
     write_cohort_review_bundle,
 )
+from vntts.authoring.cohort_review import (
+    build_cohort_review_decision,
+    write_cohort_review_decision,
+    write_cohort_review_plan,
+)
 
 
 class AuthoringCohortBundleTest(unittest.TestCase):
@@ -660,6 +665,43 @@ class AuthoringCohortBundleTest(unittest.TestCase):
         self.assertEqual(assessments[0].queue_id, queue_id)
         self.assertEqual(assessments[0].assessment, "bad")
         self.assertEqual(assessments[0].defect_reasons, ("unspecified",))
+
+    def test_resume_rejects_checksum_valid_expansion_from_foreign_workspace(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, state_path, queue_id = self.create_sources(root)[0]
+            bundle = build_cohort_review_bundle([workspace])
+            publication = root / "bundle.json"
+            write_cohort_review_bundle(bundle, publication)
+            foreign_plan = json.loads(json.dumps(bundle.document["sources"][0]["plan"]))
+            foreign_plan["workspace_id"] = "different-workspace-id"
+            foreign_plan["plan_id"] = cohort_bundle_module._canonical_sha256(
+                {key: value for key, value in foreign_plan.items() if key != "plan_id"}
+            )
+            decision = build_cohort_review_decision(
+                foreign_plan,
+                foreign_plan["cohorts"][0]["cohort_id"],
+                "expand",
+                reviewed_queue_ids=[queue_id],
+                sample_assessments={queue_id: "bad"},
+                next_clean_samples_per_bucket=2,
+            )
+            evidence = workspace / "cohort-reviews"
+            write_cohort_review_plan(
+                foreign_plan, evidence / f"plan-{foreign_plan['plan_id']}.json"
+            )
+            write_cohort_review_decision(
+                decision, evidence / f"decision-{decision.decision_id}.json"
+            )
+            before = state_path.read_bytes()
+
+            with self.assertRaisesRegex(CohortReviewError, "different workspace"):
+                load_resumable_cohort_review_session(publication, persist=False)
+
+            self.assertEqual(state_path.read_bytes(), before)
+            self.assertFalse(
+                cohort_bundle_module.cohort_review_progress_path(publication).exists()
+            )
 
     def test_resume_restores_legacy_expansion_without_optional_assessments(self):
         for version, null_statuses in ((1, False), (1, True), (2, False), (2, True)):

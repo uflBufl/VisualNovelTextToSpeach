@@ -28,6 +28,7 @@ from vntts.authoring.cohort_review import (
     _validate_bound_workspace_fingerprint,
     _validate_bound_workspace_identity,
     _validate_decision_against_plan,
+    _validate_plan_source_workspace,
     _write_document_no_replace,
     build_cohort_review_decision,
     build_cohort_review_plan,
@@ -1138,6 +1139,7 @@ def _source_cohort_decisions(workspace: Path) -> tuple[_DecisionDocument, ...]:
         if plan_path.is_symlink() or not plan_path.is_file():
             raise CohortReviewError("Cohort review decision plan is unavailable")
         plan = _validated_plan_document(_load_document(plan_path, "cohort review plan"))
+        _validate_plan_source_workspace(plan, workspace.name)
         _validate_decision_against_plan(plan, decision)
         decisions.append(decision)
     return tuple(decisions)

@@ -101,13 +101,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/legacy_reason_review.py",
-      "scope": "publish_reason_review_decisions",
-      "count": 1,
-      "maximum": 11
-    },
-    {
-      "code": "C901",
       "path": "vntts/authoring/listening_cli.py",
       "scope": "main",
       "count": 1,

@@ -14,6 +14,8 @@ from vntts.authoring.cohort_review import (
     COHORT_REVIEW_DEFECT_REASONS,
     CohortReviewError,
     JsonObject,
+    _validate_decision_against_plan,
+    _validate_plan_source_workspace,
     build_cohort_review_decision,
     load_cohort_review_decision,
     load_cohort_review_plan,
@@ -204,26 +206,18 @@ def publish_reason_review_decisions(
 ) -> tuple[Path, ...]:
     """Write additive v4 reassessments; never rewrite or reapply old review state."""
     selections = _validated_selections(review, selections, complete=True)
-    reasons_by_key = dict(review.known_reasons)
-    labels_by_key = {}
-    for item in review.items:
-        key = (item.workspace_id, item.queue_id, item.audio_sha256)
-        reasons_by_key[key] = selections[item.item_id]
-        labels_by_key[key] = "bad" if selections[item.item_id] else "acceptable"
-    source_paths = _source_decision_paths(review)
-    selected_decision_ids = {
-        decision_id
+    selections_by_key = {
+        (item.workspace_id, item.queue_id, item.audio_sha256): selections[item.item_id]
         for item in review.items
-        for decision_id in item.decision_ids
-        if decision_id in source_paths
     }
-    if not selected_decision_ids:
+    source_paths = _source_decision_paths(review)
+    if not source_paths:
         raise LegacyReasonReviewError(
             "No original cohort decisions were found below the selected root"
         )
     published: list[Path] = []
     covered: set[tuple[str, str, str]] = set()
-    for decision_id in sorted(selected_decision_ids):
+    for decision_id in sorted(source_paths):
         path = source_paths[decision_id]
         decision = load_cohort_review_decision(path).document
         workspace_id = _decision_workspace_id(path)
@@ -252,12 +246,12 @@ def publish_reason_review_decisions(
                         evidence.get("audio_sha256"), "Reviewed audio SHA-256"
                     ),
                 )
-                if key not in labels_by_key:
+                if key not in selections_by_key:
                     raise LegacyReasonReviewError(
                         f"No current assessment was supplied for {queue_id!r}"
                     )
-                assessment = labels_by_key[key]
-                reasons = reasons_by_key[key]
+                reasons = selections_by_key[key]
+                assessment = "bad" if reasons else "acceptable"
                 covered.add(key)
             assessments[queue_id] = {
                 "assessment": assessment,
@@ -266,8 +260,11 @@ def publish_reason_review_decisions(
         plan_id = _required_text(decision.get("plan_id"), "Plan ID")
         plan_path = path.parent / f"plan-{plan_id}.json"
         try:
+            plan = load_cohort_review_plan(plan_path)
+            _validate_plan_source_workspace(plan.document, workspace_id)
+            _validate_decision_against_plan(plan.document, decision)
             supplement = build_cohort_review_decision(
-                load_cohort_review_plan(plan_path),
+                plan,
                 _required_text(decision.get("cohort_id"), "Cohort ID"),
                 _required_text(decision.get("decision"), "Decision"),
                 reviewed_queue_ids=[

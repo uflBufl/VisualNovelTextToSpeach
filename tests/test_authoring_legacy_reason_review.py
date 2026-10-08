@@ -4,6 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from tests.authoring_fixtures import _legacy_bad_fixture
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.legacy_reason_review import (
     LegacyReasonReviewError,
     build_legacy_reason_review,
@@ -65,6 +66,41 @@ class LegacyReasonReviewTest(unittest.TestCase):
         self.assertEqual(sample["human_label"], "acceptable")
         self.assertEqual(sample["human_defect_reasons"], [])
         self.assertEqual(len(sample["decision_ids"]), 2)
+
+    def test_supplement_rejects_foreign_or_mismatched_plan_before_publication(self):
+        for foreign in (False, True):
+            with self.subTest(foreign=foreign), TemporaryDirectory() as directory:
+                root = Path(directory)
+                _workspace, _queue_id, decision_path, corpus = _legacy_bad_fixture(root)
+                review = build_legacy_reason_review(corpus, root)
+                decision = json.loads(decision_path.read_text(encoding="utf-8"))
+                plan_path = decision_path.parent / f"plan-{decision['plan_id']}.json"
+                plan = json.loads(plan_path.read_text(encoding="utf-8"))
+                if foreign:
+                    plan["workspace_id"] = "foreign-workspace"
+                else:
+                    plan["policy"]["clean_samples_per_bucket"] = 2
+                plan["plan_id"] = canonical_document_sha256(
+                    {key: value for key, value in plan.items() if key != "plan_id"}
+                )
+                plan_path.write_text(json.dumps(plan), encoding="utf-8")
+                before = {
+                    path.name: path.read_bytes()
+                    for path in decision_path.parent.iterdir()
+                }
+                with self.assertRaisesRegex(
+                    LegacyReasonReviewError, "different workspace|different plan"
+                ):
+                    publish_reason_review_decisions(
+                        review, {review.items[0].item_id: ("pause_or_pacing",)}
+                    )
+                self.assertEqual(
+                    {
+                        path.name: path.read_bytes()
+                        for path in decision_path.parent.iterdir()
+                    },
+                    before,
+                )
 
     def test_progress_is_bound_to_exact_audio(self):
         with TemporaryDirectory() as directory:

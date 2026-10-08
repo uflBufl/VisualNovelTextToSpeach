@@ -946,6 +946,13 @@ def execute_cohort_review_decision(
     return apply_cohort_review_decision(workspace, plan_document, decision_document)
 
 
+def _validate_plan_source_workspace(
+    plan_document: Mapping[str, object], workspace_id: str
+) -> None:
+    if plan_document["workspace_id"] != workspace_id:
+        raise CohortReviewError("Cohort review plan belongs to a different workspace")
+
+
 def _validate_decision_against_plan(
     plan_document: Mapping[str, object], decision_document: Mapping[str, object]
 ) -> JsonObject:
