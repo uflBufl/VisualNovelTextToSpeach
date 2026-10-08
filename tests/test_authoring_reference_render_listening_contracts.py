@@ -62,6 +62,33 @@ class ReferenceRenderListeningContractTest(unittest.TestCase):
             backend_factory=_PreviewBackendFactory(),
         )
 
+    def test_publication_race_preserves_destination_and_cleans_staging(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "comparison"
+            rename = reference_render_comparison.rename_directory_no_replace
+
+            def create_competitor_then_rename(staging, destination):
+                destination.mkdir()
+                (destination / "sentinel").write_bytes(b"competitor")
+                return rename(staging, destination)
+
+            with (
+                patch.object(
+                    reference_render_comparison,
+                    "rename_directory_no_replace",
+                    create_competitor_then_rename,
+                ),
+                self.assertRaisesRegex(
+                    ReferenceRenderComparisonError, "destination already exists"
+                ),
+            ):
+                self._comparison(root)
+
+            self.assertEqual((output / "sentinel").read_bytes(), b"competitor")
+            self.assertEqual(list(output.iterdir()), [output / "sentinel"])
+            self.assertEqual(list(root.glob(".comparison.staging-*")), [])
+
     def test_public_session_preserves_source_identity_and_empty_output(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

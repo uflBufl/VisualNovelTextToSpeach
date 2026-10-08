@@ -43,6 +43,7 @@ from vntts.authoring.listening import (
 )
 from vntts.authoring.publication import (
     no_replace_destination,
+    publication_errors,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -397,9 +398,12 @@ def publish_reference_render_comparison(
         service_options["backend_factory"] = backend_factory
     service = FailureReferencePreviewService(plan.audit_directory, **service_options)
     try:
-        with staged_directory(
-            output.parent, prefix=f".{output.name}.staging-"
-        ) as staging:
+        with (
+            publication_errors(ReferenceRenderComparisonError),
+            staged_directory(
+                output.parent, prefix=f".{output.name}.staging-"
+            ) as staging,
+        ):
             reports, arm_documents, controls, shared = _render_comparison_arms(
                 plan, staging, service, audit
             )
