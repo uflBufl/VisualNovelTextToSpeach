@@ -955,7 +955,7 @@ def _identity(
         payload["base_pack_identity"] = base_pack_identity
     if live_sequence_sha256 is not None:
         payload["live_sequence_sha256"] = live_sequence_sha256
-    return str(canonical_document_sha256(payload))
+    return canonical_document_sha256(payload)
 
 
 def _optional_sequence_snapshot(path: Path | None) -> tuple[str | None, bytes | None]:
