@@ -15,7 +15,8 @@ from unittest.mock import patch
 
 from scripts import moss_native_compare as compare
 from scripts import moss_native_pause_probe as probe
-from tests.test_moss_native_pause_probe import _FakeBackend, clean_wav_bytes
+from tests.pregeneration_fixtures import clean_wav_bytes
+from tests.test_moss_native_pause_probe import _FakeBackend
 from vntts.services.tts_engine import TTSConfigurationError
 from vntts.settings import AppSettings
 from vntts.synthesis import SynthesisCachePolicy, SynthesisCompletion

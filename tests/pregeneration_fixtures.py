@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterable
+import io
+import wave
+from collections.abc import Callable, Iterable
+from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
+from numpy.typing import NDArray
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import write_story_index_document
 from vntts_artifacts.voice_manifest import write_voice_manifest
 
 from tests.bulk_generation_fixtures import SyntheticRenderer, write_queue
+from tests.story_fixtures import write_content
+from tests.voice_manifest_fixtures import write_manifest
 from vntts.authoring.audio_events import audio_event_plan_for_record
 from vntts.authoring.bulk_generation import (
     authorize_live_fallback,
@@ -20,8 +27,23 @@ from vntts.authoring.bulk_generation import (
 )
 from vntts.pregeneration_generation import OfflineGenerationResult
 from vntts.pregeneration_queue import PregenerationInput
-from vntts.pregeneration_setup import PregenerationJob, PreparationEstimate
-from vntts.synthesis import SynthesisCompletion
+from vntts.pregeneration_setup import (
+    PregenerationJob,
+    PregenerationJobStore,
+    PreparationEstimate,
+    inspect_story_index,
+)
+from vntts.pregeneration_voices import VoiceGroup, VoicePlan, VoicePlanStore
+from vntts.settings import AppSettings
+from vntts.synthesis import (
+    SynthesisCompletion,
+    SynthesisDiagnostics,
+    SynthesisLimits,
+    SynthesisRequest,
+    SynthesisResult,
+    SynthesisTiming,
+)
+from vntts.voices import CharacterVoiceRegistry
 
 
 def item(name: str, sequence: int) -> dict[str, object]:
@@ -192,3 +214,100 @@ def fixture(
         estimate=PreparationEstimate(2, 0, 2, 1, 1, 1000),
     )
     return job, generation_input, result, items
+
+
+class CollectedResult:
+    def __init__(self, result: SynthesisResult) -> None:
+        self.result = result
+
+    def collect(self) -> SynthesisResult:
+        return self.result
+
+
+class FakeBackend:
+    def __init__(
+        self,
+        name: str,
+        *,
+        completion: SynthesisCompletion = SynthesisCompletion.COMPLETE,
+        on_render: Callable[[], object] | None = None,
+        pcm: NDArray[np.float32] | None = None,
+        result_sample_rate: int = 16_000,
+    ) -> None:
+        self.name = name
+        self.completion = completion
+        self.on_render = on_render
+        self.pcm = pcm
+        self.result_sample_rate = result_sample_rate
+        self.registry: CharacterVoiceRegistry | None = None
+        self.requests: list[SynthesisRequest] = []
+        self.shutdown_count = 0
+
+    def render(self, request: SynthesisRequest) -> CollectedResult:
+        self.requests.append(request)
+        if self.on_render is not None:
+            self.on_render()
+        return CollectedResult(
+            SynthesisResult(
+                pcm=(
+                    np.full(1_600, 0.1, dtype=np.float32)
+                    if self.pcm is None
+                    else self.pcm
+                ),
+                sample_rate=self.result_sample_rate,
+                completion=self.completion,
+                limits=SynthesisLimits(None, None),
+                timing=SynthesisTiming(10.0, 100.0),
+                diagnostics=SynthesisDiagnostics(
+                    backend=self.name,
+                    cache_source="generated",
+                    generation_profile=request.generation_profile,
+                    seed=request.seed,
+                    chunk_count=1,
+                    sample_count=1_600,
+                ),
+            )
+        )
+
+    def shutdown(self) -> None:
+        self.shutdown_count += 1
+
+
+def clean_wav_bytes(
+    *, amplitude: float = 0.1, seconds: float = 1.2, sample_rate: int = 16_000
+) -> bytes:
+    samples = np.full(round(seconds * sample_rate), amplitude, dtype=np.float32)
+    samples[1::2] *= -1
+    pcm = np.round(samples * 32767).astype("<i2")
+    output = io.BytesIO()
+    with wave.open(output, "wb") as target:
+        target.setnchannels(1)
+        target.setsampwidth(2)
+        target.setframerate(sample_rate)
+        target.writeframes(pcm.tobytes())
+    return output.getvalue()
+
+
+def ambiguous_fixture(root: Path) -> tuple[VoicePlan, VoiceGroup, Path]:
+    content = inspect_story_index(write_content(root / "content"))
+    jobs = PregenerationJobStore(root / "jobs")
+    job = jobs.create_or_resume(content, ("story",))
+    manifest = write_manifest(root / "voices", rhiannon=clean_wav_bytes())
+    plan = VoicePlanStore(jobs).create(
+        job,
+        AppSettings(speech_backend="moss-tts", tts_profile="stable"),
+        manifest_path=manifest,
+    )
+    selected = next(group for group in plan.groups if group.character == "Rhiannon")
+    ambiguous = replace(
+        selected,
+        route="needs-audition",
+        resolution="ambiguous-voice-evidence",
+    )
+    plan = replace(
+        plan,
+        groups=tuple(
+            ambiguous if group is selected else group for group in plan.groups
+        ),
+    )
+    return plan, ambiguous, manifest

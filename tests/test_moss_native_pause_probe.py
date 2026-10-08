@@ -13,7 +13,7 @@ from unittest.mock import patch
 import numpy as np
 
 from scripts import moss_native_pause_probe as probe
-from tests.test_pregeneration_audition import clean_wav_bytes
+from tests.pregeneration_fixtures import clean_wav_bytes
 from vntts.settings import AppSettings
 from vntts.synthesis import (
     SynthesisCompletion,

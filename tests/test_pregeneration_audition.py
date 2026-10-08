@@ -2,7 +2,6 @@ import io
 import json
 import os
 import unittest
-import wave
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
@@ -13,6 +12,7 @@ from unittest.mock import ANY, Mock, call, patch
 import numpy as np
 import soundfile as sf
 
+from tests.pregeneration_fixtures import FakeBackend, ambiguous_fixture, clean_wav_bytes
 from tests.story_fixtures import write_content
 from tests.voice_manifest_fixtures import write_manifest
 from vntts.pregeneration_audition import (
@@ -28,106 +28,7 @@ from vntts.settings import AppSettings
 from vntts.synthesis import (
     SynthesisCachePolicy,
     SynthesisCompletion,
-    SynthesisDiagnostics,
-    SynthesisLimits,
-    SynthesisResult,
-    SynthesisTiming,
 )
-
-
-class CollectedResult:
-    def __init__(self, result):
-        self.result = result
-
-    def collect(self):
-        return self.result
-
-
-class FakeBackend:
-    def __init__(
-        self,
-        name,
-        *,
-        completion=SynthesisCompletion.COMPLETE,
-        on_render=None,
-        pcm=None,
-        result_sample_rate=16_000,
-    ):
-        self.name = name
-        self.completion = completion
-        self.on_render = on_render
-        self.pcm = pcm
-        self.result_sample_rate = result_sample_rate
-        self.registry = None
-        self.requests = []
-        self.shutdown_count = 0
-
-    def render(self, request):
-        self.requests.append(request)
-        if self.on_render is not None:
-            self.on_render()
-        return CollectedResult(
-            SynthesisResult(
-                pcm=(
-                    np.full(1_600, 0.1, dtype=np.float32)
-                    if self.pcm is None
-                    else self.pcm
-                ),
-                sample_rate=self.result_sample_rate,
-                completion=self.completion,
-                limits=SynthesisLimits(None, None),
-                timing=SynthesisTiming(10.0, 100.0),
-                diagnostics=SynthesisDiagnostics(
-                    backend=self.name,
-                    cache_source="generated",
-                    generation_profile=request.generation_profile,
-                    seed=request.seed,
-                    chunk_count=1,
-                    sample_count=1_600,
-                ),
-            )
-        )
-
-    def shutdown(self):
-        self.shutdown_count += 1
-
-
-def clean_wav_bytes(*, amplitude=0.1, seconds=1.2, sample_rate=16_000):
-    samples = np.full(round(seconds * sample_rate), amplitude, dtype=np.float32)
-    samples[1::2] *= -1
-    pcm = np.round(samples * 32767).astype("<i2")
-    output = io.BytesIO()
-    with wave.open(output, "wb") as target:
-        target.setnchannels(1)
-        target.setsampwidth(2)
-        target.setframerate(sample_rate)
-        target.writeframes(pcm.tobytes())
-    return output.getvalue()
-
-
-def ambiguous_fixture(root):
-    content = inspect_story_index(write_content(root / "content"))
-    jobs = PregenerationJobStore(root / "jobs")
-    job = jobs.create_or_resume(content, ("story",))
-    manifest = write_manifest(root / "voices", rhiannon=clean_wav_bytes())
-    plan = VoicePlanStore(jobs).create(
-        job,
-        AppSettings(speech_backend="moss-tts", tts_profile="stable"),
-        manifest_path=manifest,
-    )
-    selected = next(group for group in plan.groups if group.character == "Rhiannon")
-    ambiguous = replace(
-        selected,
-        route="needs-audition",
-        resolution="ambiguous-voice-evidence",
-    )
-    plan = replace(
-        plan,
-        groups=tuple(
-            ambiguous if group is selected else group for group in plan.groups
-        ),
-    )
-    return plan, ambiguous, manifest
 
 
 class VoiceAuditionPreviewServiceTest(unittest.TestCase):
@@ -704,11 +605,10 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             plan, group, _manifest = ambiguous_fixture(root)
-            backend = FakeBackend(
-                "moss-tts",
-                pcm=np.concatenate(
-                    (np.full(1_600, 0.1, dtype=np.float32), np.zeros(19_200))
-                ),
+            backend = FakeBackend("moss-tts")
+            # Deliberately return float64 PCM from a normally float32 provider.
+            backend.pcm = np.concatenate(
+                (np.full(1_600, 0.1, dtype=np.float32), np.zeros(19_200))
             )
             service = VoiceAuditionPreviewService(
                 root / "auditions", backend_factory=lambda *_args, **_kwargs: backend
@@ -935,7 +835,10 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
             with self.subTest(rate=rate), TemporaryDirectory() as directory:
                 root = Path(directory)
                 plan, group, _manifest = ambiguous_fixture(root)
-                backend = FakeBackend("moss-tts", result_sample_rate=rate)
+                backend = FakeBackend("moss-tts")
+                backend.result_sample_rate = (
+                    rate  # Deliberately violate the provider contract.
+                )
                 service = VoiceAuditionPreviewService(
                     root / "auditions",
                     backend_factory=lambda *_args, **_kwargs: backend,

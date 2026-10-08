@@ -803,7 +803,7 @@ class MossCppBackendTest(unittest.TestCase):
 
     def test_pause_probe_uses_real_adapter_and_preserves_native_responses(self):
         from scripts import moss_native_pause_probe as probe
-        from tests.test_pregeneration_audition import clean_wav_bytes
+        from tests.pregeneration_fixtures import clean_wav_bytes
 
         self.reference.write_bytes(clean_wav_bytes())
         output = self.root / "pause-probe"
@@ -1157,7 +1157,7 @@ class MossCppBackendTest(unittest.TestCase):
         self.assertNotIn("private", str(self.native_log.report()))
 
     def test_preview_retry_export_correlates_native_attempts_and_quality(self):
-        from tests.test_pregeneration_audition import ambiguous_fixture
+        from tests.pregeneration_fixtures import ambiguous_fixture
         from vntts.pregeneration_audition import (
             VoiceAuditionIncomplete,
             VoiceAuditionPreviewService,
