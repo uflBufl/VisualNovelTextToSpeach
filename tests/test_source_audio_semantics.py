@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from tests.test_game_pack import write_synthetic_game_pack
+from tests.story_fixtures import write_synthetic_game_pack
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
     canonical_document_sha256,

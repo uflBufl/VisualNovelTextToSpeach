@@ -4,9 +4,21 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 from vntts_artifacts.atomic_io import atomic_write_json
+from vntts_artifacts.audio import PCM16_MONO_WAV_FORMAT, write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
-from vntts_artifacts.story_index import write_story_index_document
+from vntts_artifacts.game_pack import write_game_pack
+from vntts_artifacts.generated_audio import write_generated_audio_manifest
+from vntts_artifacts.hashing import text_sha256
+from vntts_artifacts.live_sequence import write_live_sequence_plan
+from vntts_artifacts.story_index import (
+    write_story_index as write_producer_story_index,
+)
+from vntts_artifacts.story_index import (
+    write_story_index_document,
+)
+from vntts_artifacts.voice_manifest import write_voice_manifest
 
 from vntts.document_identity import canonical_document_sha256
 from vntts.source_audio_semantics import SEMANTIC_EVIDENCE_METHOD, semantic_text_sha256
@@ -385,3 +397,168 @@ def write_content(root: Path) -> Path:
         ],
     )
     return path
+
+
+def write_synthetic_game_pack(
+    root: Path,
+    *,
+    include_generated: bool = True,
+    include_sequence: bool = False,
+    include_semantics: bool = False,
+) -> tuple[Path, str, str, str, Path | None]:
+    line_id = "synthetic:chapter-1:line-7"
+    text = "Keep this exact line intact."
+    text_hash = text_sha256(text)
+    semantic_evidence = None
+    semantic_metadata: dict[str, object] | None = None
+    published_evidence: PublishedSemanticEvidence | None = None
+    if include_semantics:
+        media_sha256 = "1" * 64
+        semantic_evidence = root / "source-audio-semantic-evidence.json"
+        published_evidence = write_source_audio_semantic_evidence(
+            semantic_evidence,
+            line_id=line_id,
+            text=text,
+            media_id=11,
+            media_sha256=media_sha256,
+            model_sha256="2" * 64,
+            source_story_index_sha256="3" * 64,
+            generated_at="2026-08-30T00:00:00Z",
+        )
+        semantic_metadata = {
+            "evidence_id": published_evidence.evidence_id,
+            "evidence_sha256": published_evidence.sha256,
+            "method": SEMANTIC_EVIDENCE_METHOD,
+            "selected_chapters": ["chapter-1"],
+            "applied_count": 1,
+        }
+
+    story = root / "story-index.jsonl"
+    story_record: dict[str, object] = {
+        "record_type": "line",
+        "line_id": line_id,
+        "chapter": "chapter-1",
+        "sequence": 7,
+        "speaker": "Ada",
+        "text": text,
+        "kind": "dialogue",
+        "source_audio_status": "absent",
+    }
+    if published_evidence is not None:
+        story_record.update(
+            text_sha256=text_hash,
+            source_audio_duration_media_sha256=media_sha256,
+            source_audio_completeness="full",
+            source_audio_completeness_reason="exact-normalized-asr-transcript",
+            source_audio_semantic_evidence_id=published_evidence.evidence_id,
+            source_audio_semantic_evidence_entry_id=published_evidence.entry_id,
+        )
+    write_producer_story_index(
+        story,
+        {
+            "game": "Synthetic Game",
+            "language": "en",
+            **(
+                {"source_audio_semantics": semantic_metadata}
+                if semantic_metadata is not None
+                else {}
+            ),
+        },
+        [story_record],
+    )
+
+    voice_wav = root / "voices" / "ada.wav"
+    write_pcm16_wav(voice_wav, np.zeros(240, dtype=np.float32), 24_000)
+    voices = root / "voice-manifest.json"
+    write_voice_manifest(
+        voices,
+        {
+            "version": 2,
+            "voices": [
+                {
+                    "character": "Ada",
+                    "speaker": "ada-v1",
+                    "references": ["voices/ada.wav"],
+                }
+            ],
+        },
+    )
+
+    generated = None
+    generated_wav = None
+    if include_generated:
+        generated_wav = root / "generated" / "line-7.wav"
+        write_pcm16_wav(
+            generated_wav,
+            np.linspace(-0.1, 0.1, 240, dtype=np.float32),
+            24_000,
+        )
+        generated = root / "generated-audio.json"
+        write_generated_audio_manifest(
+            generated,
+            {"game": "Synthetic Game", "language": "en"},
+            [
+                {
+                    "line_id": line_id,
+                    "text_sha256": text_hash,
+                    "audio": "generated/line-7.wav",
+                    "audio_format": PCM16_MONO_WAV_FORMAT,
+                    "audio_sha256": sha256_file(generated_wav),
+                    "sample_rate": 24_000,
+                    "sample_count": 240,
+                }
+            ],
+        )
+
+    pack_path = root / "game-pack.json"
+    components = {"story_index": story, "voice_manifest": voices}
+    if generated is not None:
+        components["generated_audio"] = generated
+    if include_sequence:
+        sequence = root / "live-sequence.json"
+        write_live_sequence_plan(
+            sequence,
+            {
+                "game_id": "synthetic-game",
+                "producer": {"name": "synthetic-extractor", "version": "0.7.0"},
+                "source_extract_sha256": "1" * 64,
+                "chapters": [
+                    {
+                        "chapter": "chapter-1",
+                        "entry_event_ids": ["event-7"],
+                        "events": [
+                            {
+                                "event_id": "event-7",
+                                "sequence": 7,
+                                "kind": "speech",
+                                "line_id": line_id,
+                                "control": "terminal",
+                                "successors": [],
+                            }
+                        ],
+                    }
+                ],
+            },
+            story,
+        )
+        components["live_sequence_plan"] = sequence
+    pack_metadata: dict[str, object] = {
+        "game": {"id": "synthetic-game", "version": "1.0"},
+        "producers": [{"name": "synthetic-extractor", "version": "0.6.0"}],
+        "created_at": "2026-08-16T12:05:00Z",
+    }
+    if semantic_evidence is not None and published_evidence is not None:
+        pack_metadata["vntts.authoring"] = {
+            "source_audio_semantic_evidence": {
+                "path": semantic_evidence.name,
+                "sha256": sha256_file(semantic_evidence),
+                "evidence_id": published_evidence.evidence_id,
+                "entry_count": 1,
+            }
+        }
+    write_game_pack(
+        pack_path,
+        pack_metadata,
+        components,
+    )
+    return pack_path, line_id, text, text_hash, generated_wav
