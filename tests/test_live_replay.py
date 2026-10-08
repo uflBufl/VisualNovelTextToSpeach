@@ -16,8 +16,8 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import text_sha256, write_generated_audio_manifest
 from vntts_artifacts.live_sequence import write_live_sequence_plan
 
+from tests.story_fixtures import write_verified_source_story
 from tests.symlink_support import symlink_or_skip
-from tests.test_chapter_voice_preload import write_verified_source_story
 from vntts.dialog_capture import CapturedDialogFrame
 from vntts.live import LiveDialogReader
 from vntts.live_replay import (

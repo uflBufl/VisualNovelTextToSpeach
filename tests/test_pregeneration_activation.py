@@ -13,7 +13,7 @@ from vntts_artifacts.story_index import (
 
 from tests.audio_output_fixtures import FakeAudioOutput
 from tests.pregeneration_fixtures import fixture
-from tests.test_chapter_voice_preload import write_verified_source_story
+from tests.story_fixtures import write_verified_source_story
 from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.generated_audio import (
     GeneratedAudioFallbackBackend,

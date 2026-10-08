@@ -13,10 +13,12 @@ from vntts_artifacts import load_story_index_document, write_story_index_documen
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 
+from tests.story_fixtures import (
+    write_content,
+    write_source_audio_semantic_evidence,
+    write_story_index,
+)
 from tests.symlink_support import symlink_or_skip
-from tests.test_pregeneration_setup import write_story_index
-from tests.test_pregeneration_voices import write_content
-from vntts.document_identity import canonical_document_sha256
 from vntts.game_content_importer import (
     GameContentImportCancelled,
     GameContentImportError,
@@ -25,7 +27,7 @@ from vntts.game_content_importer import (
     resolve_reverse1999_installation,
 )
 from vntts.pregeneration_setup import PregenerationJobStore, inspect_story_index
-from vntts.source_audio_semantics import SEMANTIC_EVIDENCE_METHOD, semantic_text_sha256
+from vntts.source_audio_semantics import SEMANTIC_EVIDENCE_METHOD
 
 
 class FinishedProcess:
@@ -410,53 +412,24 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 timed = Path(arguments[arguments.index("--story-index") + 1])
                 record = load_story_index_document(timed).records[0].to_record()
                 untimed = load_story_index_document(timed).records[1].to_record()
-                entry = {
-                    "locale": "en",
-                    "media_sha256": "a" * 64,
-                    "displayed_text_sha256": text_hash,
-                    "normalized_displayed_text_sha256": semantic_text_sha256(text),
-                    "observed_transcript": text,
-                    "normalized_observed_text_sha256": semantic_text_sha256(text),
-                    "verdict": "full",
-                    "reason": "exact-normalized-asr-transcript",
-                    "method": SEMANTIC_EVIDENCE_METHOD,
-                    "model_sha256": "b" * 64,
-                    "source_line_ids": ["voice:1"],
-                }
-                entry["entry_id"] = canonical_document_sha256(
-                    {
-                        key: value
-                        for key, value in entry.items()
-                        if key != "source_line_ids"
-                    }
-                )
-                evidence = {
-                    "schema": "r1999.source-audio-semantic-evidence",
-                    "schema_version": 1,
-                    "locale": "en",
-                    "source_story_index_sha256": "c" * 64,
-                    "model": {
-                        "kind": "whisper",
-                        "snapshot": "test",
-                        "sha256": "b" * 64,
-                        "device": "cpu",
-                        "decoding": "deterministic_greedy_default",
-                    },
-                    "entries": [entry],
-                }
-                evidence["evidence_id"] = canonical_document_sha256(evidence)
-                evidence["generated_at"] = "2026-09-29T00:00:00+00:00"
                 evidence_path = Path(
                     arguments[arguments.index("--evidence-output") + 1]
                 )
-                atomic_write_json(evidence_path, evidence, sort_keys=True)
+                evidence = write_source_audio_semantic_evidence(
+                    evidence_path,
+                    line_id="voice:1",
+                    text=text,
+                    media_id=None,
+                    snapshot="test",
+                    generated_at="2026-09-29T00:00:00+00:00",
+                )
                 record.update(
                     source_audio_completeness="full",
                     source_audio_completeness_reason=(
                         "exact-normalized-asr-transcript"
                     ),
-                    source_audio_semantic_evidence_id=evidence["evidence_id"],
-                    source_audio_semantic_evidence_entry_id=entry["entry_id"],
+                    source_audio_semantic_evidence_id=evidence.evidence_id,
+                    source_audio_semantic_evidence_entry_id=evidence.entry_id,
                 )
                 write_story_index_document(
                     Path(arguments[arguments.index("--story-output") + 1]),
@@ -465,8 +438,8 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                         "language": "en",
                         "source_audio_completion": "verified-media-duration-seconds",
                         "source_audio_semantics": {
-                            "evidence_id": evidence["evidence_id"],
-                            "evidence_sha256": sha256_file(evidence_path),
+                            "evidence_id": evidence.evidence_id,
+                            "evidence_sha256": evidence.sha256,
                             "method": SEMANTIC_EVIDENCE_METHOD,
                             "selected_chapters": ["314501"],
                             "applied_count": 1,

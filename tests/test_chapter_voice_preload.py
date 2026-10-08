@@ -6,22 +6,15 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import (
     load_story_index_document,
-    write_story_index_document,
 )
 
+from tests.story_fixtures import write_verified_source_story
 from vntts.chapter_voice_preload import (
     ChapterDialogue,
     ChapterMatch,
     ChapterVoicePreloader,
-)
-from vntts.document_identity import canonical_document_sha256
-from vntts.source_audio_semantics import (
-    SEMANTIC_EVIDENCE_METHOD,
-    semantic_text_sha256,
 )
 
 
@@ -84,85 +77,6 @@ def story_index_document():
             )
         records.append(record)
     return "\n".join(json.dumps(record) for record in records) + "\n"
-
-
-def write_verified_source_story(path):
-    line_id = "test:0"
-    text = "These old ones are enough to carry everyone."
-    text_hash = hashlib.sha256(text.encode()).hexdigest()
-    media_hash = "a" * 64
-    entry = {
-        "locale": "en",
-        "media_id": 70,
-        "media_sha256": media_hash,
-        "displayed_text_sha256": text_hash,
-        "normalized_displayed_text_sha256": semantic_text_sha256(text),
-        "observed_transcript": text,
-        "normalized_observed_text_sha256": semantic_text_sha256(text),
-        "verdict": "full",
-        "reason": "exact-normalized-asr-transcript",
-        "method": SEMANTIC_EVIDENCE_METHOD,
-        "model_sha256": "b" * 64,
-        "source_line_ids": [line_id],
-    }
-    entry["entry_id"] = canonical_document_sha256(
-        {key: value for key, value in entry.items() if key != "source_line_ids"}
-    )
-    evidence = {
-        "schema": "r1999.source-audio-semantic-evidence",
-        "schema_version": 1,
-        "locale": "en",
-        "source_story_index_sha256": "c" * 64,
-        "model": {
-            "kind": "whisper",
-            "snapshot": "synthetic",
-            "sha256": "b" * 64,
-            "device": "cpu",
-            "decoding": "deterministic_greedy_default",
-        },
-        "entries": [entry],
-    }
-    evidence["evidence_id"] = canonical_document_sha256(evidence)
-    evidence["generated_at"] = "2026-09-14T00:00:00+00:00"
-    evidence_path = path.parent / "source-audio-semantic-evidence.json"
-    atomic_write_json(evidence_path, evidence, sort_keys=True)
-    metadata = {
-        "game": "Synthetic",
-        "language": "en",
-        "source_audio_completion": "verified-media-duration-seconds",
-        "source_audio_semantics": {
-            "evidence_id": evidence["evidence_id"],
-            "evidence_sha256": sha256_file(evidence_path),
-            "method": SEMANTIC_EVIDENCE_METHOD,
-            "selected_chapters": ["24006"],
-            "applied_count": 1,
-        },
-    }
-    record = {
-        "record_type": "line",
-        "line_id": line_id,
-        "chapter": "24006",
-        "sequence": 10,
-        "speaker": "Kamuta",
-        "text": text,
-        "text_sha256": text_hash,
-        "kind": "dialogue",
-        "source_audio_status": "available",
-        "source_audio_id": "voice-7",
-        "source_audio_duration_seconds": 1.25,
-        "source_audio_duration_media_id": 70,
-        "source_audio_duration_media_sha256": media_hash,
-        "source_audio_duration_sample_rate": 24000,
-        "source_audio_duration_sample_count": 30000,
-        "source_audio_duration_decoder": "synthetic",
-        "source_media_ids": [70],
-        "available_media_ids": [70],
-        "source_audio_completeness": "full",
-        "source_audio_completeness_reason": "exact-normalized-asr-transcript",
-        "source_audio_semantic_evidence_id": evidence["evidence_id"],
-        "source_audio_semantic_evidence_entry_id": entry["entry_id"],
-    }
-    write_story_index_document(path, metadata, [record])
 
 
 class ChapterVoicePreloaderTest(unittest.TestCase):

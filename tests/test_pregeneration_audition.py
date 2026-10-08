@@ -13,7 +13,8 @@ from unittest.mock import ANY, Mock, call, patch
 import numpy as np
 import soundfile as sf
 
-from tests.test_pregeneration_voices import write_content, write_manifest
+from tests.story_fixtures import write_content
+from tests.test_pregeneration_voices import write_manifest
 from vntts.pregeneration_audition import (
     VoiceAuditionCancelled,
     VoiceAuditionError,

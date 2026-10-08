@@ -25,6 +25,7 @@ from vntts_artifacts.voice_manifest import write_voice_manifest
 import vntts.authoring.bulk_generation as bulk_generation_module
 import vntts.authoring.game_pack as game_pack_module
 from tests.bulk_generation_fixtures import audio_samples
+from tests.story_fixtures import semantic_evidence_document, semantic_evidence_entry
 from tests.symlink_support import symlink_or_skip
 from tests.test_authoring_render_hypothesis_review import write_comparison
 from vntts.authoring.bulk_generation import (
@@ -56,8 +57,6 @@ from vntts.game_pack import import_game_pack
 from vntts.generated_audio import GeneratedAudioLibrary
 from vntts.source_audio_semantics import (
     SEMANTIC_EVIDENCE_METHOD,
-    canonical_document_sha256,
-    semantic_text_sha256,
 )
 from vntts.synthesis import (
     SynthesisChunk,
@@ -144,45 +143,26 @@ def prepare_authoring_fixture(
         entries = []
         for index, item in enumerate(items, start=1):
             media_sha256 = hashlib.sha256(f"media-{index}".encode()).hexdigest()
-            entry = {
-                "locale": "en",
-                "media_id": index,
-                "media_sha256": media_sha256,
-                "displayed_text_sha256": item["text_sha256"],
-                "normalized_displayed_text_sha256": semantic_text_sha256(item["text"]),
-                "observed_transcript": item["text"],
-                "normalized_observed_text_sha256": semantic_text_sha256(item["text"]),
-                "verdict": "full",
-                "reason": "exact-normalized-asr-transcript",
-                "method": SEMANTIC_EVIDENCE_METHOD,
-                "model_sha256": "2" * 64,
-                "source_line_ids": [item["line_id"]],
-            }
-            entry["entry_id"] = canonical_document_sha256(
-                {key: value for key, value in entry.items() if key != "source_line_ids"}
+            entry, _entry_id = semantic_evidence_entry(
+                line_id=item["line_id"],
+                text=item["text"],
+                displayed_text_sha256=item["text_sha256"],
+                media_id=index,
+                media_sha256=media_sha256,
+                model_sha256="2" * 64,
             )
             entries.append(entry)
             semantic_entries[item["line_id"]] = entry
-        semantic_document = {
-            "schema": "r1999.source-audio-semantic-evidence",
-            "schema_version": 1,
-            "locale": "en",
-            "source_story_index_sha256": "3" * 64,
-            "model": {
-                "kind": "whisper",
-                "snapshot": "synthetic",
-                "sha256": "2" * 64,
-                "device": "cpu",
-                "decoding": "deterministic_greedy_default",
-            },
-            "entries": entries,
-        }
-        semantic_document["evidence_id"] = canonical_document_sha256(semantic_document)
-        semantic_document["generated_at"] = "2026-08-30T00:00:00Z"
+        semantic_document, evidence_id = semantic_evidence_document(
+            entries,
+            model_sha256="2" * 64,
+            source_story_index_sha256="3" * 64,
+            generated_at="2026-08-30T00:00:00Z",
+        )
         semantic_evidence = root / "inputs" / "source-audio-semantic-evidence.json"
         atomic_write_json(semantic_evidence, semantic_document, sort_keys=True)
         semantic_metadata = {
-            "evidence_id": semantic_document["evidence_id"],
+            "evidence_id": evidence_id,
             "evidence_sha256": sha256_file(semantic_evidence),
             "method": SEMANTIC_EVIDENCE_METHOD,
             "selected_chapters": ["chapter-one"],

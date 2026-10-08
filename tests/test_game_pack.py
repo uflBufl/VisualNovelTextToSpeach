@@ -21,15 +21,14 @@ from vntts_artifacts.story_index import (
 )
 from vntts_artifacts.voice_manifest import write_voice_manifest
 
+from tests.story_fixtures import write_source_audio_semantic_evidence
 from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.game_pack import apply_game_pack, import_game_pack, main
 from vntts.generated_audio import GeneratedAudioLibrary
 from vntts.settings import AppSettings, load_app_settings
 from vntts.source_audio_semantics import (
     SEMANTIC_EVIDENCE_METHOD,
-    canonical_document_sha256,
     load_source_audio_semantic_evidence,
-    semantic_text_sha256,
 )
 from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.voices import CharacterVoiceRegistry
@@ -46,52 +45,23 @@ def write_synthetic_game_pack(
     text = "Keep this exact line intact."
     text_hash = text_sha256(text)
     semantic_evidence = None
-    semantic_entry = None
     semantic_metadata = None
     if include_semantics:
         media_sha256 = "1" * 64
-        semantic_entry = {
-            "locale": "en",
-            "media_id": 11,
-            "media_sha256": media_sha256,
-            "displayed_text_sha256": text_hash,
-            "normalized_displayed_text_sha256": semantic_text_sha256(text),
-            "observed_transcript": text,
-            "normalized_observed_text_sha256": semantic_text_sha256(text),
-            "verdict": "full",
-            "reason": "exact-normalized-asr-transcript",
-            "method": SEMANTIC_EVIDENCE_METHOD,
-            "model_sha256": "2" * 64,
-            "source_line_ids": [line_id],
-        }
-        semantic_entry["entry_id"] = canonical_document_sha256(
-            {
-                key: value
-                for key, value in semantic_entry.items()
-                if key != "source_line_ids"
-            }
-        )
-        semantic_document = {
-            "schema": "r1999.source-audio-semantic-evidence",
-            "schema_version": 1,
-            "locale": "en",
-            "source_story_index_sha256": "3" * 64,
-            "model": {
-                "kind": "whisper",
-                "snapshot": "synthetic",
-                "sha256": "2" * 64,
-                "device": "cpu",
-                "decoding": "deterministic_greedy_default",
-            },
-            "entries": [semantic_entry],
-        }
-        semantic_document["evidence_id"] = canonical_document_sha256(semantic_document)
-        semantic_document["generated_at"] = "2026-08-30T00:00:00Z"
         semantic_evidence = root / "source-audio-semantic-evidence.json"
-        atomic_write_json(semantic_evidence, semantic_document, sort_keys=True)
+        published_evidence = write_source_audio_semantic_evidence(
+            semantic_evidence,
+            line_id=line_id,
+            text=text,
+            media_id=11,
+            media_sha256=media_sha256,
+            model_sha256="2" * 64,
+            source_story_index_sha256="3" * 64,
+            generated_at="2026-08-30T00:00:00Z",
+        )
         semantic_metadata = {
-            "evidence_id": semantic_document["evidence_id"],
-            "evidence_sha256": sha256_file(semantic_evidence),
+            "evidence_id": published_evidence.evidence_id,
+            "evidence_sha256": published_evidence.sha256,
             "method": SEMANTIC_EVIDENCE_METHOD,
             "selected_chapters": ["chapter-1"],
             "applied_count": 1,
@@ -111,11 +81,11 @@ def write_synthetic_game_pack(
     if include_semantics:
         story_record.update(
             text_sha256=text_hash,
-            source_audio_duration_media_sha256=semantic_entry["media_sha256"],
+            source_audio_duration_media_sha256=media_sha256,
             source_audio_completeness="full",
             source_audio_completeness_reason="exact-normalized-asr-transcript",
             source_audio_semantic_evidence_id=semantic_metadata["evidence_id"],
-            source_audio_semantic_evidence_entry_id=semantic_entry["entry_id"],
+            source_audio_semantic_evidence_entry_id=published_evidence.entry_id,
         )
     write_story_index(
         story,

@@ -13,14 +13,12 @@ from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QMessageBox  # noqa: E402
 from vntts_artifacts.file_integrity import sha256_file  # noqa: E402
 
+from tests.story_fixtures import write_story_index  # noqa: E402
 from tests.test_pregeneration_audition import (  # noqa: E402
     ambiguous_fixture,
     clean_wav_bytes,
 )
-from tests.test_pregeneration_setup import (  # noqa: E402
-    ManualThreadPool,
-    write_story_index,
-)
+from tests.test_pregeneration_setup import ManualThreadPool  # noqa: E402
 from vntts.game_content_importer import Reverse1999GameImporter  # noqa: E402
 from vntts.person_link_suggestions import PersonLinkSuggestion  # noqa: E402
 from vntts.pregeneration_audition import (  # noqa: E402

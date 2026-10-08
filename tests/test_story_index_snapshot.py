@@ -11,7 +11,7 @@ import vntts.game_content_importer as importer
 import vntts.game_pack as game_pack
 import vntts.pregeneration_setup as setup
 import vntts.story_index_snapshot as snapshots
-from tests.test_pregeneration_setup import write_story_index
+from tests.story_fixtures import write_story_index
 
 
 class StoryIndexSnapshotTest(unittest.TestCase):

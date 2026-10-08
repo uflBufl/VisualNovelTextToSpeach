@@ -14,6 +14,7 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import load_story_index_document
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
+from tests.story_fixtures import semantic_evidence_document, semantic_evidence_entry
 from vntts.pregeneration_queue import (
     PregenerationInputStore,
     PregenerationQueueError,
@@ -169,54 +170,35 @@ def add_semantic_evidence(story_path):
         media_sha256 = hashlib.sha256(f"media-{index}".encode()).hexdigest()
         text_sha256 = hashlib.sha256(record["text"].encode()).hexdigest()
         record["text_sha256"] = text_sha256
-        entry = {
-            "locale": "en",
-            "media_id": index,
-            "media_sha256": media_sha256,
-            "displayed_text_sha256": text_sha256,
-            "normalized_displayed_text_sha256": semantic_text_sha256(record["text"]),
-            "observed_transcript": record["text"],
-            "normalized_observed_text_sha256": semantic_text_sha256(record["text"]),
-            "verdict": "full",
-            "reason": "exact-normalized-asr-transcript",
-            "method": SEMANTIC_EVIDENCE_METHOD,
-            "model_sha256": "2" * 64,
-            "source_line_ids": [line_id],
-        }
-        entry["entry_id"] = canonical_document_sha256(
-            {key: value for key, value in entry.items() if key != "source_line_ids"}
+        entry, entry_id = semantic_evidence_entry(
+            line_id=line_id,
+            text=record["text"],
+            displayed_text_sha256=text_sha256,
+            media_id=index,
+            media_sha256=media_sha256,
+            model_sha256="2" * 64,
         )
         record.update(
             source_audio_duration_media_sha256=media_sha256,
             source_audio_completeness="full",
             source_audio_completeness_reason="exact-normalized-asr-transcript",
-            source_audio_semantic_evidence_entry_id=entry["entry_id"],
+            source_audio_semantic_evidence_entry_id=entry_id,
         )
         entries.append(entry)
-    evidence = {
-        "schema": "r1999.source-audio-semantic-evidence",
-        "schema_version": 1,
-        "locale": "en",
-        "source_story_index_sha256": "3" * 64,
-        "model": {
-            "kind": "whisper",
-            "snapshot": "synthetic",
-            "sha256": "2" * 64,
-            "device": "cpu",
-            "decoding": "deterministic_greedy_default",
-        },
-        "entries": entries,
-    }
-    evidence["evidence_id"] = canonical_document_sha256(evidence)
-    evidence["generated_at"] = "2026-08-31T00:00:00+00:00"
+    evidence, evidence_id = semantic_evidence_document(
+        entries,
+        model_sha256="2" * 64,
+        source_story_index_sha256="3" * 64,
+        generated_at="2026-08-31T00:00:00+00:00",
+    )
     for record in records:
         if record.get("source_audio_semantic_evidence_entry_id") is not None:
-            record["source_audio_semantic_evidence_id"] = evidence["evidence_id"]
+            record["source_audio_semantic_evidence_id"] = evidence_id
     evidence_path = story_path.parent / "source-audio-semantic-evidence.json"
     atomic_write_json(evidence_path, evidence, sort_keys=True)
     metadata = dict(story.metadata)
     metadata["source_audio_semantics"] = {
-        "evidence_id": evidence["evidence_id"],
+        "evidence_id": evidence_id,
         "evidence_sha256": sha256_file(evidence_path),
         "method": SEMANTIC_EVIDENCE_METHOD,
         "selected_chapters": ["1", "2"],

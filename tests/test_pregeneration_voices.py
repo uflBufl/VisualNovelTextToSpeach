@@ -9,21 +9,19 @@ from threading import Event, Thread, current_thread
 from unittest.mock import patch
 
 from PIL import Image
-from vntts_artifacts import write_story_index_document
-from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_generation_queue import (
     expected_voice_generation_queue_id,
     text_sha256,
 )
 
+from tests.story_fixtures import write_content
 from vntts.authoring.source_reference_bindings import (
     SOURCE_REFERENCE_BINDINGS_FIELD,
     SOURCE_REFERENCE_BINDINGS_SCHEMA,
     SOURCE_REFERENCE_BINDINGS_VERSION,
     queue_voice_overrides_sha256,
 )
-from vntts.document_identity import canonical_document_sha256
 from vntts.pregeneration_queue import (
     PregenerationInputStore,
     PregenerationQueueError,
@@ -42,10 +40,6 @@ from vntts.pregeneration_voices import (
     resolve_pregeneration_settings,
 )
 from vntts.settings import AppSettings
-from vntts.source_audio_semantics import (
-    SEMANTIC_EVIDENCE_METHOD,
-    semantic_text_sha256,
-)
 from vntts.versioned_json import write_versioned_json
 from vntts.voice_library import VoiceLibrary
 from vntts.voices import (
@@ -65,162 +59,6 @@ def write_reference(path, payload):
     with wave.open(str(path), "wb") as audio:
         audio.setparams((1, 2, 16_000, 0, "NONE", "not compressed"))
         audio.writeframes(frames)
-
-
-def write_content(root):
-    root.mkdir(parents=True, exist_ok=True)
-    path = root / "story-index.jsonl"
-    line_id = "line:original"
-    text = "Already voiced."
-    text_hash = hashlib.sha256(text.encode()).hexdigest()
-    media_hash = "a" * 64
-    entry = {
-        "locale": "en",
-        "media_id": 7,
-        "media_sha256": media_hash,
-        "displayed_text_sha256": text_hash,
-        "normalized_displayed_text_sha256": semantic_text_sha256(text),
-        "observed_transcript": text,
-        "normalized_observed_text_sha256": semantic_text_sha256(text),
-        "verdict": "full",
-        "reason": "exact-normalized-asr-transcript",
-        "method": SEMANTIC_EVIDENCE_METHOD,
-        "model_sha256": "b" * 64,
-        "source_line_ids": [line_id],
-    }
-    entry["entry_id"] = canonical_document_sha256(
-        {key: value for key, value in entry.items() if key != "source_line_ids"}
-    )
-    evidence = {
-        "schema": "r1999.source-audio-semantic-evidence",
-        "schema_version": 1,
-        "locale": "en",
-        "source_story_index_sha256": "c" * 64,
-        "model": {
-            "kind": "whisper",
-            "snapshot": "synthetic",
-            "sha256": "b" * 64,
-            "device": "cpu",
-            "decoding": "deterministic_greedy_default",
-        },
-        "entries": [entry],
-    }
-    evidence["evidence_id"] = canonical_document_sha256(evidence)
-    evidence["generated_at"] = "2026-09-14T00:00:00+00:00"
-    evidence_path = root / "source-audio-semantic-evidence.json"
-    atomic_write_json(evidence_path, evidence, sort_keys=True)
-    write_story_index_document(
-        path,
-        {
-            "game": "Reverse: 1999",
-            "language": "en",
-            "source_audio_completion": "verified-media-duration-seconds",
-            "source_audio_semantics": {
-                "evidence_id": evidence["evidence_id"],
-                "evidence_sha256": sha256_file(evidence_path),
-                "method": SEMANTIC_EVIDENCE_METHOD,
-                "selected_chapters": ["1"],
-                "applied_count": 1,
-            },
-            "collections": [
-                {
-                    "collection_id": "story",
-                    "title": "Story",
-                    "kind": "character-story",
-                    "order": 1,
-                }
-            ],
-        },
-        [
-            {
-                "record_type": "line",
-                "line_id": line_id,
-                "chapter": "1",
-                "sequence": 1,
-                "speaker": "Rhiannon",
-                "voice_character": "Rhiannon",
-                "text": text,
-                "text_sha256": text_hash,
-                "kind": "dialogue",
-                "collection_id": "story",
-                "source_audio_status": "available",
-                "source_audio_duration_seconds": 1.0,
-                "source_audio_duration_media_id": 7,
-                "source_audio_duration_media_sha256": media_hash,
-                "source_audio_duration_sample_rate": 24000,
-                "source_audio_duration_sample_count": 24000,
-                "source_audio_duration_decoder": "synthetic",
-                "source_media_ids": [7],
-                "available_media_ids": [7],
-                "source_audio_completeness": "full",
-                "source_audio_completeness_reason": ("exact-normalized-asr-transcript"),
-                "source_audio_semantic_evidence_id": evidence["evidence_id"],
-                "source_audio_semantic_evidence_entry_id": entry["entry_id"],
-                "speakable": True,
-                "portrait": 10,
-                "source_bank": "rhiannon.bnk",
-            },
-            {
-                "record_type": "line",
-                "line_id": "line:rhiannon:1",
-                "chapter": "1",
-                "sequence": 2,
-                "speaker": "Aderyn",
-                "voice_character": "Rhiannon",
-                "text": "This is the most useful preview sentence for my voice.",
-                "kind": "dialogue",
-                "collection_id": "story",
-                "source_audio_status": "absent",
-                "speakable": True,
-                "portrait": 10,
-                "source_bank": "rhiannon.bnk",
-            },
-            {
-                "record_type": "line",
-                "line_id": "line:rhiannon:2",
-                "chapter": "1",
-                "sequence": 3,
-                "speaker": "Rhiannon",
-                "voice_character": "Rhiannon",
-                "text": "Short.",
-                "kind": "dialogue",
-                "collection_id": "story",
-                "source_audio_status": "absent",
-                "speakable": True,
-                "portrait": 10,
-                "source_bank": "rhiannon.bnk",
-            },
-            {
-                "record_type": "line",
-                "line_id": "line:unknown",
-                "chapter": "1",
-                "sequence": 4,
-                "speaker": "Hotelier",
-                "voice_character": "Hotelier",
-                "text": "A one-off role.",
-                "kind": "dialogue",
-                "collection_id": "story",
-                "source_audio_status": "absent",
-                "speakable": True,
-                "portrait": 20,
-                "source_bank": "hotel.bnk",
-            },
-            {
-                "record_type": "line",
-                "line_id": "line:unattributed",
-                "chapter": "1",
-                "sequence": 5,
-                "speaker": "???",
-                "voice_character": "Someone",
-                "text": "Who am I?",
-                "kind": "dialogue",
-                "collection_id": "story",
-                "source_audio_status": "absent",
-                "speakable": True,
-            },
-        ],
-    )
-    return path
 
 
 def write_manifest(root, *, rhiannon=b"rhiannon", unrelated=b"unrelated"):
