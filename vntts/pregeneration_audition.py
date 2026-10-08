@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from time import monotonic
-from typing import Protocol, TypeAlias
+from typing import NamedTuple, Protocol, TypeAlias
 
 import numpy as np
 from durable_file import sha256_file
@@ -100,7 +100,17 @@ class _BackendFactory(Protocol):
 
 
 NativePreviewContext: TypeAlias = dict[str, object]
-BackendConfig: TypeAlias = tuple[str, str | None, str | None, str, bool, bool]
+
+
+class BackendConfig(NamedTuple):
+    backend: str
+    model: str | None
+    language: str | None
+    profile: str
+    pocket_voice_cloning: bool
+    xtts_terms_accepted: bool
+
+
 ProgressReporter: TypeAlias = Callable[[str], object]
 
 
@@ -341,13 +351,13 @@ class VoiceAuditionPreviewService:
         progress: ProgressReporter | None,
         notify: ProgressReporter,
     ) -> None:
-        config = (
-            plan.synthesis_backend,
-            plan.synthesis_model,
-            plan.synthesis_language,
-            plan.synthesis_profile,
-            plan.pocket_voice_cloning,
-            plan.xtts_terms_accepted,
+        config = BackendConfig(
+            backend=plan.synthesis_backend,
+            model=plan.synthesis_model,
+            language=plan.synthesis_language,
+            profile=plan.synthesis_profile,
+            pocket_voice_cloning=plan.pocket_voice_cloning,
+            xtts_terms_accepted=plan.xtts_terms_accepted,
         )
         if self._backend is not None and self._backend_config == config:
             self._backend.registry = registry
