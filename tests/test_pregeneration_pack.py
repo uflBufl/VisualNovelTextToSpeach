@@ -26,6 +26,7 @@ from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_mani
 
 from tests.pregeneration_fixtures import fixture
 from vntts.authoring.bulk_generation import BulkGenerationError
+from vntts.authoring.generation_state import load_generation_state_from_snapshot
 from vntts.game_pack import import_game_pack
 from vntts.generated_audio import GeneratedAudioLibrary
 from vntts.pregeneration_contract import OfflineGenerationCancelled
@@ -667,20 +668,25 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 )
                 return queue
 
-            with patch.object(
-                VoiceGenerationQueue, "load", side_effect=replace_queue_after_parse
+            with (
+                patch.object(
+                    VoiceGenerationQueue, "load", side_effect=replace_queue_after_parse
+                ),
+                patch(
+                    "vntts.pregeneration_pack.load_generation_state_from_snapshot",
+                    wraps=load_generation_state_from_snapshot,
+                ) as state_loader,
             ):
-                _state, queue, _voices, _entries, _omissions = (
-                    _load_terminal_generation(
-                        job,
-                        generation_input,
-                        result,
-                        sha256_file(result.state),
-                        state_document=json.loads(result.state.read_text()),
-                    )
+                _load_terminal_generation(
+                    job,
+                    generation_input,
+                    result,
+                    sha256_file(result.state),
+                    state_document=json.loads(result.state.read_text()),
                 )
 
-            self.assertEqual(queue.items[0].speaker, items[0]["speaker"])
+            validated_queue = state_loader.call_args.args[1]
+            self.assertEqual(validated_queue.items[0].speaker, items[0]["speaker"])
 
     def test_change_summary_uses_verified_resume_and_exact_replacement_candidates(self):
         with TemporaryDirectory() as directory:

@@ -461,14 +461,12 @@ class OfflinePackPublisher:
             )
             return result
         phase_started, cpu_started = perf_counter(), process_time()
-        state, _queue, voice_document, voices, current_omissions = (
-            _load_terminal_generation(
-                job,
-                generation_input,
-                generation_result,
-                state_sha256,
-                state_document=state_document,
-            )
+        state, voice_document, voices, current_omissions = _load_terminal_generation(
+            job,
+            generation_input,
+            generation_result,
+            state_sha256,
+            state_document=state_document,
         )
         _verify_prepared_inputs(generation_input)
         _record_publication_phase("terminal-load", phase_started, cpu_started)
@@ -832,7 +830,6 @@ def _load_terminal_generation(
     state_document: GenerationState,
 ) -> tuple[
     GenerationState,
-    VoiceGenerationQueue,
     JsonObject,
     tuple[VoiceManifestEntry, ...],
     JsonRecords,
@@ -868,7 +865,7 @@ def _load_terminal_generation(
             queue,
             omission_queue_ids=omission_queue_ids,
         )
-        return state, queue, voice_document, voices, omissions
+        return state, voice_document, voices, omissions
     except (
         BulkGenerationError,
         GamePackError,
