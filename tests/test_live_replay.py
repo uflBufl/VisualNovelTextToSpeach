@@ -16,6 +16,7 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import text_sha256, write_generated_audio_manifest
 from vntts_artifacts.live_sequence import write_live_sequence_plan
 
+from tests.replay_fixtures import write_sequence_replay_corpus
 from tests.story_fixtures import write_verified_source_story
 from tests.symlink_support import symlink_or_skip
 from vntts.dialog_capture import CapturedDialogFrame
@@ -185,166 +186,6 @@ class LiveReplayTest(unittest.TestCase):
         )
         return path
 
-    def create_sequence_corpus(
-        self,
-        directory,
-        *,
-        mode,
-        story_lines,
-        events,
-        dialogue_line_ids,
-        observations=None,
-        expected_counts,
-        focus_probes=(),
-        generated_line_id=None,
-    ):
-        root = Path(directory)
-        story = root / "story.jsonl"
-        story_records = [
-            {
-                "record_type": "metadata",
-                "schema": "vntts.story-index",
-                "schema_version": 1,
-                "line_count": len(story_lines),
-                "source_audio_completion": "duration-seconds",
-            }
-        ]
-        story_records.extend(
-            {
-                "record_type": "line",
-                "kind": "dialogue",
-                **line,
-            }
-            for line in story_lines
-        )
-        story.write_text(
-            "\n".join(json.dumps(record) for record in story_records) + "\n",
-            encoding="utf-8",
-        )
-        plan = root / "live-sequence.json"
-        write_live_sequence_plan(
-            plan,
-            {
-                "game_id": "replay-test",
-                "producer": {"name": "tests", "version": "1"},
-                "source_extract_sha256": hashlib.sha256(b"fixture").hexdigest(),
-                "chapters": [
-                    {
-                        "chapter": "1",
-                        "entry_event_ids": [events[0]["event_id"]],
-                        "events": events,
-                    }
-                ],
-            },
-            story,
-        )
-        by_id = {line["line_id"]: line for line in story_lines}
-        observation_values = observations or {
-            line_id: [(by_id[line_id]["speaker"], by_id[line_id]["text"])]
-            for line_id in dialogue_line_ids
-        }
-        dialogue = []
-        for dialogue_index, line_id in enumerate(dialogue_line_ids):
-            line = by_id[line_id]
-            event_id = next(
-                event["event_id"] for event in events if event.get("line_id") == line_id
-            )
-            frames = []
-            for frame_index, (speaker, text) in enumerate(observation_values[line_id]):
-                image = Image.new("RGB", (80, 40), "black")
-                ImageDraw.Draw(image).rectangle(
-                    (8 + frame_index, 16, 28 + frame_index, 24),
-                    fill="white",
-                )
-                frame = root / f"sequence-{dialogue_index}-{frame_index}.png"
-                image.save(frame)
-                frames.append(
-                    {
-                        "path": frame.name,
-                        "sha256": sha256_file(frame),
-                        "observed_character": speaker,
-                        "observed_text": text,
-                    }
-                )
-            dialogue.append(
-                {
-                    "frames": frames,
-                    "character": line["speaker"],
-                    "text": line["text"],
-                    "event_id": event_id,
-                    "line_id": line_id,
-                    "expect_playback": line.get("expect_playback", True),
-                    "source_audio_status": line.get("source_audio_status", "absent"),
-                    "source_audio_duration_seconds": line.get(
-                        "source_audio_duration_seconds"
-                    ),
-                    "expected_source": None
-                    if not line.get("expect_playback", True)
-                    else (
-                        "generated"
-                        if line_id == generated_line_id
-                        else "live:replay-live-tts"
-                    ),
-                }
-            )
-        corpus = {
-            "schema_version": 2,
-            "name": f"Sequence {mode} fixture",
-            "dialogue": dialogue,
-            "live_sequence": {
-                "mode": mode,
-                "story_index": {
-                    "path": story.name,
-                    "sha256": sha256_file(story),
-                },
-                "plan": {"path": plan.name, "sha256": sha256_file(plan)},
-                "focus_probes": list(focus_probes),
-                "expected": {
-                    "event_ids": [
-                        next(
-                            event["event_id"]
-                            for event in events
-                            if event.get("line_id") == line_id
-                        )
-                        for line_id in dialogue_line_ids
-                    ],
-                    "line_ids": list(dialogue_line_ids),
-                    **expected_counts,
-                },
-            },
-        }
-        if generated_line_id is not None:
-            generated = root / "sequence-generated.wav"
-            with wave.open(str(generated), "wb") as output:
-                output.setnchannels(1)
-                output.setsampwidth(2)
-                output.setframerate(24_000)
-                output.writeframes(b"\0\0\1\0\0\0")
-            generated_manifest = root / "sequence-generated.json"
-            generated_line = by_id[generated_line_id]
-            write_generated_audio_manifest(
-                generated_manifest,
-                {"fixture": "sequence-replay"},
-                [
-                    {
-                        "line_id": generated_line_id,
-                        "text_sha256": text_sha256(generated_line["text"]),
-                        "audio": generated.name,
-                        "audio_format": "wav-pcm16-mono",
-                        "audio_sha256": sha256_file(generated),
-                        "sample_rate": 24_000,
-                        "sample_count": 3,
-                    }
-                ],
-            )
-            corpus["generated_audio_manifest"] = {
-                "path": generated_manifest.name,
-                "sha256": sha256_file(generated_manifest),
-            }
-        path = root / f"sequence-{mode}.json"
-        path.write_text(json.dumps(corpus), encoding="utf-8")
-        return path
-
     @staticmethod
     def recognize(frame):
         marker = frame.image.getpixel((0, 0))
@@ -443,7 +284,7 @@ class LiveReplayTest(unittest.TestCase):
                     "line_id": "story:shadow:3",
                 },
             ]
-            path = self.create_sequence_corpus(
+            path = write_sequence_replay_corpus(
                 temporary_directory,
                 mode="shadow",
                 story_lines=story_lines,
@@ -539,7 +380,7 @@ class LiveReplayTest(unittest.TestCase):
                     "line_id": "story:repeat:2",
                 },
             ]
-            path = self.create_sequence_corpus(
+            path = write_sequence_replay_corpus(
                 temporary_directory,
                 mode="audio-manual",
                 story_lines=story_lines,
@@ -630,7 +471,7 @@ class LiveReplayTest(unittest.TestCase):
                     "line_id": "story:prefix:3",
                 },
             ]
-            path = self.create_sequence_corpus(
+            path = write_sequence_replay_corpus(
                 temporary_directory,
                 mode="audio-auto",
                 story_lines=story_lines,
@@ -796,7 +637,7 @@ class LiveReplayTest(unittest.TestCase):
                     "line_id": "story:branch:5",
                 },
             ]
-            path = self.create_sequence_corpus(
+            path = write_sequence_replay_corpus(
                 temporary_directory,
                 mode="audio-manual",
                 story_lines=story_lines,
@@ -1016,7 +857,7 @@ class LiveReplayTest(unittest.TestCase):
                     "line_id": "story:contract:1",
                 }
             ]
-            path = self.create_sequence_corpus(
+            path = write_sequence_replay_corpus(
                 temporary_directory,
                 mode="shadow",
                 story_lines=story_lines,
@@ -1094,7 +935,7 @@ class LiveReplayTest(unittest.TestCase):
                     "line_id": "story:ordered:2",
                 },
             ]
-            path = self.create_sequence_corpus(
+            path = write_sequence_replay_corpus(
                 temporary_directory,
                 mode="shadow",
                 story_lines=story_lines,
@@ -1137,7 +978,7 @@ class LiveReplayTest(unittest.TestCase):
                     "line_id": "story:bound:1",
                 }
             ]
-            path = self.create_sequence_corpus(
+            path = write_sequence_replay_corpus(
                 temporary_directory,
                 mode="shadow",
                 story_lines=story_lines,
@@ -1209,7 +1050,7 @@ class LiveReplayTest(unittest.TestCase):
 
     def test_sequence_validation_uses_captured_plan_bytes(self):
         with TemporaryDirectory() as directory:
-            path = self.create_sequence_corpus(
+            path = write_sequence_replay_corpus(
                 directory,
                 mode="shadow",
                 story_lines=[
@@ -1437,7 +1278,7 @@ class LiveReplayTest(unittest.TestCase):
                 "text": "Hello.",
                 "source_audio_status": "absent",
             }
-            path = self.create_sequence_corpus(
+            path = write_sequence_replay_corpus(
                 directory,
                 mode="shadow",
                 story_lines=[line],

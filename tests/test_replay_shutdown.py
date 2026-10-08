@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 from threading import Event, Thread
 from unittest.mock import patch
 
-from tests import test_live_replay as fixtures
+from tests.replay_fixtures import write_sequence_replay_corpus
 from vntts import live_replay
 from vntts.live import LiveDialogReader
 
@@ -188,7 +188,7 @@ class ReplayShutdownTest(unittest.TestCase):
             "text": "Hello.",
             "source_audio_status": "absent",
         }
-        path = fixtures.LiveReplayTest().create_sequence_corpus(
+        path = write_sequence_replay_corpus(
             directory,
             mode="shadow" if stage == "ocr" else "audio-auto",
             story_lines=[line],
