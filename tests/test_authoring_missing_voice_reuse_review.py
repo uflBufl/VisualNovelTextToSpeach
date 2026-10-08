@@ -11,6 +11,7 @@ from tests.missing_voice_reuse_fixtures import (
 )
 from tests.missing_voice_reuse_fixtures import (
     build_failed_missing_voice_reuse_plan_fixture,
+    create_missing_voice_reuse_binding_review,
     create_missing_voice_reuse_review_fixture,
     create_missing_voice_reuse_workspace,
 )
@@ -31,6 +32,29 @@ from vntts.authoring.missing_voice_reuse_review import (
 class AuthoringMissingVoiceReuseReviewTest(unittest.TestCase):
     def fixture(self, root, statuses=("generated", "failed")):
         return create_missing_voice_reuse_review_fixture(root, statuses=statuses)
+
+    def test_non_finite_bundle_identity_uses_review_error(self):
+        with TemporaryDirectory() as directory:
+            _plan, session_path, _queue_id = create_missing_voice_reuse_binding_review(
+                Path(directory)
+            )
+            bundle_path = session_path.with_name("bundle.json")
+            original = bundle_path.read_bytes()
+            document = json.loads(original)
+            try:
+                for value in (float("nan"), float("inf"), float("-inf")):
+                    with self.subTest(value=value):
+                        bundle_path.write_text(json.dumps({**document, "seed": value}))
+                        with self.assertRaisesRegex(
+                            MissingVoiceReuseReviewError, "bundle identity is invalid"
+                        ):
+                            load_missing_voice_reuse_review(session_path)
+            finally:
+                bundle_path.write_bytes(original)
+            self.assertEqual(
+                load_missing_voice_reuse_review(session_path)[0]["bundle_id"],
+                document["bundle_id"],
+            )
 
     def test_failed_arm_stays_visible_and_cannot_be_selected(self):
         with TemporaryDirectory() as directory:

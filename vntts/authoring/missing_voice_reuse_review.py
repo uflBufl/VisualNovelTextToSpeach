@@ -753,9 +753,15 @@ def load_missing_voice_reuse_review(
     ):
         raise MissingVoiceReuseReviewError("Missing-voice review schema is unsupported")
     claimed_bundle_id = bundle.get("bundle_id")
-    if claimed_bundle_id != canonical_document_sha256(
-        {key: value for key, value in bundle.items() if key != "bundle_id"}
-    ):
+    try:
+        bundle_id = canonical_document_sha256(
+            {key: value for key, value in bundle.items() if key != "bundle_id"}
+        )
+    except (TypeError, ValueError) as error:
+        raise MissingVoiceReuseReviewError(
+            f"Missing-voice review bundle identity is invalid: {error}"
+        ) from error
+    if claimed_bundle_id != bundle_id:
         raise MissingVoiceReuseReviewError(
             "Missing-voice review bundle identity changed"
         )
