@@ -37,6 +37,7 @@ from vntts.authoring.delivery import (
     DeliveryAnnotationError,
     apply_delivery_policy,
 )
+from vntts.authoring.publication import publication_errors
 from vntts.chapter_voice_preload import (
     _source_audio_covers_full_line,
     _validated_source_audio_line_ids,
@@ -419,6 +420,7 @@ def inspect_generation_queue(
     )
 
 
+@publication_errors(GenerationQueueBuildError)
 def publish_generation_queue(
     plan: GenerationQueuePlan, output_path: str | Path
 ) -> Path:

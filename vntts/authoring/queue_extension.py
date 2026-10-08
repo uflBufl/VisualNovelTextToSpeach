@@ -15,6 +15,7 @@ from vntts_artifacts.voice_generation_queue import (
 )
 
 from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.publication import publication_errors
 from vntts.document_identity import file_sha256, is_lowercase_sha256
 
 SCHEMA = "vntts.authoring-generation-queue-extension"
@@ -47,6 +48,7 @@ class QueueExtensionLedger(TypedDict):
 _file_sha256 = partial(file_sha256, error_type=QueueExtensionError)
 
 
+@publication_errors(QueueExtensionError)
 def publish_additive_generation_queue(
     base_queue: str | PathLike[str],
     extension_queue: str | PathLike[str],

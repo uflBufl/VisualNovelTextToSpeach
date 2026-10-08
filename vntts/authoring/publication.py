@@ -23,6 +23,15 @@ class AtomicPublicationError(RuntimeError):
 
 
 @contextmanager
+def publication_errors(error_type: type[Exception]) -> Iterator[None]:
+    """Translate publication failures without changing staging or cleanup."""
+    try:
+        yield
+    except (OSError, AtomicPublicationError) as error:
+        raise error_type(str(error)) from error
+
+
+@contextmanager
 def staged_directory(parent: str | Path, *, prefix: str) -> Iterator[Path]:
     """Yield a temporary publication directory and always clean leftovers."""
     with temporary_directory(
@@ -151,6 +160,7 @@ __all__ = [
     "AtomicPublicationError",
     "generation_publication_leases",
     "no_replace_destination",
+    "publication_errors",
     "publish_single_base_successor",
     "rename_directory_no_replace",
     "staged_directory",

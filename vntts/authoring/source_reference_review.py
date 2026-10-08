@@ -43,6 +43,7 @@ from vntts.authoring.listening import (
 )
 from vntts.authoring.publication import (
     no_replace_destination,
+    publication_errors,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -165,6 +166,7 @@ class SourceReferenceBindingsResult:
 _file_sha256 = partial(file_sha256, error_type=SourceReferenceReviewError)
 
 
+@publication_errors(SourceReferenceReviewError)
 def import_source_reference_review(
     report_path: str | Path,
     review_path: str | Path,
@@ -830,6 +832,7 @@ def _copy_selected_binding_variant(
     return voice, selected
 
 
+@publication_errors(SourceReferenceReviewError)
 def publish_source_reference_bindings(
     plan_directory: str | Path,
     base_voice_manifest: str | Path,
@@ -1043,6 +1046,7 @@ def _copy_successor_voices(
     return voices
 
 
+@publication_errors(SourceReferenceReviewError)
 def publish_source_reference_binding_successor(
     base_binding_manifest: str | Path,
     plan_directory: str | Path,
@@ -1280,6 +1284,7 @@ def _copy_retirement_voices(
     return voices
 
 
+@publication_errors(SourceReferenceReviewError)
 def publish_source_reference_binding_retirement(
     base_binding_manifest: str | Path,
     variant_ids: Iterable[str] | None,
@@ -1591,6 +1596,7 @@ def _stage_evaluation_variant(
     return voice, variant, items, (source, reference_sha256)
 
 
+@publication_errors(SourceReferenceReviewError)
 def publish_source_reference_evaluation(
     plan_directory: str | Path, output: str | Path
 ) -> SourceReferenceEvaluationResult:
@@ -2006,6 +2012,7 @@ def _collect_listening_variants(
     return originals, generated_reports, checked_audio
 
 
+@publication_errors(SourceReferenceReviewError)
 def publish_source_reference_listening_reports(
     evaluation_directory: str | Path, state_path: str | Path, output: str | Path
 ) -> SourceReferenceListeningReportsResult:
