@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from vntts_artifacts import load_story_index_document
+from vntts_artifacts import StoryIndexError, load_story_index_document
 
 import vntts.game_content_importer as importer
 import vntts.game_pack as game_pack
@@ -18,6 +18,28 @@ class StoryIndexSnapshotTest(unittest.TestCase):
     def setUp(self):
         setup._cached_story_index_document.cache_clear()
         self.addCleanup(setup._cached_story_index_document.cache_clear)
+
+    def test_parse_errors_retain_original_source_path_and_cause(self):
+        with TemporaryDirectory() as directory:
+            source = write_story_index(Path(directory)).resolve()
+            metadata = source.read_bytes().splitlines()[0]
+            for payload in (b"", b"not-json\n", metadata + b"\nnot-json\n", b"{}\n"):
+                with self.subTest(payload=payload):
+                    source.write_bytes(payload)
+                    with self.assertRaises(StoryIndexError) as direct:
+                        load_story_index_document(source)
+                    with self.assertRaises(StoryIndexError) as captured:
+                        snapshots.load_story_index_snapshot(source, payload)
+                    self.assertEqual(str(captured.exception), str(direct.exception))
+                    self.assertIs(
+                        type(captured.exception.__cause__),
+                        type(direct.exception.__cause__),
+                    )
+                    self.assertEqual(
+                        str(captured.exception.__cause__),
+                        str(direct.exception.__cause__),
+                    )
+                    self.assertEqual(source.read_bytes(), payload)
 
     def test_cache_data_stays_bound_through_transient_source_replacement(self):
         for owner in (setup, importer, game_pack):
