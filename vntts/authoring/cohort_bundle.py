@@ -132,7 +132,7 @@ class _BundleSample(TypedDict):
     pace_advisories: NotRequired[list[str]]
 
 
-class _BundleCohort(TypedDict):
+class CohortBundleCohort(TypedDict):
     workspace: str
     workspace_id: str
     plan_id: str
@@ -154,7 +154,7 @@ class _BundleBody(TypedDict):
     blocked_item_count: int
     blocked_source_occurrence_count: int
     sources: list[_SourceDocument]
-    cohorts: list[_BundleCohort]
+    cohorts: list[CohortBundleCohort]
 
 
 class _BundleDocument(_BundleBody):
@@ -514,7 +514,7 @@ def _assemble_bundle(
     source_plans: Sequence[tuple[PathLike, _PlanDocument]],
 ) -> CohortReviewBundle:
     sources: list[_SourceDocument] = []
-    flattened: list[_BundleCohort] = []
+    flattened: list[CohortBundleCohort] = []
     workspace_ids: set[str] = set()
     for path, plan in source_plans:
         path = Path(path).resolve()
@@ -1532,7 +1532,7 @@ def _validated_progress_document(
 
 
 def _load_source_sample_records(
-    source: _SourceDocument, source_cohorts: Sequence[_BundleCohort]
+    source: _SourceDocument, source_cohorts: Sequence[CohortBundleCohort]
 ) -> tuple[Path, dict[str, ReviewItem]]:
     loaded = _load_sample_source(source)
     sample_by_id = _source_samples_by_id(source_cohorts)
@@ -1596,8 +1596,8 @@ def _sample_source_paths(source: _SourceDocument) -> _SampleSourcePaths:
 
 
 def _source_samples_by_id(
-    source_cohorts: Sequence[_BundleCohort],
-) -> dict[str, tuple[_BundleCohort, _BundleSample]]:
+    source_cohorts: Sequence[CohortBundleCohort],
+) -> dict[str, tuple[CohortBundleCohort, _BundleSample]]:
     sample_by_id = {
         sample["queue_id"]: (cohort, sample)
         for cohort in source_cohorts
@@ -1611,7 +1611,7 @@ def _source_samples_by_id(
 def _review_item_from_sample(
     loaded: _LoadedSampleSource,
     queue_id: str,
-    cohort: _BundleCohort,
+    cohort: CohortBundleCohort,
     sample: _BundleSample,
 ) -> ReviewItem:
     queue_item = loaded.queue_records.get(queue_id)
@@ -1640,7 +1640,7 @@ def _review_item_from_sample(
 def _bound_sample_review_item(
     loaded: _LoadedSampleSource,
     queue_id: str,
-    cohort: _BundleCohort,
+    cohort: CohortBundleCohort,
     sample: _BundleSample,
     queue_item: dict[str, object],
     result: dict[str, object],
@@ -2037,8 +2037,8 @@ def _validated_bundle_cohorts(values: Sequence[object]) -> list[dict[str, object
 
 def _flatten_validated_sources(
     expected_cohorts: Sequence[tuple[str, str, str, _PlanCohort]],
-) -> list[_BundleCohort]:
-    flattened: list[_BundleCohort] = []
+) -> list[CohortBundleCohort]:
+    flattened: list[CohortBundleCohort] = []
     for path, workspace_id, plan_id, cohort in expected_cohorts:
         sampled = set(cohort["sample_queue_ids"])
         samples: list[_BundleSample] = []

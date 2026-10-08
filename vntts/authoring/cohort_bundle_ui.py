@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
 
 from vntts.async_ui import LatestTaskRunner
 from vntts.authoring.cohort_bundle import (
+    CohortBundleCohort,
     CohortBundleProjection,
     CohortBundleSample,
     CohortReviewBundle,
@@ -115,7 +116,7 @@ class _ActionState:
     authority_ready: bool
     all_heard: bool
     current_clean: int
-    cohort: Mapping[str, object] | None
+    cohort: CohortBundleCohort | None
     has_more_clean: bool
     split_unreviewed_count: int
     split_acceptable_count: int
@@ -168,7 +169,7 @@ ObservationWriter: TypeAlias = Callable[
     ],
     Path,
 ]
-Confirmer: TypeAlias = Callable[[str, Mapping[str, object], int, int], bool]
+Confirmer: TypeAlias = Callable[[str, CohortBundleCohort, int, int], bool]
 ObservationSnapshot: TypeAlias = tuple[
     Path | None,
     CohortReviewBundle | None,
@@ -1188,7 +1189,7 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
         ]
         for position, cohort in enumerate(available, start=1):
             key = (cohort["workspace_id"], cohort["cohort_id"])
-            identity = cast(Mapping[str, object], cohort["identity"])
+            identity = cohort["identity"]
             self.cohort_choice.addItem(
                 f"Cohort {position} of {len(available)} | "
                 f"{identity['voice_character']} | "
@@ -1211,7 +1212,7 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
         key = self._current_key()
         return self.samples_by_cohort.get(key, ()) if key is not None else ()
 
-    def _current_cohort(self) -> Mapping[str, object] | None:
+    def _current_cohort(self) -> CohortBundleCohort | None:
         key = self._current_key()
         return next(
             (
@@ -1275,7 +1276,7 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
         self.sample_text.setText(sample.item.text)
         cohort = self._current_cohort()
         if cohort is not None:
-            identity = cast(Mapping[str, object], cohort["identity"])
+            identity = cohort["identity"]
             model = str(identity["model"])
             binding = identity.get("source_reference_binding")
             reference = (
@@ -1856,11 +1857,11 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
     def _confirm_decision(
         self,
         decision: str,
-        cohort: Mapping[str, object],
+        cohort: CohortBundleCohort,
         reviewed: int,
         bad: int,
     ) -> bool:
-        item_count = cast(int, cohort["item_count"])
+        item_count = cohort["item_count"]
         if decision == "expand":
             title = "Request more evidence?"
             prompt = (
@@ -2051,9 +2052,7 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
             if item_count
             else "Reject cohort"
         )
-        identity = (
-            cast(Mapping[str, object], state.cohort["identity"]) if state.cohort else {}
-        )
+        identity = state.cohort["identity"] if state.cohort else {}
         self.cohort_scope.setText(
             f"Cohort {self.cohort_choice.currentIndex() + 1} of "
             f"{self.cohort_choice.count()} | {identity['voice_character']} | "
