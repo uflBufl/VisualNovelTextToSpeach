@@ -64,6 +64,43 @@ def story_audio_cue():
 
 
 class AuthoringQueueBuilderTest(unittest.TestCase):
+    def test_source_replacement_after_capture_is_refused_during_inspection(self):
+        for source_name in ("story", "manifest"):
+            with self.subTest(source=source_name), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                story_path, manifest_path = write_inputs(
+                    root, [story_record("line-1", "absent")]
+                )
+                source = story_path if source_name == "story" else manifest_path
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest["voices"][0]["character"] = "Replacement Ada"
+                read_bytes = Path.read_bytes
+                captured = False
+
+                def replace_after_capture(path):
+                    nonlocal captured
+                    payload = read_bytes(path)
+                    if path == source and not captured:
+                        captured = True
+                        if source_name == "story":
+                            write_story_index_document(
+                                source,
+                                story_metadata(),
+                                [story_record("line-2", "absent")],
+                            )
+                        else:
+                            write_voice_manifest(source, manifest)
+                    return payload
+
+                with (
+                    patch.object(Path, "read_bytes", replace_after_capture),
+                    self.assertRaisesRegex(
+                        GenerationQueueBuildError, "changed during queue planning"
+                    ),
+                ):
+                    inspect_generation_queue(story_path, manifest_path)
+                self.assertTrue(captured)
+
     def test_only_needed_references_are_probed_once_per_plan(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

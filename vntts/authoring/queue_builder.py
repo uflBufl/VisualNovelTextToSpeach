@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -13,6 +15,7 @@ from vntts_artifacts import (
     VOICE_GENERATION_QUEUE_SCHEMA,
     VOICE_GENERATION_QUEUE_SCHEMA_VERSION,
     StoryIndexDocument,
+    StoryIndexError,
     StoryIndexRecord,
     expected_voice_generation_queue_id,
     voice_generation_action,
@@ -22,7 +25,6 @@ from vntts_artifacts.audio import probe_pcm16_mono_wav
 from vntts_artifacts.voice_manifest import (
     VoiceManifestEntry,
     VoiceManifestError,
-    load_voice_manifest,
     normalize_character_name,
 )
 
@@ -43,7 +45,8 @@ from vntts.chapter_voice_preload import (
     _validated_source_audio_line_ids,
 )
 from vntts.document_identity import canonical_document_sha256, file_sha256
-from vntts.voices import synthesis_character_for_line
+from vntts.story_index_snapshot import load_story_index_snapshot
+from vntts.voices import synthesis_character_for_line, voice_manifest_entries_at_path
 
 
 class GenerationQueueBuildError(RuntimeError):
@@ -398,17 +401,32 @@ def inspect_generation_queue(
     """Load public shared artifacts and return a non-mutating queue plan."""
     story_index_path = Path(story_index_path).expanduser().resolve()
     voice_manifest_path = Path(voice_manifest_path).expanduser().resolve()
-    document = StoryIndexDocument.load(story_index_path)
     try:
-        _manifest, entries = load_voice_manifest(
-            voice_manifest_path, allow_legacy=False
+        story_payload = story_index_path.read_bytes()
+    except OSError as error:
+        raise StoryIndexError(
+            f"Unable to open story index {story_index_path}: {error}"
+        ) from error
+    story_sha256 = hashlib.sha256(story_payload).hexdigest()
+    document = load_story_index_snapshot(story_index_path, story_payload)
+    try:
+        try:
+            manifest_payload = voice_manifest_path.read_bytes()
+            manifest = json.loads(manifest_payload.decode("utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise VoiceManifestError(
+                f"Unable to read voice manifest {voice_manifest_path}: {error}"
+            ) from error
+        entries = voice_manifest_entries_at_path(
+            manifest, voice_manifest_path, allow_legacy=False
         )
     except VoiceManifestError as error:
         raise GenerationQueueBuildError(
             "Voice manifest reference leaves its canonical manifest directory or "
             f"is otherwise unsafe: {error}"
         ) from error
-    return plan_generation_queue(
+    manifest_sha256 = hashlib.sha256(manifest_payload).hexdigest()
+    plan = plan_generation_queue(
         document,
         entries,
         voice_manifest_path,
@@ -418,6 +436,13 @@ def inspect_generation_queue(
         partial_source_audio_only=partial_source_audio_only,
         generated_at=generated_at,
     )
+    for field, expected, label in (
+        ("source_story_index_sha256", story_sha256, "Story index"),
+        ("source_voice_manifest_sha256", manifest_sha256, "Voice manifest"),
+    ):
+        if plan.metadata[field] != expected:
+            raise GenerationQueueBuildError(f"{label} changed during queue planning")
+    return plan
 
 
 @publication_errors(GenerationQueueBuildError)
