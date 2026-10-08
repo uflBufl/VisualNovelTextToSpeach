@@ -683,7 +683,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
         self._voice_library_directory.cleanup()
 
     def test_inaccessible_saved_voice_returns_to_stories_without_loading(self):
-        from tests.test_pregeneration_voices import write_manifest
+        from tests.voice_manifest_fixtures import write_manifest
         from vntts.pregeneration_voices import VoicePlanStore
         from vntts.voices import CharacterVoiceRegistry, remember_voice_binding
 
@@ -1921,7 +1921,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
     def test_changed_character_default_prepares_new_inputs_only_for_selected_story(
         self,
     ):
-        from tests.test_pregeneration_voices import write_manifest
+        from tests.voice_manifest_fixtures import write_manifest
 
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2907,7 +2907,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.deleteLater()
 
     def test_narrator_draft_stays_visible_and_rolls_back_when_replan_fails(self):
-        from tests.test_pregeneration_voices import write_manifest
+        from tests.voice_manifest_fixtures import write_manifest
         from vntts.pregeneration_voices import VoicePlanStore
 
         with TemporaryDirectory() as temporary_directory:
@@ -2959,7 +2959,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.deleteLater()
 
     def test_voice_choice_replans_against_reimported_story_content(self):
-        from tests.test_pregeneration_voices import write_manifest
+        from tests.voice_manifest_fixtures import write_manifest
         from vntts.pregeneration_voices import VoicePlanStore
 
         with TemporaryDirectory() as temporary_directory:
@@ -3015,7 +3015,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.deleteLater()
 
     def test_changed_story_selection_requires_explicit_review(self):
-        from tests.test_pregeneration_voices import write_manifest
+        from tests.voice_manifest_fixtures import write_manifest
         from vntts.pregeneration_voices import VoicePlanStore
 
         with TemporaryDirectory() as temporary_directory:

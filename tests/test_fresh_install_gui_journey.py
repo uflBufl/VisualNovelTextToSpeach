@@ -19,10 +19,10 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 from tests.audio_output_fixtures import FakeAudioOutput  # noqa: E402
 from tests.bulk_generation_fixtures import audio_samples  # noqa: E402
 from tests.test_pregeneration_setup import ManualThreadPool  # noqa: E402
-from tests.test_pregeneration_voices import write_manifest  # noqa: E402
 from tests.test_self_service_pregeneration import (  # noqa: E402
     InProcessPocketGenerator,
 )
+from tests.voice_manifest_fixtures import write_manifest  # noqa: E402
 from vntts.app import TrayApplication  # noqa: E402
 from vntts.controller import AppController  # noqa: E402
 from vntts.game_content_importer import ImporterAvailability  # noqa: E402

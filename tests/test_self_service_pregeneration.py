@@ -21,7 +21,7 @@ from tests.story_fixtures import (
     write_story_index,  # noqa: E402
 )
 from tests.test_pregeneration_setup import ManualThreadPool  # noqa: E402
-from tests.test_pregeneration_voices import (  # noqa: E402
+from tests.voice_manifest_fixtures import (  # noqa: E402
     write_conflicting_manifest,
     write_manifest,
 )

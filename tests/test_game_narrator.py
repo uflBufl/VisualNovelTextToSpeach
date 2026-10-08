@@ -25,11 +25,11 @@ from tests.story_fixtures import write_content  # noqa: E402
 from tests.test_authoring_pcm_playback import FakeAudioModule  # noqa: E402
 from tests.test_pregeneration_audition import FakeBackend, clean_wav_bytes  # noqa: E402
 from tests.test_pregeneration_setup import ManualThreadPool  # noqa: E402
-from tests.test_pregeneration_voices import (  # noqa: E402
+from tests.test_voice_default_impact import voice_impact_fixture  # noqa: E402
+from tests.voice_manifest_fixtures import (  # noqa: E402
     write_manifest,
     write_player_candidate_manifest,
 )
-from tests.test_voice_default_impact import voice_impact_fixture  # noqa: E402
 from vntts.app import TrayApplication  # noqa: E402
 from vntts.authoring.pcm_playback import PersistentPcmPlayer  # noqa: E402
 from vntts.game_content_importer import Reverse1999GameImporter  # noqa: E402
