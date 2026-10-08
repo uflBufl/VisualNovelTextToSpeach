@@ -573,7 +573,3 @@ Planned implementation order after approval:
 ## Active - Continue cleanup ownership expansion
 
 - [ ] **Remaining native acquisition boundaries:** qualify `_launch_owned_process` and Windows job initialization separately from the completed server-resource cleanup. Trace real Windows API failure behavior before changing guards; keep suspended-child ownership and the existing two-second wait budget. Gate: failed job acquisition plus kill/wait failures preserves the acquisition error and leaves no runnable child; retain real-Windows qualification where mocks cannot prove ownership.
-
-## Investigate remaining shared test setup ownership
-
-- [ ] Trace remaining authoring fixture imports: failure-reference preview backend/factory and deferred result collection, game-pack comparison setup, reconciliation/silence/specialist/composite builders, and the source-audio semantics game-pack builder. Inspect direct/local/alias and dynamic consumers and existing typed owners; preserve lazy render/cancellation/collection timing, differing PCM/report bytes, schema versions and publication policies before choosing a shared owner. Run affected selectors and normal types after each safe migration; raw imports are investigation leads, not a blanket defect count. The delayed result-factory wrapper is intentionally distinct from the immediate collected-result wrapper.
