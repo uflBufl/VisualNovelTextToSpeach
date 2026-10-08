@@ -88,6 +88,22 @@ class _Labels(_LabelsBody):
     labels_id: str
 
 
+class _FitMetrics(TypedDict):
+    positive_count: int
+    negative_count: int
+    max_positive_distance: float | None
+    min_negative_distance: float | None
+    separated: bool
+
+
+class _HeldOutMetrics(TypedDict):
+    positive_count: int
+    negative_count: int
+    confusion: dict[str, int]
+    boundary_violation_count: int
+    boundary_violations: list[JsonDocument]
+
+
 PARTITIONS = frozenset({"fit", "held-out"})
 
 
@@ -434,7 +450,7 @@ def installed_model_descriptor() -> JsonDocument:
     }
 
 
-def _fit_threshold(results: list[_ScoredPair]) -> tuple[float | None, JsonDocument]:
+def _fit_threshold(results: list[_ScoredPair]) -> tuple[float | None, _FitMetrics]:
     fit = [item for item in results if item["partition"] == "fit"]
     positives = [
         item["cosine_distance"]
@@ -459,7 +475,7 @@ def _fit_threshold(results: list[_ScoredPair]) -> tuple[float | None, JsonDocume
 
 def _held_out_result(
     results: list[_ScoredPair], threshold: float | None
-) -> JsonDocument:
+) -> _HeldOutMetrics:
     held_out = [item for item in results if item["partition"] == "held-out"]
     counts = {
         "true_positive": 0,
@@ -467,7 +483,7 @@ def _held_out_result(
         "false_positive": 0,
         "false_negative": 0,
     }
-    boundary_violations = []
+    boundary_violations: list[JsonDocument] = []
     for item in held_out:
         actual_positive = item["relationship"] == "same-speaker"
         predicted_positive = (
