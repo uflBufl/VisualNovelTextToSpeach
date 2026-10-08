@@ -151,9 +151,9 @@
     {
       "code": "C901",
       "path": "vntts/authoring/queue_extension.py",
-      "scope": "validate_additive_generation_queue",
+      "scope": "_validate_extension_ledger",
       "count": 1,
-      "maximum": 17
+      "maximum": 16
     },
     {
       "code": "C901",
@@ -718,9 +718,9 @@
     {
       "code": "PLR0912",
       "path": "vntts/authoring/queue_extension.py",
-      "scope": "validate_additive_generation_queue",
+      "scope": "_validate_extension_ledger",
       "count": 1,
-      "maximum": 16
+      "maximum": 15
     },
     {
       "code": "PLR0912",

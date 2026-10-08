@@ -630,14 +630,7 @@ def _validate_workspace_queue_extension(
         )
     except (OSError, QueueExtensionError) as error:
         raise AuthoringWorkbenchError(str(error)) from error
-    added_items = ledger.get("added_items")
-    added_item_values = added_items if isinstance(added_items, list) else []
-    expected_ids = sorted(
-        queue_id
-        for record in added_item_values
-        if _is_json_document(record)
-        if isinstance((queue_id := record.get("queue_id")), str)
-    )
+    expected_ids = sorted(record["queue_id"] for record in ledger["added_items"])
     if (
         config.get("extension_queue_sha256") != ledger["extension_queue_sha256"]
         or config.get("extension_id") != ledger["extension_id"]

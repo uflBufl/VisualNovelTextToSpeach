@@ -5,6 +5,7 @@ from __future__ import annotations
 from functools import partial
 from os import PathLike
 from pathlib import Path
+from typing import TypedDict, TypeGuard
 
 from durable_file import sha256_file
 from vntts_artifacts.voice_generation_queue import (
@@ -25,6 +26,22 @@ WORKSPACE_VERSION = 1
 
 class QueueExtensionError(ValueError):
     """Raised when an additive queue successor is unsafe or inconsistent."""
+
+
+class AddedQueueItem(TypedDict):
+    queue_id: str
+    item_sha256: str
+
+
+class QueueExtensionLedger(TypedDict):
+    schema: str
+    schema_version: int
+    base_queue_sha256: str
+    extension_queue_sha256: str
+    base_item_count: int
+    added_item_count: int
+    added_items: list[AddedQueueItem]
+    extension_id: str
 
 
 _file_sha256 = partial(file_sha256, error_type=QueueExtensionError)
@@ -111,7 +128,7 @@ def validate_additive_generation_queue(
     queue_path: str | PathLike[str],
     *,
     base_queue: str | PathLike[str] | None = None,
-) -> tuple[VoiceGenerationQueue, dict[str, object]]:
+) -> tuple[VoiceGenerationQueue, QueueExtensionLedger]:
     """Validate the embedded extension ledger and optional exact base queue."""
     path = Path(queue_path).expanduser().resolve()
     try:
@@ -119,6 +136,17 @@ def validate_additive_generation_queue(
     except VoiceGenerationQueueError as error:
         raise QueueExtensionError(str(error)) from error
     ledger = queue.metadata.get(FIELD)
+    if not _validate_extension_ledger(ledger, queue, base_queue=base_queue):
+        raise QueueExtensionError("Generation queue extension ledger is malformed")
+    return queue, ledger
+
+
+def _validate_extension_ledger(
+    ledger: object,
+    queue: VoiceGenerationQueue,
+    *,
+    base_queue: str | PathLike[str] | None,
+) -> TypeGuard[QueueExtensionLedger]:
     required = {
         "schema",
         "schema_version",
@@ -136,7 +164,7 @@ def validate_additive_generation_queue(
         or type(ledger.get("schema_version")) is not int
         or ledger.get("schema_version") != SCHEMA_VERSION
     ):
-        raise QueueExtensionError("Generation queue extension ledger is malformed")
+        return False
     body = {key: value for key, value in ledger.items() if key != "extension_id"}
     if ledger.get("extension_id") != canonical_document_sha256(body):
         raise QueueExtensionError("Generation queue extension identity changed")
@@ -182,7 +210,7 @@ def validate_additive_generation_queue(
         expected = {item.queue_id: item.document for item in base.items}
         if expected != {queue_id: observed[queue_id] for queue_id in base_ids}:
             raise QueueExtensionError("Generation queue changed or removed base items")
-    return queue, ledger
+    return True
 
 
 def workspace_queue_extension(
@@ -192,14 +220,6 @@ def workspace_queue_extension(
     _queue, ledger = validate_additive_generation_queue(
         queue_path, base_queue=base_queue
     )
-    added_items = ledger["added_items"]
-    assert isinstance(added_items, list)
-    added_queue_ids = []
-    for record in added_items:
-        assert isinstance(record, dict)
-        queue_id = record["queue_id"]
-        assert isinstance(queue_id, str)
-        added_queue_ids.append(queue_id)
     return {
         "schema": WORKSPACE_SCHEMA,
         "schema_version": WORKSPACE_VERSION,
@@ -210,7 +230,9 @@ def workspace_queue_extension(
         "extension_queue_sha256": ledger["extension_queue_sha256"],
         "extension_id": ledger["extension_id"],
         "added_item_count": ledger["added_item_count"],
-        "added_queue_ids": sorted(added_queue_ids),
+        "added_queue_ids": sorted(
+            record["queue_id"] for record in ledger["added_items"]
+        ),
     }
 
 
