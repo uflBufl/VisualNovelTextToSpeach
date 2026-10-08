@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import vntts.authoring.audio_event_composition as composition_module
-from tests.test_authoring_audio_event_review import publish
+from tests.authoring_fixtures import publish_audio_event_review_fixture as publish
 from vntts.authoring.audio_event_composition import (
     AudioEventCompositionError,
     load_audio_event_composition,

@@ -1,4 +1,3 @@
-import hashlib
 import io
 import json
 import unittest
@@ -9,9 +8,17 @@ from unittest.mock import patch
 
 import numpy as np
 from vntts_artifacts.audio import write_pcm16_wav
-from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 
 import vntts.authoring.audio_event_review as review_module
+from tests.authoring_fixtures import (
+    publish_audio_event_review_fixture as publish,
+)
+from tests.authoring_fixtures import (
+    write_audio_event_queue as write_queue,
+)
+from tests.authoring_fixtures import (
+    write_audio_event_source_story as write_source_story,
+)
 from tests.symlink_support import symlink_or_skip
 from vntts.authoring.audio_event_review import (
     AudioEventReviewError,
@@ -20,76 +27,6 @@ from vntts.authoring.audio_event_review import (
     record_audio_event_review_decision,
 )
 from vntts.authoring.cli import main as authoring_main
-
-
-def write_queue(path, text="Tsk!"):
-    digest = hashlib.sha256(text.encode()).hexdigest()
-    queue_id = f"line:tsk:{digest[:16]}"
-    write_voice_generation_queue(
-        path,
-        {"game": "Synthetic", "language": "en"},
-        [
-            {
-                "record_type": "generation_item",
-                "queue_id": queue_id,
-                "line_id": "line:tsk",
-                "text_sha256": digest,
-                "text": text,
-                "speaker": "Poacher I",
-                "voice_character": "Poacher I",
-                "action": "manual_review",
-                "state": "pending",
-            }
-        ],
-    )
-    return queue_id
-
-
-def write_source_story(path):
-    text = "Tsk!"
-    path.write_text(
-        json.dumps(
-            {
-                "record_type": "line",
-                "line_id": "reverse1999:200308:6",
-                "text": text,
-                "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
-                "speaker": "Kanjira",
-                "source_audio_id": "610008734",
-                "source_audio_status": "available",
-                "source_event": "play_activityvoc_hero3071_660",
-                "source_bank": "activityvoc_hero3071molu1_3_part02.bnk",
-                "source_media_ids": [410389900],
-            }
-        )
-        + "\n"
-    )
-    return path
-
-
-def publish(root, *, text="Tsk!", sample_count=1_200):
-    queue = root / "queue.jsonl"
-    queue_id = write_queue(queue, text)
-    audio = root / "source.wav"
-    samples = np.zeros(sample_count, dtype=np.float32)
-    samples[300:340] = 0.4
-    write_pcm16_wav(audio, samples, 24_000)
-    output = root / "review"
-    story = write_source_story(root / "story-index.jsonl")
-    result = publish_source_audio_event_review(
-        queue,
-        queue_id,
-        story,
-        audio,
-        output,
-        source_line_id="reverse1999:200308:6",
-        source_speaker="Kanjira",
-        source_event="play_activityvoc_hero3071_660",
-        source_bank="activityvoc_hero3071molu1_3_part02.bnk",
-        source_media_id=410389900,
-        source_audio_id="610008734",
-    )
-    return result, queue, audio
 
 
 class AudioEventReviewTest(unittest.TestCase):
