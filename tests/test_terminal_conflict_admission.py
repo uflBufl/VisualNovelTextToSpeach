@@ -7,6 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from tests.symlink_support import symlink_or_skip
 from tests.terminal_conflict_fixtures import create_terminal_conflict_review
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.terminal_conflict_records import (
@@ -22,6 +23,7 @@ from vntts.authoring.terminal_conflict_resolution import (
 )
 from vntts.authoring.terminal_conflict_review import (
     TerminalConflictReviewError,
+    load_terminal_conflict_review,
     record_terminal_conflict_decision,
     validate_terminal_conflict_review_document,
     validate_terminal_conflict_review_progress_document,
@@ -205,6 +207,31 @@ class TerminalConflictDocumentAdmissionTest(unittest.TestCase):
 
 
 class TerminalConflictAdmissionTest(unittest.TestCase):
+    def test_aggregate_loader_rejects_symlink_review_with_or_without_progress(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            review_root = create_terminal_conflict_review(root)
+            document = json.loads((review_root / "review.json").read_text())
+            target = root / "review-target.json"
+            (review_root / "review.json").rename(target)
+            symlink_or_skip(review_root / "review.json", target)
+            for include_progress in (False, True):
+                with self.subTest(progress=include_progress):
+                    if include_progress:
+                        (review_root / "progress.json").write_text(
+                            json.dumps(
+                                {
+                                    "schema": "vntts.authoring-terminal-conflict-progress",
+                                    "schema_version": 1,
+                                    "review_id": document["review_id"],
+                                    "updated_at": "2026-10-08T00:00:00+00:00",
+                                    "decisions": [],
+                                }
+                            )
+                        )
+                    with self.assertRaises(TerminalConflictReviewError):
+                        load_terminal_conflict_review(review_root)
+
     def test_merge_versions_and_raw_outcome_predicate(self):
         document = {
             "schema": "vntts.authoring-terminal-conflict-workspace-merge",

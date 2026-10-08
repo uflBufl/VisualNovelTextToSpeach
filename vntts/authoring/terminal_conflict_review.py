@@ -589,9 +589,15 @@ def publish_terminal_conflict_review(
         review_rows = _review_rows_for_conflicts(inputs)
         document, candidate_total = _review_document(inputs, review_rows, staging)
         atomic_write_json(staging / "review.json", document, sort_keys=True)
-        load_terminal_conflict_review(staging)
-        assert_authority_snapshot(inputs.snapshot, "authoring reconciliation")
-        review = validate_terminal_conflict_review_document(document, staging)
+        review = load_terminal_conflict_review_document(staging)
+        if review != document:
+            raise TerminalConflictReviewError(
+                "Terminal conflict review changed while loaded"
+            )
+        try:
+            assert_authority_snapshot(inputs.snapshot, "authoring reconciliation")
+        except AuthoringAuthorityError as error:
+            raise TerminalConflictReviewError(str(error)) from error
         _assert_source_authorities(review)
         review_id = review["review_id"]
         if output_exists:
@@ -615,21 +621,11 @@ def publish_terminal_conflict_review(
 def load_terminal_conflict_review(directory: str | Path) -> TerminalConflictReview:
     """Load one immutable conflict review and its optional decision progress."""
     directory = _review_directory(directory)
-    review_path = directory / "review.json"
-    try:
-        payload = review_path.read_bytes()
-        document = json.loads(payload.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise TerminalConflictReviewError(str(error)) from error
-    document = validate_terminal_conflict_review_document(document, directory)
-    if review_path.read_bytes() != payload:
-        raise TerminalConflictReviewError(
-            "Terminal conflict review changed while loaded"
-        )
-    completed = 0
-    progress_path = directory / "progress.json"
-    if progress_path.exists() or progress_path.is_symlink():
-        completed = len(load_terminal_conflict_review_progress(directory)["decisions"])
+    session = load_terminal_conflict_review_session(directory)
+    document = session.review
+    completed = (
+        len(session.progress["decisions"]) if session.progress is not None else 0
+    )
     return TerminalConflictReview(
         directory,
         document["review_id"],
@@ -640,11 +636,18 @@ def load_terminal_conflict_review(directory: str | Path) -> TerminalConflictRevi
     )
 
 
-def load_terminal_conflict_review_document(
-    directory: str | Path,
-) -> TerminalConflictReviewDocument:
-    """Return one exact validated immutable review document."""
-    directory = _review_directory(directory)
+@dataclass(frozen=True)
+class TerminalConflictReviewSession:
+    """One coherent immutable review and optional decision progress snapshot."""
+
+    directory: Path
+    review: TerminalConflictReviewDocument
+    progress: TerminalConflictReviewProgress | None
+
+
+def _capture_review_document(
+    directory: Path,
+) -> tuple[AuthoritySnapshot, TerminalConflictReviewDocument]:
     try:
         snapshot = capture_authority_file(
             directory / "review.json", "terminal conflict review"
@@ -652,10 +655,58 @@ def load_terminal_conflict_review_document(
         document = validate_terminal_conflict_review_document(
             snapshot.json_document("terminal conflict review"), directory
         )
+    except AuthoringAuthorityError as error:
+        raise TerminalConflictReviewError(str(error)) from error
+    return snapshot, document
+
+
+def load_terminal_conflict_review_document(
+    directory: str | Path,
+) -> TerminalConflictReviewDocument:
+    """Return one exact validated immutable review, independently of progress."""
+    directory = _review_directory(directory)
+    snapshot, document = _capture_review_document(directory)
+    try:
         assert_authority_snapshot(snapshot, "terminal conflict review")
     except AuthoringAuthorityError as error:
         raise TerminalConflictReviewError(str(error)) from error
     return document
+
+
+def load_terminal_conflict_review_session(
+    directory: str | Path,
+) -> TerminalConflictReviewSession:
+    """Load one validated review and its optional progress without rereading WAVs."""
+    return _load_review_session(directory, require_progress=False)
+
+
+def _load_review_session(
+    directory: str | Path, *, require_progress: bool
+) -> TerminalConflictReviewSession:
+    directory = _review_directory(directory)
+    review_snapshot, review = _capture_review_document(directory)
+    progress_path = directory / "progress.json"
+    progress_snapshot = None
+    progress = None
+    try:
+        if require_progress or progress_path.exists() or progress_path.is_symlink():
+            progress_snapshot = capture_authority_file(
+                progress_path, "terminal conflict progress"
+            )
+            progress = _validate_progress(
+                progress_snapshot.json_document("terminal conflict progress"), review
+            )
+            _assert_progress_carry_forward(progress, review)
+        assert_authority_snapshot(review_snapshot, "terminal conflict review")
+        if progress_snapshot is not None:
+            assert_authority_snapshot(progress_snapshot, "terminal conflict progress")
+        elif progress_path.exists() or progress_path.is_symlink():
+            raise TerminalConflictReviewError(
+                "Terminal conflict progress changed while loaded"
+            )
+    except AuthoringAuthorityError as error:
+        raise TerminalConflictReviewError(str(error)) from error
+    return TerminalConflictReviewSession(directory, review, progress)
 
 
 def load_terminal_conflict_candidate_audio(
@@ -923,25 +974,9 @@ def validate_terminal_conflict_review_document(
 def load_terminal_conflict_review_progress(
     directory: str | Path,
 ) -> TerminalConflictReviewProgress:
-    directory = _review_directory(directory)
-    try:
-        review_snapshot = capture_authority_file(
-            directory / "review.json", "terminal conflict review"
-        )
-        review = validate_terminal_conflict_review_document(
-            review_snapshot.json_document("terminal conflict review"), directory
-        )
-        progress_snapshot = capture_authority_file(
-            directory / "progress.json", "terminal conflict progress"
-        )
-        progress = progress_snapshot.json_document("terminal conflict progress")
-        validated = _validate_progress(progress, review)
-        _assert_progress_carry_forward(validated, review)
-        assert_authority_snapshot(review_snapshot, "terminal conflict review")
-        assert_authority_snapshot(progress_snapshot, "terminal conflict progress")
-    except AuthoringAuthorityError as error:
-        raise TerminalConflictReviewError(str(error)) from error
-    return validated
+    session = _load_review_session(directory, require_progress=True)
+    assert session.progress is not None
+    return session.progress
 
 
 def record_terminal_conflict_decision(
@@ -1274,7 +1309,10 @@ def assert_terminal_conflict_progress_carry_forward(
     progress: TerminalConflictReviewProgress, review: TerminalConflictReviewDocument
 ) -> None:
     """Recheck an optional predecessor decision ledger and its authorities."""
-    _assert_progress_carry_forward(progress, review)
+    try:
+        _assert_progress_carry_forward(progress, review)
+    except AuthoringAuthorityError as error:
+        raise TerminalConflictReviewError(str(error)) from error
 
 
 def assert_terminal_conflict_review_source_authorities(
@@ -1361,7 +1399,10 @@ def _assert_source_authorities(review: TerminalConflictReviewDocument) -> None:
                 _assert_candidate_source_authority(
                     case, candidate, source, workspace_records
                 )
-    assert_authority_snapshot(report_snapshot, "source reconciliation")
+    try:
+        assert_authority_snapshot(report_snapshot, "source reconciliation")
+    except AuthoringAuthorityError as error:
+        raise TerminalConflictReviewError(str(error)) from error
 
 
 def _objects(value: object, label: str) -> list[JsonDocument]:
@@ -1686,6 +1727,8 @@ def _progress_lock(directory: Path) -> Iterator[None]:
         ) from error
     try:
         yield
+    except AuthoringAuthorityError as error:
+        raise TerminalConflictReviewError(str(error)) from error
     finally:
         _remove_progress_lock(path, guard_path, lease)
 
@@ -1700,6 +1743,7 @@ __all__ = [
     "TERMINAL_CONFLICT_REVIEW_VERSION",
     "TerminalConflictReview",
     "TerminalConflictReviewError",
+    "TerminalConflictReviewSession",
     "assert_terminal_conflict_review_source_authorities",
     "assert_terminal_conflict_progress_carry_forward",
     "carry_approved_cohort_terminal_conflict_decisions",
@@ -1708,6 +1752,7 @@ __all__ = [
     "load_terminal_conflict_candidate_audio",
     "load_terminal_conflict_review_document",
     "load_terminal_conflict_review_progress",
+    "load_terminal_conflict_review_session",
     "publish_terminal_conflict_review",
     "record_terminal_conflict_decision",
     "validate_terminal_conflict_review_document",
