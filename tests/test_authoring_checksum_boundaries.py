@@ -5,14 +5,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from tests import test_authoring_queue_builder as builder_fixtures
-from tests import (
-    test_authoring_queue_extension as queue_fixtures,
-)
+
+from tests import test_authoring_queue_extension as queue_fixtures
 from tests.authoring_fixtures import (
     create_explicit_fallback_merge_fixture,
     create_reviewed_waveform_fixture,
     create_voice_quality_review,
+    queue_builder_story_record,
+    write_queue_builder_inputs,
 )
 from tests.missing_voice_reuse_fixtures import (
     create_failed_prompt_hypothesis_review,
@@ -175,8 +175,8 @@ class ChecksumBoundaryTest(unittest.TestCase):
     def test_queue_source_disappearance_stays_a_planning_error(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            story, manifest = builder_fixtures.write_inputs(
-                root, [builder_fixtures.story_record("line-1", "absent")]
+            story, manifest = write_queue_builder_inputs(
+                root, [queue_builder_story_record("line-1", "absent")]
             )
             metadata = queue_builder._source_queue_metadata
 

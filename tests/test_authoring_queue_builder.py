@@ -15,7 +15,7 @@ from vntts_artifacts import (
     load_story_index_document,
     write_story_index_document,
 )
-from vntts_artifacts.audio import probe_pcm16_mono_wav, write_pcm16_wav
+from vntts_artifacts.audio import probe_pcm16_mono_wav
 from vntts_artifacts.hashing import text_sha256
 from vntts_artifacts.voice_manifest import (
     VoiceManifestEntry,
@@ -23,6 +23,15 @@ from vntts_artifacts.voice_manifest import (
     write_voice_manifest,
 )
 
+from tests.authoring_fixtures import (
+    queue_builder_story_metadata as story_metadata,
+)
+from tests.authoring_fixtures import (
+    queue_builder_story_record as story_record,
+)
+from tests.authoring_fixtures import (
+    write_queue_builder_inputs as write_inputs,
+)
 from tests.symlink_support import symlink_or_skip
 from vntts.authoring.audio_events import AUDIO_EVENT_PLAN_FIELD, STORY_AUDIO_CUES_FIELD
 from vntts.authoring.cli import main as authoring_main
@@ -32,56 +41,6 @@ from vntts.authoring.queue_builder import (
     plan_generation_queue,
     publish_generation_queue,
 )
-
-
-def story_metadata():
-    return {
-        "game": "Synthetic Novel",
-        "language": "en",
-        "generated_at": "2026-08-16T12:00:00+00:00",
-        "collections": [
-            {
-                "collection_id": "main",
-                "title": "Main Story",
-                "kind": "story",
-                "order": 1,
-            },
-            {
-                "collection_id": "side",
-                "title": "Side Story",
-                "kind": "story",
-                "order": 2,
-            },
-        ],
-    }
-
-
-def story_record(line_id, status, *, collection="main", **overrides):
-    text = f"Exact text for {line_id}."
-    record = {
-        "record_type": "line",
-        "line_id": line_id,
-        "chapter": "chapter-one",
-        "sequence": int(line_id.rsplit("-", 1)[-1]),
-        "speaker": "Ada (memory)",
-        "voice_character": "Ada Alias",
-        "text": text,
-        "text_sha256": text_sha256(text),
-        "kind": "dialogue",
-        "previous_text": "Previous.",
-        "next_text": "Next.",
-        "context": {"scene": "observatory"},
-        "source_audio_status": status,
-        "source_audio_reason": f"fixture_{status}",
-        "source_kind": "story",
-        "speakable": True,
-        "collection_id": collection,
-        "emotion": {"primary": "quiet"},
-        "prompt_adapters": {"generic": "Speak softly."},
-        "producer_extension": {"preserve": True},
-    }
-    record.update(overrides)
-    return record
 
 
 def story_audio_cue():
@@ -102,40 +61,6 @@ def story_audio_cue():
         "source_media_ids": [],
         "available_media_ids": [],
     }
-
-
-def write_inputs(root, records):
-    story_path = root / "story-index.jsonl"
-    write_story_index_document(story_path, story_metadata(), records)
-    references = root / "references"
-    references.mkdir()
-    write_pcm16_wav(references / "ada.wav", [0.0, 0.1, -0.1, 0.0], 16_000)
-    manifest_path = root / "voice-manifest.json"
-    write_voice_manifest(
-        manifest_path,
-        {
-            "version": 2,
-            "voices": [
-                {
-                    "character": "Ada",
-                    "speaker": "provider-ada",
-                    "aliases": ["Ada Alias"],
-                    "references": ["references/ada.wav"],
-                },
-                {
-                    "character": "No Local Reference",
-                    "speaker": "provider-missing",
-                    "references": ["references/missing.wav"],
-                },
-                {
-                    "character": "Narrator",
-                    "speaker": "provider-narrator",
-                    "references": ["references/ada.wav"],
-                },
-            ],
-        },
-    )
-    return story_path, manifest_path
 
 
 class AuthoringQueueBuilderTest(unittest.TestCase):

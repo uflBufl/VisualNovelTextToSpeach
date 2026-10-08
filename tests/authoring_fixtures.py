@@ -25,6 +25,7 @@ from vntts_artifacts.voice_generation_queue import (
     expected_voice_generation_queue_id,
     write_voice_generation_queue,
 )
+from vntts_artifacts.voice_manifest import write_voice_manifest
 
 from vntts.authoring import bulk_generation as bulk_generation_module
 from vntts.authoring import workspace_creation as workspace_creation_module
@@ -1188,3 +1189,91 @@ def write_silence_comparison_input_plan(
         encoding="utf-8",
     )
     return plan
+
+
+def queue_builder_story_metadata() -> dict[str, object]:
+    return {
+        "game": "Synthetic Novel",
+        "language": "en",
+        "generated_at": "2026-08-16T12:00:00+00:00",
+        "collections": [
+            {
+                "collection_id": "main",
+                "title": "Main Story",
+                "kind": "story",
+                "order": 1,
+            },
+            {
+                "collection_id": "side",
+                "title": "Side Story",
+                "kind": "story",
+                "order": 2,
+            },
+        ],
+    }
+
+
+def queue_builder_story_record(
+    line_id: str, status: str, *, collection: str = "main", **overrides: object
+) -> dict[str, object]:
+    text = f"Exact text for {line_id}."
+    record: dict[str, object] = {
+        "record_type": "line",
+        "line_id": line_id,
+        "chapter": "chapter-one",
+        "sequence": int(line_id.rsplit("-", 1)[-1]),
+        "speaker": "Ada (memory)",
+        "voice_character": "Ada Alias",
+        "text": text,
+        "text_sha256": text_sha256(text),
+        "kind": "dialogue",
+        "previous_text": "Previous.",
+        "next_text": "Next.",
+        "context": {"scene": "observatory"},
+        "source_audio_status": status,
+        "source_audio_reason": f"fixture_{status}",
+        "source_kind": "story",
+        "speakable": True,
+        "collection_id": collection,
+        "emotion": {"primary": "quiet"},
+        "prompt_adapters": {"generic": "Speak softly."},
+        "producer_extension": {"preserve": True},
+    }
+    record.update(overrides)
+    return record
+
+
+def write_queue_builder_inputs(
+    root: Path, records: Sequence[dict[str, object]]
+) -> tuple[Path, Path]:
+    story_path = root / "story-index.jsonl"
+    write_story_index_document(story_path, queue_builder_story_metadata(), records)
+    references = root / "references"
+    references.mkdir()
+    write_pcm16_wav(references / "ada.wav", [0.0, 0.1, -0.1, 0.0], 16_000)
+    manifest_path = root / "voice-manifest.json"
+    write_voice_manifest(
+        manifest_path,
+        {
+            "version": 2,
+            "voices": [
+                {
+                    "character": "Ada",
+                    "speaker": "provider-ada",
+                    "aliases": ["Ada Alias"],
+                    "references": ["references/ada.wav"],
+                },
+                {
+                    "character": "No Local Reference",
+                    "speaker": "provider-missing",
+                    "references": ["references/missing.wav"],
+                },
+                {
+                    "character": "Narrator",
+                    "speaker": "provider-narrator",
+                    "references": ["references/ada.wav"],
+                },
+            ],
+        },
+    )
+    return story_path, manifest_path
