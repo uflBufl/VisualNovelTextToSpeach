@@ -25,9 +25,11 @@ from vntts_artifacts.voice_manifest import write_voice_manifest
 import vntts.authoring.bulk_generation as bulk_generation_module
 import vntts.authoring.game_pack as game_pack_module
 from tests.bulk_generation_fixtures import audio_samples
+from tests.source_reference_fixtures import (
+    write_reference_render_comparison_fixture as write_comparison,
+)
 from tests.story_fixtures import semantic_evidence_document, semantic_evidence_entry
 from tests.symlink_support import symlink_or_skip
-from tests.test_authoring_render_hypothesis_review import write_comparison
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     _canonical_sha256,

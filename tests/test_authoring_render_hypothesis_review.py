@@ -7,14 +7,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import numpy as np
 from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.audio import write_pcm16_wav
-from vntts_artifacts.file_integrity import sha256_file
 
 from tests.authoring_fixtures import create_failed_reference_workspace
 from tests.source_reference_fixtures import (
     PreviewBackendFactory as _PreviewBackendFactory,
+)
+from tests.source_reference_fixtures import (
+    write_reference_render_comparison_fixture as write_comparison,
 )
 from tests.symlink_support import symlink_or_skip
 from vntts.authoring import render_hypothesis_review
@@ -52,101 +52,6 @@ def canonical_sha256(value):
             value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
     ).hexdigest()
-
-
-def write_comparison(root, *, reference_format="wav"):
-    root.mkdir()
-    controls = root / "controls"
-    controls.mkdir()
-    reference = controls / f"reference.{reference_format}"
-    if reference_format == "wav":
-        write_pcm16_wav(reference, np.full(1_200, 0.1, dtype=np.float32), 24_000)
-    else:
-        reference.write_bytes(b"OggS\x00checksum-bound-fixture")
-    reference_sha = sha256_file(reference)
-    text_sha = hashlib.sha256(b"A measured test line.").hexdigest()
-    queue_id = "reverse1999:1:2:" + text_sha[:16]
-    reports = []
-    arms = []
-    for index, arm_id in enumerate(("reference-02", "reference-03"), start=1):
-        arm_root = root / "arms" / arm_id
-        (arm_root / "audio").mkdir(parents=True)
-        base = {
-            "id": queue_id,
-            "line_id": "reverse1999:1:2",
-            "text": "A measured test line.",
-            "text_sha256": text_sha,
-            "case_group_id": "b" * 64,
-            "candidate_group_id": "c" * 64,
-            "candidate_id": "candidate-one",
-            "reference_sha256": reference_sha,
-        }
-        if index == 1:
-            audio = arm_root / "audio/0001.wav"
-            write_pcm16_wav(audio, np.full(2_400, 0.2, dtype=np.float32), 24_000)
-            render = {
-                **base,
-                "outcome": "complete",
-                "audio": "audio/0001.wav",
-                "audio_sha256": sha256_file(audio),
-                "sample_rate": 24_000,
-                "backend": "moss-tts",
-                "model": "fixture",
-                "generation_profile": "stable",
-                "seed": 0,
-            }
-        else:
-            render = {**base, "outcome": "error", "error": "typed limited"}
-        report = {
-            "schema": "vntts.voice-model-report",
-            "schema_version": 1,
-            "model_id": arm_id,
-            "provider": "reference-render-comparison",
-            "backend": "reference-render-comparison",
-            "model": "one exact alternative reference per sample",
-            "samples": [render],
-        }
-        report_path = arm_root / "report.json"
-        atomic_write_json(report_path, report)
-        report_relative = f"arms/{arm_id}/report.json"
-        reports.append(report_relative)
-        arms.append(
-            {
-                "arm_id": arm_id,
-                "report": report_relative,
-                "report_sha256": sha256_file(report_path),
-                "complete_count": int(index == 1),
-                "failure_count": int(index != 1),
-                "renders": [render],
-            }
-        )
-    body = {
-        "schema": "vntts.authoring-reference-render-comparison",
-        "schema_version": 1,
-        "generated_at": "2026-08-27T00:00:00+00:00",
-        "input_plan": "/immutable/plan.json",
-        "input_plan_sha256": "d" * 64,
-        "audit": "/immutable/audit",
-        "audit_id": "e" * 64,
-        "audit_sha256": "f" * 64,
-        "queue_ids": [queue_id],
-        "controls": [
-            {
-                "group_id": "c" * 64,
-                "candidate_id": "candidate-one",
-                "audio": f"controls/reference.{reference_format}",
-                "sha256": reference_sha,
-            }
-        ],
-        "arms": arms,
-        "reports": reports,
-        "complete_pair_queue_ids": [],
-    }
-    atomic_write_json(
-        root / "comparison.json",
-        {**body, "comparison_id": canonical_sha256(body)},
-    )
-    return queue_id
 
 
 class RenderHypothesisReviewTest(unittest.TestCase):
