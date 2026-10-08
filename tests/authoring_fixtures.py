@@ -47,6 +47,11 @@ from vntts.authoring.generation_manifest import write_generated_manifest_from_st
 from vntts.authoring.legacy_import import import_legacy_job
 from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
 from vntts.authoring.robustness_corpus import publish_speech_robustness_corpus
+from vntts.authoring.silence_comparison import (
+    SILENCE_COMPARISON_INPUT_SCHEMA,
+    SILENCE_COMPARISON_INPUT_VERSION,
+    SilenceComparisonSample,
+)
 from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
 from vntts.authoring.specialist_failure_plan import OFFLINE_FALLBACK_BACKEND
 from vntts.authoring.workbench import WorkspaceCreationResult, create_resume_workspace
@@ -1128,3 +1133,58 @@ def create_specialist_failure_workspace(
         json.dumps({"items": {queue_id: result}})
     )
     return workspace
+
+
+def write_silence_comparison_sample(root: str | Path) -> SilenceComparisonSample:
+    root = Path(root)
+    speech = np.full(800, 0.2, dtype=np.float32)
+    raw = root / "raw.wav"
+    segmented = root / "segmented.wav"
+    write_pcm16_wav(
+        raw,
+        np.concatenate((speech, np.zeros(1_600, dtype=np.float32), speech)),
+        1_000,
+    )
+    write_pcm16_wav(
+        segmented,
+        np.concatenate((speech, np.zeros(180, dtype=np.float32), speech)),
+        1_000,
+    )
+    sample = SilenceComparisonSample(
+        "queue:one",
+        "line:one",
+        "The gate is already open. We should leave before dawn.",
+        raw,
+        segmented,
+    )
+    return sample
+
+
+def write_silence_comparison_input_plan(
+    root: str | Path, sample: SilenceComparisonSample
+) -> Path:
+    root = Path(root)
+    plan = root / "comparison-input.json"
+    text_sha256 = hashlib.sha256(sample.text.encode("utf-8")).hexdigest()
+    plan.write_text(
+        json.dumps(
+            {
+                "schema": SILENCE_COMPARISON_INPUT_SCHEMA,
+                "schema_version": SILENCE_COMPARISON_INPUT_VERSION,
+                "samples": [
+                    {
+                        "queue_id": sample.queue_id,
+                        "line_id": sample.line_id,
+                        "text": sample.text,
+                        "text_sha256": text_sha256,
+                        "raw_audio": sample.raw_audio.name,
+                        "raw_audio_sha256": sha256_file(sample.raw_audio),
+                        "segmented_audio": sample.segmented_audio.name,
+                        "segmented_audio_sha256": sha256_file(sample.segmented_audio),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return plan

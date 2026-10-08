@@ -1,4 +1,3 @@
-import hashlib
 import io
 import json
 import tempfile
@@ -11,14 +10,15 @@ import numpy as np
 from vntts_artifacts.audio import read_pcm16_mono_wav, write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 
+from tests.authoring_fixtures import (
+    write_silence_comparison_input_plan,
+    write_silence_comparison_sample,
+)
 from tests.symlink_support import symlink_or_skip
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.listening import load_listening_session
 from vntts.authoring.silence_comparison import (
-    SILENCE_COMPARISON_INPUT_SCHEMA,
-    SILENCE_COMPARISON_INPUT_VERSION,
     SilenceComparisonError,
-    SilenceComparisonSample,
     create_silence_comparison_session,
     load_silence_comparison,
     load_silence_comparison_input_plan,
@@ -27,63 +27,10 @@ from vntts.authoring.silence_comparison import (
 
 
 class AuthoringSilenceComparisonTest(unittest.TestCase):
-    def _fixture(self, root):
-        root = Path(root)
-        speech = np.full(800, 0.2, dtype=np.float32)
-        raw = root / "raw.wav"
-        segmented = root / "segmented.wav"
-        write_pcm16_wav(
-            raw,
-            np.concatenate((speech, np.zeros(1_600, dtype=np.float32), speech)),
-            1_000,
-        )
-        write_pcm16_wav(
-            segmented,
-            np.concatenate((speech, np.zeros(180, dtype=np.float32), speech)),
-            1_000,
-        )
-        sample = SilenceComparisonSample(
-            "queue:one",
-            "line:one",
-            "The gate is already open. We should leave before dawn.",
-            raw,
-            segmented,
-        )
-        return sample
-
-    def _write_input_plan(self, root, sample):
-        root = Path(root)
-        plan = root / "comparison-input.json"
-        text_sha256 = hashlib.sha256(sample.text.encode("utf-8")).hexdigest()
-        plan.write_text(
-            json.dumps(
-                {
-                    "schema": SILENCE_COMPARISON_INPUT_SCHEMA,
-                    "schema_version": SILENCE_COMPARISON_INPUT_VERSION,
-                    "samples": [
-                        {
-                            "queue_id": sample.queue_id,
-                            "line_id": sample.line_id,
-                            "text": sample.text,
-                            "text_sha256": text_sha256,
-                            "raw_audio": sample.raw_audio.name,
-                            "raw_audio_sha256": sha256_file(sample.raw_audio),
-                            "segmented_audio": sample.segmented_audio.name,
-                            "segmented_audio_sha256": sha256_file(
-                                sample.segmented_audio
-                            ),
-                        }
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
-        return plan
-
     def test_publishes_checksum_bound_reports_and_blind_session(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            sample = self._fixture(root)
+            sample = write_silence_comparison_sample(root)
 
             result = publish_silence_comparison((sample,), root / "comparison")
             document = load_silence_comparison(result.directory)
@@ -109,7 +56,7 @@ class AuthoringSilenceComparisonTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             result = publish_silence_comparison(
-                (self._fixture(root),), root / "comparison"
+                (write_silence_comparison_sample(root),), root / "comparison"
             )
             document = json.loads(
                 (result.directory / "comparison.json").read_text(encoding="utf-8")
@@ -140,7 +87,7 @@ class AuthoringSilenceComparisonTest(unittest.TestCase):
     def test_publication_rechecks_source_bytes_and_never_replaces(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            sample = self._fixture(root)
+            sample = write_silence_comparison_sample(root)
             output = root / "comparison"
             real_write = Path.write_bytes
             mutated = False
@@ -162,7 +109,7 @@ class AuthoringSilenceComparisonTest(unittest.TestCase):
                     publish_silence_comparison((sample,), output)
             self.assertFalse(output.exists())
 
-            sample = self._fixture(root)
+            sample = write_silence_comparison_sample(root)
             publish_silence_comparison((sample,), output)
             digest = sha256_file(output / "comparison.json")
             with self.assertRaisesRegex(SilenceComparisonError, "already exists"):
@@ -172,7 +119,7 @@ class AuthoringSilenceComparisonTest(unittest.TestCase):
     def test_publication_cleans_staging_after_keyboard_interrupt(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            sample = self._fixture(root)
+            sample = write_silence_comparison_sample(root)
             output = root / "comparison"
             real_write = Path.write_bytes
 
@@ -192,8 +139,8 @@ class AuthoringSilenceComparisonTest(unittest.TestCase):
     def test_input_plan_and_cli_publish_check_and_session(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            sample = self._fixture(root)
-            plan_path = self._write_input_plan(root, sample)
+            sample = write_silence_comparison_sample(root)
+            plan_path = write_silence_comparison_input_plan(root, sample)
 
             plan = load_silence_comparison_input_plan(plan_path)
             self.assertEqual(plan.samples[0].queue_id, sample.queue_id)
@@ -257,14 +204,14 @@ class AuthoringSilenceComparisonTest(unittest.TestCase):
     def test_input_plan_rejects_changed_audio_and_symlink(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            sample = self._fixture(root)
-            plan_path = self._write_input_plan(root, sample)
+            sample = write_silence_comparison_sample(root)
+            plan_path = write_silence_comparison_input_plan(root, sample)
             sample.raw_audio.write_bytes(sample.segmented_audio.read_bytes())
             with self.assertRaisesRegex(SilenceComparisonError, "checksum changed"):
                 load_silence_comparison_input_plan(plan_path)
 
-            sample = self._fixture(root)
-            plan_path = self._write_input_plan(root, sample)
+            sample = write_silence_comparison_sample(root)
+            plan_path = write_silence_comparison_input_plan(root, sample)
             alias = root / "raw-alias.wav"
             symlink_or_skip(alias, sample.raw_audio)
             document = json.loads(plan_path.read_text(encoding="utf-8"))
@@ -276,9 +223,9 @@ class AuthoringSilenceComparisonTest(unittest.TestCase):
     def test_loaded_input_plan_remains_bound_during_publication(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            sample = self._fixture(root)
+            sample = write_silence_comparison_sample(root)
             plan = load_silence_comparison_input_plan(
-                self._write_input_plan(root, sample)
+                write_silence_comparison_input_plan(root, sample)
             )
             write_pcm16_wav(
                 sample.raw_audio,
@@ -301,7 +248,7 @@ class AuthoringSilenceComparisonTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             result = publish_silence_comparison(
-                (self._fixture(root),), root / "comparison"
+                (write_silence_comparison_sample(root),), root / "comparison"
             )
             comparison_path = result.directory / "comparison.json"
             original = json.loads(comparison_path.read_text(encoding="utf-8"))

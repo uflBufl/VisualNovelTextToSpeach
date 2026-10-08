@@ -6,8 +6,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import tests.test_authoring_silence_comparison as fixtures
 import vntts.authoring.listening as listening
+from tests.authoring_fixtures import (
+    write_silence_comparison_input_plan,
+    write_silence_comparison_sample,
+)
 from tests.symlink_support import symlink_or_skip
 from vntts.authoring.silence_comparison import (
     SilenceComparisonError,
@@ -21,7 +24,7 @@ from vntts.authoring.silence_comparison import (
 class SilenceComparisonContractsTest(unittest.TestCase):
     def fixture(self, root):
         root = root.resolve()
-        sample = fixtures.AuthoringSilenceComparisonTest()._fixture(root)
+        sample = write_silence_comparison_sample(root)
         result = publish_silence_comparison((sample,), root / "comparison")
         path = result.directory / "comparison.json"
         return sample, result.directory, path, json.loads(path.read_bytes())
@@ -60,9 +63,7 @@ class SilenceComparisonContractsTest(unittest.TestCase):
     def test_invalid_json_encoding_is_a_domain_error_at_each_input(self):
         with tempfile.TemporaryDirectory() as directory:
             sample, root, path, document = self.fixture(Path(directory))
-            plan = fixtures.AuthoringSilenceComparisonTest()._write_input_plan(
-                root.parent, sample
-            )
+            plan = write_silence_comparison_input_plan(root.parent, sample)
             plan.write_bytes(b"\xff")
             with self.assertRaises(SilenceComparisonError):
                 load_silence_comparison_input_plan(plan)
