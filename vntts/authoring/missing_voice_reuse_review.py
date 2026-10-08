@@ -11,7 +11,7 @@ import shutil
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TypeAlias, TypedDict
+from typing import NotRequired, TypeAlias, TypedDict
 
 from durable_file import atomic_write_json, sha256_file
 
@@ -46,38 +46,35 @@ REVIEW_VERSION = 1
 AUTOMATIC_UNRESOLVED_ORIGIN = "automatic_no_complete_candidate"
 
 
-class ReviewSample(TypedDict, total=False):
+class ReviewSample(TypedDict):
     queue_id: str
-    line_id: str
-    text: str
-    text_sha256: str
-    length_bucket: str
-    portrait: object
+    line_id: NotRequired[str]
+    text: NotRequired[str]
+    text_sha256: NotRequired[str]
+    length_bucket: NotRequired[str]
+    portrait: NotRequired[object]
     cohort_id: str
 
 
-class ReviewArm(TypedDict, total=False):
+class ReviewArm(TypedDict):
     queue_id: str
     status: str
     attempt_count: int
-    audio: str
-    audio_sha256: str
-    quality: object
-    repair_strategy: str | None
-    failure_kind: str
-    failure_summary: str
+    audio: NotRequired[str]
+    audio_sha256: NotRequired[str]
+    quality: NotRequired[object]
+    repair_strategy: NotRequired[str | None]
+    failure_kind: NotRequired[str]
+    failure_summary: NotRequired[str]
 
 
-class ReviewCandidate(TypedDict, total=False):
+class ReviewCandidate(TypedDict):
     label: str
-    candidate_id: str
-    voice_character: str
-    speaker: str
     samples: list[ReviewArm]
     generated_count: int
 
 
-class ReviewCohort(TypedDict, total=False):
+class ReviewCohort(TypedDict):
     cohort_id: str
     sample_count: int
     samples: list[ReviewSample]
@@ -85,11 +82,11 @@ class ReviewCohort(TypedDict, total=False):
     decision_options: list[str]
 
 
-class ReviewDecision(TypedDict, total=False):
+class ReviewDecision(TypedDict):
     cohort_id: str
     decision: str | None
-    decided_at: str
-    decision_origin: str
+    decided_at: NotRequired[str]
+    decision_origin: NotRequired[str]
 
 
 class HeardRecord(TypedDict):
@@ -98,26 +95,25 @@ class HeardRecord(TypedDict):
     label: str
 
 
-class ReviewBundle(TypedDict, total=False):
+class ReviewBundle(TypedDict):
     schema: str
     schema_version: int
     bundle_id: str
     plan: JsonObject
-    target_mode: str
+    target_mode: NotRequired[str]
     character: str
     decision_context: JsonObject | None
     candidates: list[ReviewCandidate]
     cohorts: list[ReviewCohort]
-    source_control: list[JsonObject]
+    source_control: NotRequired[list[JsonObject]]
     cohort_count: int
     candidate_count: int
     blind_key_sha256: str
-    plan_id: str
     seed: int
     policy: JsonObject
 
 
-class ReviewSession(TypedDict, total=False):
+class ReviewSession(TypedDict):
     schema: str
     schema_version: int
     bundle_id: str
@@ -128,33 +124,26 @@ class ReviewSession(TypedDict, total=False):
     decisions: list[ReviewDecision]
 
 
-class PlanCandidate(TypedDict, total=False):
+class PlanCandidate(TypedDict):
     candidate_id: str
     voice_character: str
     speaker: str
     ordered_references: list[JsonObject]
-    render_hypothesis: JsonObject | None
+    render_hypothesis: NotRequired[JsonObject]
 
 
-class PlanTarget(TypedDict, total=False):
+class PlanTarget(TypedDict):
     queue_id: str
     cohort_id: str
-    line_id: str
-    text: str
-    text_sha256: str
-    portrait: object
-    failure_category: str
-    source_state_item_sha256: str
+    line_id: NotRequired[str]
+    text: NotRequired[str]
+    text_sha256: NotRequired[str]
+    portrait: NotRequired[object]
+    failure_category: NotRequired[str]
+    source_state_item_sha256: NotRequired[str]
 
 
-class PlanSample(TypedDict, total=False):
-    queue_id: str
-    cohort_id: str
-    line_id: str
-    text: str
-    text_sha256: str
-    length_bucket: str
-    portrait: object
+PlanSample: TypeAlias = ReviewSample
 
 
 class CandidateSnapshot(TypedDict):

@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 from vntts.async_ui import LatestTaskRunner
 from vntts.authoring.missing_voice_reuse_review import (
     AUTOMATIC_UNRESOLVED_ORIGIN,
+    HeardRecord,
     MissingVoiceReuseReviewError,
     load_missing_voice_reuse_review,
     missing_voice_reuse_review_progress,
@@ -120,12 +121,6 @@ class ReviewDecision(TypedDict):
     cohort_id: str
     decision: str | None
     decision_origin: str | None
-
-
-class HeardRecord(TypedDict):
-    cohort_id: str
-    queue_id: str
-    label: str
 
 
 class ReviewSession(TypedDict):
