@@ -34,6 +34,7 @@ from vntts.pregeneration_pack import (
     OfflinePackError,
     OfflinePackPublisher,
     _copy_file,
+    _copy_prepared_file,
     _ensure_pack_disk_space,
     _link_verified_file,
     _load_terminal_generation,
@@ -415,13 +416,54 @@ class OfflinePackPublisherTest(unittest.TestCase):
             source = root / "source.wav"
             source.write_bytes(b"same audio")
             destination = root / "staging" / "audio.wav"
-            _copy_file(source, destination)
+            digest = _copy_file(source, destination)
             with patch(
                 "vntts.pregeneration_pack.shutil.copyfile",
                 side_effect=AssertionError("verified staged file must be reused"),
             ):
-                _copy_file(source, destination)
+                self.assertEqual(_copy_file(source, destination), digest)
             self.assertEqual(destination.read_bytes(), source.read_bytes())
+
+    def test_prepared_copy_reuses_digest_and_preserves_race_checks(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.json"
+            destination = root / "staged.json"
+            source.write_bytes(b"prepared document")
+            digest = sha256_file(source)
+            with patch(
+                "vntts.pregeneration_pack.sha256_file", wraps=sha256_file
+            ) as hashes:
+                _copy_prepared_file(source, destination, digest, "story index")
+            self.assertEqual(
+                [call.args[0] for call in hashes.call_args_list],
+                [source.resolve(), source.resolve(), destination],
+            )
+            destination.unlink()
+            with self.assertRaisesRegex(
+                OfflinePackError, "Prepared staged story index changed"
+            ):
+                _copy_prepared_file(source, destination, "0" * 64, "story index")
+            destination.unlink()
+            from shutil import copyfile
+
+            for target in (source, destination):
+                with self.subTest(changed=target):
+                    source.write_bytes(b"prepared document")
+
+                    def copy_then_change(original, staged):
+                        copyfile(original, staged)
+                        target.write_bytes(b"changed while copying")
+
+                    with (
+                        patch(
+                            "vntts.pregeneration_pack.shutil.copyfile",
+                            side_effect=copy_then_change,
+                        ),
+                        self.assertRaisesRegex(OfflinePackError, "source changed"),
+                    ):
+                        _copy_prepared_file(source, destination, digest, "story index")
+                    destination.unlink()
 
     def test_incremental_reuse_hard_links_verified_audio(self):
         with TemporaryDirectory() as directory:
@@ -872,10 +914,11 @@ class OfflinePackPublisherTest(unittest.TestCase):
             copied_references = []
 
             def copy_then_cancel(source, destination):
-                _copy_file(source, destination)
+                digest = _copy_file(source, destination)
                 if Path(source).suffix == ".wav":
                     copied_references.append(Path(source).name)
                     cancellation.set()
+                return digest
 
             with (
                 patch(
@@ -956,9 +999,10 @@ class OfflinePackPublisherTest(unittest.TestCase):
             copied = []
 
             def copy_then_cancel(source, destination):
-                _copy_file(source, destination)
+                digest = _copy_file(source, destination)
                 copied.append(Path(source).name)
                 cancellation.set()
+                return digest
 
             with (
                 patch(

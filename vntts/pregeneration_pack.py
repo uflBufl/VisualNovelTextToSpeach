@@ -1495,8 +1495,8 @@ def _verify_prepared_inputs(generation_input: PregenerationInput) -> None:
 def _copy_prepared_file(
     source: Path, destination: Path, expected_sha256: str, label: str
 ) -> None:
-    _copy_file(source, destination)
-    _verify_prepared_file(destination, expected_sha256, f"staged {label}")
+    if _copy_file(source, destination) != expected_sha256:
+        raise OfflinePackError(f"Prepared staged {label} changed")
 
 
 def _verify_prepared_file(path: Path, expected_sha256: str, label: str) -> None:
@@ -1508,7 +1508,7 @@ def _verify_prepared_file(path: Path, expected_sha256: str, label: str) -> None:
         raise OfflinePackError(f"Prepared {label} changed")
 
 
-def _copy_file(source: str | Path, destination: Path) -> None:
+def _copy_file(source: str | Path, destination: Path) -> str:
     source = Path(source)
     if not source.is_file() or source.is_symlink():
         raise OfflinePackError(f"Offline pack source is unsafe: {source}")
@@ -1522,6 +1522,7 @@ def _copy_file(source: str | Path, destination: Path) -> None:
         shutil.copyfile(source, destination)
     if sha256_file(source) != before or sha256_file(destination) != before:
         raise OfflinePackError(f"Offline pack source changed: {source}")
+    return before
 
 
 def _link_verified_file(
