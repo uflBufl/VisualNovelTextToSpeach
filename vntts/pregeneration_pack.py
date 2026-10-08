@@ -1425,7 +1425,7 @@ def _live_fallback_records(state: GenerationState) -> JsonRecords:
                 "decision_sha256": canonical_document_sha256(decision),
             }
         )
-    return sorted(records, key=lambda value: (value["line_id"], value["text_sha256"]))
+    return records
 
 
 def _copy_voice_references(
