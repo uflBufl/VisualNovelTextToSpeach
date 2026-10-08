@@ -48,6 +48,7 @@ from vntts.authoring.legacy_import import import_legacy_job
 from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
 from vntts.authoring.robustness_corpus import publish_speech_robustness_corpus
 from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
+from vntts.authoring.specialist_failure_plan import OFFLINE_FALLBACK_BACKEND
 from vntts.authoring.workbench import WorkspaceCreationResult, create_resume_workspace
 from vntts.authoring.workspace_foundation import load_json_object
 
@@ -1073,3 +1074,57 @@ def publish_audio_event_review_fixture(
         source_audio_id="610008734",
     )
     return result, queue, audio
+
+
+def create_specialist_failure_workspace(
+    root: Path, strategy: str, queue_id: str
+) -> Path:
+    workspace = root / queue_id
+    (workspace / "generated-audio").mkdir(parents=True)
+    configuration = {
+        "workspace_id": f"workspace-{queue_id}",
+        "config_fingerprint": "a" * 64,
+        "carry_forward": {"failed_queue_ids": [queue_id]},
+    }
+    queue = [
+        {"record_type": "metadata"},
+        {
+            "queue_id": queue_id,
+            "line_id": f"line-{queue_id}",
+            "text": "First sentence. Second sentence.",
+            "speaker": "Narrator",
+        },
+    ]
+    result = {
+        "status": "failed",
+        "provider": "moss-tts"
+        if strategy != OFFLINE_FALLBACK_BACKEND
+        else "pocket-tts",
+        "model": "model",
+        "generation_profile": "stable",
+        "voice_character": "Narrator",
+        "attempts_by_provider": {"moss-tts": 1},
+        "failure_repair": {"strategy": strategy},
+        "failure": {
+            "kind": "missed_eos_audio_limit"
+            if strategy != OFFLINE_FALLBACK_BACKEND
+            else "speech_silence",
+            "completion": "limited"
+            if strategy != OFFLINE_FALLBACK_BACKEND
+            else "complete",
+            "error_type": "ExampleError",
+            "text_features": {
+                "word_count": 4,
+                "sentence_boundary_count": 2,
+                "ellipsis_count": 0,
+            },
+        },
+    }
+    (workspace / "workspace.json").write_text(json.dumps(configuration))
+    (workspace / "queue.jsonl").write_text(
+        "\n".join(json.dumps(value) for value in queue) + "\n"
+    )
+    (workspace / "generated-audio/generation-state.json").write_text(
+        json.dumps({"items": {queue_id: result}})
+    )
+    return workspace

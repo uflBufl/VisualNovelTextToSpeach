@@ -6,9 +6,9 @@ from unittest.mock import patch
 
 from vntts_artifacts.file_integrity import sha256_file
 
-import tests.test_authoring_specialist_failure_plan as specialist_fixture
 import vntts.authoring.failure_regeneration as regeneration
 import vntts.authoring.specialist_failure_plan as specialist
+from tests.authoring_fixtures import create_specialist_failure_workspace
 from tests.bulk_generation_fixtures import queue_item, write_queue
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import LEGACY_STATE_SCHEMA
@@ -17,7 +17,7 @@ from vntts.authoring.cohort_review import CohortReviewError
 
 class FailurePlanContractsTest(unittest.TestCase):
     def specialist_fixture(self, root):
-        return specialist_fixture.SpecialistFailurePlanTest().create_workspace(
+        return create_specialist_failure_workspace(
             root, "sentence_boundary_segmentation", "a"
         )
 
@@ -93,7 +93,7 @@ class FailurePlanContractsTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             first = self.specialist_fixture(root)
-            second = specialist_fixture.SpecialistFailurePlanTest().create_workspace(
+            second = create_specialist_failure_workspace(
                 root, "sentence_boundary_segmentation", "b"
             )
             original = specialist._next_action
