@@ -2,79 +2,17 @@ import unittest
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
 import soundfile as sf
 
+from tests.audio_output_fixtures import FakeAudioModule, FakeOutputStream
 from vntts.authoring.pcm_playback import (
     PcmClip,
     PcmPlaybackError,
     PersistentPcmPlayer,
 )
-
-
-class FakeStatus:
-    def __init__(self, *, output_underflow=False):
-        self.output_underflow = output_underflow
-
-
-class FakeOutputStream:
-    def __init__(self, module, **options):
-        self.module = module
-        self.options = options
-        self.callback = options["callback"]
-        self.samplerate = options["samplerate"]
-        self.channels = options["channels"]
-        self.time = 0.0
-        self.started = False
-        self.aborted = False
-        self.closed = False
-
-    def start(self):
-        self.started = True
-
-    def abort(self):
-        self.aborted = True
-
-    def close(self):
-        self.closed = True
-
-    def pump(self, frames, *, underflow=False):
-        output = np.empty((frames, self.channels), dtype=np.float32)
-        timing = SimpleNamespace(
-            outputBufferDacTime=self.time + self.module.latency,
-            currentTime=self.time,
-        )
-        self.callback(
-            output,
-            frames,
-            timing,
-            FakeStatus(output_underflow=underflow),
-        )
-        self.time += frames / self.samplerate
-        return output
-
-
-class FakeAudioModule:
-    latency = 0.1
-
-    def __init__(self, *, sample_rate=48_000, channels=2):
-        self.device = {
-            "default_samplerate": sample_rate,
-            "max_output_channels": channels,
-        }
-        self.stream = None
-
-    def query_devices(self, *, kind):
-        if kind != "output":
-            raise AssertionError(kind)
-        return self.device
-
-    def OutputStream(self, **options):
-        self.stream = FakeOutputStream(self, **options)
-        return self.stream
 
 
 class PersistentPcmPlayerTest(unittest.TestCase):
