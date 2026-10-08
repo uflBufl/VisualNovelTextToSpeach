@@ -153,7 +153,7 @@ class ChecksumBoundaryTest(unittest.TestCase):
             extension = write_voice_generation_queue(
                 root / "extension.jsonl", metadata, [additive_queue_item(2)]
             )
-            loader = queue_extension.VoiceGenerationQueue.load
+            loader = queue_extension.load_stable_generation_queue
 
             def load_then_remove(path):
                 result = loader(path)
@@ -162,8 +162,8 @@ class ChecksumBoundaryTest(unittest.TestCase):
                 return result
 
             with patch.object(
-                queue_extension.VoiceGenerationQueue,
-                "load",
+                queue_extension,
+                "load_stable_generation_queue",
                 side_effect=load_then_remove,
             ):
                 with self.assertRaises(queue_extension.QueueExtensionError) as caught:

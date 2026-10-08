@@ -153,7 +153,7 @@
       "path": "vntts/authoring/queue_extension.py",
       "scope": "_validate_extension_ledger",
       "count": 1,
-      "maximum": 16
+      "maximum": 15
     },
     {
       "code": "C901",
@@ -720,7 +720,7 @@
       "path": "vntts/authoring/queue_extension.py",
       "scope": "_validate_extension_ledger",
       "count": 1,
-      "maximum": 15
+      "maximum": 14
     },
     {
       "code": "PLR0912",
