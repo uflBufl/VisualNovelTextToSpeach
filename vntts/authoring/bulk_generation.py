@@ -2921,11 +2921,7 @@ def _silence_failure_evidence_directory(
     if not directory.name or directory.name in {".", ".."}:
         raise BulkGenerationError("Silence-failure evidence requires a directory name")
     directory = no_replace_destination(directory)
-    try:
-        directory.relative_to(output_directory)
-    except ValueError:
-        pass
-    else:
+    if directory.is_relative_to(output_directory):
         raise BulkGenerationError(
             "Silence-failure evidence must stay outside generated output"
         )

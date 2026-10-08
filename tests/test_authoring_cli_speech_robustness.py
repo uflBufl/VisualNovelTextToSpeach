@@ -42,6 +42,32 @@ class SpeechRobustnessCliFamilyTest(unittest.TestCase):
         self.assertIsNone(arguments.model)
         self.assertTrue(arguments.offline)
 
+    @patch("vntts.authoring.cli_speech_robustness.install_managed_asr_model")
+    def test_corpus_containment_is_rejected_before_installing_model(self, install):
+        for output in (
+            "corpus",
+            "corpus/sub/report.json",
+            "corpus/../corpus/report.json",
+        ):
+            with (
+                self.subTest(output=output),
+                self.assertRaisesRegex(
+                    SpeechRobustnessCommandError, "outside the immutable corpus"
+                ),
+            ):
+                handle(
+                    argparse.Namespace(
+                        command="speech-robustness-asr",
+                        corpus=Path("corpus"),
+                        model=None,
+                        output=Path(output),
+                        device="cpu",
+                        offline=False,
+                        progress=None,
+                    )
+                )
+        install.assert_not_called()
+
     def test_family_owns_every_speech_robustness_command(self):
         self.assertEqual(
             COMMANDS,

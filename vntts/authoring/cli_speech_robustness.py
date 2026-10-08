@@ -137,11 +137,7 @@ def _handle(arguments: argparse.Namespace) -> int:
     if arguments.command == "speech-robustness-asr":
         corpus_root = arguments.corpus.expanduser().resolve()
         output = arguments.output.expanduser().resolve()
-        try:
-            output.relative_to(corpus_root)
-        except ValueError:
-            pass
-        else:
+        if output.is_relative_to(corpus_root):
             raise SpeechRobustnessAsrError(
                 "ASR report must be outside the immutable corpus directory"
             )

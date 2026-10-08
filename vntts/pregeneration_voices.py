@@ -2331,9 +2331,7 @@ def _portrait_snapshot(
         if candidate.is_symlink() or not candidate.is_file():
             continue
         resolved = candidate.resolve()
-        try:
-            resolved.relative_to(root)
-        except ValueError:
+        if not resolved.is_relative_to(root):
             continue
         before = sha256_file(resolved)
         if sha256_file(resolved) != before:

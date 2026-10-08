@@ -1584,11 +1584,7 @@ def _publication_output(
     output.parent.mkdir(parents=True, exist_ok=True)
     for decision_input in decision_inputs:
         source = Path(decision_input).expanduser().resolve()
-        if source.is_dir():
-            try:
-                output.relative_to(source)
-            except ValueError:
-                continue
+        if source.is_dir() and output.is_relative_to(source):
             raise SpeechRobustnessCorpusError(
                 "Robustness corpus output must be outside decision inputs"
             )
