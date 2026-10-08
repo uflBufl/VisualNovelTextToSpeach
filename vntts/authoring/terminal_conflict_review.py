@@ -1286,7 +1286,7 @@ def assert_terminal_conflict_review_source_authorities(
 
 def _source_reconciliation(
     review: TerminalConflictReviewDocument,
-) -> tuple[AuthoritySnapshot, JsonDocument, dict[str, JsonDocument]]:
+) -> tuple[AuthoritySnapshot, dict[str, JsonDocument]]:
     try:
         report_snapshot = capture_authority_file(
             review["source_reconciliation"], "source reconciliation"
@@ -1305,7 +1305,7 @@ def _source_reconciliation(
         _text(value.get("workspace_id"), "Workspace ID"): value
         for value in _objects(report.get("workspaces"), "reconciliation workspaces")
     }
-    return report_snapshot, report, workspace_records
+    return report_snapshot, workspace_records
 
 
 def _assert_candidate_source_authority(
@@ -1354,7 +1354,7 @@ def _assert_candidate_source_authority(
 
 
 def _assert_source_authorities(review: TerminalConflictReviewDocument) -> None:
-    report_snapshot, _report, workspace_records = _source_reconciliation(review)
+    report_snapshot, workspace_records = _source_reconciliation(review)
     for case in review["cases"]:
         for candidate in case["candidates"]:
             for source in candidate["source_authorities"]:
