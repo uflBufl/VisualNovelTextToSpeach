@@ -1224,7 +1224,7 @@
       "path": "vntts/authoring/terminal_conflict_review_ui.py",
       "scope": "TerminalConflictReviewDialog.__init__",
       "count": 1,
-      "maximum": 118
+      "maximum": 117
     },
     {
       "code": "PLR0915",

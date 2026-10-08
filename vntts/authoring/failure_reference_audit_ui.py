@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Callable, Literal, Protocol, TypeAlias, TypedDict, TypeGuard
 
-from PySide6.QtCore import QObject, Qt, QThreadPool, QUrl
+from PySide6.QtCore import Qt, QThreadPool, QUrl
 from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -90,23 +90,11 @@ class AuditDecisions(TypedDict):
     decision_set_id: str | None
 
 
-class _AudioPlayer(Protocol):
-    def stop(self) -> None: ...
-
-    def play_bytes(self, payload: bytes, source: str) -> object | None: ...
-
-    def setSource(self, source: QUrl) -> None: ...
-
-
 AuditLoader: TypeAlias = Callable[[str | Path], FailureReferenceAudit]
 DecisionLoader: TypeAlias = Callable[[Path], object]
 AudioPreparer: TypeAlias = Callable[[Path, str, str], FailureReferenceAudio]
 DecisionRecorder: TypeAlias = Callable[[Path, str, str], object]
 PreviewServiceFactory: TypeAlias = Callable[[Path], "_PreviewService"]
-AudioBytesPlayer: TypeAlias = Callable[
-    [_AudioPlayer, QObject | None, bytes, str], object | None
-]
-AudioBufferReleaser: TypeAlias = Callable[[_AudioPlayer, object | None], None]
 
 
 class _PreviewService(Protocol):
@@ -124,20 +112,6 @@ _decision_loader: DecisionLoader = load_failure_reference_decisions
 _default_audio_preparer: AudioPreparer = prepare_failure_reference_audio
 _default_decision_recorder: DecisionRecorder = record_failure_reference_decision
 _preview_service_factory: PreviewServiceFactory = FailureReferencePreviewService
-
-
-def _play_audio_bytes(
-    player: _AudioPlayer, _parent: QObject | None, payload: bytes, source: str
-) -> object | None:
-    return player.play_bytes(payload, source)
-
-
-def _release_audio_buffer(player: _AudioPlayer, _buffer: object | None) -> None:
-    player.setSource(QUrl())
-
-
-_audio_bytes_player: AudioBytesPlayer = _play_audio_bytes
-_audio_buffer_releaser: AudioBufferReleaser = _release_audio_buffer
 
 
 def _is_audit_document(value: object) -> TypeGuard[AuditDocument]:
@@ -714,9 +688,7 @@ class FailureReferenceAuditDialog(CloseGuardedDialog):
             )
             self._update_actions()
             return
-        playback = _audio_bytes_player(
-            self.player, self, audio.payload, f"memory:{audio.path.name}"
-        )
+        playback = self.player.play_bytes(audio.payload, f"memory:{audio.path.name}")
         if playback is None:
             self.status.setText("BLOCKED: unable to open immutable audio buffer")
             self._update_actions()
@@ -743,7 +715,7 @@ class FailureReferenceAuditDialog(CloseGuardedDialog):
     def stop_playback(self) -> None:
         self.player.stop() if hasattr(self, "player") else None
         if hasattr(self, "player"):
-            _audio_buffer_releaser(self.player, self._playback_buffer)
+            self.player.setSource(QUrl())
         self._playback_buffer = None
         self._playback_target = None
         self._playback_kind = None
@@ -822,8 +794,8 @@ class FailureReferenceAuditDialog(CloseGuardedDialog):
 
     def _play_generated_preview(self, preview: FailureReferencePreview) -> None:
         self.stop_playback()
-        playback = _audio_bytes_player(
-            self.player, self, preview.payload, "memory:generated-preview.wav"
+        playback = self.player.play_bytes(
+            preview.payload, "memory:generated-preview.wav"
         )
         if playback is None:
             self.status.setText("BLOCKED: unable to open immutable generated preview")

@@ -6,7 +6,7 @@ import argparse
 import hashlib
 import sys
 from pathlib import Path
-from typing import Callable, Literal, Protocol, TypeAlias, TypedDict, TypeGuard
+from typing import Callable, Literal, TypeAlias, TypedDict, TypeGuard
 
 from PySide6.QtCore import QEvent, QObject, Qt, QThreadPool, QUrl
 from PySide6.QtGui import QCloseEvent, QKeySequence
@@ -69,43 +69,17 @@ class ReviewProgress(TypedDict):
     decisions: list[ReviewDecision]
 
 
-class _AudioPlayer(Protocol):
-    def stop(self) -> None: ...
-
-    def play_bytes(self, payload: bytes, source: str) -> object | None: ...
-
-    def setSource(self, source: QUrl) -> None: ...
-
-
 CandidateLoader: TypeAlias = Callable[[Path, str, str], bytes]
 DecisionRecorder: TypeAlias = Callable[[Path, str, str], object]
 DecisionConfirmer: TypeAlias = Callable[[str], bool]
 CandidatePayload: TypeAlias = tuple[str, str, str, int, bytes]
 ReviewDocumentLoader: TypeAlias = Callable[[Path], object]
 ReviewProgressLoader: TypeAlias = Callable[[Path], object]
-AudioBytesPlayer: TypeAlias = Callable[
-    [_AudioPlayer, QObject | None, bytes, str], object | None
-]
-AudioBufferReleaser: TypeAlias = Callable[[_AudioPlayer, object | None], None]
 
 _review_document_loader: ReviewDocumentLoader = load_terminal_conflict_review_document
 _review_progress_loader: ReviewProgressLoader = load_terminal_conflict_review_progress
 _default_candidate_loader: CandidateLoader = load_terminal_conflict_candidate_audio
 _default_decision_recorder: DecisionRecorder = record_terminal_conflict_decision
-
-
-def _play_audio_bytes(
-    player: _AudioPlayer, _parent: QObject | None, payload: bytes, source: str
-) -> object | None:
-    return player.play_bytes(payload, source)
-
-
-def _release_audio_buffer(player: _AudioPlayer, _buffer: object | None) -> None:
-    player.setSource(QUrl())
-
-
-_audio_bytes_player: AudioBytesPlayer = _play_audio_bytes
-_audio_buffer_releaser: AudioBufferReleaser = _release_audio_buffer
 
 
 def _is_review_candidate(value: object) -> TypeGuard[ReviewCandidate]:
@@ -216,7 +190,6 @@ class TerminalConflictReviewDialog(CloseGuardedDialog):
         self.confirmer: DecisionConfirmer = confirmer or self._confirm_decision
         self._active = False
         self._close_pending = False
-        self._audio_buffer: object | None = None
         self._playing_candidate: str | None = None
         self._heard: set[str] = set()
         self._current: ReviewCase | None = None
@@ -527,13 +500,10 @@ class TerminalConflictReviewDialog(CloseGuardedDialog):
             self.status.setText("PLAYBACK CANCELLED: candidate selection changed")
             self._set_actions(True)
             return
-        self._audio_buffer = _audio_bytes_player(
-            self.player,
-            self,
-            payload,
-            f"memory:terminal-candidate-{index + 1}.wav",
+        playback = self.player.play_bytes(
+            payload, f"memory:terminal-candidate-{index + 1}.wav"
         )
-        if self._audio_buffer is None:
+        if playback is None:
             self.status.setText("PLAYBACK BLOCKED: immutable audio buffer failed")
             self._set_actions(True)
             return
@@ -547,8 +517,7 @@ class TerminalConflictReviewDialog(CloseGuardedDialog):
         if hasattr(self, "playback_runner"):
             self.playback_runner.cancel()
         self.player.stop()
-        _audio_buffer_releaser(self.player, self._audio_buffer)
-        self._audio_buffer = None
+        self.player.setSource(QUrl())
         self._playing_candidate = None
         self.stop.setEnabled(False)
 
