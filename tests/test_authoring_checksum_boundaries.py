@@ -270,7 +270,7 @@ class ChecksumBoundaryTest(unittest.TestCase):
             )
             self._disappear_after(
                 source_reference_review,
-                "load_source_reference_plan",
+                "_load_source_reference_plan_snapshot",
                 plan.directory / "plan.json",
                 lambda: source_reference_review.publish_source_reference_evaluation(
                     plan.directory, root / "outputs"

@@ -71,6 +71,7 @@ from vntts.document_identity import (
     is_lowercase_sha256,
 )
 from vntts.story_index_snapshot import load_story_index_snapshot
+from vntts.voices import voice_manifest_entries_at_path
 
 SOURCE_REPORT_SCHEMA = "r1999.story-voice-reference-candidates"
 SOURCE_REPORT_VERSIONS = frozenset({1, 2})
@@ -394,8 +395,14 @@ def _publish_source_reference_plan(
 
 def load_source_reference_plan(directory: str | Path) -> JsonObject:
     """Validate a published plan and every copied reference checksum."""
+    return _load_source_reference_plan_snapshot(directory)[1]
+
+
+def _load_source_reference_plan_snapshot(
+    directory: str | Path,
+) -> tuple[bytes, JsonObject]:
     directory = Path(directory).expanduser().resolve()
-    plan_path, _payload, plan = _read_json(
+    plan_path, payload, plan = _read_json(
         directory / "plan.json", "source-reference plan"
     )
     if plan_path.parent != directory:
@@ -417,7 +424,7 @@ def load_source_reference_plan(directory: str | Path) -> JsonObject:
         _validate_plan_cluster(
             directory, cluster, cluster_index, seen_clusters, seen_queue_ids
         )
-    return plan
+    return payload, plan
 
 
 def _validate_plan_cluster(
@@ -629,13 +636,20 @@ def _quality_review_selection(
     from vntts.authoring.source_reference_quality_records import (
         SourceReferenceQualityError,
         accepted_source_reference_variants,
-        load_source_reference_quality_review,
+        validate_source_reference_quality_review_document,
+    )
+    from vntts.authoring.source_reference_quality_records import (
+        _read_json as read_quality_review,
     )
 
     quality_review_path = Path(quality_review).expanduser().resolve()
     try:
-        payload = quality_review_path.read_bytes()
-        document = load_source_reference_quality_review(quality_review_path)
+        payload, snapshot = read_quality_review(
+            quality_review_path, "source-reference quality review"
+        )
+        document = validate_source_reference_quality_review_document(
+            snapshot, quality_review_path.parent
+        )
         if quality_review_path.read_bytes() != payload:
             raise SourceReferenceReviewError(
                 "Source-reference quality review changed while it was loaded"
@@ -665,9 +679,11 @@ def _load_binding_base(
 ) -> tuple[Path, JsonObject, str, VoiceManifestEntry, list[VoiceManifestEntry]]:
     base_voice_manifest = Path(base_voice_manifest).expanduser().resolve()
     try:
-        base_payload = base_voice_manifest.read_bytes()
-        base_document, base_voices = load_voice_manifest(
-            base_voice_manifest, allow_legacy=False
+        _path, base_payload, base_document = _read_json(
+            base_voice_manifest, "base voice manifest"
+        )
+        base_voices = voice_manifest_entries_at_path(
+            base_document, base_voice_manifest, allow_legacy=False
         )
     except (OSError, VoiceManifestError) as error:
         raise SourceReferenceReviewError(str(error)) from error
@@ -845,9 +861,9 @@ def publish_source_reference_bindings(
 ) -> SourceReferenceBindingsResult:
     """Publish a partial manifest with explicit queue-to-variant bindings."""
     plan_directory = Path(plan_directory).expanduser().resolve()
-    plan = load_source_reference_plan(plan_directory)
+    plan_payload, plan = _load_source_reference_plan_snapshot(plan_directory)
     plan_path = plan_directory / "plan.json"
-    plan_sha256 = _file_sha256(plan_path)
+    plan_sha256 = hashlib.sha256(plan_payload).hexdigest()
     selected_variant_ids, quality_review_path, quality_review_sha256 = (
         _quality_review_selection(quality_review, selected_variant_ids, plan_sha256)
     )
@@ -977,8 +993,8 @@ def _load_bound_manifest(
     path: Path,
 ) -> tuple[bytes, JsonObject, tuple[VoiceManifestEntry, ...], dict[str, str]]:
     try:
-        payload = path.read_bytes()
-        document, voices = load_voice_manifest(path, allow_legacy=False)
+        _path, payload, document = _read_json(path, "source-reference voice manifest")
+        voices = voice_manifest_entries_at_path(document, path, allow_legacy=False)
         overrides = queue_voice_overrides_from_manifest(document, voices=voices)
     except (OSError, VoiceManifestError, SourceReferenceBindingError) as error:
         raise SourceReferenceReviewError(str(error)) from error
@@ -1602,9 +1618,9 @@ def publish_source_reference_evaluation(
 ) -> SourceReferenceEvaluationResult:
     """Publish self-contained fixed-corpus inputs for every accepted anchor."""
     plan_directory = Path(plan_directory).expanduser().resolve()
-    plan = load_source_reference_plan(plan_directory)
+    plan_payload, plan = _load_source_reference_plan_snapshot(plan_directory)
     plan_path = plan_directory / "plan.json"
-    plan_sha256 = _file_sha256(plan_path)
+    plan_sha256 = hashlib.sha256(plan_payload).hexdigest()
     output = no_replace_destination(output)
     if output.exists() or output.is_symlink():
         raise SourceReferenceReviewError(
