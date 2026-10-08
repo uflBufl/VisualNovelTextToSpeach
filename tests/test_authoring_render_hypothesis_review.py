@@ -22,6 +22,7 @@ from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_reference_audit import (
     load_failure_reference_decisions,
     publish_failure_reference_audit,
+    record_failure_reference_decision,
 )
 from vntts.authoring.failure_reference_binding import (
     load_failure_reference_binding_document,
@@ -55,29 +56,6 @@ def canonical_sha256(value):
 
 
 class RenderHypothesisReviewTest(unittest.TestCase):
-    def test_non_finite_review_identity_uses_record_and_review_errors(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            comparison = root / "comparison"
-            queue_id = write_comparison(comparison)
-            output = root / "review"
-            publish_render_hypothesis_review(
-                comparison, queue_id, "reference-02", output
-            )
-            path = output / "review.json"
-            original = json.loads(path.read_text())
-            for value in (float("nan"), float("inf"), float("-inf")):
-                for loader, error_type in (
-                    (load_render_hypothesis_record, RenderHypothesisRecordError),
-                    (load_render_hypothesis_review, RenderHypothesisReviewError),
-                ):
-                    with self.subTest(value=value, loader=loader.__name__):
-                        path.write_text(json.dumps({**original, "seed": value}))
-                        with self.assertRaisesRegex(error_type, "identity is invalid"):
-                            loader(output)
-            path.write_text(json.dumps(original))
-            self.assertEqual(load_render_hypothesis_review(output).queue_id, queue_id)
-
     def test_accepted_hypothesis_imports_into_fresh_audit_and_binding(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -181,6 +159,10 @@ class RenderHypothesisReviewTest(unittest.TestCase):
             self.assertEqual(
                 load_failure_reference_decisions(fresh_audit)["decisions"], []
             )
+            self.assert_import_preserves_competing_decision(
+                root, workspace, comparison.directory, review_root, queue_id
+            )
+
             imported = import_accepted_render_hypothesis(
                 fresh_audit, comparison.directory, review_root, queue_id
             )
@@ -198,8 +180,7 @@ class RenderHypothesisReviewTest(unittest.TestCase):
             binding = load_failure_reference_binding_document(binding_root)
             decision = load_failure_reference_decisions(fresh_audit)["decisions"][0]
 
-            self.assertTrue(imported.created)
-            self.assertFalse(repeated.created)
+            self.assertEqual((imported.created, repeated.created), (True, False))
             self.assertEqual(imported.decision_set_id, repeated.decision_set_id)
             self.assertEqual(
                 decision["selection_authority"]["schema"],
@@ -222,6 +203,37 @@ class RenderHypothesisReviewTest(unittest.TestCase):
                 )
             self.assertEqual(code, 0)
             self.assertFalse(json.loads(stdout.getvalue())["created"])
+
+    def assert_import_preserves_competing_decision(
+        self, root, workspace, comparison_root, review_root, queue_id
+    ):
+        conflict_audit = root / "conflict-audit"
+        publish_failure_reference_audit(
+            workspace, conflict_audit, seed=19, queue_ids=(queue_id,)
+        )
+        competitor = None
+
+        def save_competing_decision(directory, group_id, candidate_id, **kwargs):
+            nonlocal competitor
+            competitor = record_failure_reference_decision(
+                directory, group_id, "neither_acceptable"
+            )
+            return record_failure_reference_decision(
+                directory, group_id, candidate_id, **kwargs
+            )
+
+        with patch.object(
+            render_hypothesis_review,
+            "record_failure_reference_decision",
+            side_effect=save_competing_decision,
+        ):
+            with self.assertRaisesRegex(
+                RenderHypothesisReviewError, "changed before decision save"
+            ):
+                import_accepted_render_hypothesis(
+                    conflict_audit, comparison_root, review_root, queue_id
+                )
+        self.assertEqual(load_failure_reference_decisions(conflict_audit), competitor)
 
     def assert_import_rejects_captured_key_replacement(
         self,
@@ -441,6 +453,29 @@ class RenderHypothesisReviewTest(unittest.TestCase):
                     comparison, queue_id, "reference-02", link
                 )
             self.assertFalse(target.exists())
+
+    def test_non_finite_review_identity_uses_record_and_review_errors(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            comparison = root / "comparison"
+            queue_id = write_comparison(comparison)
+            output = root / "review"
+            publish_render_hypothesis_review(
+                comparison, queue_id, "reference-02", output
+            )
+            path = output / "review.json"
+            original = json.loads(path.read_text())
+            for value in (float("nan"), float("inf"), float("-inf")):
+                for loader, error_type in (
+                    (load_render_hypothesis_record, RenderHypothesisRecordError),
+                    (load_render_hypothesis_review, RenderHypothesisReviewError),
+                ):
+                    with self.subTest(value=value, loader=loader.__name__):
+                        path.write_text(json.dumps({**original, "seed": value}))
+                        with self.assertRaisesRegex(error_type, "identity is invalid"):
+                            loader(output)
+            path.write_text(json.dumps(original))
+            self.assertEqual(load_render_hypothesis_review(output).queue_id, queue_id)
 
     def test_public_record_rejects_noninteger_versions(self):
         with TemporaryDirectory() as directory:

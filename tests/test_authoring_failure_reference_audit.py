@@ -11,7 +11,12 @@ from tests.authoring_fixtures import create_failed_reference_workspace
 from tests.source_reference_fixtures import (
     PreviewBackendFactory as _PreviewBackendFactory,
 )
+from vntts.authoring import failure_reference_audit as audit_module
 from vntts.authoring import reference_render_comparison
+from vntts.authoring.advisory_lock import (
+    AdvisoryLockBusyError,
+    exclusive_advisory_lock,
+)
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_reference_audit import (
     FailureReferenceAuditError,
@@ -355,6 +360,107 @@ class FailureReferenceAuditTest(unittest.TestCase):
                 FailureReferenceAuditError, "decision identity changed"
             ):
                 load_failure_reference_decisions(output)
+
+    def test_conditional_decision_save_preserves_competing_writer(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _queue_id = self.create_failed_workspace(root)
+            output = root / "audit"
+            publish_failure_reference_audit(workspace, output)
+            group = json.loads((output / "audit.json").read_text())["groups"][0]
+            expected = load_failure_reference_decisions(output)
+            competitor = record_failure_reference_decision(
+                output, group["group_id"], "neither_acceptable"
+            )
+            before = (output / "decisions.json").read_bytes()
+            with self.assertRaisesRegex(
+                FailureReferenceAuditError, "changed before decision save"
+            ):
+                record_failure_reference_decision(
+                    output,
+                    group["group_id"],
+                    group["candidates"][0]["candidate_id"],
+                    expected_decisions=expected,
+                )
+            self.assertEqual((output / "decisions.json").read_bytes(), before)
+            self.assertEqual(load_failure_reference_decisions(output), competitor)
+            updated = record_failure_reference_decision(
+                output,
+                group["group_id"],
+                group["candidates"][0]["candidate_id"],
+                expected_decisions=competitor,
+            )
+            self.assertEqual(
+                updated["decisions"][0]["decision"],
+                group["candidates"][0]["candidate_id"],
+            )
+
+    def test_decision_guard_timeout_uses_audit_error(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _queue_id = self.create_failed_workspace(root)
+            output = root / "audit"
+            publish_failure_reference_audit(workspace, output)
+            group = json.loads((output / "audit.json").read_text())["groups"][0]
+            with patch.object(
+                audit_module,
+                "exclusive_advisory_lock",
+                side_effect=AdvisoryLockBusyError("guard busy"),
+            ):
+                with self.assertRaisesRegex(FailureReferenceAuditError, "guard busy"):
+                    record_failure_reference_decision(
+                        output, group["group_id"], "neither_acceptable"
+                    )
+            self.assertFalse((output / "decisions.json").exists())
+
+    def test_decision_update_holds_shared_guard_until_publication(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _queue_id = self.create_failed_workspace(root)
+            output = root / "audit"
+            publish_failure_reference_audit(workspace, output)
+            group = json.loads((output / "audit.json").read_text())["groups"][0]
+            entered = threading.Event()
+            release = threading.Event()
+            failures = []
+            original = audit_module.load_failure_reference_decisions
+
+            def pause_after_read(directory):
+                current = original(directory)
+                entered.set()
+                if not release.wait(5):
+                    raise AssertionError("Decision writer was not released")
+                return current
+
+            def write():
+                try:
+                    record_failure_reference_decision(
+                        output, group["group_id"], "neither_acceptable"
+                    )
+                except BaseException as error:
+                    failures.append(error)
+
+            with patch.object(
+                audit_module,
+                "load_failure_reference_decisions",
+                side_effect=pause_after_read,
+            ):
+                writer = threading.Thread(target=write)
+                writer.start()
+                try:
+                    self.assertTrue(entered.wait(5))
+                    with self.assertRaises(AdvisoryLockBusyError):
+                        with exclusive_advisory_lock(output / "decisions.json.lock"):
+                            self.fail("Decision writer did not hold the shared guard")
+                finally:
+                    release.set()
+                    writer.join(5)
+            self.assertFalse(writer.is_alive())
+            self.assertEqual(failures, [])
+            self.assertEqual(
+                load_failure_reference_decisions(output)["decisions"][0]["decision"],
+                "neither_acceptable",
+            )
 
     def test_decision_schema_version_requires_exact_integer(self):
         with TemporaryDirectory() as directory:
@@ -825,6 +931,37 @@ class FailureReferenceAuditTest(unittest.TestCase):
                     arm_ids=("complete-1", "incomplete"),
                 )
 
+    def assert_import_preserves_competing_decision(
+        self, root, workspace, comparison_root, session, queue_id
+    ):
+        conflict_audit = root / "conflict-audit"
+        publish_failure_reference_audit(
+            workspace, conflict_audit, seed=19, queue_ids=(queue_id,)
+        )
+        competitor = None
+
+        def save_competing_decision(directory, group_id, candidate_id, **kwargs):
+            nonlocal competitor
+            competitor = record_failure_reference_decision(
+                directory, group_id, "neither_acceptable"
+            )
+            return record_failure_reference_decision(
+                directory, group_id, candidate_id, **kwargs
+            )
+
+        with patch.object(
+            reference_render_comparison,
+            "record_failure_reference_decision",
+            side_effect=save_competing_decision,
+        ):
+            with self.assertRaisesRegex(
+                ReferenceRenderComparisonError, "changed before decision save"
+            ):
+                import_reference_render_preference(
+                    conflict_audit, comparison_root, session, queue_id
+                )
+        self.assertEqual(load_failure_reference_decisions(conflict_audit), competitor)
+
     def assert_reference_import_rejects_replacements(
         self, audit_root, comparison_root, session, queue_id, replacements
     ):
@@ -961,6 +1098,10 @@ class FailureReferenceAuditTest(unittest.TestCase):
                 for value in arm["renders"]
                 if value["id"] == queue_id
             )
+            self.assert_import_preserves_competing_decision(
+                root, workspace, comparison.directory, session, queue_id
+            )
+
             fresh_audit_root = root / "fresh-audit"
             fresh_audit = publish_failure_reference_audit(
                 workspace, fresh_audit_root, seed=19, queue_ids=(queue_id,)
@@ -1128,8 +1269,7 @@ class FailureReferenceAuditTest(unittest.TestCase):
                 0,
             )
 
-            self.assertTrue(imported.created)
-            self.assertFalse(repeated.created)
+            self.assertEqual((imported.created, repeated.created), (True, False))
             self.assertNotEqual(fresh_audit.audit_id, expected_fresh_audit_id)
             self.assertEqual(imported.audit_id, expected_fresh_audit_id)
             self.assertEqual(imported.decision_set_id, repeated.decision_set_id)

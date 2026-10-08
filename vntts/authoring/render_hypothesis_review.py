@@ -782,6 +782,7 @@ def _save_import_selection(
                 selection.group_id,
                 selection.candidate_id,
                 selection_authority=selection.authority,
+                expected_decisions=current,
             )
     except (AuthoringAuthorityError, FailureReferenceAuditError, OSError) as error:
         raise RenderHypothesisReviewError(str(error)) from error

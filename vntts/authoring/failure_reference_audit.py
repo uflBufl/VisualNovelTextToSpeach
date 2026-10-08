@@ -25,6 +25,10 @@ from vntts_artifacts.voice_manifest import (
     normalize_character_name,
 )
 
+from vntts.authoring.advisory_lock import (
+    AdvisoryLockBusyError,
+    exclusive_advisory_lock,
+)
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     generation_failure_repair_plan,
@@ -963,13 +967,35 @@ def record_failure_reference_decision(
     decision: str,
     *,
     selection_authority: JsonDocument | None = None,
+    expected_decisions: JsonDocument | None = None,
 ) -> JsonDocument:
-    """Atomically record one exact candidate or neither-acceptable decision."""
-    audit = load_failure_reference_audit(directory)
-    audit_document = _document(
-        json.loads((audit.directory / "audit.json").read_text()),
-        "Reference audit group is malformed",
-    )
+    """Record one decision; imports may require an unchanged decision set."""
+    audit, audit_document = _load_validated_audit(directory)
+    try:
+        with exclusive_advisory_lock(
+            audit.directory / "decisions.json.lock", blocking=True
+        ):
+            return _record_failure_reference_decision(
+                audit,
+                audit_document,
+                group_id,
+                decision,
+                selection_authority=selection_authority,
+                expected_decisions=expected_decisions,
+            )
+    except (OSError, AdvisoryLockBusyError) as error:
+        raise FailureReferenceAuditError(str(error)) from error
+
+
+def _record_failure_reference_decision(
+    audit: FailureReferenceAudit,
+    audit_document: JsonDocument,
+    group_id: str,
+    decision: str,
+    *,
+    selection_authority: JsonDocument | None,
+    expected_decisions: JsonDocument | None,
+) -> JsonDocument:
     groups = _audit_groups(audit_document.get("groups"))
     group = next(
         (value for value in groups if value["group_id"] == group_id),
@@ -986,6 +1012,10 @@ def record_failure_reference_decision(
         None,
     )
     current = load_failure_reference_decisions(audit.directory)
+    if expected_decisions is not None and current != expected_decisions:
+        raise FailureReferenceAuditError(
+            "Reference audit decisions changed before decision save"
+        )
     decisions = {
         _text(value.get("group_id"), "Reference audit decision is malformed"): value
         for value in _documents(

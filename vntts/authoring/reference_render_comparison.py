@@ -1119,6 +1119,7 @@ def _save_reference_selection(
                 group_id,
                 candidate_id,
                 selection_authority=authority,
+                expected_decisions=current,
             )
         except FailureReferenceAuditError as error:
             raise ReferenceRenderComparisonError(str(error)) from error
