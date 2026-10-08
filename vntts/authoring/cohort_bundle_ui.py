@@ -197,7 +197,7 @@ class _DecisionTaskLike(Protocol):
 def _parse_decision_task_result(value: object) -> _DecisionTaskLike | None:
     projection = getattr(value, "projection", None)
     next_bundle = getattr(projection, "next_bundle", None)
-    bundle = getattr(value, "bundle", None)
+    bundle = getattr(value, "bundle", object())
     samples = getattr(value, "samples", None)
     if not isinstance(next_bundle, CohortReviewBundle) or not isinstance(
         samples, tuple
@@ -208,8 +208,8 @@ def _parse_decision_task_result(value: object) -> _DecisionTaskLike | None:
     if any(
         error is not None and not isinstance(error, Exception)
         for error in (
-            getattr(value, "checkpoint_error", None),
-            getattr(value, "refresh_error", None),
+            getattr(value, "checkpoint_error", object()),
+            getattr(value, "refresh_error", object()),
         )
     ):
         return None

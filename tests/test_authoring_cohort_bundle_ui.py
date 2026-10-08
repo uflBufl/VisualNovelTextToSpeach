@@ -651,6 +651,42 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertIn("SAVE FAILED", dialog.status.text())
             self.assertFalse(dialog._decision_active)
 
+    def test_incomplete_checkpoint_result_fails_closed_without_attribute_errors(self):
+        with TemporaryDirectory() as directory:
+            bundle = self.create_bundle(Path(directory))
+            with patch.object(CohortReviewBundleDialog, "reload_bundle"):
+                dialog = CohortReviewBundleDialog(bundle)
+            complete = {
+                "projection": SimpleNamespace(next_bundle=bundle),
+                "bundle": bundle,
+                "samples": (),
+                "checkpoint_error": None,
+                "refresh_error": None,
+                "commit_seconds": 0,
+                "checkpoint_seconds": 0,
+                "refresh_seconds": 0,
+            }
+            for missing in ("bundle", "checkpoint_error", "refresh_error"):
+                with self.subTest(missing=missing):
+                    dialog._decision_active = True
+                    dialog._checkpoint_decisions = True
+                    dialog._decision_finished(
+                        SimpleNamespace(
+                            **{
+                                key: value
+                                for key, value in complete.items()
+                                if key != missing
+                            }
+                        ),
+                        None,
+                    )
+                    self.assertEqual(
+                        dialog.status.text(),
+                        "SAVE FAILED: worker returned an invalid decision result",
+                    )
+                    self.assertFalse(dialog._decision_active)
+                    self.assertIs(dialog.bundle, bundle)
+
     def test_real_decision_removes_completed_cohort_and_selects_next(self):
         with TemporaryDirectory() as directory:
             bundle = self.create_bundle(Path(directory))
