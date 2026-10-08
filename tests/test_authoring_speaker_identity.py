@@ -5,7 +5,7 @@ import unittest
 import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -221,6 +221,51 @@ class SpeakerIdentityTest(unittest.TestCase):
                     self.assertRaises(SpeakerIdentityError),
                 ):
                     build_reference_inventory(manifest)
+
+    def test_report_rejects_rehashed_invalid_labels_before_embedding(self):
+        with TemporaryDirectory() as directory:
+            inventory = build_reference_inventory(_fixture(Path(directory)))
+            ids = [item["reference_id"] for item in inventory["references"]]
+            labels = build_labelled_pairs(
+                inventory,
+                [
+                    {
+                        "left_reference_id": ids[0],
+                        "right_reference_id": ids[1],
+                        "partition": "fit",
+                        "relationship": "same-speaker",
+                    },
+                    {
+                        "left_reference_id": ids[2],
+                        "right_reference_id": ids[3],
+                        "partition": "held-out",
+                        "relationship": "different-speaker",
+                    },
+                ],
+            )
+            for invalid_left, reason in (
+                (ids[0], "leaks"),
+                ("unknown-reference", "unknown reference"),
+            ):
+                with self.subTest(reference=invalid_left):
+                    invalid = {
+                        **labels,
+                        "pairs": [
+                            labels["pairs"][0],
+                            {**labels["pairs"][1], "left_reference_id": invalid_left},
+                        ],
+                    }
+                    invalid["labels_id"] = speaker_identity._document_sha256(
+                        {
+                            key: value
+                            for key, value in invalid.items()
+                            if key != "labels_id"
+                        }
+                    )
+                    embed = Mock(return_value=(1.0, 0.0))
+                    with self.assertRaisesRegex(SpeakerIdentityError, reason):
+                        build_speaker_identity_report(inventory, invalid, embed, {})
+                    embed.assert_not_called()
 
     def test_invalid_model_embeddings_use_the_domain_error(self):
         with TemporaryDirectory() as directory:

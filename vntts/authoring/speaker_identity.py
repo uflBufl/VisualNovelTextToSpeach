@@ -259,7 +259,12 @@ def write_labelled_pairs(document: _Labels, output: str | Path) -> Path:
 
 
 def load_labelled_pairs(path: str | Path, inventory: _Inventory) -> _Labels:
-    document = _load_json(path, "speaker-identity labels")
+    return _admit_labelled_pairs(_load_json(path, "speaker-identity labels"), inventory)
+
+
+def _admit_labelled_pairs(
+    document: Mapping[str, object], inventory: _Inventory
+) -> _Labels:
     _validate_labels_shape(document)
     if document.get("inventory_id") != inventory["inventory_id"]:
         raise SpeakerIdentityError("Labels belong to a different reference inventory")
@@ -277,9 +282,7 @@ def build_speaker_identity_report(
 ) -> JsonDocument:
     """Fit one safe threshold and report held-out evidence without applying it."""
     _validate_inventory_shape(inventory)
-    _validate_labels_shape(labels)
-    if labels["inventory_id"] != inventory["inventory_id"]:
-        raise SpeakerIdentityError("Labels belong to a different reference inventory")
+    labels = _admit_labelled_pairs(labels, inventory)
     by_id = {item["reference_id"]: item for item in inventory["references"]}
     required_ids = sorted(
         {
