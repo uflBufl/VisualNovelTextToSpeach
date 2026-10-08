@@ -74,7 +74,9 @@ def _verify(model_directory: Path, model: ManagedModelFiles) -> VerificationResu
         actual_files[filename] = sha256_file(path) if path.is_file() else None
         if actual_files[filename] != expected:
             return f"model file changed: {filename}", None, actual_files
-    actual_tree = _tree_sha256(model_directory)
+    actual_tree = (
+        _tree_sha256(model_directory) if model.tree_sha256 is not None else None
+    )
     if model.tree_sha256 is not None and actual_tree != model.tree_sha256:
         return "model tree checksum changed", actual_tree, actual_files
     return None, actual_tree, actual_files

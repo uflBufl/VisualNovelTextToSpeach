@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from vntts.authoring import speaker_identity
+from vntts.authoring import managed_model_installation, speaker_identity
 from vntts.authoring.cli import create_parser
 from vntts.authoring.speaker_identity import (
     SpeakerIdentityError,
@@ -342,8 +342,16 @@ class SpeakerIdentityTest(unittest.TestCase):
                         ],
                         "1.1.1",
                     )
-                repeated = install_managed_speaker_identity_model(
-                    root=root / "managed", source=source
+                with patch.object(
+                    managed_model_installation,
+                    "sha256_file",
+                    wraps=managed_model_installation.sha256_file,
+                ) as hash_file:
+                    repeated = install_managed_speaker_identity_model(
+                        root=root / "managed", source=source
+                    )
+                hash_file.assert_called_once_with(
+                    Path(installed["model_directory"], "model.bin")
                 )
                 self.assertEqual(repeated["status"], "installed")
                 self.assertEqual(
