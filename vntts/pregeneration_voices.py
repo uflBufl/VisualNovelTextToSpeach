@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from time import perf_counter, process_time
-from typing import Protocol, TypeAlias, TypedDict
+from typing import NamedTuple, Protocol, TypeAlias, TypedDict
 
 from durable_file import sha256_file
 from vntts_artifacts.story_index import (
@@ -82,18 +82,26 @@ from vntts.voices import (
 )
 
 JsonObject: TypeAlias = dict[str, object]
-VariantEvidence: TypeAlias = tuple[str | None, str | None, str | None]
+
+
+class VariantEvidence(NamedTuple):
+    portrait: str | None
+    source_bank: str | None
+    source_voice_id: str | None
+
+
 PortraitSnapshot: TypeAlias = tuple[str | None, str | None]
-GroupValue: TypeAlias = tuple[
-    StoryIndexRecord,
-    str,
-    VariantEvidence,
-    str,
-    str | None,
-    str | None,
-    str | None,
-    str | None,
-]
+
+
+class GroupValue(NamedTuple):
+    record: StoryIndexRecord
+    character: str
+    evidence: VariantEvidence
+    routing_role: str
+    variant_key: str | None
+    bound_source: str | None
+    portrait_image: str | None
+    portrait_image_sha256: str | None
 
 
 class SynthesisControls(TypedDict):
@@ -771,7 +779,7 @@ class VoicePlanStore:
             bound_source = assignment_source or (None if variant_key else line_source)
             portrait_image, portrait_image_sha256 = _portrait_snapshot(
                 Path(job.story_index).expanduser().resolve().parent,
-                evidence[0],
+                evidence.portrait,
                 portrait_snapshots,
             )
             identity = [
@@ -781,15 +789,15 @@ class VoicePlanStore:
             ]
             group_id = _digest(identity)
             grouped.setdefault(group_id, []).append(
-                (
-                    record,
-                    character,
-                    evidence,
-                    routing_role,
-                    variant_key,
-                    bound_source,
-                    portrait_image,
-                    portrait_image_sha256,
+                GroupValue(
+                    record=record,
+                    character=character,
+                    evidence=evidence,
+                    routing_role=routing_role,
+                    variant_key=variant_key,
+                    bound_source=bound_source,
+                    portrait_image=portrait_image,
+                    portrait_image_sha256=portrait_image_sha256,
                 )
             )
 
@@ -1007,19 +1015,27 @@ class VoicePlanStore:
         person_aliases: Mapping[str, str],
         rollback: VoiceBindingRollback | None,
     ) -> VoiceGroup:
-        records = tuple(value[0] for value in values)
-        character = values[0][1]
-        portrait, source_bank, source_voice_id = values[0][2]
-        routing_role = values[0][3]
-        variant_key = values[0][4]
-        if any(value[2][1] != source_bank for value in values):
+        records = tuple(value.record for value in values)
+        character = values[0].character
+        source_bank, source_voice_id = (
+            values[0].evidence.source_bank,
+            values[0].evidence.source_voice_id,
+        )
+        routing_role = values[0].routing_role
+        variant_key = values[0].variant_key
+        if any(value.evidence.source_bank != source_bank for value in values):
             source_bank = None
-        if any(value[2][2] != source_voice_id for value in values):
+        if any(value.evidence.source_voice_id != source_voice_id for value in values):
             source_voice_id = None
-        bound_source = values[0][5]
-        portrait_value = next((value for value in values if value[6]), values[0])
-        portrait = portrait_value[2][0]
-        portrait_image, portrait_image_sha256 = portrait_value[6:8]
+        bound_source = values[0].bound_source
+        portrait_value = next(
+            (value for value in values if value.portrait_image), values[0]
+        )
+        portrait = portrait_value.evidence.portrait
+        portrait_image, portrait_image_sha256 = (
+            portrait_value.portrait_image,
+            portrait_value.portrait_image_sha256,
+        )
         speakers = tuple(dict.fromkeys(record.speaker for record in records))
         assignment_source = _effective_assignment_source(
             settings,
@@ -2285,10 +2301,12 @@ def _candidate_identity(
 
 
 def _variant_evidence(record: StoryIndexRecord) -> VariantEvidence:
-    return (
-        _optional_variant(record.producer_fields.get("portrait")),
-        _optional_variant(record.producer_fields.get("source_bank")),
-        _optional_variant(record.producer_fields.get("source_voice_id")),
+    return VariantEvidence(
+        portrait=_optional_variant(record.producer_fields.get("portrait")),
+        source_bank=_optional_variant(record.producer_fields.get("source_bank")),
+        source_voice_id=_optional_variant(
+            record.producer_fields.get("source_voice_id")
+        ),
     )
 
 
