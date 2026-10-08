@@ -9,6 +9,7 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from statistics import median
 from typing import Literal, Protocol, TypeAlias, TypedDict, runtime_checkable
 
 import numpy as np
@@ -330,16 +331,10 @@ def _distribution(records: Sequence[_AsrRecord], metric: _RateMetric) -> JsonDoc
     values = sorted(float(record["comparison"][metric]) for record in records)
     if not values:
         return {"count": 0, "mean": None, "median": None, "maximum": None}
-    midpoint = len(values) // 2
-    median = (
-        values[midpoint]
-        if len(values) % 2
-        else (values[midpoint - 1] + values[midpoint]) / 2
-    )
     return {
         "count": len(values),
         "mean": round(sum(values) / len(values), 6),
-        "median": round(median, 6),
+        "median": round(median(values), 6),
         "maximum": round(values[-1], 6),
     }
 
