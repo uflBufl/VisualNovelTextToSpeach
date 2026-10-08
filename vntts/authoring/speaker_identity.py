@@ -509,12 +509,8 @@ def _held_out_result(
                 }
             )
     return {
-        "positive_count": sum(
-            item["relationship"] == "same-speaker" for item in held_out
-        ),
-        "negative_count": sum(
-            item["relationship"] != "same-speaker" for item in held_out
-        ),
+        "positive_count": counts["true_positive"] + counts["false_negative"],
+        "negative_count": counts["true_negative"] + counts["false_positive"],
         "confusion": counts,
         "boundary_violation_count": len(boundary_violations),
         "boundary_violations": boundary_violations,

@@ -345,12 +345,17 @@ def _distribution(records: Sequence[_AsrRecord], metric: _RateMetric) -> JsonDoc
 
 
 def _summary(records: Sequence[_AsrRecord]) -> JsonDocument:
+    labels: Counter[str] = Counter()
+    providers: Counter[str] = Counter()
     by_label: dict[str, list[_AsrRecord]] = defaultdict(list)
     by_provider: dict[tuple[str, str], list[_AsrRecord]] = defaultdict(list)
     for record in records:
         label = record["human_label"]
+        provider = record["provider"]
+        labels[label] += 1
+        providers[provider] += 1
         by_label[label].append(record)
-        by_provider[(record["provider"], label)].append(record)
+        by_provider[(provider, label)].append(record)
     grouped = [(f"label:{label}", by_label[label]) for label in sorted(by_label)] + [
         (f"provider:{provider}:{label}", by_provider[(provider, label)])
         for provider, label in sorted(by_provider)
@@ -364,8 +369,8 @@ def _summary(records: Sequence[_AsrRecord]) -> JsonDocument:
     }
     return {
         "sample_count": len(records),
-        "human_labels": dict(Counter(record["human_label"] for record in records)),
-        "providers": dict(Counter(record["provider"] for record in records)),
+        "human_labels": dict(labels),
+        "providers": dict(providers),
         "groups": groups,
     }
 

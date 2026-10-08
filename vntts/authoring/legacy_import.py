@@ -561,16 +561,12 @@ def _generation_summary(
     generated_index: GeneratedAudioIndex | None,
     diagnostics: tuple[str, ...],
 ) -> JsonDocument:
-    statuses = Counter(
-        str(value.get("status") or "unknown")
-        for value in state_items.values()
-        if isinstance(value, dict)
-    )
-    reviews = Counter(
-        str(value.get("review_status") or "unreviewed")
-        for value in state_items.values()
-        if isinstance(value, dict)
-    )
+    statuses: Counter[str] = Counter()
+    reviews: Counter[str] = Counter()
+    for value in state_items.values():
+        if isinstance(value, dict):
+            statuses[str(value.get("status") or "unknown")] += 1
+            reviews[str(value.get("review_status") or "unreviewed")] += 1
     return {
         "queue_items": len(queue.items),
         "state_items": len(state_items),

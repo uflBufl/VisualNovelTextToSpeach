@@ -12,6 +12,8 @@ from unittest.mock import patch
 
 import numpy as np
 
+import vntts.authoring.robustness_asr as asr_module
+
 from tests.authoring_fixtures import create_test_workspace
 from vntts.authoring import robustness_corpus
 from vntts.authoring.cli import main as authoring_main
@@ -98,6 +100,44 @@ def _canonical_sha256(document):
 
 
 class AuthoringRobustnessCorpusTest(unittest.TestCase):
+    def test_asr_summary_counts_and_groups_share_one_traversal(self):
+        class CountedRecords(list):
+            iterations = 0
+
+            def __iter__(self):
+                self.iterations += 1
+                return super().__iter__()
+
+        records = CountedRecords(
+            {
+                "human_label": label,
+                "provider": provider,
+                "comparison": compare_speech_transcript("one", text),
+            }
+            for label, provider, text in (
+                ("bad", "z", "two"),
+                ("acceptable", "a", "one"),
+                ("bad", "z", "one"),
+                ("bad", "a", ""),
+            )
+        )
+        summary = asr_module._summary(records)
+        self.assertEqual(records.iterations, 1)
+        self.assertEqual(
+            list(summary["human_labels"].items()), [("bad", 3), ("acceptable", 1)]
+        )
+        self.assertEqual(list(summary["providers"].items()), [("z", 2), ("a", 2)])
+        self.assertEqual(
+            list(summary["groups"]),
+            [
+                "label:acceptable",
+                "label:bad",
+                "provider:a:acceptable",
+                "provider:a:bad",
+                "provider:z:bad",
+            ],
+        )
+
     def test_public_reader_rejects_boolean_schema_version(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
