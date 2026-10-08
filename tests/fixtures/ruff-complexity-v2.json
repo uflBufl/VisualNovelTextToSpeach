@@ -202,7 +202,7 @@
       "path": "vntts/authoring/terminal_conflict_workspace.py",
       "scope": "_select_terminal_conflict_sources",
       "count": 1,
-      "maximum": 18
+      "maximum": 15
     },
     {
       "code": "C901",
@@ -741,7 +741,7 @@
       "path": "vntts/authoring/terminal_conflict_workspace.py",
       "scope": "_select_terminal_conflict_sources",
       "count": 1,
-      "maximum": 18
+      "maximum": 15
     },
     {
       "code": "PLR0912",
@@ -1231,7 +1231,7 @@
       "path": "vntts/authoring/terminal_conflict_workspace.py",
       "scope": "_select_terminal_conflict_sources",
       "count": 1,
-      "maximum": 74
+      "maximum": 69
     },
     {
       "code": "PLR0915",

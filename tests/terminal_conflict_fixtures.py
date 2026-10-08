@@ -9,7 +9,10 @@ from pathlib import Path
 import numpy as np
 from vntts_artifacts.audio import write_pcm16_wav
 
-from tests.authoring_fixtures import create_test_workspace
+from tests.authoring_fixtures import (
+    create_carry_source_workspace,
+    create_test_workspace,
+)
 from vntts.authoring.bulk_generation import inspect_generated_wav
 from vntts.authoring.cohort_bundle import (
     build_cohort_review_bundle,
@@ -26,8 +29,14 @@ from vntts.authoring.workbench import create_resume_workspace
 from vntts.authoring.workspace_foundation import load_json_object
 
 
-def create_parallel_review_workspaces(root: Path) -> tuple[Path, Path, str, Path, Path]:
-    _fixture, imported, primary = create_test_workspace(root)
+def create_parallel_review_workspaces(
+    root: Path, *, item_count: int = 1
+) -> tuple[Path, Path, str, Path, Path]:
+    _fixture, imported, primary = (
+        create_test_workspace(root)
+        if item_count == 1
+        else create_carry_source_workspace(root, item_count=item_count)
+    )
     primary_directory = primary.directory
     secondary = create_resume_workspace(
         imported,
@@ -48,19 +57,20 @@ def create_parallel_review_workspaces(root: Path) -> tuple[Path, Path, str, Path
         state = load_json_object(state_path, "fixture generation state")
         items = state["items"]
         assert isinstance(items, dict)
-        queue_id, result = next(iter(items.items()))
+        queue_id = next(iter(items))
         assert isinstance(queue_id, str)
-        assert isinstance(result, dict)
-        result.update(
-            {
-                "status": "generated",
-                "review_status": "pending_review",
-                "generation_profile": profile,
-                "voice_character": "Rhiannon",
-                "prompt_applied": False,
-                "synthesis_provenance_sha256": "b" * 64,
-            }
-        )
+        for result in items.values():
+            assert isinstance(result, dict)
+            result.update(
+                {
+                    "status": "generated",
+                    "review_status": "pending_review",
+                    "generation_profile": profile,
+                    "voice_character": "Rhiannon",
+                    "prompt_applied": False,
+                    "synthesis_provenance_sha256": "b" * 64,
+                }
+            )
         state["active"] = None
         state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
     bundles = root / "review-bundles"
@@ -89,38 +99,42 @@ def decide_parallel_review_bundle(
         assert isinstance(cohort_id, str)
         samples = cohort["samples"]
         assert isinstance(samples, list)
-        sample = samples[0]
-        assert isinstance(sample, dict)
-        queue_id = sample["queue_id"]
-        assert isinstance(queue_id, str)
+        reviewed_queue_ids = []
+        for sample in samples:
+            assert isinstance(sample, dict)
+            queue_id = sample["queue_id"]
+            assert isinstance(queue_id, str)
+            reviewed_queue_ids.append(queue_id)
         projection = execute_cohort_bundle_decision(
             bundle,
             workspace_id,
             cohort_id,
             decision,
-            reviewed_queue_ids=[queue_id],
+            reviewed_queue_ids=reviewed_queue_ids,
         )
         bundle = projection.next_bundle
 
 
-def create_terminal_conflict_fixture(root: Path) -> tuple[Path, Path, str, Path]:
+def create_terminal_conflict_fixture(
+    root: Path, *, item_count: int = 1
+) -> tuple[Path, Path, str, Path]:
     primary, secondary, queue_id, bundles, publication = (
-        create_parallel_review_workspaces(root)
+        create_parallel_review_workspaces(root, item_count=item_count)
     )
     publication.unlink()
     state_path = secondary / "generated-audio/generation-state.json"
     state = load_json_object(state_path, "fixture generation state")
     items = state["items"]
     assert isinstance(items, dict)
-    result = items[queue_id]
-    assert isinstance(result, dict)
-    audio_path = result["path"]
-    assert isinstance(audio_path, str)
-    audio = secondary / "generated-audio" / audio_path
     samples = np.linspace(-0.25, 0.25, 4_000, dtype=np.float32)
-    write_pcm16_wav(audio, samples, 16_000)
-    result["file_sha256"] = hashlib.sha256(audio.read_bytes()).hexdigest()
-    result["quality"] = asdict(inspect_generated_wav(audio))
+    for result in items.values():
+        assert isinstance(result, dict)
+        audio_path = result["path"]
+        assert isinstance(audio_path, str)
+        audio = secondary / "generated-audio" / audio_path
+        write_pcm16_wav(audio, samples, 16_000)
+        result["file_sha256"] = hashlib.sha256(audio.read_bytes()).hexdigest()
+        result["quality"] = asdict(inspect_generated_wav(audio))
     state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
     write_cohort_review_bundle(
         build_cohort_review_bundle((primary, secondary)), publication
@@ -135,8 +149,10 @@ def create_terminal_conflict_fixture(root: Path) -> tuple[Path, Path, str, Path]
     return primary, secondary, queue_id, report_path
 
 
-def create_terminal_conflict_review(root: Path) -> Path:
-    _primary, _secondary, _queue_id, report = create_terminal_conflict_fixture(root)
+def create_terminal_conflict_review(root: Path, *, item_count: int = 1) -> Path:
+    _primary, _secondary, _queue_id, report = create_terminal_conflict_fixture(
+        root, item_count=item_count
+    )
     directory = root / "conflict-review"
     publish_terminal_conflict_review(report, directory)
     return directory

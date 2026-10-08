@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import json
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -21,7 +20,7 @@ from vntts.authoring.authority import (
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     ReviewAuthority,
-    load_review_audio_bytes,
+    _assert_review_authorities,
     process_is_alive,
 )
 from vntts.authoring.generation_manifest import write_generated_manifest_from_state
@@ -42,12 +41,15 @@ from vntts.authoring.terminal_conflict_records import (
 from vntts.authoring.terminal_conflict_resolution import (
     TerminalConflictResolutionDocument,
     TerminalConflictResolutionError,
+    TerminalConflictResolutionRecord,
     assert_terminal_conflict_resolution_source_authorities,
     validate_terminal_conflict_resolution_document,
 )
 from vntts.authoring.terminal_conflict_review import (
+    TerminalConflictReviewCandidate,
     TerminalConflictReviewDocument,
     TerminalConflictReviewError,
+    TerminalConflictReviewSourceAuthority,
     validate_terminal_conflict_review_document,
 )
 from vntts.authoring.terminal_conflict_successor import (
@@ -392,21 +394,32 @@ def _load_terminal_conflict_base(
     )
 
 
-def _select_terminal_conflict_sources(
+@dataclass(frozen=True)
+class _SelectedTerminalConflictCandidate:
+    queue_id: str
+    next_action: str
+    resolved: TerminalConflictResolutionRecord
+    candidate: TerminalConflictReviewCandidate
+    source: TerminalConflictReviewSourceAuthority
+
+
+@dataclass(frozen=True)
+class _SelectedWorkspaceSnapshot:
+    directory: Path
+    document: dict[str, object]
+    workspace_sha256: str
+    state: AuthoritySnapshot
+    items_and_audio: dict[str, tuple[dict[str, object], bytes]]
+
+
+def _selected_terminal_conflict_candidates(
     inputs: _TerminalConflictMergeInputs,
-) -> _TerminalConflictSelection:
-    """Select and snapshot one unambiguous source for every resolved conflict."""
+) -> list[_SelectedTerminalConflictCandidate]:
     review_cases = {item["queue_id"]: item for item in inputs.review["cases"]}
     resolution_records = {
         item["queue_id"]: item for item in inputs.resolution["resolutions"]
     }
-    items: dict[str, dict[str, object]] = {}
-    audio: dict[str, AuthoritySnapshot] = {}
-    snapshots: list[AuthoritySnapshot | tuple[Path, str]] = []
-    directories = {inputs.base_directory}
-    source_records: dict[str, TerminalConflictWorkspaceSource] = {}
-    source_counts: Counter[str] = Counter()
-    ledgers: list[TerminalConflictWorkspaceLedger] = []
+    selected: list[_SelectedTerminalConflictCandidate] = []
     for projected in inputs.successor["resolved_terminal_conflicts"]:
         queue_id = projected["queue_id"]
         resolved = resolution_records[queue_id]
@@ -437,9 +450,7 @@ def _select_terminal_conflict_sources(
         ]
         if base_authorities:
             source = base_authorities[0]
-        elif len(authorities) == 1:
-            source = authorities[0]
-        elif (
+        elif len(authorities) == 1 or (
             len({item["review_authority"]["item_sha256"] for item in authorities}) == 1
         ):
             source = authorities[0]
@@ -447,14 +458,51 @@ def _select_terminal_conflict_sources(
             raise AuthoringWorkbenchError(
                 f"Selected conflict has ambiguous state provenance: {queue_id}"
             )
+        selected.append(
+            _SelectedTerminalConflictCandidate(
+                queue_id, projected["next_action"], resolved, candidate, source
+            )
+        )
+    return selected
+
+
+def _select_terminal_conflict_sources(
+    inputs: _TerminalConflictMergeInputs,
+) -> _TerminalConflictSelection:
+    """Select and snapshot one unambiguous source for every resolved conflict."""
+    selections = _selected_terminal_conflict_candidates(inputs)
+    authorities_by_workspace: dict[str, dict[str, ReviewAuthority]] = {}
+    for selection in selections:
+        authorities_by_workspace.setdefault(selection.source["workspace_id"], {})[
+            selection.queue_id
+        ] = ReviewAuthority(**selection.source["review_authority"])
+    workspaces: dict[str, _SelectedWorkspaceSnapshot] = {}
+    items: dict[str, dict[str, object]] = {}
+    audio: dict[str, AuthoritySnapshot] = {}
+    snapshots: list[AuthoritySnapshot | tuple[Path, str]] = []
+    directories = {inputs.base_directory}
+    source_records: dict[str, TerminalConflictWorkspaceSource] = {}
+    source_counts: Counter[str] = Counter()
+    ledgers: list[TerminalConflictWorkspaceLedger] = []
+    for selection in selections:
+        queue_id = selection.queue_id
+        resolved = selection.resolved
+        candidate = selection.candidate
+        source = selection.source
         source_record = inputs.report_workspaces.get(source["workspace_id"])
         if source_record is None:
             raise AuthoringWorkbenchError(
                 f"Terminal conflict source workspace is unavailable: {queue_id}"
             )
-        source_directory, source_document, source_workspace_sha256 = (
-            load_workspace_authority(_record_text(source_record, "workspace"))
-        )
+        cached = workspaces.get(source["workspace_id"])
+        if cached is None:
+            source_directory, source_document, source_workspace_sha256 = (
+                load_workspace_authority(_record_text(source_record, "workspace"))
+            )
+        else:
+            source_directory = cached.directory
+            source_document = cached.document
+            source_workspace_sha256 = cached.workspace_sha256
         source_workspace_id = _record_text(source_document, "workspace_id")
         source_config_fingerprint = _record_text(source_document, "config_fingerprint")
         directories.add(source_directory)
@@ -473,24 +521,39 @@ def _select_terminal_conflict_sources(
                 f"Terminal conflict source authority is inconsistent: {queue_id}"
             )
         authority = ReviewAuthority(**source["review_authority"])
-        try:
-            audio_payload = load_review_audio_bytes(
-                state_path, queue_path, queue_id, authority
+        if cached is None:
+            try:
+                _state, item_audio = _assert_review_authorities(
+                    state_path,
+                    authorities_by_workspace[source["workspace_id"]],
+                    queue_path,
+                )
+                state_snapshot = capture_authority_file(
+                    state_path, "terminal conflict source state"
+                )
+            except (AuthoringAuthorityError, BulkGenerationError) as error:
+                raise AuthoringWorkbenchError(str(error)) from error
+            cached = _SelectedWorkspaceSnapshot(
+                source_directory,
+                source_document,
+                source_workspace_sha256,
+                state_snapshot,
+                item_audio,
             )
-            state_snapshot = capture_authority_file(
-                state_path, "terminal conflict source state"
+            workspaces[source["workspace_id"]] = cached
+            snapshots.extend(
+                (
+                    state_snapshot,
+                    (source_directory / "workspace.json", source_workspace_sha256),
+                    (queue_path, inputs.base_queue_sha256),
+                )
             )
-        except (AuthoringAuthorityError, BulkGenerationError) as error:
-            raise AuthoringWorkbenchError(str(error)) from error
+        state_snapshot = cached.state
         if state_snapshot.sha256 != authority.state_sha256:
             raise AuthoringWorkbenchError(
                 f"Terminal conflict source state changed: {queue_id}"
             )
-        try:
-            source_state = json.loads(state_snapshot.payload.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise AuthoringWorkbenchError(str(error)) from error
-        source_item = source_state.get("items", {}).get(queue_id)
+        source_item, audio_payload = cached.items_and_audio[queue_id]
         if (
             not isinstance(source_item, dict)
             or canonical_document_sha256(source_item) != authority.item_sha256
@@ -501,11 +564,11 @@ def _select_terminal_conflict_sources(
             )
         expected_status = (
             ("approved", "approved")
-            if projected["next_action"] == APPLY_APPROVED_OUTCOME
+            if selection.next_action == APPLY_APPROVED_OUTCOME
             else ("generated", "rejected")
         )
         if (
-            projected["next_action"]
+            selection.next_action
             not in {APPLY_APPROVED_OUTCOME, RETAIN_EXPLICIT_REJECTION}
             or (source_item.get("status"), source_item.get("review_status"))
             != expected_status
@@ -545,10 +608,10 @@ def _select_terminal_conflict_sources(
             "source_state_sha256": state_snapshot.sha256,
             "source_item_sha256": canonical_document_sha256(source_item),
             "audio_sha256": resolution_audio_snapshot.sha256,
-            "status": source_item["status"],
-            "review_status": source_item["review_status"],
+            "status": expected_status[0],
+            "review_status": expected_status[1],
             "selected_candidate_id": candidate["candidate_id"],
-            "next_action": projected["next_action"],
+            "next_action": selection.next_action,
         }
         items[queue_id] = copy.deepcopy(source_item)
         audio[queue_id] = resolution_audio_snapshot
@@ -560,14 +623,7 @@ def _select_terminal_conflict_sources(
             "state_sha256": state_snapshot.sha256,
             "terminal_item_count": 0,
         }
-        snapshots.extend(
-            (
-                state_snapshot,
-                resolution_audio_snapshot,
-                (source_directory / "workspace.json", source_workspace_sha256),
-                (queue_path, inputs.base_queue_sha256),
-            )
-        )
+        snapshots.append(resolution_audio_snapshot)
     for workspace_id, count in source_counts.items():
         source_records[workspace_id]["terminal_item_count"] = count
     return _TerminalConflictSelection(
