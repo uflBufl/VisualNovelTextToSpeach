@@ -7,9 +7,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import numpy as np
-
 from tests.authoring_fixtures import create_failed_reference_workspace
+from tests.source_reference_fixtures import (
+    PreviewBackendFactory as _PreviewBackendFactory,
+)
 from vntts.authoring import reference_render_comparison
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_reference_audit import (
@@ -40,13 +41,6 @@ from vntts.authoring.reference_render_comparison import (
     load_reference_render_plan,
     publish_reference_render_comparison,
 )
-from vntts.synthesis import (
-    SynthesisCompletion,
-    SynthesisDiagnostics,
-    SynthesisLimits,
-    SynthesisResult,
-    SynthesisTiming,
-)
 
 
 def _canonical_sha256(value):
@@ -58,83 +52,6 @@ def _canonical_sha256(value):
             sort_keys=True,
         ).encode("utf-8")
     ).hexdigest()
-
-
-class _CollectedResult:
-    def __init__(self, result_factory):
-        self.result_factory = result_factory
-
-    def collect(self):
-        return self.result_factory()
-
-
-class _PreviewBackend:
-    def __init__(self, name, registry, model_name, cancellation, *, on_render=None):
-        self.name = name
-        self.registry = registry
-        self.model_name = model_name
-        self.cancellation = cancellation
-        self.on_render = on_render
-        self.requests = []
-        self.stop_calls = 0
-
-    def render(self, request):
-        self.requests.append(request)
-
-        def result():
-            if self.on_render is not None:
-                self.on_render(self, request)
-            completion = (
-                SynthesisCompletion.CANCELLED
-                if request.cancellation_requested()
-                else SynthesisCompletion.COMPLETE
-            )
-            return SynthesisResult(
-                pcm=np.full((800, 1), 0.2, dtype=np.float32),
-                sample_rate=16_000,
-                completion=completion,
-                limits=SynthesisLimits(100, 2.0),
-                timing=SynthesisTiming(10.0, 20.0),
-                diagnostics=SynthesisDiagnostics(
-                    backend=self.name,
-                    cache_source="fresh-generation",
-                    generation_profile=request.generation_profile,
-                    seed=request.seed,
-                    chunk_count=1,
-                    sample_count=800,
-                ),
-            )
-
-        return _CollectedResult(result)
-
-    def stop(self):
-        self.stop_calls += 1
-
-
-class _PreviewBackendFactory:
-    def __init__(self, *, on_render=None):
-        self.on_render = on_render
-        self.backends = []
-
-    def __call__(
-        self,
-        name,
-        registry,
-        _cache_root,
-        *,
-        model_name=None,
-        startup_cancellation=None,
-        **_options,
-    ):
-        backend = _PreviewBackend(
-            name,
-            registry,
-            model_name,
-            startup_cancellation,
-            on_render=self.on_render,
-        )
-        self.backends.append(backend)
-        return backend
 
 
 class FailureReferenceAuditTest(unittest.TestCase):

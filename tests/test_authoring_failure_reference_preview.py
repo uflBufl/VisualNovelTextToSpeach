@@ -8,9 +8,11 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from tests.authoring_fixtures import create_failed_reference_workspace
-from tests.test_authoring_failure_reference_audit import (
-    _CollectedResult,
-    _PreviewBackendFactory,
+from tests.source_reference_fixtures import (
+    DeferredCollectedResult as _CollectedResult,
+)
+from tests.source_reference_fixtures import (
+    PreviewBackendFactory as _PreviewBackendFactory,
 )
 from vntts.authoring.failure_reference_audit import (
     FailureReferenceAuditError,

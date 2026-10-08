@@ -4,9 +4,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import tests.test_authoring_failure_reference_audit as fixtures
 import vntts.authoring.listening as listening
 from tests.authoring_fixtures import create_failed_reference_workspace
+from tests.source_reference_fixtures import (
+    PreviewBackendFactory as _PreviewBackendFactory,
+)
 from vntts.authoring import reference_render_comparison
 from vntts.authoring.failure_reference_audit import publish_failure_reference_audit
 from vntts.authoring.listening import load_listening_session
@@ -57,7 +59,7 @@ class ReferenceRenderListeningContractTest(unittest.TestCase):
         return publish_reference_render_comparison(
             load_reference_render_plan(plan_path),
             root / "comparison",
-            backend_factory=fixtures._PreviewBackendFactory(),
+            backend_factory=_PreviewBackendFactory(),
         )
 
     def test_public_session_preserves_source_identity_and_empty_output(self):

@@ -3,8 +3,9 @@
 import hashlib
 import json
 import struct
+import threading
 import zlib
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,6 +37,7 @@ from vntts.synthesis import (
     SynthesisResult,
     SynthesisTiming,
 )
+from vntts.voices import CharacterVoiceRegistry
 
 
 def _write_audio(root: Path, name: str, value: float) -> dict[str, object]:
@@ -353,3 +355,92 @@ def publish_source_reference_quality_fixture(
         portrait_directory=portrait_directory,
     )
     return plan, evaluation, generation, quality
+
+
+class DeferredCollectedResult:
+    def __init__(self, result_factory: Callable[[], SynthesisResult]) -> None:
+        self.result_factory = result_factory
+
+    def collect(self) -> SynthesisResult:
+        return self.result_factory()
+
+
+class PreviewBackend:
+    def __init__(
+        self,
+        name: str,
+        registry: CharacterVoiceRegistry,
+        model_name: str | None,
+        cancellation: threading.Event | None,
+        *,
+        on_render: Callable[["PreviewBackend", SynthesisRequest], None] | None = None,
+    ) -> None:
+        self.name = name
+        self.registry = registry
+        self.model_name = model_name
+        self.cancellation = cancellation
+        self.on_render = on_render
+        self.requests: list[SynthesisRequest] = []
+        self.stop_calls = 0
+
+    def render(self, request: SynthesisRequest) -> DeferredCollectedResult:
+        self.requests.append(request)
+
+        def result() -> SynthesisResult:
+            if self.on_render is not None:
+                self.on_render(self, request)
+            completion = (
+                SynthesisCompletion.CANCELLED
+                if request.cancellation_requested()
+                else SynthesisCompletion.COMPLETE
+            )
+            return SynthesisResult(
+                pcm=np.full((800, 1), 0.2, dtype=np.float32),
+                sample_rate=16_000,
+                completion=completion,
+                limits=SynthesisLimits(100, 2.0),
+                timing=SynthesisTiming(10.0, 20.0),
+                diagnostics=SynthesisDiagnostics(
+                    backend=self.name,
+                    cache_source="fresh-generation",
+                    generation_profile=request.generation_profile,
+                    seed=request.seed,
+                    chunk_count=1,
+                    sample_count=800,
+                ),
+            )
+
+        return DeferredCollectedResult(result)
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+
+
+class PreviewBackendFactory:
+    def __init__(
+        self,
+        *,
+        on_render: Callable[[PreviewBackend, SynthesisRequest], None] | None = None,
+    ) -> None:
+        self.on_render = on_render
+        self.backends: list[PreviewBackend] = []
+
+    def __call__(
+        self,
+        name: str,
+        registry: CharacterVoiceRegistry,
+        _cache_root: Path,
+        *,
+        model_name: str | None = None,
+        startup_cancellation: threading.Event | None = None,
+        **_options: object,
+    ) -> PreviewBackend:
+        backend = PreviewBackend(
+            name,
+            registry,
+            model_name,
+            startup_cancellation,
+            on_render=self.on_render,
+        )
+        self.backends.append(backend)
+        return backend

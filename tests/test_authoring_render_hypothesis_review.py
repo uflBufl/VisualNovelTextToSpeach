@@ -13,10 +13,10 @@ from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 
 from tests.authoring_fixtures import create_failed_reference_workspace
-from tests.symlink_support import symlink_or_skip
-from tests.test_authoring_failure_reference_audit import (
-    _PreviewBackendFactory,
+from tests.source_reference_fixtures import (
+    PreviewBackendFactory as _PreviewBackendFactory,
 )
+from tests.symlink_support import symlink_or_skip
 from vntts.authoring import render_hypothesis_review
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_reference_audit import (
