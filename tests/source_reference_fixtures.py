@@ -2,10 +2,12 @@
 
 import hashlib
 import json
+import math
 import struct
 import threading
+import wave
 import zlib
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -544,3 +546,230 @@ def write_reference_render_comparison_fixture(
         {**body, "comparison_id": canonical_document_sha256(body)},
     )
     return queue_id
+
+
+def write_experimental_composite_wav(
+    path: Path, samples: Sequence[int] = (1000, -1000, 2000, -2000)
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(8_000)
+        output.writeframes(struct.pack(f"<{len(samples)}h", *samples))
+
+
+def write_experimental_composite_voice_fixture(
+    root: Path,
+) -> tuple[Path, Path, Path, dict[str, object]]:
+    source = root / "source"
+    source.mkdir()
+    write_experimental_composite_wav(source / "centurion.wav")
+    manifest = source / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "game": "fixture",
+                "language": "en",
+                "voices": [
+                    {
+                        "character": "Centurion",
+                        "speaker": "centurion",
+                        "references": ["centurion.wav"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    composite = root / "composite"
+    (composite / "clips").mkdir(parents=True)
+    write_experimental_composite_wav(
+        composite / "composite.wav", (3000, -3000, 4000, -4000)
+    )
+    clips: list[dict[str, object]] = []
+    for index, samples in enumerate(((1000, -1000), (2000, -2000)), start=1):
+        path = composite / "clips" / f"{index}.wav"
+        write_experimental_composite_wav(path, samples)
+        clips.append(
+            {
+                "media_id": index,
+                "reference": f"clips/{index}.wav",
+                "reference_sha256": sha256_file(path),
+            }
+        )
+    reference_sha256 = sha256_file(composite / "composite.wav")
+    ledger: dict[str, object] = {
+        "schema": "vntts.authoring-exact-bank-reference-composite",
+        "schema_version": 1,
+        "character": "Hotelier",
+        "portrait": "505401.png",
+        "source_bank": "hotel.bnk",
+        "clips": clips,
+        "composite": {
+            "path": "composite.wav",
+            "sha256": reference_sha256,
+        },
+    }
+    (composite / "composite.json").write_text(
+        json.dumps(ledger, sort_keys=True), encoding="utf-8"
+    )
+    ledger_sha256 = sha256_file(composite / "composite.json")
+    evaluation: dict[str, object] = {
+        "schema": "vntts.authoring-exact-bank-composite-evaluation",
+        "schema_version": 1,
+        "source_composite_sha256": ledger_sha256,
+    }
+    (composite / "evaluation.json").write_text(
+        json.dumps(evaluation, sort_keys=True), encoding="utf-8"
+    )
+    quality = root / "quality"
+    quality.mkdir()
+    write_experimental_composite_wav(
+        quality / "reference.wav", (3000, -3000, 4000, -4000)
+    )
+    review_path = quality / "review.json"
+    review: dict[str, object] = {
+        "schema": "vntts.authoring-source-reference-quality-review",
+        "schema_version": 1,
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+        "source_reference_plan_sha256": ledger_sha256,
+        "source_reference_evaluation_sha256": sha256_file(
+            composite / "evaluation.json"
+        ),
+        "generation_state_sha256": "c" * 64,
+        "variant_count": 1,
+        "completed_count": 1,
+        "variants": [
+            {
+                "cluster_id": f"exact-bank-composite:{reference_sha256}",
+                "variant_id": f"exact-bank-composite:{reference_sha256}",
+                "reference_kind": "exact_bank_composite",
+                "character": "Hotelier",
+                "portrait": "505401.png",
+                "source_bank": "hotel.bnk",
+                "media_ids": [1, 2],
+                "affected_queue_item_count": 1,
+                "reference": {
+                    "audio": "reference.wav",
+                    "audio_sha256": sha256_file(quality / "reference.wav"),
+                    "sample_rate": 8_000,
+                    "sample_count": 4,
+                    "duration_seconds": 0.0005,
+                },
+                "generated_samples": [],
+                "excluded_results": [],
+                "decision": {
+                    "decision": "needs_sample",
+                    "reviewed_at": "2026-01-01T00:00:00+00:00",
+                },
+            }
+        ],
+    }
+    review_path.write_text(json.dumps(review, sort_keys=True), encoding="utf-8")
+    return manifest, composite, review_path, review
+
+
+def write_reference_composite_wav(
+    path: Path, *, frequency: float, leading: int = 0, trailing: int = 0
+) -> None:
+    sample_rate = 8_000
+    tone = [
+        int(6_000 * math.sin(2 * math.pi * frequency * index / sample_rate))
+        for index in range(4_000)
+    ]
+    samples = [0] * leading + tone + [0] * trailing
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(sample_rate)
+        output.writeframes(struct.pack(f"<{len(samples)}h", *samples))
+
+
+def write_exact_bank_composite_report(
+    root: str | Path, *, scope: str = "complete_exact_bank"
+) -> Path:
+    root = Path(root)
+    candidates: list[dict[str, object]] = []
+    for index, media_id in enumerate((20, 10), start=1):
+        reference = root / "references" / f"{media_id}.wav"
+        write_reference_composite_wav(
+            reference,
+            frequency=200 + index * 50,
+            leading=800 if media_id == 10 else 0,
+            trailing=800 if media_id == 20 else 0,
+        )
+        candidates.append(
+            {
+                "character": "Hotelier",
+                "portrait": "505401.png",
+                "source_bank": "hotelier.bnk",
+                "source_bank_sha256": "a" * 64,
+                "media_id": media_id,
+                "source_sha256": hashlib.sha256(
+                    f"encoded-{media_id}".encode()
+                ).hexdigest(),
+                "candidate_origin": "exact_bank_unrouted_media",
+                "source_event_ids": [1_000 + media_id],
+                "reference": f"references/{media_id}.wav",
+                "reference_sha256": hashlib.sha256(reference.read_bytes()).hexdigest(),
+                "source_lines": [],
+            }
+        )
+    report = root / "report.json"
+    report.write_text(
+        json.dumps(
+            {
+                "schema": "r1999.story-voice-reference-candidates",
+                "schema_version": 2,
+                "bank_inventory_scope": scope,
+                "groups": [
+                    {
+                        "character": "Hotelier",
+                        "portrait": "505401.png",
+                        "source_bank": "hotelier.bnk",
+                        "candidate_count": 2,
+                        "affected_portrait_line_count": 1,
+                    }
+                ],
+                "candidates": candidates,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return report
+
+
+class CompositeRenderer:
+    name = "synthetic"
+    model_name = "synthetic-v1"
+
+    def render(self, request: SynthesisRequest) -> SynthesisChunkStream:
+        pcm = np.full(4_000, 0.1, dtype=np.float32)
+
+        def produce() -> Generator[SynthesisChunk, None, SynthesisResult]:
+            yield SynthesisChunk(pcm, 16_000, 0, 1.0)
+            return SynthesisResult(
+                pcm=pcm,
+                sample_rate=16_000,
+                completion=SynthesisCompletion.COMPLETE,
+                limits=SynthesisLimits(256, 180.0),
+                timing=SynthesisTiming(1.0, 2.0),
+                diagnostics=SynthesisDiagnostics(
+                    backend=self.name,
+                    cache_source="fresh-generation",
+                    generation_profile=request.generation_profile,
+                    seed=request.seed,
+                    chunk_count=1,
+                    sample_count=len(pcm),
+                ),
+            )
+
+        return SynthesisChunkStream(produce())
+
+    def stop(self) -> None:
+        pass

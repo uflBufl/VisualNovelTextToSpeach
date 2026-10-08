@@ -6,17 +6,18 @@ from unittest.mock import patch
 
 from vntts_artifacts.file_integrity import sha256_file
 
-import tests.test_authoring_experimental_composite_voice as experimental_fixture
-import tests.test_authoring_reference_composite as reference_fixture
 import vntts.authoring.experimental_composite_voice as experimental
+from tests.source_reference_fixtures import (
+    CompositeRenderer,
+    write_exact_bank_composite_report,
+    write_experimental_composite_voice_fixture,
+)
 from vntts.authoring.authority import canonical_document_sha256
 
 
 class CompositeContractsTest(unittest.TestCase):
     def fixture(self, root):
-        return experimental_fixture.AuthoringExperimentalCompositeVoiceTest().create_fixture(
-            root
-        )[:3]
+        return write_experimental_composite_voice_fixture(root)[:3]
 
     def publish(self, root, inputs):
         return experimental.publish_experimental_composite_voice_input(
@@ -151,9 +152,7 @@ class CompositeContractsTest(unittest.TestCase):
 
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            report = reference_fixture.AuthoringReferenceCompositeTest().make_report(
-                root
-            )
+            report = write_exact_bank_composite_report(root)
             doc = json.loads(report.read_text())
             doc["schema_version"] = 2.0
             report.write_text(json.dumps(doc))
@@ -177,11 +176,7 @@ class CompositeContractsTest(unittest.TestCase):
         ):
             with self.subTest(options=options), TemporaryDirectory() as directory:
                 root = Path(directory)
-                report = (
-                    reference_fixture.AuthoringReferenceCompositeTest().make_report(
-                        root
-                    )
-                )
+                report = write_exact_bank_composite_report(root)
                 with self.assertRaises(ReferenceCompositeError):
                     publish_exact_bank_reference_composite(
                         report,
@@ -202,11 +197,7 @@ class CompositeContractsTest(unittest.TestCase):
         for removed in (1, 2):
             with self.subTest(removed=removed), TemporaryDirectory() as directory:
                 root = Path(directory)
-                report = (
-                    reference_fixture.AuthoringReferenceCompositeTest().make_report(
-                        root
-                    )
-                )
+                report = write_exact_bank_composite_report(root)
                 doc = json.loads(report.read_text())
                 candidate = doc["candidates"][0]
                 path = root / candidate["reference"]
@@ -232,11 +223,7 @@ class CompositeContractsTest(unittest.TestCase):
                 TemporaryDirectory() as directory,
             ):
                 root = Path(directory)
-                report = (
-                    reference_fixture.AuthoringReferenceCompositeTest().make_report(
-                        root
-                    )
-                )
+                report = write_exact_bank_composite_report(root)
                 source = root / source_name
                 target = root / "same-bytes"
                 target.write_bytes(source.read_bytes())
@@ -274,16 +261,14 @@ class CompositeContractsTest(unittest.TestCase):
 
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            report = reference_fixture.AuthoringReferenceCompositeTest().make_report(
-                root
-            )
+            report = write_exact_bank_composite_report(root)
             composite = reference.publish_exact_bank_reference_composite(
                 report, "Hotelier", "505401.png", "hotelier.bnk", root / "composite"
             )
             generation = run_bulk_generation(
                 composite.directory / "queue.jsonl",
                 root / "generation",
-                reference_fixture._Renderer(),
+                CompositeRenderer(),
                 provider="synthetic",
                 model="synthetic-v1",
                 generation_profile="stable",
