@@ -15,6 +15,7 @@ from vntts_artifacts.story_index import load_story_index_document
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
 from tests.story_fixtures import semantic_evidence_document, semantic_evidence_entry
+from vntts.authoring.audio_events import audio_event_plan_for_record
 from vntts.pregeneration_queue import (
     PregenerationInputStore,
     PregenerationQueueError,
@@ -609,7 +610,12 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 manifest_path=manifest,
             )
 
-            result = PregenerationInputStore(jobs).materialize(job, plan)
+            with patch(
+                "vntts.pregeneration_queue.audio_event_plan_for_record",
+                wraps=audio_event_plan_for_record,
+            ) as parse_events:
+                result = PregenerationInputStore(jobs).materialize(job, plan)
+            self.assertEqual(parse_events.call_count, 2 * result.queue_items)
             queue = VoiceGenerationQueue.load(result.queue)
             queue_by_line = {item.line_id: item.queue_id for item in queue.items}
             input_path = result.directory / "input.json"

@@ -67,6 +67,27 @@ class AuthoringReconciliationTest(unittest.TestCase):
     def decide_parallel_bundle(self, publication, decisions):
         return decide_parallel_review_bundle(publication, decisions)
 
+    def test_primary_unbundled_spoken_admission_is_reused(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _authoring, workspace, _state, _queue_id, bundles, _quality, publication = (
+                self.create_fixture(root)
+            )
+            publication.unlink()
+            with patch.object(
+                reconciliation_module,
+                "is_spoken_queue_item",
+                wraps=reconciliation_module.is_spoken_queue_item,
+            ) as classify:
+                report = build_authoring_reconciliation(workspace, bundles)
+            self.assertEqual(classify.call_count, 1)
+            self.assertEqual(
+                report.document["workspaces"][0]["reported_queue_item_count"], 1
+            )
+            self.assertEqual(
+                report.document["workspaces"][0]["authoritative_counts"]["eligible"], 1
+            )
+
     def test_final_actions_are_counted_once_across_workspaces(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

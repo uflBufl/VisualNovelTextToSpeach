@@ -451,7 +451,10 @@ def _build_workspace_scope(
     generation_eligible_ids = {
         item.queue_id
         for item in reportable
-        if is_spoken_queue_item(item) or item.queue_id in projection_ids
+        # Unbundled primary items already passed spoken admission above.
+        if (scoped_queue_ids is None and item.queue_id not in bundle_queue_ids)
+        or is_spoken_queue_item(item)
+        or item.queue_id in projection_ids
     }
     state_items = snapshot.state_items
     relevant = {
