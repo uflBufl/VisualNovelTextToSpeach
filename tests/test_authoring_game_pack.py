@@ -453,7 +453,7 @@ class AuthoringGamePackTest(unittest.TestCase):
     def test_self_service_preset_inputs_record_actual_narrator_and_character_voices(
         self,
     ):
-        from tests.test_voice_default_impact import voice_impact_fixture
+        from tests.pregeneration_fixtures import voice_impact_fixture
         from vntts.pregeneration_queue import PregenerationInputStore
         from vntts.pregeneration_voices import VoicePlanStore
 
