@@ -230,11 +230,7 @@ def _load_planned_audit(
     if document["audit_id"] != audit.audit_id:
         raise ReferenceRenderComparisonError("Reference render audit identity changed")
     audit_document = _read_audit_document(audit_directory)
-    groups = {
-        _required_text(value.get("group_id"), "audit group ID"): value
-        for value in _documents(audit_document.get("groups"), "audit groups")
-    }
-    return audit_directory, audit.audit_id, groups
+    return audit_directory, audit.audit_id, _groups_by_id(audit_document)
 
 
 def _parse_reference_render_arms(
@@ -428,18 +424,15 @@ def publish_reference_render_comparison(
 
 def _comparison_audit(directory: Path) -> _ComparisonAudit:
     audit_document = _read_audit_document(directory)
-    audit_groups = _documents(audit_document.get("groups"), "audit groups")
+    groups = _groups_by_id(audit_document)
     return _ComparisonAudit(
-        {
-            _required_text(value.get("group_id"), "audit group ID"): value
-            for value in audit_groups
-        },
+        groups,
         {
             (
                 _required_text(group.get("group_id"), "audit group ID"),
                 _required_text(case.get("queue_id"), "queue ID"),
             ): case
-            for group in audit_groups
+            for group in groups.values()
             for case in _documents(group.get("cases"), "audit cases")
         },
     )
@@ -481,16 +474,14 @@ def _render_comparison_arm(
     arm_id = arm["arm_id"]
     arm_root = staging / "arms" / arm_id
     (arm_root / "audio").mkdir(parents=True)
-    report_samples: list[JsonDocument] = []
     renders: list[JsonDocument] = []
     complete_ids: set[str] = set()
     for position, sample in enumerate(arm["samples"], start=1):
-        report_sample, render, complete = _render_comparison_sample(
+        render = _render_comparison_sample(
             plan, arm_root, service, audit, copied_controls, sample, position
         )
-        report_samples.append(report_sample)
         renders.append(render)
-        if complete:
+        if render["outcome"] == "complete":
             complete_ids.add(sample["queue_id"])
     report = {
         "schema": "vntts.voice-model-report",
@@ -499,7 +490,7 @@ def _render_comparison_arm(
         "provider": "reference-render-comparison",
         "backend": "reference-render-comparison",
         "model": "one exact alternative reference per sample",
-        "samples": report_samples,
+        "samples": renders,
     }
     report_path = arm_root / "report.json"
     atomic_write_json(report_path, report)
@@ -526,7 +517,7 @@ def _render_comparison_sample(
     copied_controls: dict[tuple[str, str], JsonDocument],
     sample: _ReferenceRenderSample,
     position: int,
-) -> tuple[JsonDocument, JsonDocument, bool]:
+) -> JsonDocument:
     queue_id = sample["queue_id"]
     case = audit.cases[(sample["case_group_id"], queue_id)]
     candidate_group = audit.groups[sample["candidate_group_id"]]
@@ -556,8 +547,7 @@ def _render_comparison_sample(
     except FailureReferencePreviewCancelled:
         raise
     except FailureReferencePreviewIncomplete as error:
-        failed = {**base_record, "outcome": "error", "error": str(error)}
-        return failed, failed, False
+        return {**base_record, "outcome": "error", "error": str(error)}
     relative_audio = Path("audio") / f"{position:04d}.wav"
     target = arm_root / relative_audio
     target.write_bytes(preview.payload)
@@ -565,7 +555,7 @@ def _render_comparison_sample(
         raise ReferenceRenderComparisonError(
             "Rendered alternative-reference audio checksum changed"
         )
-    complete = {
+    return {
         **base_record,
         "outcome": "complete",
         "audio": relative_audio.as_posix(),
@@ -576,7 +566,6 @@ def _render_comparison_sample(
         "generation_profile": preview.generation_profile,
         "seed": preview.seed,
     }
-    return complete, complete, True
 
 
 def _copy_comparison_control(
