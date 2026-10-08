@@ -12,7 +12,7 @@ from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
-from typing import TypeAlias, TypedDict
+from typing import NamedTuple, TypeAlias, TypedDict
 
 import numpy as np
 from durable_file import atomic_write_json
@@ -69,15 +69,16 @@ _HUMAN_LABELS = frozenset({"acceptable", "bad"})
 JsonDocument: TypeAlias = dict[str, object]
 SampleKey: TypeAlias = tuple[str, str, str]
 FailureKey: TypeAlias = tuple[str, str]
-WorkspaceSource: TypeAlias = tuple[
-    Path,
-    JsonDocument,
-    str,
-    AuthoritySnapshot,
-    JsonDocument,
-    AuthoritySnapshot,
-    dict[str, VoiceGenerationQueueItem],
-]
+
+
+class WorkspaceSource(NamedTuple):
+    directory: Path
+    workspace: JsonDocument
+    workspace_sha256: str
+    state_snapshot: AuthoritySnapshot
+    state: JsonDocument
+    queue_snapshot: AuthoritySnapshot
+    queue_items: dict[str, VoiceGenerationQueueItem]
 
 
 class _RepeatSignal(TypedDict):
@@ -283,15 +284,7 @@ def _required_schema_version(document: JsonDocument) -> int:
 
 def _workspace_snapshot(
     workspace_directory: str | Path,
-) -> tuple[
-    Path,
-    JsonDocument,
-    str,
-    AuthoritySnapshot,
-    JsonDocument,
-    AuthoritySnapshot,
-    dict[str, VoiceGenerationQueueItem],
-]:
+) -> WorkspaceSource:
     try:
         directory, workspace, workspace_sha256 = load_workspace_authority(
             workspace_directory
@@ -334,14 +327,14 @@ def _workspace_snapshot(
         raise SpeechRobustnessCorpusError(
             "Robustness source state is bound to a different queue"
         )
-    return (
-        directory,
-        workspace,
-        workspace_sha256,
-        state_snapshot,
-        parsed,
-        queue_snapshot,
-        {item.queue_id: item for item in queue.items},
+    return WorkspaceSource(
+        directory=directory,
+        workspace=workspace,
+        workspace_sha256=workspace_sha256,
+        state_snapshot=state_snapshot,
+        state=parsed,
+        queue_snapshot=queue_snapshot,
+        queue_items={item.queue_id: item for item in queue.items},
     )
 
 
@@ -689,7 +682,7 @@ class _SourceBuilder:
         if cached is None:
             cached = _workspace_snapshot(resolved)
             self.workspace_cache[resolved] = cached
-            self.snapshots.extend((cached[3], cached[5]))
+            self.snapshots.extend((cached.state_snapshot, cached.queue_snapshot))
         return cached
 
     def add_decision(self, decision_path: Path) -> None:
