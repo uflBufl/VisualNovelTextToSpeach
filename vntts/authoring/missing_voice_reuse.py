@@ -73,7 +73,7 @@ from vntts.authoring.workbench import (
 )
 from vntts.authoring.workspace_inspection import generation_failure_category
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
-from vntts.json_types import is_json_object
+from vntts.json_types import has_schema_version, is_json_object
 from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.voices import voice_manifest_entries_at_path
 
@@ -1409,9 +1409,10 @@ def _validate_plan(
 
 
 def _validate_plan_header(document: JsonObject) -> None:
-    if (
-        document.get("schema") != MISSING_VOICE_REUSE_PLAN_SCHEMA
-        or document.get("schema_version") != MISSING_VOICE_REUSE_PLAN_VERSION
+    if document.get(
+        "schema"
+    ) != MISSING_VOICE_REUSE_PLAN_SCHEMA or not has_schema_version(
+        document, MISSING_VOICE_REUSE_PLAN_VERSION
     ):
         raise MissingVoiceReuseError("Missing-voice reuse plan schema is unsupported")
     claimed = document.get("plan_id")

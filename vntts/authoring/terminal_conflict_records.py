@@ -11,6 +11,7 @@ from typing import TypedDict
 
 from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.document_identity import is_lowercase_sha256
+from vntts.json_types import has_schema_version
 
 TERMINAL_CONFLICT_MERGE_SCHEMA = "vntts.authoring-terminal-conflict-workspace-merge"
 TERMINAL_CONFLICT_MERGE_VERSION = 1
@@ -137,10 +138,10 @@ def is_terminal_review_outcome(result: object) -> bool:
     return isinstance(result, dict) and (
         result.get("status"),
         result.get("review_status"),
-    ) in {
+    ) in (
         ("approved", "approved"),
         ("generated", "rejected"),
-    }
+    )
 
 
 def validate_terminal_conflict_item_provenance(
@@ -204,7 +205,7 @@ def validate_terminal_conflict_state_binding(
     if (
         not isinstance(merge, dict)
         or merge.get("schema") != TERMINAL_CONFLICT_MERGE_SCHEMA
-        or merge.get("schema_version") != TERMINAL_CONFLICT_MERGE_VERSION
+        or not has_schema_version(merge, TERMINAL_CONFLICT_MERGE_VERSION)
         or not isinstance(merge.get("items"), list)
     ):
         raise TerminalConflictRecordError(

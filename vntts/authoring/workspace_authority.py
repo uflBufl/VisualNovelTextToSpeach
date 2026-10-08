@@ -91,7 +91,12 @@ from vntts.authoring.workspace_state import (
     shared_workspace_state_reads,
 )
 from vntts.cleanup import temporary_directory
-from vntts.json_types import is_json_object as _is_json_document
+from vntts.json_types import (
+    has_schema_version as _has_exact_schema_version,
+)
+from vntts.json_types import (
+    is_json_object as _is_json_document,
+)
 
 WorkspaceDocument: TypeAlias = JsonDocument
 ImportSnapshot: TypeAlias = JsonDocument
@@ -108,13 +113,6 @@ def _json_document(value: object, message: str) -> JsonDocument:
     if not _is_json_document(value):
         raise AuthoringWorkbenchError(message)
     return value
-
-
-def _has_exact_schema_version(document: Mapping[str, object], expected: int) -> bool:
-    return (
-        type(document.get("schema_version")) is int
-        and document.get("schema_version") == expected
-    )
 
 
 def _load_bound_workspace_queue(

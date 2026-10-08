@@ -76,6 +76,7 @@ from vntts.authoring.source_reference_bindings import (
     queue_voice_overrides_from_manifest,
     queue_voice_overrides_sha256,
 )
+from vntts.json_types import has_schema_version
 from vntts.path_safety import safe_relative_path
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidence,
@@ -965,7 +966,7 @@ class _PublicationLease:
         if (
             not isinstance(document, dict)
             or document.get("schema") != "vntts.game-pack-publication-lease"
-            or document.get("schema_version") != 1
+            or not has_schema_version(document, 1)
             or not isinstance(document.get("owner"), str)
             or not document["owner"]
             or document.get("destination") != str(self.destination)

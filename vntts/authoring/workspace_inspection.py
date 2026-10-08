@@ -117,6 +117,7 @@ from vntts.authoring.workspace_state import (
     shared_workspace_state_reads,
 )
 from vntts.document_identity import canonical_document_sha256
+from vntts.json_types import has_schema_version
 from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.voices import (
     CharacterVoice,
@@ -1814,7 +1815,7 @@ def _leased_runtime_status(
         return AuthoringRuntimeStatus.BLOCKED
     if (
         lease.get("schema") != LEASE_SCHEMA
-        or lease.get("schema_version") != LEASE_VERSION
+        or not has_schema_version(lease, LEASE_VERSION)
         or lease.get("queue_sha256") != queue_sha256
     ):
         return AuthoringRuntimeStatus.BLOCKED

@@ -56,6 +56,7 @@ from vntts.authoring.terminal_conflict_records import (
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.cleanup import temporary_directory
 from vntts.document_identity import is_lowercase_sha256
+from vntts.json_types import has_schema_version as _has_exact_schema_version
 from vntts.synthesis import SynthesisCompletion
 from vntts.voices import synthesis_character_for_line
 
@@ -116,13 +117,6 @@ FAILURE_KINDS = {
 
 StateObject: TypeAlias = dict[str, object]
 QueueById: TypeAlias = dict[str, VoiceGenerationQueueItem]
-
-
-def _has_exact_schema_version(document: StateObject, expected: int) -> bool:
-    return (
-        type(document.get("schema_version")) is int
-        and document.get("schema_version") == expected
-    )
 
 
 def load_stable_generation_queue(

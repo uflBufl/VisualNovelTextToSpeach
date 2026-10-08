@@ -47,6 +47,7 @@ from vntts.chapter_voice_preload import (
 )
 from vntts.cleanup import attempt_cleanup
 from vntts.document_identity import canonical_document_sha256
+from vntts.json_types import has_schema_version
 from vntts.person_link_suggestions import (
     PersonLinkSuggestion,
     suggest_person_links,
@@ -2119,9 +2120,8 @@ def _manifest_candidate_variants(
     player = manifest_document.get(PLAYER_VOICE_CANDIDATES_FIELD)
     if player is None:
         return tuple(variants)
-    if (
-        isinstance(player, dict)
-        and player.get("schema_version") != PLAYER_VOICE_CANDIDATES_VERSION
+    if isinstance(player, dict) and not has_schema_version(
+        player, PLAYER_VOICE_CANDIDATES_VERSION
     ):
         raise PregenerationVoiceError(
             "Game voice references need refreshing to show their source dialogue"
@@ -2138,7 +2138,7 @@ def _manifest_candidate_variants(
         not isinstance(player, dict)
         or set(player) != expected_fields
         or player.get("schema") != PLAYER_VOICE_CANDIDATES_SCHEMA
-        or player.get("schema_version") != PLAYER_VOICE_CANDIDATES_VERSION
+        or not has_schema_version(player, PLAYER_VOICE_CANDIDATES_VERSION)
         or player.get("story_index_sha256") != story_index_sha256
         or manifest_path is None
     ):
@@ -2212,7 +2212,7 @@ def player_voice_catalog_is_current(manifest_path: Path | str) -> bool:
     player = document.get(PLAYER_VOICE_CANDIDATES_FIELD)
     return player is None or (
         isinstance(player, dict)
-        and player.get("schema_version") == PLAYER_VOICE_CANDIDATES_VERSION
+        and has_schema_version(player, PLAYER_VOICE_CANDIDATES_VERSION)
     )
 
 

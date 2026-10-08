@@ -48,6 +48,7 @@ from vntts.authoring.missing_voice_reuse_binding import (
 from vntts.authoring.workbench import inspect_workspace
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.document_identity import file_sha256
+from vntts.json_types import has_schema_version
 from vntts.voices import synthesis_character_for_line
 
 AUTOMATIC_UNRESOLVED_ORIGIN = "automatic_no_complete_candidate"
@@ -371,7 +372,7 @@ def _load_authority(directory: Path) -> MissingVoiceAuthority:
     if (
         set(decision) != expected_fields
         or decision.get("schema") != MISSING_VOICE_REUSE_DECISION_SCHEMA
-        or decision.get("schema_version") != 1
+        or not has_schema_version(decision, 1)
         or decision.get("decision_id")
         != canonical_document_sha256(
             {key: value for key, value in decision.items() if key != "decision_id"}

@@ -62,7 +62,7 @@ from vntts.authoring.workspace_voice_runtime import (
     load_workspace_queue_voice_overrides,
     load_workspace_voice_registry,
 )
-from vntts.json_types import is_json_object
+from vntts.json_types import has_schema_version, is_json_object
 from vntts.voices import CharacterVoiceRegistry
 
 CONFIG_REBASE_SCHEMA = "vntts.authoring-workspace-config-rebase"
@@ -1897,7 +1897,7 @@ def _failure_reference_route(
         return None
     if (
         set(source_binding) != required
-        or source_binding.get("schema_version") != 1
+        or not has_schema_version(source_binding, 1)
         or source_binding.get("queue_id") != queue_id
         or not isinstance(synthetic_character, str)
         or not synthetic_character.strip()

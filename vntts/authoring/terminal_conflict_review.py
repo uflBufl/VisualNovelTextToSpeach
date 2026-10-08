@@ -57,7 +57,7 @@ from vntts.authoring.workbench import (
     prepare_review_audio,
 )
 from vntts.authoring.workbench_contracts import ReviewItem
-from vntts.json_types import is_json_object
+from vntts.json_types import has_schema_version, is_json_object
 
 TERMINAL_CONFLICT_REVIEW_SCHEMA = "vntts.authoring-terminal-conflict-review"
 TERMINAL_CONFLICT_REVIEW_VERSION = 1
@@ -688,7 +688,7 @@ def _review_document_header(value: object) -> TerminalConflictReviewDocument:
     if (
         not _is_review_document(value)
         or value.get("schema") != TERMINAL_CONFLICT_REVIEW_SCHEMA
-        or value.get("schema_version") != TERMINAL_CONFLICT_REVIEW_VERSION
+        or not has_schema_version(value, TERMINAL_CONFLICT_REVIEW_VERSION)
     ):
         raise TerminalConflictReviewError("Unsupported terminal conflict review")
     expected_fields = {
@@ -725,7 +725,7 @@ def _review_document_header(value: object) -> TerminalConflictReviewDocument:
     cases = value["cases"]
     if not isinstance(cases, list) or not cases:
         raise TerminalConflictReviewError("Terminal conflict review cases are empty")
-    if value["case_count"] != len(cases):
+    if type(value["case_count"]) is not int or value["case_count"] != len(cases):
         raise TerminalConflictReviewError("Terminal conflict case count changed")
     return value
 
@@ -748,7 +748,7 @@ def _candidate_identity(
         raise TerminalConflictReviewError("Terminal conflict candidate is malformed")
     candidate_id = _sha256(candidate["candidate_id"], "Terminal conflict candidate ID")
     authority = candidate["authority"]
-    if authority not in {"approved", "rejected"}:
+    if not isinstance(authority, str) or authority not in {"approved", "rejected"}:
         raise TerminalConflictReviewError(
             "Terminal conflict candidate authority is invalid"
         )
@@ -776,7 +776,9 @@ def _validate_candidate_audio(candidate: object, root: Path, digest: str) -> Non
     except Pcm16MonoWavError as error:
         raise TerminalConflictReviewError(str(error)) from error
     if (
-        candidate["sample_rate"] != info.sample_rate
+        type(candidate["sample_rate"]) is not int
+        or candidate["sample_rate"] != info.sample_rate
+        or type(candidate["sample_count"]) is not int
         or candidate["sample_count"] != info.sample_count
     ):
         raise TerminalConflictReviewError("Terminal conflict WAV metadata changed")
@@ -910,7 +912,10 @@ def validate_terminal_conflict_review_document(
     candidate_count = 0
     for case in cases:
         candidate_count += _validate_review_case(case, root, seen_cases, seen_queue_ids)
-    if value["candidate_count"] != candidate_count:
+    if (
+        type(value["candidate_count"]) is not int
+        or value["candidate_count"] != candidate_count
+    ):
         raise TerminalConflictReviewError("Terminal conflict candidate count changed")
     return value
 
@@ -1402,14 +1407,17 @@ def _validate_progress_decisions(
         }:
             raise TerminalConflictReviewError("Terminal conflict decision is malformed")
         case_id = decision["case_id"]
-        if case_id in seen or case_id not in cases:
+        if not isinstance(case_id, str) or case_id in seen or case_id not in cases:
             raise TerminalConflictReviewError(
                 "Terminal conflict decision is duplicated"
             )
         seen.add(case_id)
         allowed = {item["candidate_id"] for item in cases[case_id]["candidates"]}
         allowed.add(NEITHER_ACCEPTABLE)
-        if decision["decision"] not in allowed:
+        if (
+            not isinstance(decision["decision"], str)
+            or decision["decision"] not in allowed
+        ):
             raise TerminalConflictReviewError("Terminal conflict winner is invalid")
         _aware_timestamp(
             decision["reviewed_at"], "Terminal conflict decision timestamp"

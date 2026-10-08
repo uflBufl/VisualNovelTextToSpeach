@@ -43,7 +43,7 @@ from vntts.authoring.terminal_conflict_review import (
     validate_terminal_conflict_review_document,
     validate_terminal_conflict_review_progress_document,
 )
-from vntts.json_types import is_json_object
+from vntts.json_types import has_schema_version, is_json_object
 
 TERMINAL_CONFLICT_RESOLUTION_SCHEMA = "vntts.authoring-terminal-conflict-resolution"
 TERMINAL_CONFLICT_RESOLUTION_VERSION = 1
@@ -638,7 +638,7 @@ def _validate_resolution_document_header(
         not _is_resolution_document(value)
         or set(value) != fields
         or value.get("schema") != TERMINAL_CONFLICT_RESOLUTION_SCHEMA
-        or value.get("schema_version") != TERMINAL_CONFLICT_RESOLUTION_VERSION
+        or not has_schema_version(value, TERMINAL_CONFLICT_RESOLUTION_VERSION)
     ):
         raise TerminalConflictResolutionError(
             "Unsupported terminal conflict resolution"
@@ -647,7 +647,7 @@ def _validate_resolution_document_header(
     raw_records = value["resolutions"]
     if not isinstance(raw_records, list) or not raw_records:
         raise TerminalConflictResolutionError("Terminal conflict resolutions are empty")
-    if value["case_count"] != len(raw_records):
+    if type(value["case_count"]) is not int or value["case_count"] != len(raw_records):
         raise TerminalConflictResolutionError(
             "Terminal conflict resolution case count changed"
         )
@@ -731,6 +731,7 @@ def _validate_resolution_record_identity(
     if (
         not isinstance(candidate_ids, list)
         or len(candidate_ids) < 2
+        or any(not isinstance(candidate_id, str) for candidate_id in candidate_ids)
         or len(candidate_ids) != len(set(candidate_ids))
     ):
         raise TerminalConflictResolutionError(
@@ -785,7 +786,9 @@ def _validate_resolution_record_selection(
         raise TerminalConflictResolutionError(
             "Selected terminal conflict candidate is unavailable"
         )
-    if record["selected_authority"] not in {"approved", "rejected"}:
+    if not isinstance(record["selected_authority"], str) or record[
+        "selected_authority"
+    ] not in {"approved", "rejected"}:
         raise TerminalConflictResolutionError(
             "Selected terminal conflict authority is invalid"
         )
@@ -810,7 +813,9 @@ def _validate_resolution_record_selection(
     except Pcm16MonoWavError as error:
         raise TerminalConflictResolutionError(str(error)) from error
     if (
-        record["sample_rate"] != info.sample_rate
+        type(record["sample_rate"]) is not int
+        or record["sample_rate"] != info.sample_rate
+        or type(record["sample_count"]) is not int
         or record["sample_count"] != info.sample_count
     ):
         raise TerminalConflictResolutionError(
@@ -828,7 +833,9 @@ def _validate_resolution_document_completion(
     selected_paths: set[str],
 ) -> None:
     if (
-        value["selected_count"] != selected
+        type(value["selected_count"]) is not int
+        or value["selected_count"] != selected
+        or type(value["neither_count"]) is not int
         or value["neither_count"] != neither
         or selected + neither != len(records)
     ):

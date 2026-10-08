@@ -24,6 +24,7 @@ from vntts.authoring.robustness_corpus import (
     load_speech_robustness_corpus,
 )
 from vntts.authoring.workbench import AuthoringWorkbenchError, load_workspace_authority
+from vntts.json_types import has_schema_version
 
 PROGRESS_SCHEMA = "vntts.legacy-reason-review-progress"
 PROGRESS_VERSION = 1
@@ -147,7 +148,7 @@ def load_reason_review_progress(
     if (
         not isinstance(document, dict)
         or document.get("schema") != PROGRESS_SCHEMA
-        or document.get("schema_version") != PROGRESS_VERSION
+        or not has_schema_version(document, PROGRESS_VERSION)
         or document.get("corpus_id") != review.corpus_id
         or not isinstance(document.get("items"), list)
     ):

@@ -28,6 +28,7 @@ from vntts.authoring.speaker_identity_model import (
     RUNTIME_VERSION,
     managed_speaker_identity_status,
 )
+from vntts.json_types import has_schema_version
 from vntts.voices import CharacterVoiceRegistry, read_voice_reference_bytes
 
 INVENTORY_SCHEMA = "vntts.speaker-reference-inventory"
@@ -505,7 +506,7 @@ def _validate_inventory_shape(document: Mapping[str, object]) -> None:
     references = document.get("references")
     if (
         document.get("schema") != INVENTORY_SCHEMA
-        or document.get("schema_version") != SCHEMA_VERSION
+        or not has_schema_version(document, SCHEMA_VERSION)
         or not isinstance(document.get("voice_manifest"), str)
         or not isinstance(references, list)
         or document.get("reference_count") != len(references)
@@ -539,7 +540,7 @@ def _validate_labels_shape(document: Mapping[str, object]) -> None:
     pairs = document.get("pairs")
     if (
         document.get("schema") != LABELS_SCHEMA
-        or document.get("schema_version") != SCHEMA_VERSION
+        or not has_schema_version(document, SCHEMA_VERSION)
         or not isinstance(pairs, list)
         or document.get("labels_id")
         != _document_sha256(
