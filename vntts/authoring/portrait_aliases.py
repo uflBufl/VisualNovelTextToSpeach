@@ -209,22 +209,19 @@ def _accepted_portrait_variant(
 def _portrait_alias_suggestions(
     variants: list[_PortraitVariant], max_dhash_distance: int
 ) -> list[_PortraitAliasSuggestion]:
+    families: dict[tuple[str, str], list[_PortraitVariant]] = {}
+    for variant in variants:
+        family = (variant["character"].casefold(), variant["source_bank"].casefold())
+        families.setdefault(family, []).append(variant)
     suggestions: list[_PortraitAliasSuggestion] = []
-    for first, second in combinations(variants, 2):
-        if not _eligible_alias_pair(first, second):
-            continue
-        distance = _hamming(first["dhash"], second["dhash"])
-        if distance <= max_dhash_distance:
-            suggestions.append(_portrait_alias_suggestion(first, second, distance))
+    for family_variants in families.values():
+        for first, second in combinations(family_variants, 2):
+            if first["portrait"] == second["portrait"]:
+                continue
+            distance = _hamming(first["dhash"], second["dhash"])
+            if distance <= max_dhash_distance:
+                suggestions.append(_portrait_alias_suggestion(first, second, distance))
     return sorted(suggestions, key=lambda value: value["suggestion_id"])
-
-
-def _eligible_alias_pair(first: _PortraitVariant, second: _PortraitVariant) -> bool:
-    return (
-        first["character"].casefold() == second["character"].casefold()
-        and first["source_bank"].casefold() == second["source_bank"].casefold()
-        and first["portrait"] != second["portrait"]
-    )
 
 
 def _portrait_alias_suggestion(

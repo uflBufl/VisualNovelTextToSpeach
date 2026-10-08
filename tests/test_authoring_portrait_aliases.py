@@ -1,7 +1,9 @@
+import itertools
 import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from tests.source_reference_fixtures import (
     publish_source_reference_quality_fixture,
@@ -62,6 +64,41 @@ class PortraitAliasesTest(unittest.TestCase):
                         aliases.load_portrait_alias_decision(path, loaded).document,
                         decision.document,
                     )
+
+    def test_pair_search_only_visits_same_voice_families(self):
+        variants = []
+        for family in range(20):
+            for member in range(2):
+                variants.append(
+                    {
+                        "variant_id": f"{family}-{member}",
+                        "character": f"Hero-{family}",
+                        "portrait": f"{member}.png",
+                        "source_bank": f"{family}.bnk",
+                        "portrait_image_sha256": "a" * 64,
+                        "dhash": "0" * 16,
+                    }
+                )
+        pairs = []
+
+        def counted_pairs(values, size):
+            for pair in itertools.combinations(values, size):
+                pairs.append(pair)
+                yield pair
+
+        with patch.object(aliases, "combinations", side_effect=counted_pairs):
+            suggestions = aliases._portrait_alias_suggestions(variants, 6)
+        self.assertEqual(len(pairs), 20)
+        self.assertEqual(len(suggestions), 20)
+        self.assertEqual(
+            [value["suggestion_id"] for value in suggestions],
+            sorted(value["suggestion_id"] for value in suggestions),
+        )
+        self.assertTrue(
+            all(
+                first["source_bank"] == second["source_bank"] for first, second in pairs
+            )
+        )
 
 
 if __name__ == "__main__":
