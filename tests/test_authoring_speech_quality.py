@@ -14,6 +14,7 @@ from vntts.authoring.speech_quality import (
     SpeechSilenceValidationError,
     analyze_generated_speech_samples,
     inspect_generated_speech,
+    inspect_generated_speech_samples,
     measure_generated_speech,
     measure_generated_speech_bytes,
     measure_generated_speech_samples,
@@ -31,6 +32,51 @@ def wav_bytes(samples, sample_rate=125):
 
 
 class AuthoringSpeechQualityTest(unittest.TestCase):
+    def test_sample_inspection_preserves_path_gate_and_diagnosis(self):
+        for samples in (np.full(13, 1000), np.zeros(153)):
+            with TemporaryDirectory() as directory:
+                path = Path(directory) / "speech.wav"
+                path.write_bytes(wav_bytes(samples))
+                for version in (1, 2):
+                    with self.subTest(count=len(samples), version=version):
+                        options = {"analysis_version": version, "text": "One. Two."}
+                        if samples.any():
+                            self.assertEqual(
+                                inspect_generated_speech_samples(
+                                    samples,
+                                    sample_rate=125,
+                                    duration_seconds=len(samples) / 125,
+                                    **options,
+                                ),
+                                inspect_generated_speech(path, **options),
+                            )
+                        else:
+                            with self.assertRaises(
+                                SpeechSilenceValidationError
+                            ) as path_error:
+                                inspect_generated_speech(path, **options)
+                            with self.assertRaises(
+                                SpeechSilenceValidationError
+                            ) as sample_error:
+                                inspect_generated_speech_samples(
+                                    samples,
+                                    sample_rate=125,
+                                    duration_seconds=len(samples) / 125,
+                                    **options,
+                                )
+                            self.assertEqual(
+                                sample_error.exception.quality,
+                                path_error.exception.quality,
+                            )
+                            self.assertEqual(
+                                sample_error.exception.failures,
+                                path_error.exception.failures,
+                            )
+                            self.assertEqual(
+                                sample_error.exception.diagnosis,
+                                path_error.exception.diagnosis,
+                            )
+
     def test_measurements_skip_diagnostic_spans_but_inspection_keeps_them(self):
         samples = np.zeros(160, dtype=np.int16)
         payload = wav_bytes(samples)
@@ -177,6 +223,12 @@ class AuthoringSpeechQualityTest(unittest.TestCase):
                     ),
                     lambda: measure_generated_speech_samples(
                         [1],
+                        sample_rate=125,
+                        duration_seconds=1 / 125,
+                        analysis_version=version,
+                    ),
+                    lambda: inspect_generated_speech_samples(
+                        ["invalid"],
                         sample_rate=125,
                         duration_seconds=1 / 125,
                         analysis_version=version,

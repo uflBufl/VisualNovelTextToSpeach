@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import unittest
+import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -795,12 +796,16 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
         backend = FakeRenderBackend()
         variant = ModelVariant("fake/one", "fake", generation_profile="expressive")
         with TemporaryDirectory() as directory:
-            report = benchmark_renderer(
-                variant,
-                backend,
-                [{"id": "sample", "character": "Voice", "text": "A line."}],
-                directory,
-                seed=11,
+            with patch.object(wave, "open", wraps=wave.open) as open_wav:
+                report = benchmark_renderer(
+                    variant,
+                    backend,
+                    [{"id": "sample", "character": "Voice", "text": "A line."}],
+                    directory,
+                    seed=11,
+                )
+            self.assertEqual(
+                sum(call.args[1] == "rb" for call in open_wav.call_args_list), 1
             )
 
         self.assertEqual(len(backend.requests), 1)

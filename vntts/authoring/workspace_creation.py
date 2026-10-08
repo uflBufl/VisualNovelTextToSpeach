@@ -48,7 +48,6 @@ from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     JsonDocument,
     inline_pause_matches_failure,
-    inspect_generated_wav,
     load_generation_state,
     normalize_short_trailing_ellipsis,
     normalized_failure_record,
@@ -56,6 +55,9 @@ from vntts.authoring.bulk_generation import (
     sentence_repair_matches_failure,
     sha256_control_path,
     snapshot_generation_control_files,
+)
+from vntts.authoring.bulk_generation import (
+    inspect_generated_wav as inspect_generated_wav,
 )
 from vntts.authoring.failure_reference_binding_records import (
     FailureReferenceBinding,
@@ -77,7 +79,10 @@ from vntts.authoring.generation_lease import (
     GenerationLease,
     process_is_alive,
 )
-from vntts.authoring.generation_manifest import write_generated_manifest_from_state
+from vntts.authoring.generation_manifest import (
+    inspect_generated_wav_with_samples,
+    write_generated_manifest_from_state,
+)
 from vntts.authoring.missing_voice_policy import (
     MissingVoicePolicy,
     MissingVoicePolicyError,
@@ -109,7 +114,11 @@ from vntts.authoring.source_reference_bindings import (
     queue_voice_overrides_sha256,
 )
 from vntts.authoring.speech_quality import (
-    measure_generated_speech_bytes,
+    SPEECH_QUALITY_ANALYSIS_VERSION,
+    measure_generated_speech_samples,
+)
+from vntts.authoring.speech_quality import (
+    measure_generated_speech_bytes as measure_generated_speech_bytes,
 )
 from vntts.authoring.terminal_conflict_records import is_terminal_review_outcome
 from vntts.authoring.workbench_contracts import (
@@ -1175,8 +1184,18 @@ def _install_audio_event_composition(
             else {}
         )
     try:
-        quality = asdict(inspect_generated_wav(audio, allow_short_audio_event=True))
-        speech_quality = asdict(measure_generated_speech_bytes(audio.read_bytes()))
+        audio_quality, samples = inspect_generated_wav_with_samples(
+            audio, allow_short_audio_event=True
+        )
+        quality = asdict(audio_quality)
+        speech_quality = asdict(
+            measure_generated_speech_samples(
+                samples,
+                sample_rate=audio_quality.sample_rate,
+                duration_seconds=audio_quality.sample_count / audio_quality.sample_rate,
+                analysis_version=SPEECH_QUALITY_ANALYSIS_VERSION,
+            )
+        )
     except BulkGenerationError as error:
         raise AuthoringWorkbenchError(str(error)) from error
     target_state = copy.deepcopy(state)

@@ -63,7 +63,7 @@ from vntts.authoring.generation_lease import (
 from vntts.authoring.generation_manifest import (
     RUNTIME_PROGRESS_MANIFEST_NAME,
     approved_manifest_entries,
-    inspect_generated_wav,
+    inspect_generated_wav_with_samples,
     snapshot_recorded_voices,
     validate_success_file,
     write_generated_manifest_from_state,
@@ -71,6 +71,9 @@ from vntts.authoring.generation_manifest import (
 )
 from vntts.authoring.generation_manifest import AudioQuality as AudioQuality
 from vntts.authoring.generation_manifest import RecordedVoice as RecordedVoice
+from vntts.authoring.generation_manifest import (
+    inspect_generated_wav as inspect_generated_wav,
+)
 from vntts.authoring.generation_state import (
     AUTOMATIC_RECOVERY_LIVE_FALLBACK_EVIDENCE_SCHEMA as AUTOMATIC_RECOVERY_LIVE_FALLBACK_EVIDENCE_SCHEMA,
 )
@@ -192,7 +195,7 @@ from vntts.authoring.speech_quality import (
     MAX_TRAILING_SILENCE_SECONDS,
     NOTABLE_SILENCE_SPAN_SECONDS,
     SpeechSilenceValidationError,
-    inspect_generated_speech,
+    inspect_generated_speech_samples,
 )
 from vntts.authoring.speech_quality import (
     MAX_SILENCE_RATIO as MAX_SILENCE_RATIO,
@@ -214,6 +217,9 @@ from vntts.authoring.speech_quality import (
 )
 from vntts.authoring.speech_quality import (
     SpeechSilenceSpan as SpeechSilenceSpan,
+)
+from vntts.authoring.speech_quality import (
+    inspect_generated_speech as inspect_generated_speech,
 )
 from vntts.authoring.speech_quality import (
     measure_generated_speech as measure_generated_speech,
@@ -2477,8 +2483,13 @@ def _render_and_publish_generation_attempt(
             "trailing_trimmed_samples": trimmed.trailing_trimmed_samples,
         }
     write_pcm16_wav(attempt.partial, output_pcm, attempt.rendered.sample_rate)
-    quality = inspect_generated_wav(attempt.partial)
-    speech_quality = inspect_generated_speech(attempt.partial, text=plan.synthesis_text)
+    quality, samples = inspect_generated_wav_with_samples(attempt.partial)
+    speech_quality = inspect_generated_speech_samples(
+        samples,
+        sample_rate=quality.sample_rate,
+        duration_seconds=quality.sample_count / quality.sample_rate,
+        text=plan.synthesis_text,
+    )
     file_sha256 = sha256_file(attempt.partial)
     _write_active_phase(run.state_path, run.state, "publishing")
     _notify_progress(run)

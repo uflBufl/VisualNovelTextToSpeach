@@ -18,7 +18,7 @@ from typing import TypeAlias
 import numpy as np
 from durable_file import atomic_write_bytes, atomic_write_json, sha256_file
 from numpy.typing import NDArray
-from vntts_artifacts.audio import probe_pcm16_mono_wav, write_pcm16_wav
+from vntts_artifacts.audio import read_pcm16_mono_wav, write_pcm16_wav
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 from vntts_artifacts.voice_manifest import VoiceManifestError
 
@@ -33,7 +33,10 @@ from vntts.authoring.publication import (
     rename_directory_no_replace,
     staged_directory,
 )
-from vntts.authoring.speech_quality import measure_generated_speech_bytes
+from vntts.authoring.speech_quality import (
+    SPEECH_QUALITY_ANALYSIS_VERSION,
+    measure_generated_speech_samples,
+)
 from vntts.authoring.workspace_foundation import load_json_object_snapshot
 from vntts.cleanup import temporary_directory
 from vntts.cli import cli_error, cli_messages
@@ -847,8 +850,13 @@ def _render_benchmark_sample(
         _mono_pcm(result.pcm),
         result.sample_rate,
     )
-    info = probe_pcm16_mono_wav(staged_audio_path)
-    speech_quality = measure_generated_speech_bytes(staged_audio_path.read_bytes())
+    samples, info = read_pcm16_mono_wav(staged_audio_path)
+    speech_quality = measure_generated_speech_samples(
+        samples,
+        sample_rate=info.sample_rate,
+        duration_seconds=info.duration_seconds,
+        analysis_version=SPEECH_QUALITY_ANALYSIS_VERSION,
+    )
     reported_audio_path = reported_output_directory / "audio" / staged_audio_path.name
     return {
         **base_record,

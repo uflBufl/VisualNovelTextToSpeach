@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib
+from collections.abc import Sequence
 from dataclasses import asdict
 from pathlib import Path, PurePosixPath
 from typing import Callable, TypeAlias
@@ -2545,7 +2546,7 @@ def _validate_current_success_item(result: StateObject, queue_id: str) -> None:
 
 
 def _validate_success_speech_quality(
-    result: StateObject, queue_id: str, quality: AudioQuality, samples: np.ndarray
+    result: StateObject, queue_id: str, quality: AudioQuality, samples: Sequence[int]
 ) -> None:
     stored = result.get("speech_quality")
     if not isinstance(stored, dict):

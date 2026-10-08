@@ -365,10 +365,28 @@ def inspect_generated_speech(
         raise BulkGenerationError(
             f"Unable to analyze generated speech: {error}"
         ) from error
-    quality, spans = analyze_generated_speech_samples(
+    return inspect_generated_speech_samples(
         samples,
         sample_rate=info.sample_rate,
         duration_seconds=info.duration_seconds,
+        analysis_version=analysis_version,
+        text=text,
+    )
+
+
+def inspect_generated_speech_samples(
+    samples: object,
+    *,
+    sample_rate: int,
+    duration_seconds: float,
+    analysis_version: int = SPEECH_QUALITY_ANALYSIS_VERSION,
+    text: str = "",
+) -> SpeechQuality:
+    """Apply the speech-silence gate to already-decoded PCM16 samples."""
+    quality, spans = analyze_generated_speech_samples(
+        samples,
+        sample_rate=sample_rate,
+        duration_seconds=duration_seconds,
         analysis_version=analysis_version,
     )
     failures = []
@@ -419,6 +437,7 @@ __all__ = [
     "SpeechSilenceValidationError",
     "analyze_generated_speech_samples",
     "inspect_generated_speech",
+    "inspect_generated_speech_samples",
     "measure_generated_speech",
     "measure_generated_speech_bytes",
     "measure_generated_speech_samples",

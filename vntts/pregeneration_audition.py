@@ -32,7 +32,10 @@ from vntts.authoring.advisory_lock import (
     exclusive_advisory_lock,
 )
 from vntts.authoring.generation_lease import BulkGenerationError
-from vntts.authoring.generation_manifest import AudioQuality, inspect_generated_wav
+from vntts.authoring.generation_manifest import (
+    AudioQuality,
+    inspect_generated_wav_with_samples,
+)
 from vntts.authoring.speech_quality import (
     MAX_INTERNAL_SILENCE_SECONDS,
     MAX_LEADING_SILENCE_SECONDS,
@@ -40,7 +43,7 @@ from vntts.authoring.speech_quality import (
     MAX_TRAILING_SILENCE_SECONDS,
     SpeechQuality,
     SpeechSilenceValidationError,
-    inspect_generated_speech,
+    inspect_generated_speech_samples,
 )
 from vntts.cleanup import attempt_cleanup, cleanup_on_exit
 from vntts.document_identity import canonical_document_sha256
@@ -877,8 +880,13 @@ def _preflight_candidate_references(
 def _inspect_preview(path: Path, text: str) -> AudioQuality:
     audio_quality: AudioQuality | None = None
     try:
-        audio_quality = inspect_generated_wav(path)
-        speech_quality = inspect_generated_speech(path, text=text)
+        audio_quality, samples = inspect_generated_wav_with_samples(path)
+        speech_quality = inspect_generated_speech_samples(
+            samples,
+            sample_rate=audio_quality.sample_rate,
+            duration_seconds=audio_quality.sample_count / audio_quality.sample_rate,
+            text=text,
+        )
     except SpeechSilenceValidationError as error:
         _record_preview_quality(
             "rejected", "speech-silence", audio_quality, error.quality

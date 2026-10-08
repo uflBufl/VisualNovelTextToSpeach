@@ -2,6 +2,7 @@ import io
 import json
 import os
 import unittest
+import wave
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
@@ -55,6 +56,29 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
                         VoiceAuditionError, "not uniquely available"
                     ):
                         _validate_request(plan, group, source_id)
+
+    def test_each_preview_validation_phase_decodes_its_wav_once(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            plan, group, _manifest = ambiguous_fixture(root)
+            backend = FakeBackend("moss-tts")
+            service = VoiceAuditionPreviewService(
+                root / "auditions",
+                backend_factory=lambda *_args, **_kwargs: backend,
+            )
+            self.addCleanup(service.close)
+            with patch.object(wave, "open", wraps=wave.open) as open_wav:
+                preview = service.generate(plan, group, group.candidates[0].source_id)
+            decoded = [
+                Path(call.args[0])
+                for call in open_wav.call_args_list
+                if call.args[1] == "rb"
+                and isinstance(call.args[0], (str, Path))
+                and Path(call.args[0]).parent.resolve() == service.root.resolve()
+            ]
+            self.assertEqual(len(decoded), len(set(decoded)))
+            self.assertIn(preview.path, decoded)
+            self.assertEqual(len(backend.requests), 1)
 
     def test_rejects_changed_audio_between_preview_validation_phases(self):
         for cached in (False, True):

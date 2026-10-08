@@ -3,6 +3,7 @@ import json
 import os
 import socket
 import unittest
+import wave
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -300,6 +301,26 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         )
         self.assertEqual(progress_manifest["entries"][0]["line_id"], item["line_id"])
 
+    def test_rendered_wav_decodes_once_before_publication(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            output = root / "output"
+            with patch("wave.open", wraps=wave.open) as wav_open:
+                result = self.run_generation(queue, output, SyntheticRenderer())
+            staged_reads = [
+                call
+                for call in wav_open.call_args_list
+                if call.args[1] == "rb"
+                and isinstance(call.args[0], str)
+                and call.args[0].endswith(".partial.wav")
+            ]
+            self.assertEqual(result.generated, 1)
+            self.assertEqual(len(staged_reads), 1)
+            self.assertTrue(result.manifest.is_file())
+            self.assertEqual(list(output.rglob("*.partial.wav")), [])
+
     def test_validated_player_audio_is_published_and_reused_without_review(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -365,14 +386,14 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     second_started.set()
 
             renderer.inspect_state = inspect_state
-            inspect_speech = bulk_module.inspect_generated_speech
+            inspect_speech = bulk_module.inspect_generated_speech_samples
 
-            def wait_for_next_render(path, **options):
+            def wait_for_next_render(samples, **options):
                 self.assertTrue(second_started.wait(2))
-                return inspect_speech(path, **options)
+                return inspect_speech(samples, **options)
 
             with patch(
-                "vntts.authoring.bulk_generation.inspect_generated_speech",
+                "vntts.authoring.bulk_generation.inspect_generated_speech_samples",
                 side_effect=wait_for_next_render,
             ):
                 result = run_bulk_generation(
@@ -2313,7 +2334,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             item = queue_item()
             queue = write_queue(root / "queue.jsonl", [item])
             output = root / "output"
-            original_inspection = bulk_module.inspect_generated_speech
+            original_inspection = bulk_module.inspect_generated_speech_samples
 
             def lose_lease(*args, **kwargs):
                 inspected = original_inspection(*args, **kwargs)
@@ -2326,7 +2347,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             with (
                 patch.object(
                     bulk_module,
-                    "inspect_generated_speech",
+                    "inspect_generated_speech_samples",
                     side_effect=lose_lease,
                 ),
                 self.assertRaisesRegex(BulkGenerationError, "ownership"),
