@@ -560,7 +560,7 @@ Planned implementation order after approval:
 
 ## Investigate intermittent macOS Qt test crash
 
-- [ ] Reproduce/bisect the October 8 remainder SIGSEGV at `tests.test_history.DialogueHistoryDialogTest.test_slow_replay_keeps_qt_responsive_and_reports_completion` after the preceding exact full-discovery prefix. Preserve `.codex/investigations/queue-oct08-local-verified.log`; a prior 3725-test run passed, so causality is not established. Gate: narrowed repeatable Qt/pooled-thread owner sequence and a deterministic lifetime regression; a successful retry does not resolve it.
+- [ ] Reproduce/bisect the October 8 remainder SIGSEGV at `tests.test_history.DialogueHistoryDialogTest.test_slow_replay_keeps_qt_responsive_and_reports_completion` after the preceding exact full-discovery prefix. Preserve the latest 3565-selected-test crash prefix in `.codex/investigations/model-quality-oct08-local-complete.log` and the prior `.codex/investigations/queue-oct08-local-verified.log`; identical branch selection and an earlier local selection passed, so causality is not established. Gate: narrowed repeatable Qt/pooled-thread owner sequence and a deterministic lifetime regression; a successful retry does not resolve it.
 
 - [ ] Reproduce/bisect the October 7 qt-assets SIGSEGV at `test_model_verification_can_finish_after_close_without_updating_ui`: native stack enters QObjectWrapper disconnectNotify during QDialog child destruction. Compare the exact 21-test shard on main and the cancellation branch; four fresh main processes passed, so causality is not established. Keep `.codex/investigations/assets-native-oct07.log`; gate: a narrowed repeatable teardown sequence and an explicit owner-lifetime check, without treating a successful retry as a native crash fix.
 

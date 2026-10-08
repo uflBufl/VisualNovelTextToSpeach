@@ -13,7 +13,6 @@ from unittest.mock import patch
 import numpy as np
 
 import vntts.authoring.robustness_asr as asr_module
-
 from tests.authoring_fixtures import create_test_workspace
 from vntts.authoring import robustness_corpus
 from vntts.authoring.cli import main as authoring_main
