@@ -588,6 +588,10 @@ def _validate_variant_identity(
     reference: JsonObject,
     variant_id: str,
 ) -> None:
+    if type(variant.get("media_id")) is not int:
+        raise SourceReferenceQualityError(
+            f"Evaluation variant {variant_id} changed media_id"
+        )
     expected = {
         "character": cluster["character"],
         "portrait": cluster["portrait"],
