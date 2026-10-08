@@ -1,4 +1,3 @@
-import hashlib
 import json
 import unittest
 from contextlib import redirect_stdout
@@ -21,6 +20,7 @@ import vntts.authoring.reconciliation as reconciliation_module
 from tests.authoring_fixtures import (
     create_pending_cohort_workspace,
     create_test_workspace,
+    tree_hashes,
     write_legacy_fixture,
 )
 from tests.source_reference_fixtures import (
@@ -46,14 +46,6 @@ from vntts.authoring.reconciliation import (
 from vntts.authoring.reconciliation_cli import main as reconciliation_main
 from vntts.authoring.reconciliation_merge import merge_reconciled_terminal_outcomes
 from vntts.authoring.workbench import create_resume_workspace, generation_command
-
-
-def _tree_hashes(root):
-    return {
-        path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-    }
 
 
 class AuthoringReconciliationTest(unittest.TestCase):
@@ -89,7 +81,7 @@ class AuthoringReconciliationTest(unittest.TestCase):
                             publication, ((secondary.name, decision),)
                         )
                     expected = build_authoring_reconciliation(primary, bundles)
-                    before = _tree_hashes(root)
+                    before = tree_hashes(root)
                     traversals = []
 
                     class CountedActions(list):
@@ -107,7 +99,7 @@ class AuthoringReconciliationTest(unittest.TestCase):
                     ):
                         actual = build_authoring_reconciliation(primary, bundles)
                     self.assertEqual(actual, expected)
-                    self.assertEqual(before, _tree_hashes(root))
+                    self.assertEqual(before, tree_hashes(root))
                     self.assertEqual(len(traversals), 2)
                     reconciliation_module._validated_report(actual)
 
@@ -130,7 +122,7 @@ class AuthoringReconciliationTest(unittest.TestCase):
                             publication, ((workspace.name, decision),)
                         )
                     expected = build_authoring_reconciliation(workspace, bundles)
-                    before = _tree_hashes(root)
+                    before = tree_hashes(root)
                     captured_maps = []
 
                     def capture_items(*args, **kwargs):
@@ -148,7 +140,7 @@ class AuthoringReconciliationTest(unittest.TestCase):
                         actual = build_authoring_reconciliation(workspace, bundles)
 
                     self.assertEqual(actual, expected)
-                    self.assertEqual(before, _tree_hashes(root))
+                    self.assertEqual(before, tree_hashes(root))
                     self.assertEqual(len(captured_maps), 1)
                     self.assertLessEqual(captured_maps[0].traversals, 2)
 
@@ -237,13 +229,13 @@ class AuthoringReconciliationTest(unittest.TestCase):
                 _quality,
                 _publication,
             ) = self.create_fixture(root)
-            before = _tree_hashes(root)
+            before = tree_hashes(root)
 
             first = build_authoring_reconciliation(workspace, bundles)
             second = build_authoring_reconciliation(workspace, bundles)
 
             self.assertEqual(first, second)
-            self.assertEqual(before, _tree_hashes(root))
+            self.assertEqual(before, tree_hashes(root))
             self.assertEqual(first.document["summary"]["workspace_count"], 1)
             self.assertEqual(first.document["summary"]["bundle_count"], 1)
             self.assertEqual(

@@ -7,9 +7,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import tests.test_authoring_reconciliation as reconciliation_tests
 import vntts.authoring.terminal_conflict_workspace as terminal_workspace_module
 import vntts.authoring.workbench as workbench_module
+from tests.authoring_fixtures import tree_hashes
 from tests.terminal_conflict_fixtures import create_terminal_conflict_fixture
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
@@ -73,7 +73,7 @@ class TerminalConflictWorkspaceTest(unittest.TestCase):
     def source_hashes(self, root):
         return {
             key: value
-            for key, value in reconciliation_tests._tree_hashes(root).items()
+            for key, value in tree_hashes(root).items()
             if not key.startswith("workspaces/")
         }
 

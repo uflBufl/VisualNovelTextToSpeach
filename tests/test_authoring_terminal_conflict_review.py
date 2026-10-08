@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import tests.test_authoring_reconciliation as reconciliation_tests
+from tests.authoring_fixtures import tree_hashes
 from tests.symlink_support import symlink_or_skip
 from tests.terminal_conflict_fixtures import create_terminal_conflict_fixture
 from vntts.authoring import terminal_conflict_review as terminal_module
@@ -52,7 +52,7 @@ class TerminalConflictReviewTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             primary, secondary, queue_id, report_path = self.create_fixture(root)
-            before = reconciliation_tests._tree_hashes(root)
+            before = tree_hashes(root)
             output = root / "conflict-review"
 
             created = publish_terminal_conflict_review(report_path, output)
@@ -75,7 +75,7 @@ class TerminalConflictReviewTest(unittest.TestCase):
             )
             source_after_publish = {
                 key: value
-                for key, value in reconciliation_tests._tree_hashes(root).items()
+                for key, value in tree_hashes(root).items()
                 if not key.startswith("conflict-review/")
             }
             self.assertEqual(before, source_after_publish)
@@ -91,7 +91,7 @@ class TerminalConflictReviewTest(unittest.TestCase):
                 before,
                 {
                     key: value
-                    for key, value in reconciliation_tests._tree_hashes(root).items()
+                    for key, value in tree_hashes(root).items()
                     if not key.startswith("conflict-review/")
                 },
             )

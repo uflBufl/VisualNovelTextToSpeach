@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from vntts_artifacts.file_integrity import sha256_file
 
+from tests.authoring_fixtures import tree_hashes
 from tests.listening_fixtures import write_listening_fixture
 from vntts.authoring.cli import main
 from vntts.authoring.listening_import import (
@@ -47,11 +48,7 @@ class ListeningImportTest(unittest.TestCase):
                 session_path.write_text(
                     json.dumps(session, sort_keys=True), encoding="utf-8"
                 )
-                source_hashes = {
-                    path.relative_to(source).as_posix(): sha256_file(path)
-                    for path in source.rglob("*")
-                    if path.is_file()
-                }
+                source_hashes = tree_hashes(source)
 
                 with self.assertRaises(ListeningImportError):
                     inspect_listening_session(source)
@@ -61,11 +58,7 @@ class ListeningImportTest(unittest.TestCase):
                 self.assertFalse((root / "app-data").exists())
                 self.assertEqual(
                     source_hashes,
-                    {
-                        path.relative_to(source).as_posix(): sha256_file(path)
-                        for path in source.rglob("*")
-                        if path.is_file()
-                    },
+                    tree_hashes(source),
                 )
 
     def test_rejects_non_integer_schema_versions_and_session_counts(self):
@@ -265,11 +258,7 @@ class ListeningImportTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             source = write_listening_fixture(root)
-            source_hashes = {
-                path.relative_to(source).as_posix(): sha256_file(path)
-                for path in source.rglob("*")
-                if path.is_file()
-            }
+            source_hashes = tree_hashes(source)
 
             inspection = inspect_listening_session(source)
             first = import_listening_session(source, root / "app-data")
@@ -284,11 +273,7 @@ class ListeningImportTest(unittest.TestCase):
             self.assertTrue((first.destination / ".blind-key.json").is_file())
             self.assertEqual(
                 source_hashes,
-                {
-                    path.relative_to(source).as_posix(): sha256_file(path)
-                    for path in source.rglob("*")
-                    if path.is_file()
-                },
+                tree_hashes(source),
             )
 
     def test_concurrent_import_does_not_overwrite_existing_destination(self):

@@ -52,6 +52,14 @@ from vntts.authoring.workbench import WorkspaceCreationResult, create_resume_wor
 from vntts.authoring.workspace_foundation import load_json_object
 
 
+def tree_hashes(root: Path) -> dict[str, str]:
+    return {
+        path.relative_to(root).as_posix(): sha256_file(path)
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
 class LegacyJob(TypedDict):
     schema: str
     schema_version: int

@@ -6,7 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import tests.test_authoring_reconciliation as reconciliation_tests
+from tests.authoring_fixtures import tree_hashes
 from tests.symlink_support import symlink_or_skip
 from tests.terminal_conflict_fixtures import create_terminal_conflict_fixture
 from vntts.authoring.authority import canonical_document_sha256
@@ -36,7 +36,7 @@ class TerminalConflictResolutionTest(unittest.TestCase):
     def source_hashes(self, root):
         return {
             key: value
-            for key, value in reconciliation_tests._tree_hashes(root).items()
+            for key, value in tree_hashes(root).items()
             if not key.startswith(("conflict-review/", "resolution/"))
         }
 

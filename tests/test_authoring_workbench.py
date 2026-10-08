@@ -34,6 +34,7 @@ from tests.authoring_fixtures import (
     create_carry_source_workspace,
     create_test_workspace,
     current_carry_fields,
+    tree_hashes,
     write_authority,
     write_carry_target_manifest,
     write_legacy_fixture,
@@ -538,11 +539,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             fixture, imported, first = self.create_workspace(root)
-            imported_hashes = {
-                path.relative_to(imported).as_posix(): sha256_file(path)
-                for path in imported.rglob("*")
-                if path.is_file()
-            }
+            imported_hashes = tree_hashes(imported)
             second = create_resume_workspace(
                 imported,
                 root / "workspaces",
@@ -556,11 +553,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             workspace = json.loads(
                 (first.directory / "workspace.json").read_text(encoding="utf-8")
             )
-            imported_hashes_after = {
-                path.relative_to(imported).as_posix(): sha256_file(path)
-                for path in imported.rglob("*")
-                if path.is_file()
-            }
+            imported_hashes_after = tree_hashes(imported)
             workspace_queue_hash = sha256_file(first.directory / "queue.jsonl")
             fixture_queue_hash = sha256_file(fixture["queue"])
 
