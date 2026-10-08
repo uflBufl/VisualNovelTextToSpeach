@@ -1,99 +1,19 @@
-import io
 import json
 import unittest
-import wave
 import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Lock
 from types import SimpleNamespace
-from typing import ClassVar
 from unittest.mock import patch
 
-import numpy as np
-
 from scripts import moss_native_pause_probe as probe
+from tests.native_moss_fixtures import FakeNativeBackend as _FakeBackend
+from tests.native_moss_fixtures import OwnedServer as _OwnedServer
 from tests.pregeneration_fixtures import clean_wav_bytes
 from vntts.settings import AppSettings
-from vntts.synthesis import (
-    SynthesisCompletion,
-    SynthesisDiagnostics,
-    SynthesisLimits,
-    SynthesisResult,
-    SynthesisTiming,
-)
+from vntts.synthesis import SynthesisCompletion
 from vntts.voice_library import VoiceLibrary
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry, VoiceManifestError
-
-
-def _stereo_wav():
-    output = io.BytesIO()
-    with wave.open(output, "wb") as wav:
-        wav.setnchannels(2)
-        wav.setsampwidth(2)
-        wav.setframerate(48000)
-        wav.writeframes(
-            (np.array([[1000, -1000]], dtype="<i2").repeat(480, 0)).tobytes()
-        )
-    return output.getvalue()
-
-
-class _Stream:
-    def __init__(self, result):
-        self.result = result
-
-    def collect(self):
-        return self.result
-
-
-class _FakeBackend:
-    instances: ClassVar[list["_FakeBackend"]] = []
-
-    def __init__(self, _registry, **options):
-        self.registry = _registry
-        self.options = options
-        self.requests = []
-        self.shutdown_called = False
-        self.server = None
-        self.server_lock = Lock()
-        self.server_info = None
-        self.runtime_status = None
-        type(self).instances.append(self)
-
-    def _http(self, method, path, body=None, *, timeout=None):
-        assert timeout is None
-        if path == "/tts":
-            return 200, {"X-MOSS-Audio-Frames": "2"}, _stereo_wav()
-        raise AssertionError(path)
-
-    def render(self, request):
-        self.requests.append(request)
-        self._http("POST", "/tts", {"text": request.text})
-        return self._result(request, SynthesisCompletion.COMPLETE)
-
-    @staticmethod
-    def _result(request, completion):
-        pcm = np.tile(np.array([[0.1, -0.1]], dtype=np.float32), (480, 1))
-        return _Stream(
-            SynthesisResult(
-                pcm=pcm,
-                sample_rate=48000,
-                completion=completion,
-                limits=SynthesisLimits(*probe.moss_generation_limits(request.text)),
-                timing=SynthesisTiming(1.0, 2.0),
-                diagnostics=SynthesisDiagnostics(
-                    "moss-cpp",
-                    "fresh-generation",
-                    request.generation_profile,
-                    request.seed,
-                    1,
-                    len(pcm),
-                ),
-            )
-        )
-
-    def shutdown(self):
-        self.shutdown_called = True
 
 
 class _LimitedThenInterruptedBackend(_FakeBackend):
@@ -109,15 +29,6 @@ class _NoRawBackend(_FakeBackend):
     def render(self, request):
         self.requests.append(request)
         return self._result(request, SynthesisCompletion.COMPLETE)
-
-
-class _OwnedServer:
-    def __init__(self, pid):
-        self.pid = pid
-        self.returncode = None
-
-    def poll(self):
-        return self.returncode
 
 
 class _LimitedThenReplacementBackend(_FakeBackend):
