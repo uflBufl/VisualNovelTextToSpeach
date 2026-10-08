@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (  # noqa: E402
 )
 from shiboken6 import isValid  # noqa: E402
 
+from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from vntts.app import (  # noqa: E402
     SettingsDialog,
     TrayApplication,
@@ -3533,12 +3534,6 @@ class TrayApplicationTest(unittest.TestCase):
         tray_application.shutdown()
 
     def test_support_export_finishes_in_background_after_shutdown(self):
-        class ManualThreadPool:
-            def __init__(self):
-                self.tasks = []
-
-            def start(self, task):
-                self.tasks.append(task)
 
         pool = ManualThreadPool()
         tray_application = TrayApplication(
@@ -3991,12 +3986,6 @@ class TrayApplicationTest(unittest.TestCase):
         tray_application.shutdown()
 
     def test_diagnostic_refresh_keeps_latest_result_and_drops_after_close(self):
-        class ManualThreadPool:
-            def __init__(self):
-                self.tasks = []
-
-            def start(self, task):
-                self.tasks.append(task)
 
         pool = ManualThreadPool()
         controller = Mock()
@@ -4045,12 +4034,6 @@ class TrayApplicationTest(unittest.TestCase):
         tray_application.shutdown()
 
     def test_closed_diagnostics_dialog_drops_its_pending_result(self):
-        class ManualThreadPool:
-            def __init__(self):
-                self.tasks = []
-
-            def start(self, task):
-                self.tasks.append(task)
 
         pool = ManualThreadPool()
         controller = AppController(AppSettings())
@@ -4097,12 +4080,6 @@ class TrayApplicationTest(unittest.TestCase):
         tray_application.shutdown()
 
     def test_diagnostics_retry_invalidates_worker_before_deferred_launch(self):
-        class ManualThreadPool:
-            def __init__(self):
-                self.tasks = []
-
-            def start(self, task):
-                self.tasks.append(task)
 
         pool = ManualThreadPool()
         controller = Mock()

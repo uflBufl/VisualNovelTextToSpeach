@@ -15,6 +15,7 @@ from PySide6.QtGui import QFont  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog, QLabel, QSizePolicy  # noqa: E402
 
+from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from vntts.calibration import DialogRegionOverlay  # noqa: E402
 from vntts.game_pack import GamePackError  # noqa: E402
 from vntts.moss_cpp_installation import MossCppInstallRequired  # noqa: E402
@@ -948,12 +949,6 @@ class OnboardingWizardTest(unittest.TestCase):
         wizard.deleteLater()
 
     def test_diagnostics_page_is_async_cancellable_and_stale_safe(self):
-        class ManualThreadPool:
-            def __init__(self):
-                self.tasks = []
-
-            def start(self, task):
-                self.tasks.append(task)
 
         diagnostics = Mock()
         diagnostics.run.return_value = (DiagnosticResult("Capture", "ok", "Ready"),)
@@ -1005,12 +1000,6 @@ class OnboardingWizardTest(unittest.TestCase):
         wizard.deleteLater()
 
     def test_runtime_preparation_has_progress_retry_and_cancellable_stale_results(self):
-        class ManualThreadPool:
-            def __init__(self):
-                self.tasks = []
-
-            def start(self, task):
-                self.tasks.append(task)
 
         diagnostics = OnboardingDiagnostics()
         diagnostics.prepare_and_run = Mock(
@@ -1048,12 +1037,6 @@ class OnboardingWizardTest(unittest.TestCase):
         wizard.deleteLater()
 
     def test_first_moss_install_waits_for_explicit_action(self):
-        class ManualThreadPool:
-            def __init__(self):
-                self.tasks = []
-
-            def start(self, task):
-                self.tasks.append(task)
 
         diagnostics = OnboardingDiagnostics()
         diagnostics.moss_installation_space = Mock(
@@ -1159,12 +1142,6 @@ class OnboardingWizardTest(unittest.TestCase):
         wizard.deleteLater()
 
     def test_first_run_journey_needs_only_game_window_before_guided_test(self):
-        class ManualThreadPool:
-            def __init__(self):
-                self.tasks = []
-
-            def start(self, task):
-                self.tasks.append(task)
 
         diagnostics = Mock()
         diagnostics.run.return_value = (

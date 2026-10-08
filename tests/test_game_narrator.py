@@ -21,10 +21,10 @@ from PySide6.QtWidgets import (  # noqa: E402
 )
 from vntts_artifacts.file_integrity import sha256_file  # noqa: E402
 
+from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from tests.story_fixtures import write_content  # noqa: E402
 from tests.test_authoring_pcm_playback import FakeAudioModule  # noqa: E402
 from tests.test_pregeneration_audition import FakeBackend, clean_wav_bytes  # noqa: E402
-from tests.test_pregeneration_setup import ManualThreadPool  # noqa: E402
 from tests.test_voice_default_impact import voice_impact_fixture  # noqa: E402
 from tests.voice_manifest_fixtures import (  # noqa: E402
     write_manifest,

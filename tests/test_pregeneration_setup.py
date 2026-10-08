@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (  # noqa: E402
 from vntts_artifacts import write_story_index_document  # noqa: E402
 from vntts_artifacts.story_index import load_story_index_document  # noqa: E402
 
+from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from tests.story_fixtures import write_story_index  # noqa: E402
 from tests.symlink_support import symlink_or_skip  # noqa: E402
 from vntts.game_content_importer import (  # noqa: E402
@@ -113,14 +114,6 @@ def story_filter_content(content):
             ),
         ),
     )
-
-
-class ManualThreadPool:
-    def __init__(self):
-        self.tasks = []
-
-    def start(self, task):
-        self.tasks.append(task)
 
 
 class PregenerationSetupTest(unittest.TestCase):

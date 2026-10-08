@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (  # noqa: E402
 )
 from vntts_artifacts.file_integrity import sha256_file  # noqa: E402
 
+from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from vntts.asset_ui import (  # noqa: E402
     AssetManagerDialog,
     VoiceImportDialog,
@@ -152,12 +153,6 @@ class AssetManagerDialogTest(unittest.TestCase):
         self.assertFalse(dialog.model_runner.active)
 
     def test_model_verification_discards_stale_completion(self):
-        class ManualThreadPool:
-            def __init__(self):
-                self.tasks = []
-
-            def start(self, task):
-                self.tasks.append(task)
 
         pool = ManualThreadPool()
         model_manager = Mock()

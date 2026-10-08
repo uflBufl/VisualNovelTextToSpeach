@@ -16,11 +16,11 @@ from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog, QSizePolicy  # noqa: E402
 
 from tests.bulk_generation_fixtures import SyntheticRenderer  # noqa: E402
+from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from tests.story_fixtures import (
     write_content,  # noqa: E402
     write_story_index,  # noqa: E402
 )
-from tests.test_pregeneration_setup import ManualThreadPool  # noqa: E402
 from tests.voice_manifest_fixtures import (  # noqa: E402
     write_conflicting_manifest,
     write_manifest,

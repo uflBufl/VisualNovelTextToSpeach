@@ -9,6 +9,7 @@ from PySide6.QtGui import QColor, QPalette, QTextCursor  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QHeaderView, QLabel  # noqa: E402
 
+from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from vntts.onboarding import DiagnosticResult  # noqa: E402
 from vntts.readiness_ui import ReadinessDialog  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
@@ -487,17 +488,6 @@ class ReadinessDialogTest(unittest.TestCase):
         self.assertFalse(dialog.remediation_button.isEnabled())
         self.assertIn("Select a warning or error", dialog.remediation_reason.text())
         dialog.deleteLater()
-
-
-class ManualThreadPool:
-    def __init__(self):
-        self.tasks = []
-
-    def start(self, task):
-        self.tasks.append(task)
-
-    def run_next(self):
-        self.tasks.pop(0).run()
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from tests.audio_output_fixtures import FakeAudioOutput  # noqa: E402
 from tests.bulk_generation_fixtures import audio_samples  # noqa: E402
-from tests.test_pregeneration_setup import ManualThreadPool  # noqa: E402
+from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from tests.test_self_service_pregeneration import (  # noqa: E402
     InProcessPocketGenerator,
 )
