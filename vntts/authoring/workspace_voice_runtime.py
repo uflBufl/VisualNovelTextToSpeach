@@ -95,21 +95,18 @@ def load_failure_reference_runtime_binding(
             "Selected reference",
             error_type=error_type,
         )
-        _read_bound_bytes(
-            reference,
-            _text(
-                control.get("sha256"),
-                "Selected reference SHA-256",
-                error_type=error_type,
-            ),
-            "Selected reference",
-            error_type=error_type,
-        )
-        controls[reference] = _text(
+        reference_sha256 = _text(
             control.get("sha256"),
             "Selected reference SHA-256",
             error_type=error_type,
         )
+        _read_bound_bytes(
+            reference,
+            reference_sha256,
+            "Selected reference",
+            error_type=error_type,
+        )
+        controls[reference] = reference_sha256
         voices.append(
             CharacterVoice(
                 character=_text(

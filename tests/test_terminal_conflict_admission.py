@@ -5,12 +5,14 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from tests.terminal_conflict_fixtures import create_terminal_conflict_review
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.terminal_conflict_records import (
     TerminalConflictRecordError,
     is_terminal_review_outcome,
+    validate_terminal_conflict_item_provenance,
     validate_terminal_conflict_state_binding,
 )
 from vntts.authoring.terminal_conflict_resolution import (
@@ -234,3 +236,20 @@ class TerminalConflictAdmissionTest(unittest.TestCase):
                 {"status": "generated", "review_status": "rejected"}
             )
         )
+
+    def test_provenance_reuses_the_first_validated_hashes(self):
+        from vntts.authoring import terminal_conflict_records as records
+
+        record = {
+            "source_workspace_id": "resume-" + "a" * 24 + "-" + "b" * 16,
+            "source_state_sha256": "a" * 64,
+            "source_item_sha256": "b" * 64,
+            "audio_sha256": "c" * 64,
+            "selected_candidate_id": "d" * 64,
+            "status": "approved",
+            "review_status": "approved",
+            "next_action": "apply_selected_approved_outcome",
+        }
+        with patch.object(records, "_sha256", wraps=records._sha256) as validate:
+            self.assertEqual(validate_terminal_conflict_item_provenance(record), record)
+        self.assertEqual(validate.call_count, 4)
