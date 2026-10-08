@@ -16,6 +16,7 @@ from vntts.authoring.authority import AuthoringAuthorityError, capture_authority
 from vntts.authoring.failure_reference_audit import (
     FailureReferenceAudit,
     FailureReferenceAuditError,
+    _source_reference_character_family,
     load_failure_reference_audit,
     load_failure_reference_decisions,
     prepare_failure_reference_audio,
@@ -1673,22 +1674,13 @@ def _safe_id(value: object, label: str) -> str:
 
 
 def _source_reference_family(group: JsonDocument) -> str:
-    value = _required_text(
-        group.get("synthesis_voice_character"), "synthesis voice character"
+    return _source_reference_character_family(
+        _required_text(
+            group.get("synthesis_voice_character"), "synthesis voice character"
+        ),
+        label="Cross-group reference rendering",
+        error_type=ReferenceRenderComparisonError,
     )
-    prefix = "Source reference "
-    marker = " cluster-"
-    if not value.startswith(prefix) or marker not in value:
-        raise ReferenceRenderComparisonError(
-            "Cross-group reference rendering is restricted to source-reference "
-            "character families"
-        )
-    character, separator, _cluster = value[len(prefix) :].partition(marker)
-    if not separator or not character:
-        raise ReferenceRenderComparisonError(
-            "Cross-group source-reference identity is malformed"
-        )
-    return character
 
 
 def _document(value: object, label: str) -> JsonDocument:

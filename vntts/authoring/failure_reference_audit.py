@@ -1028,6 +1028,21 @@ def record_failure_reference_decision(
     return document
 
 
+def _source_reference_character_family(
+    value: str, *, label: str, error_type: type[Exception]
+) -> str:
+    prefix = "Source reference "
+    marker = " cluster-"
+    if not value.startswith(prefix) or marker not in value:
+        raise error_type(
+            f"{label} is restricted to source-reference character families"
+        )
+    character = value[len(prefix) :].partition(marker)[0]
+    if not character:
+        raise error_type(f"{label} source-reference identity is malformed")
+    return character
+
+
 def prepare_failure_reference_audio(
     directory: str | Path, group_id: str, candidate_id: str
 ) -> FailureReferenceAudio:

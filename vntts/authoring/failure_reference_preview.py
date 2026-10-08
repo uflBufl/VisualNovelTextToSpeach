@@ -22,6 +22,7 @@ from vntts.authoring.failure_reference_audit import (
     FailureReferenceAudit,
     _load_validated_audit,
     _prepare_failure_reference_audio,
+    _source_reference_character_family,
     load_failure_reference_audit,
     prepare_failure_reference_audio,
 )
@@ -472,19 +473,11 @@ def _required_text(value: object, label: str) -> str:
 
 
 def _reference_family(group: _PreviewGroup) -> str:
-    value = group["synthesis_voice_character"]
-    prefix = "Source reference "
-    marker = " cluster-"
-    if not value.startswith(prefix) or marker not in value:
-        raise FailureReferencePreviewError(
-            "Cross-group preview is restricted to source-reference character families"
-        )
-    character, separator, _cluster = value[len(prefix) :].partition(marker)
-    if not separator or not character:
-        raise FailureReferencePreviewError(
-            "Cross-group preview source-reference identity is malformed"
-        )
-    return character
+    return _source_reference_character_family(
+        group["synthesis_voice_character"],
+        label="Cross-group preview",
+        error_type=FailureReferencePreviewError,
+    )
 
 
 __all__ = [
