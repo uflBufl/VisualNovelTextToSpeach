@@ -19,10 +19,31 @@ from vntts.authoring.listening_import import (
     import_listening_session,
     inspect_listening_session,
 )
-from vntts.authoring.publication import rename_directory_no_replace
+from vntts.authoring.publication import (
+    AtomicPublicationError,
+    rename_directory_no_replace,
+)
 
 
 class ListeningImportTest(unittest.TestCase):
+    def test_atomic_publication_failure_is_translated_and_cleans_staging(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = write_listening_fixture(root)
+            failure = AtomicPublicationError("Atomic publication unavailable")
+            with (
+                patch(
+                    "vntts.authoring.listening_import.rename_directory_no_replace",
+                    side_effect=failure,
+                ),
+                self.assertRaisesRegex(
+                    ListeningImportError, "Atomic publication unavailable"
+                ) as caught,
+            ):
+                import_listening_session(source, root / "app-data")
+            self.assertIs(caught.exception.__cause__, failure)
+            self.assertEqual(list((root / "app-data").iterdir()), [])
+
     def test_rejects_unhashable_assignment_ids_and_rating_preferences(self):
         mutations = (
             ("assignment", "trial_id", []),

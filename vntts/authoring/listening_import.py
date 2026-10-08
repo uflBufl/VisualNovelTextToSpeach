@@ -19,6 +19,7 @@ from vntts.authoring.import_paths import default_import_root
 from vntts.authoring.private_files import private_file_is_restricted
 from vntts.authoring.publication import (
     AtomicPublicationError,
+    publication_errors,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -173,6 +174,7 @@ def inspect_listening_session(
     return inspection
 
 
+@publication_errors(ListeningImportError)
 def import_listening_session(
     session_directory: PathInput, destination_root: PathInput | None = None
 ) -> ListeningImportResult:

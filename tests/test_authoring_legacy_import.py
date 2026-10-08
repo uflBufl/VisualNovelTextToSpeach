@@ -23,9 +23,37 @@ from vntts.authoring.legacy_import import (
     import_standalone_generation,
     inspect_standalone_generation,
 )
+from vntts.authoring.publication import AtomicPublicationError
 
 
 class LegacyAuthoringImportTest(unittest.TestCase):
+    def test_atomic_publication_failure_is_translated_and_cleans_staging(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = write_legacy_fixture(root)
+            for importer, arguments in (
+                (import_legacy_job, (fixture["job_directory"],)),
+                (
+                    import_standalone_generation,
+                    (fixture["queue"], fixture["state"].parent),
+                ),
+            ):
+                with self.subTest(importer=importer.__name__):
+                    failure = AtomicPublicationError("Atomic publication unavailable")
+                    with (
+                        patch.object(
+                            legacy_module,
+                            "rename_directory_no_replace",
+                            side_effect=failure,
+                        ),
+                        self.assertRaisesRegex(
+                            LegacyAuthoringImportError, "Atomic publication unavailable"
+                        ) as caught,
+                    ):
+                        importer(*arguments, root / "app-data")
+                    self.assertIs(caught.exception.__cause__, failure)
+                    self.assertEqual(list((root / "app-data").iterdir()), [])
+
     def test_optional_metadata_ignores_invalid_encoding(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "metadata.json"

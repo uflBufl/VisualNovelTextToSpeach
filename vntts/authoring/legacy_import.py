@@ -35,6 +35,7 @@ from vntts.authoring.generation_lease import inspect_process_status
 from vntts.authoring.import_paths import default_import_root
 from vntts.authoring.publication import (
     AtomicPublicationError,
+    publication_errors,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -199,6 +200,7 @@ def discover_legacy_jobs(
     return tuple(candidates)
 
 
+@publication_errors(LegacyAuthoringImportError)
 def import_legacy_job(
     job_directory: str | Path,
     destination_root: str | Path | None = None,
@@ -254,6 +256,7 @@ def inspect_standalone_generation(
     )
 
 
+@publication_errors(LegacyAuthoringImportError)
 def import_standalone_generation(
     queue_path: str | Path,
     output_directory: str | Path,
