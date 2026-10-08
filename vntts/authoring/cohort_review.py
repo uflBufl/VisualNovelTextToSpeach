@@ -873,10 +873,10 @@ def apply_cohort_review_decision(
         "sample_queue_ids": decision_document["sample_queue_ids"],
         "reviewed_samples": decision_document["reviewed_samples"],
         "sample_assessments": decision_document.get("sample_assessments", []),
-        "item_review_statuses": decision_document.get("item_review_statuses", []),
+        "item_review_statuses": decision_document.get("item_review_statuses") or [],
     }
     item_review_statuses = _object_list(
-        decision_document.get("item_review_statuses", [])
+        decision_document.get("item_review_statuses") or []
     )
     item_decisions = {
         value["queue_id"]: value["review_status"] for value in item_review_statuses

@@ -417,6 +417,48 @@ class AuthoringCohortReviewTest(unittest.TestCase):
                             load_cohort_review_decision(output).document, document
                         )
 
+    def test_legacy_null_item_statuses_preserve_terminal_projection(self):
+        for version in (1, 2):
+            for name, expected in (("accepted", "approved"), ("rejected", "rejected")):
+                with (
+                    self.subTest(version=version, decision=name),
+                    TemporaryDirectory() as directory,
+                ):
+                    workspace, state_path, queue_id = self.create_pending_workspace(
+                        Path(directory)
+                    )
+                    plan = build_cohort_review_plan(workspace)
+                    decision = build_cohort_review_decision(
+                        plan,
+                        plan.document["cohorts"][0]["cohort_id"],
+                        name,
+                        reviewed_queue_ids=[queue_id],
+                    ).to_dict()
+                    decision["schema_version"] = version
+                    decision["item_review_statuses"] = None
+                    decision.pop("sample_assessments")
+                    decision["decision_id"] = _canonical_sha256(
+                        {
+                            key: value
+                            for key, value in decision.items()
+                            if key != "decision_id"
+                        }
+                    )
+                    projection = apply_cohort_review_decision(workspace, plan, decision)
+                    self.assertEqual(projection.queue_ids, (queue_id,))
+                    self.assertEqual(projection.review_status, expected)
+                    state = json.loads(state_path.read_text())
+                    self.assertEqual(
+                        state["items"][queue_id]["review_status"], expected
+                    )
+                    self.assertEqual(
+                        state["items"][queue_id]["cohort_review"][
+                            "item_review_statuses"
+                        ],
+                        [],
+                    )
+                    self.assertIsNone(decision["item_review_statuses"])
+
     def test_projection_rejects_noninteger_workspace_version_before_state_write(self):
         with TemporaryDirectory() as directory:
             workspace, state, queue_id = self.create_pending_workspace(Path(directory))

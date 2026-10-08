@@ -661,6 +661,59 @@ class AuthoringCohortBundleTest(unittest.TestCase):
         self.assertEqual(assessments[0].assessment, "bad")
         self.assertEqual(assessments[0].defect_reasons, ("unspecified",))
 
+    def test_resume_restores_legacy_expansion_without_optional_assessments(self):
+        for version, null_statuses in ((1, False), (1, True), (2, False), (2, True)):
+            with (
+                self.subTest(version=version, null_statuses=null_statuses),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                workspace = self.create_sources(root)[0][0]
+                bundle = build_cohort_review_bundle([workspace])
+                publication = root / "bundle.json"
+                write_cohort_review_bundle(bundle, publication)
+                cohort = bundle.document["cohorts"][0]
+                queue_id = cohort["samples"][0]["queue_id"]
+                execute_cohort_bundle_decision(
+                    bundle,
+                    cohort["workspace_id"],
+                    cohort["cohort_id"],
+                    "expand",
+                    reviewed_queue_ids=[queue_id],
+                    next_clean_samples_per_bucket=2,
+                )
+                evidence = workspace / "cohort-reviews"
+                decision_path = next(evidence.glob("decision-*.json"))
+                document = json.loads(decision_path.read_text(encoding="utf-8"))
+                document["schema_version"] = version
+                document.pop("sample_assessments")
+                if null_statuses:
+                    document["item_review_statuses"] = None
+                else:
+                    document.pop("item_review_statuses")
+                document["decision_id"] = cohort_bundle_module._canonical_sha256(
+                    {
+                        key: value
+                        for key, value in document.items()
+                        if key != "decision_id"
+                    }
+                )
+                decision_path.unlink()
+                (evidence / f"decision-{document['decision_id']}.json").write_text(
+                    json.dumps(document), encoding="utf-8"
+                )
+
+                _resume, _current, _samples, assessments = (
+                    load_resumable_cohort_review_session(publication, persist=False)
+                )
+
+                self.assertEqual(len(assessments), 1)
+                self.assertEqual(assessments[0].workspace_id, cohort["workspace_id"])
+                self.assertEqual(assessments[0].cohort_id, cohort["cohort_id"])
+                self.assertEqual(assessments[0].queue_id, queue_id)
+                self.assertEqual(assessments[0].assessment, "heard")
+                self.assertEqual(assessments[0].defect_reasons, ())
+
     def test_version_one_observation_remains_readable_without_guessed_reason(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

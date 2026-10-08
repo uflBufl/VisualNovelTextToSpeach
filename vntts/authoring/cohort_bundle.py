@@ -182,17 +182,17 @@ class _DecisionItem(TypedDict):
     technical_flags: list[str]
 
 
-class _DecisionDocument(TypedDict, total=False):
+class _DecisionDocument(TypedDict):
     decision_id: str
     plan_id: str
     decision: str
     cohort_id: str
-    next_clean_samples_per_bucket: int | None
     target_items: list[_DecisionItem]
-    projection_review_status: str | None
-    item_review_statuses: list[dict[str, str]]
-    sample_assessments: list[dict[str, object]]
-    reviewed_samples: list[dict[str, object]]
+    reviewed_samples: list[_DecisionItem]
+    next_clean_samples_per_bucket: NotRequired[int | None]
+    projection_review_status: NotRequired[str | None]
+    item_review_statuses: NotRequired[list[dict[str, str]] | None]
+    sample_assessments: NotRequired[list[dict[str, object]]]
 
 
 def _is_text_list(value: object) -> TypeIs[list[str]]:
@@ -321,27 +321,29 @@ def _is_decision_document(value: object) -> TypeIs[_DecisionDocument]:
         return False
     text_fields = ("decision_id", "plan_id", "decision", "cohort_id")
     return (
-        all(
-            field not in value or isinstance(value.get(field), str)
-            for field in text_fields
-        )
+        all(isinstance(value.get(field), str) for field in text_fields)
         and (
             "next_clean_samples_per_bucket" not in value
             or value.get("next_clean_samples_per_bucket") is None
             or type(value.get("next_clean_samples_per_bucket")) is int
         )
-        and (
-            "target_items" not in value
-            or isinstance(value.get("target_items"), list)
-            and all(_is_decision_item(item) for item in value["target_items"])
-        )
         and all(
-            field not in value or _is_object_list(value.get(field))
-            for field in (
-                "item_review_statuses",
-                "sample_assessments",
-                "reviewed_samples",
+            isinstance(value.get(field), list)
+            and all(_is_decision_item(item) for item in value[field])
+            for field in ("target_items", "reviewed_samples")
+        )
+        and (
+            "item_review_statuses" not in value
+            or value.get("item_review_statuses") is None
+            or _is_object_list(value.get("item_review_statuses"))
+            and all(
+                all(isinstance(field, str) for field in item.values())
+                for item in value["item_review_statuses"]
             )
+        )
+        and (
+            "sample_assessments" not in value
+            or _is_object_list(value.get("sample_assessments"))
         )
         and (
             "projection_review_status" not in value
@@ -1161,7 +1163,7 @@ def _recovered_expansion_assessments(
             ]
             for decision in expansions:
                 assessed: dict[str, tuple[str, tuple[str, ...]]] = {}
-                for value in decision["sample_assessments"]:
+                for value in decision.get("sample_assessments", []):
                     queue_id = value.get("queue_id")
                     assessment = value.get("assessment")
                     reasons = value.get("defect_reasons", ())
