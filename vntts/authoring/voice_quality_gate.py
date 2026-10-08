@@ -38,6 +38,7 @@ from vntts.authoring.workbench import (
     load_workspace_authority,
 )
 from vntts.document_identity import file_sha256, is_lowercase_sha256
+from vntts.json_types import is_json_object
 
 VOICE_QUALITY_GATE_SCHEMA = "vntts.authoring-voice-quality-gate"
 VOICE_QUALITY_GATE_VERSION = 1
@@ -447,16 +448,13 @@ def _manifest_voice_character(
 
 
 def _object(value: object, label: str) -> JsonObject:
-    if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
+    if not is_json_object(value):
         raise VoiceQualityGateError(f"{label} must be an object")
     return {key: item for key, item in value.items() if isinstance(key, str)}
 
 
 def _is_object_list(value: object) -> TypeIs[list[JsonObject]]:
-    return isinstance(value, list) and all(
-        isinstance(item, dict) and all(isinstance(key, str) for key in item)
-        for item in value
-    )
+    return isinstance(value, list) and all(is_json_object(item) for item in value)
 
 
 def _is_text_list(value: object) -> TypeIs[list[str]]:

@@ -9,7 +9,7 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol, TypeAlias, TypedDict, TypeGuard, runtime_checkable
+from typing import Literal, Protocol, TypeAlias, TypedDict, runtime_checkable
 
 import numpy as np
 from durable_file import atomic_write_json
@@ -29,6 +29,7 @@ from vntts.authoring.robustness_corpus import (
     _read_pcm16,
     load_speech_robustness_corpus,
 )
+from vntts.json_types import is_json_object as _is_json_document
 
 SPEECH_ROBUSTNESS_ASR_SCHEMA = "vntts.speech-robustness-asr-report"
 SPEECH_ROBUSTNESS_ASR_VERSION = 2
@@ -258,10 +259,6 @@ class _WhisperTranscriber:
                 f"Unable to transcribe robustness WAV batch: {error}"
             ) from error
         return [self._text(result) for result in results]
-
-
-def _is_json_document(value: object) -> TypeGuard[JsonDocument]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
 
 
 def _text_field(document: JsonDocument, field: str, label: str) -> str:

@@ -48,6 +48,7 @@ from vntts.authoring.publication import (
 )
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
+from vntts.json_types import is_json_object
 
 REFERENCE_RENDER_INPUT_SCHEMA = "vntts.authoring-reference-render-input"
 REFERENCE_RENDER_INPUT_VERSION = 1
@@ -1698,7 +1699,7 @@ def _source_reference_family(group: JsonDocument) -> str:
 
 
 def _document(value: object, label: str) -> JsonDocument:
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+    if not is_json_object(value):
         raise ReferenceRenderComparisonError(f"Reference render {label} is malformed")
     return {key: item for key, item in value.items()}
 

@@ -38,6 +38,7 @@ from vntts.authoring.publication import (
     staged_directory,
 )
 from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
+from vntts.json_types import is_json_object
 
 _AUDIT_SCHEMA = "vntts.authoring-failure-reference-audit"
 _AUDIT_KEY_SCHEMA = "vntts.authoring-failure-reference-audit-key"
@@ -128,7 +129,7 @@ class _BindingArtifacts:
 
 
 def _document(value: object, message: str) -> JsonDocument:
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+    if not is_json_object(value):
         raise FailureReferenceBindingError(message)
     return {key: item for key, item in value.items()}
 

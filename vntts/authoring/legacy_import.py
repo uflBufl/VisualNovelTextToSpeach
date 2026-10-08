@@ -41,6 +41,7 @@ from vntts.authoring.publication import (
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.cleanup import temporary_directory
 from vntts.document_identity import canonical_document_sha256
+from vntts.json_types import is_json_object
 
 LEGACY_JOB_SCHEMA = "r1999.pregeneration-job"
 LEGACY_JOB_SCHEMA_VERSION = 1
@@ -1460,7 +1461,7 @@ def _relative_within(root: str | Path, path: str | Path, label: str) -> Path:
 
 def _load_json(path: str | Path, description: str) -> JsonDocument:
     value = load_json_object(path, description, error_type=LegacyAuthoringImportError)
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+    if not is_json_object(value):
         raise LegacyAuthoringImportError(f"{description} must be a JSON object: {path}")
     return {key: item for key, item in value.items() if isinstance(key, str)}
 

@@ -6,7 +6,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeAlias, TypedDict, TypeGuard
+from typing import TypeAlias, TypedDict
 
 from vntts.authoring.authority import write_json_document_no_replace
 from vntts.authoring.cohort_review import (
@@ -19,6 +19,7 @@ from vntts.authoring.workbench import (
     list_review_items,
 )
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
+from vntts.json_types import is_json_object as _is_json_document
 
 PENDING_RESOLUTION_PLAN_SCHEMA = "vntts.authoring-pending-resolution-plan"
 PENDING_RESOLUTION_PLAN_VERSION = 1
@@ -262,10 +263,6 @@ def load_pending_resolution_plan(path: str | Path) -> PendingResolutionPlan:
         ) from error
     validated = _validated_plan_document(document)
     return PendingResolutionPlan(validated["plan_id"], validated)
-
-
-def _is_json_document(value: object) -> TypeGuard[JsonDocument]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
 
 
 def _documents(value: object, label: str) -> list[JsonDocument]:

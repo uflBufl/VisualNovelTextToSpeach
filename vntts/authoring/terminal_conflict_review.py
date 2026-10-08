@@ -57,6 +57,7 @@ from vntts.authoring.workbench import (
     prepare_review_audio,
 )
 from vntts.authoring.workbench_contracts import ReviewItem
+from vntts.json_types import is_json_object
 
 TERMINAL_CONFLICT_REVIEW_SCHEMA = "vntts.authoring-terminal-conflict-review"
 TERMINAL_CONFLICT_REVIEW_VERSION = 1
@@ -175,29 +176,29 @@ class _ReviewPublicationInput:
 
 
 def _is_review_document(value: object) -> TypeGuard[TerminalConflictReviewDocument]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+    return is_json_object(value)
 
 
 def _is_progress_document(value: object) -> TypeGuard[TerminalConflictReviewProgress]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+    return is_json_object(value)
 
 
 def _is_progress_decision(value: object) -> TypeGuard[TerminalConflictReviewDecision]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+    return is_json_object(value)
 
 
 def _is_review_case(value: object) -> TypeGuard[TerminalConflictReviewCase]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+    return is_json_object(value)
 
 
 def _is_review_candidate(value: object) -> TypeGuard[TerminalConflictReviewCandidate]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+    return is_json_object(value)
 
 
 def _is_source_authority(
     value: object,
 ) -> TypeGuard[TerminalConflictReviewSourceAuthority]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+    return is_json_object(value)
 
 
 class TerminalConflictReviewError(RuntimeError):

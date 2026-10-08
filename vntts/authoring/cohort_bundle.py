@@ -37,6 +37,7 @@ from vntts.authoring.cohort_review import (
     _validated_plan_document as _validate_plan_document,
 )
 from vntts.authoring.workbench import ReviewItem
+from vntts.json_types import is_json_object
 
 _canonical_sha256 = canonical_document_sha256
 
@@ -196,14 +197,11 @@ def _is_text_list(value: object) -> TypeIs[list[str]]:
 
 
 def _is_json_object(value: object) -> TypeIs[dict[str, object]]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+    return is_json_object(value)
 
 
 def _is_object_list(value: object) -> TypeIs[list[dict[str, object]]]:
-    return isinstance(value, list) and all(
-        isinstance(item, dict) and all(isinstance(key, str) for key in item)
-        for item in value
-    )
+    return isinstance(value, list) and all(is_json_object(item) for item in value)
 
 
 def _is_plan_item(value: object) -> TypeIs[_PlanItem]:

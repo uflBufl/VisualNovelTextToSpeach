@@ -41,6 +41,7 @@ from vntts.authoring.workbench import (
     load_workspace_authority,
 )
 from vntts.authoring.workspace_foundation import contained_regular_file
+from vntts.json_types import is_json_object
 from vntts.reference_quality import ReferenceQualityReport, analyze_reference_bytes
 
 JsonDocument: TypeAlias = dict[str, object]
@@ -119,7 +120,7 @@ class _StagedAuditGroups:
 
 
 def _document(value: object, message: str) -> JsonDocument:
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+    if not is_json_object(value):
         raise FailureReferenceAuditError(message)
     return {key: item for key, item in value.items()}
 

@@ -59,6 +59,7 @@ from vntts.authoring.workbench import (
 )
 from vntts.authoring.workspace_foundation import require_sha256
 from vntts.cleanup import temporary_directory
+from vntts.json_types import is_json_object
 
 SPEECH_ROBUSTNESS_CORPUS_SCHEMA = "vntts.speech-robustness-corpus"
 SPEECH_ROBUSTNESS_CORPUS_VERSION = 3
@@ -241,7 +242,7 @@ def _document_rows(value: object, label: str) -> list[JsonDocument]:
         raise SpeechRobustnessCorpusError(f"{label} must be a list")
     rows: list[JsonDocument] = []
     for row in value:
-        if not isinstance(row, dict) or not all(isinstance(key, str) for key in row):
+        if not is_json_object(row):
             raise SpeechRobustnessCorpusError(f"{label} must contain objects")
         rows.append({key: item for key, item in row.items() if isinstance(key, str)})
     return rows
@@ -256,11 +257,11 @@ def _string_list(value: object, label: str) -> list[str]:
 
 
 def _document_map(value: object, label: str) -> dict[str, JsonDocument]:
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+    if not is_json_object(value):
         raise SpeechRobustnessCorpusError(f"{label} must be an object")
     result: dict[str, JsonDocument] = {}
     for key, row in value.items():
-        if not isinstance(row, dict) or not all(isinstance(name, str) for name in row):
+        if not is_json_object(row):
             raise SpeechRobustnessCorpusError(f"{label} entries must be objects")
         result[key] = {
             name: item for name, item in row.items() if isinstance(name, str)
@@ -270,7 +271,7 @@ def _document_map(value: object, label: str) -> dict[str, JsonDocument]:
 
 def _object_field(document: JsonDocument, field: str, label: str) -> JsonDocument:
     value = document.get(field)
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+    if not is_json_object(value):
         raise SpeechRobustnessCorpusError(f"{label} must be an object")
     return {key: item for key, item in value.items() if isinstance(key, str)}
 

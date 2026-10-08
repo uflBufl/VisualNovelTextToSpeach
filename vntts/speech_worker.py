@@ -27,6 +27,7 @@ from numpy.typing import NDArray
 
 from vntts.audio_output import AudioOutput, StreamingAudioStream, resolve_audio_output
 from vntts.cleanup import attempt_cleanup
+from vntts.json_types import is_json_object
 from vntts.moss_delay_backend import MossTTSDelayVoiceRouterBackend
 from vntts.path_safety import contained_path
 from vntts.playback import (
@@ -210,7 +211,7 @@ WorkerBackendFactory: TypeAlias = Callable[..., object]
 
 
 def _is_document(value: object) -> TypeGuard[FrameDocument]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+    return is_json_object(value)
 
 
 def _required_text(document: Mapping[str, object], field: str) -> str:

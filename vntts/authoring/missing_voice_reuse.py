@@ -73,6 +73,7 @@ from vntts.authoring.workbench import (
 )
 from vntts.authoring.workspace_inspection import generation_failure_category
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
+from vntts.json_types import is_json_object
 from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.voices import voice_manifest_entries_at_path
 
@@ -1584,7 +1585,7 @@ def _assert_sources_unchanged(
 
 
 def _object(value: object, label: str) -> JsonObject:
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+    if not is_json_object(value):
         raise MissingVoiceReuseError(f"{label} must be a JSON object")
     return {key: item for key, item in value.items()}
 

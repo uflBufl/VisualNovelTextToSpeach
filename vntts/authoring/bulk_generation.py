@@ -229,6 +229,7 @@ from vntts.authoring.workspace_foundation import (
     load_json_object,
     load_json_object_snapshot,
 )
+from vntts.json_types import is_json_object as _is_json_document
 from vntts.speech_presentation import speech_runtime_label
 from vntts.synthesis import (
     SynthesisCachePolicy,
@@ -320,10 +321,6 @@ class _GenerationFailureReport(TypedDict):
     failure_count: int
     cohorts: dict[str, list[_CohortCount]]
     records: list[_FailureReportRecord]
-
-
-def _is_json_document(value: object) -> TypeGuard[JsonDocument]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
 
 
 def _is_object_list(value: object) -> TypeGuard[list[object]]:

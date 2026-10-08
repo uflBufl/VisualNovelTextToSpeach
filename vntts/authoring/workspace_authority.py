@@ -12,7 +12,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from re import Match
-from typing import Protocol, TypeAlias, TypeGuard
+from typing import Protocol, TypeAlias
 
 from durable_file import sha256_file
 from vntts_artifacts.voice_generation_queue import (
@@ -91,6 +91,7 @@ from vntts.authoring.workspace_state import (
     shared_workspace_state_reads,
 )
 from vntts.cleanup import temporary_directory
+from vntts.json_types import is_json_object as _is_json_document
 
 WorkspaceDocument: TypeAlias = JsonDocument
 ImportSnapshot: TypeAlias = JsonDocument
@@ -101,10 +102,6 @@ CarryForwardAuthorities: TypeAlias = Mapping[str, OfflineFallbackAuthority]
 
 class _VoiceManifestEntry(Protocol):
     references: Sequence[str | Path]
-
-
-def _is_json_document(value: object) -> TypeGuard[JsonDocument]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
 
 
 def _json_document(value: object, message: str) -> JsonDocument:

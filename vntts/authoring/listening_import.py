@@ -11,7 +11,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TypedDict, TypeGuard
+from typing import TypedDict
 
 from durable_file import atomic_write_json, sha256_file
 
@@ -24,6 +24,7 @@ from vntts.authoring.publication import (
 )
 from vntts.authoring.workspace_foundation import load_json_object, require_sha256
 from vntts.document_identity import canonical_document_sha256
+from vntts.json_types import is_json_object as _is_json_object
 from vntts.path_safety import safe_relative_path
 
 SESSION_SCHEMA = "r1999.model-listening-session"
@@ -773,10 +774,6 @@ def _canonical(value: object) -> bytes:
     return json.dumps(
         value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
     ).encode("utf-8")
-
-
-def _is_json_object(value: object) -> TypeGuard[JsonObject]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
 
 
 def _object_list(value: object, label: str) -> list[JsonObject]:

@@ -13,7 +13,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TypeAlias, TypeGuard
+from typing import TypeAlias
 
 import numpy as np
 from durable_file import atomic_write_bytes, atomic_write_json, sha256_file
@@ -38,6 +38,7 @@ from vntts.authoring.workspace_foundation import load_json_object_snapshot
 from vntts.cleanup import temporary_directory
 from vntts.cli import cli_error, cli_messages
 from vntts.document_identity import canonical_document_sha256
+from vntts.json_types import is_json_object as _is_json_document
 from vntts.settings import get_local_data_directory
 from vntts.speech_backend_contract import RenderableBackend, is_renderable_backend
 from vntts.speech_backend_runtime import shutdown_speech_backend
@@ -97,10 +98,6 @@ class _FailureCorpusCapture:
     state_sha256: str
     state: JsonDocument
     queue_by_id: dict[str, JsonDocument]
-
-
-def _is_json_document(value: object) -> TypeGuard[JsonDocument]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
 
 
 def _json_document(value: object, label: str) -> JsonDocument:

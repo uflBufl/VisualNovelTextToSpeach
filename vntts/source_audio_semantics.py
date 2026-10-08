@@ -8,7 +8,7 @@ import re
 import unicodedata
 from copy import deepcopy
 from pathlib import Path
-from typing import Literal, TypeAlias, TypedDict, TypeGuard, cast
+from typing import Literal, TypeAlias, TypedDict, cast
 
 from durable_file import atomic_write_json, sha256_file
 from vntts_artifacts.story_index import (
@@ -18,6 +18,7 @@ from vntts_artifacts.story_index import (
 )
 
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
+from vntts.json_types import is_json_object as _is_json_document
 
 SEMANTIC_EVIDENCE_SCHEMA = "r1999.source-audio-semantic-evidence"
 SEMANTIC_EVIDENCE_VERSION = 1
@@ -364,7 +365,3 @@ def _require_sha256(value: object, label: str) -> str:
     if not isinstance(value, str) or not is_lowercase_sha256(value):
         raise SourceAudioSemanticEvidenceError(f"{label} SHA-256 is invalid")
     return value
-
-
-def _is_json_document(value: object) -> TypeGuard[JsonDocument]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)

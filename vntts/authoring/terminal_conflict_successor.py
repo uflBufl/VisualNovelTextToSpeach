@@ -43,6 +43,7 @@ from vntts.authoring.terminal_conflict_resolution import (
     assert_terminal_conflict_resolution_source_authorities,
     validate_terminal_conflict_resolution_document,
 )
+from vntts.json_types import is_json_object
 
 TERMINAL_CONFLICT_SUCCESSOR_SCHEMA = (
     "vntts.authoring-terminal-conflict-successor-reconciliation"
@@ -118,15 +119,15 @@ class _SuccessorInputs:
 def _is_successor_document(
     value: object,
 ) -> TypeGuard[TerminalConflictSuccessorDocument]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+    return is_json_object(value)
 
 
 def _is_successor_record(value: object) -> TypeGuard[_SuccessorRecord]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+    return is_json_object(value)
 
 
 def _is_resolution_projection(value: object) -> TypeGuard[_ResolutionProjection]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+    return is_json_object(value)
 
 
 APPLY_APPROVED_OUTCOME = "apply_selected_approved_outcome"

@@ -35,6 +35,7 @@ from vntts.authoring.publication import (
 )
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
+from vntts.json_types import is_json_object as _is_json_object
 from vntts.settings import get_local_data_directory
 
 SESSION_SCHEMA = "vntts.model-listening-session"
@@ -1537,10 +1538,6 @@ def _load_json(path: PathInput, description: str) -> dict[str, object]:
     if not _is_json_object(value):
         raise ModelListeningError(f"{description.title()} must be a JSON object")
     return value
-
-
-def _is_json_object(value: object) -> TypeGuard[dict[str, object]]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
 
 
 def _object_list(value: object) -> list[object] | None:

@@ -29,6 +29,7 @@ from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     load_workspace_authority,
 )
+from vntts.json_types import is_json_object
 from vntts.speech_backend_runtime import shutdown_speech_backend
 from vntts.synthesis import (
     SynthesisCachePolicy,
@@ -73,7 +74,7 @@ class _PreviewGroup(TypedDict):
 
 
 def _document(value: object, message: str) -> JsonDocument:
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+    if not is_json_object(value):
         raise FailureReferencePreviewError(message)
     return {key: item for key, item in value.items()}
 

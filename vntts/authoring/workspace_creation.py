@@ -162,6 +162,7 @@ from vntts.authoring.workspace_voice_runtime import (
     load_workspace_voice_registry,
 )
 from vntts.document_identity import canonical_document_sha256
+from vntts.json_types import is_json_object as _is_json_document
 from vntts.voices import (
     CharacterVoice,
     CharacterVoiceRegistry,
@@ -179,10 +180,6 @@ GenerationStateItems: TypeAlias = dict[str, JsonDocument]
 GenerationControls: TypeAlias = dict[str, tuple[Path, str]]
 
 
-def _is_json_document(value: object) -> TypeGuard[JsonDocument]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
-
-
 def _json_document(value: object, label: str) -> JsonDocument:
     if not _is_json_document(value):
         raise AuthoringWorkbenchError(f"{label} must be a JSON object")
@@ -190,10 +187,8 @@ def _json_document(value: object, label: str) -> JsonDocument:
 
 
 def _is_generation_state_items(value: object) -> TypeGuard[GenerationStateItems]:
-    return (
-        isinstance(value, dict)
-        and all(isinstance(key, str) for key in value)
-        and all(_is_json_document(item) for item in value.values())
+    return _is_json_document(value) and all(
+        _is_json_document(item) for item in value.values()
     )
 
 
@@ -679,9 +674,7 @@ def _assert_failure_reference_binding_items(
                 )
             selected_ids.add(queue_id)
     overrides = document.get("queue_voice_overrides")
-    if not isinstance(overrides, dict) or not all(
-        isinstance(queue_id, str) for queue_id in overrides
-    ):
+    if not _is_json_document(overrides):
         raise AuthoringWorkbenchError(
             "Failure-reference binding selection inventory is inconsistent"
         )

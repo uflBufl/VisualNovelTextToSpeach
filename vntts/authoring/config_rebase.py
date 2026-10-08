@@ -62,6 +62,7 @@ from vntts.authoring.workspace_voice_runtime import (
     load_workspace_queue_voice_overrides,
     load_workspace_voice_registry,
 )
+from vntts.json_types import is_json_object
 from vntts.voices import CharacterVoiceRegistry
 
 CONFIG_REBASE_SCHEMA = "vntts.authoring-workspace-config-rebase"
@@ -2159,7 +2160,7 @@ def _copy_tree(source: Path, destination: Path, snapshots: Snapshots) -> None:
 
 
 def _object(value: object, label: str) -> JsonObject:
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+    if not is_json_object(value):
         raise AuthoringWorkbenchError(f"{label} is malformed")
     return {key: item for key, item in value.items()}
 

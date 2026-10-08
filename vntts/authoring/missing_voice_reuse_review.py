@@ -37,6 +37,7 @@ from vntts.authoring.workbench import (
 )
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
+from vntts.json_types import is_json_object
 
 REVIEW_BUNDLE_SCHEMA = "vntts.authoring-missing-voice-reuse-review-bundle"
 REVIEW_SESSION_SCHEMA = "vntts.authoring-missing-voice-reuse-review-session"
@@ -1542,7 +1543,7 @@ def _review_decision(value: JsonObject) -> ReviewDecision:
 
 
 def _object(value: object, label: str) -> JsonObject:
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+    if not is_json_object(value):
         raise MissingVoiceReuseReviewError(f"{label} is malformed")
     return {key: item for key, item in value.items()}
 

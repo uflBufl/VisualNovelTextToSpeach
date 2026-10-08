@@ -43,6 +43,7 @@ from vntts.authoring.terminal_conflict_review import (
     validate_terminal_conflict_review_document,
     validate_terminal_conflict_review_progress_document,
 )
+from vntts.json_types import is_json_object
 
 TERMINAL_CONFLICT_RESOLUTION_SCHEMA = "vntts.authoring-terminal-conflict-resolution"
 TERMINAL_CONFLICT_RESOLUTION_VERSION = 1
@@ -87,13 +88,13 @@ class TerminalConflictResolutionDocument(TypedDict):
 def _is_resolution_document(
     value: object,
 ) -> TypeGuard[TerminalConflictResolutionDocument]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+    return is_json_object(value)
 
 
 def _is_resolution_record(
     value: object,
 ) -> TypeGuard[TerminalConflictResolutionRecord]:
-    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+    return is_json_object(value)
 
 
 class TerminalConflictResolutionError(RuntimeError):

@@ -19,6 +19,7 @@ from vntts.game_audio_decoder import (
     find_game_decoder,
     probe_game_decoder,
 )
+from vntts.json_types import is_json_object
 from vntts.onboarding import probe_tesseract
 from vntts.release_runtime import runtime_probe_script, validate_runtime_provenance
 from vntts.runtime_paths import (
@@ -72,7 +73,7 @@ _PUBLIC_POCKET_ARTIFACTS = {
 
 def _json_object(payload: str, description: str) -> ReportDocument:
     value: object = json.loads(payload)
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+    if not is_json_object(value):
         raise RuntimeError(f"{description} must be a JSON object")
     return {key: item for key, item in value.items() if isinstance(key, str)}
 
