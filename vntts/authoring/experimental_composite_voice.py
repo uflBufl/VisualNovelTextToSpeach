@@ -22,6 +22,7 @@ from vntts_artifacts.voice_manifest import (
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.publication import (
     no_replace_destination,
+    publication_errors,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -118,6 +119,7 @@ class ExperimentalCompositeVoiceResult:
         }
 
 
+@publication_errors(ExperimentalCompositeVoiceError)
 def publish_experimental_composite_voice_input(
     source_manifest: str | Path,
     composite_directory: str | Path,

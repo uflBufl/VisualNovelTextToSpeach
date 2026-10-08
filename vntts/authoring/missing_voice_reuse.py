@@ -52,7 +52,11 @@ from vntts.authoring.failure_repair import (
     FailureRepairPolicy,
     inline_sentence_pause_prompt,
 )
-from vntts.authoring.publication import rename_directory_no_replace, staged_directory
+from vntts.authoring.publication import (
+    publication_errors,
+    rename_directory_no_replace,
+    staged_directory,
+)
 from vntts.authoring.source_reference_bindings import (
     MISSING_VOICE_REUSE_APPROVED_BINDING_VERSION,
     MISSING_VOICE_REUSE_BINDING_FIELD,
@@ -570,6 +574,7 @@ def load_missing_voice_reuse_plan(path: str | Path) -> MissingVoiceReusePlan:
     return MissingVoiceReusePlan(_string(validated["plan_id"], "plan_id"), validated)
 
 
+@publication_errors(MissingVoiceReuseError)
 def prepare_missing_voice_reuse_candidate_workspace(
     plan: MissingVoiceReusePlan | JsonObject,
     candidate_id: str,

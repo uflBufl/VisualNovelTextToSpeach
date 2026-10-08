@@ -37,6 +37,7 @@ from vntts.authoring.bulk_generation import (
 from vntts.authoring.private_files import private_file_is_restricted
 from vntts.authoring.publication import (
     no_replace_destination,
+    publication_errors,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -250,6 +251,7 @@ class FailureReferenceAudio:
     payload: bytes
 
 
+@publication_errors(FailureReferenceAuditError)
 def publish_failure_reference_audit(
     workspace_directory: str | Path,
     output_directory: str | Path,

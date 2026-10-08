@@ -36,6 +36,7 @@ from vntts.authoring.missing_voice_reuse_review import (
 )
 from vntts.authoring.publication import (
     no_replace_destination,
+    publication_errors,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -90,6 +91,7 @@ class MissingVoiceReuseBindingResult:
 _file_sha256 = partial(file_sha256, error_type=MissingVoiceReuseBindingError)
 
 
+@publication_errors(MissingVoiceReuseBindingError)
 def publish_missing_voice_reuse_binding(
     plan_path: str | Path,
     session_path: str | Path,

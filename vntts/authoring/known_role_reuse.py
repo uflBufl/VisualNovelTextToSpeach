@@ -37,7 +37,11 @@ from vntts.authoring.missing_voice_live_fallback import (
     _load_authority,
     _validated_targets,
 )
-from vntts.authoring.publication import rename_directory_no_replace, staged_directory
+from vntts.authoring.publication import (
+    publication_errors,
+    rename_directory_no_replace,
+    staged_directory,
+)
 from vntts.authoring.source_reference_bindings import (
     KNOWN_ROLE_REUSE_AUTHORITY,
     KNOWN_ROLE_REUSE_BINDING_FIELD,
@@ -159,6 +163,7 @@ class KnownRoleReuseResult:
         return {**asdict(self), "directory": str(self.directory)}
 
 
+@publication_errors(KnownRoleReuseError)
 def publish_known_role_reuse_binding(
     workspace: str | Path,
     unresolved_authority_directory: str | Path,
