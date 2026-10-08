@@ -39,7 +39,7 @@ JsonObject: TypeAlias = dict[str, object]
 class _PortraitVariant(TypedDict):
     variant_id: str
     character: str
-    portrait: object
+    portrait: str | None
     source_bank: str
     portrait_image_sha256: str
     dhash: str
@@ -199,7 +199,7 @@ def _accepted_portrait_variant(
     return {
         "variant_id": variant_id,
         "character": _required_text(card.get("character"), "quality character"),
-        "portrait": card["portrait"],
+        "portrait": _optional_portrait(card.get("portrait")),
         "source_bank": _required_text(card.get("source_bank"), "quality source bank"),
         "portrait_image_sha256": image_sha256,
         "dhash": _dhash(image_payload, variant_id),
@@ -448,7 +448,7 @@ def _validate_plan_shape(document: JsonObject) -> _PortraitAliasPlanDocument:
                 {
                     "variant_id": variant["variant_id"],
                     "character": variant["character"],
-                    "portrait": variant["portrait"],
+                    "portrait": _optional_portrait(variant["portrait"]),
                     "source_bank": variant["source_bank"],
                     "portrait_image_sha256": variant["portrait_image_sha256"],
                     "dhash": variant["dhash"],
@@ -528,6 +528,10 @@ def _distinct_texts(values: object, label: str) -> tuple[str, ...]:
         seen.add(value)
         result.append(value)
     return tuple(sorted(result))
+
+
+def _optional_portrait(value: object) -> str | None:
+    return None if value is None else _required_text(value, "portrait identity")
 
 
 def _required_text(value: object, label: str) -> str:
