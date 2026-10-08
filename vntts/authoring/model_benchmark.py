@@ -736,10 +736,7 @@ def _benchmark_renderer_staged(
         )
         for index, sample in enumerate(samples, start=1)
     ]
-    outcomes = {
-        value: sum(sample["outcome"] == value for sample in rendered_samples)
-        for value in ("complete", "limited", "cancelled", "error")
-    }
+    outcomes = dict.fromkeys(("complete", "limited", "cancelled", "error"), 0)
     group_summary: dict[str, dict[str, int]] = {}
     for sample in rendered_samples:
         group = str(sample.get("comparison_group") or "all")
@@ -754,10 +751,11 @@ def _benchmark_renderer_staged(
             },
         )
         outcome = _required_text(sample.get("outcome"), "render outcome")
-        if outcome not in summary:
+        if outcome not in outcomes:
             raise ModelBenchmarkError(f"Unsupported render outcome: {outcome}")
         summary["total"] += 1
         summary[outcome] += 1
+        outcomes[outcome] += 1
     report = {
         "schema": MODEL_REPORT_SCHEMA,
         "schema_version": SCHEMA_VERSION,

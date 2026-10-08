@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -773,6 +774,22 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
         )
         self.assertEqual(corpus["narrator_character"], "Centurion")
         self.assertRegex(corpus["source_voice_manifest_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_unsupported_render_outcome_is_refused_before_publication(self):
+        backend = FakeRenderBackend(completion=SimpleNamespace(value="total"))
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "output"
+            with self.assertRaisesRegex(
+                ModelBenchmarkError, "Unsupported render outcome"
+            ):
+                benchmark_renderer(
+                    ModelVariant("fake", "fake"),
+                    backend,
+                    [{"id": "sample", "character": "Voice", "text": "A line."}],
+                    output,
+                )
+            self.assertFalse(output.exists())
+            self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_renderer_uses_typed_bypass_request_and_never_plays(self):
         backend = FakeRenderBackend()
