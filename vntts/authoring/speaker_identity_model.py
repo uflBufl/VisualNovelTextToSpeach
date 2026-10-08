@@ -180,17 +180,17 @@ def install_managed_speaker_identity_model(
 ) -> ManagedModelStatus:
     installation = managed_speaker_identity_installation(root=root)
     fetch = _download_file if fetch_file is None else fetch_file
+    metadata = _metadata()
     result = install_managed_model(
         installation,
         _files(),
-        metadata=_metadata(),
+        metadata=metadata,
         notice=_notice(),
         source=source,
         fetch_file=fetch,
         error_type=SpeakerIdentityModelError,
         model_label="speaker-model",
     )
-    metadata = _metadata()
     result["licenses"] = metadata["licenses"]
     result["runtime"] = metadata["runtime"]
     return result

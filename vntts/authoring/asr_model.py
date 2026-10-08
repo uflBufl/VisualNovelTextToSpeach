@@ -189,17 +189,18 @@ def install_managed_asr_model(
     """Atomically import or download and verify one pinned model snapshot."""
     installation = managed_asr_installation(model, root=root)
     fetch = _download_file if fetch_file is None else fetch_file
+    metadata = _metadata(model)
     result = install_managed_model(
         installation,
         _files(model),
-        metadata=_metadata(model),
+        metadata=metadata,
         notice=_notice(model),
         source=source,
         fetch_file=lambda filename: fetch(model, filename),
         error_type=ManagedAsrModelError,
         model_label="ASR model",
     )
-    result["licenses"] = _metadata(model)["licenses"]
+    result["licenses"] = metadata["licenses"]
     return result
 
 
