@@ -23,6 +23,7 @@ from vntts.authoring.bulk_generation import (
 from vntts.authoring.generation_state import validate_generation_state_document
 from vntts.authoring.publication import (
     no_replace_destination,
+    publication_errors,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -98,6 +99,7 @@ class _QualityReviewInputs:
 _file_sha256 = partial(file_sha256, error_type=SourceReferenceQualityError)
 
 
+@publication_errors(SourceReferenceQualityError)
 def publish_source_reference_quality_review(
     plan_directory: str | Path,
     evaluation_directory: str | Path,
