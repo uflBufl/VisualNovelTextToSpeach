@@ -745,8 +745,14 @@ def load_missing_voice_reuse_review(
 ) -> tuple[ReviewBundle, ReviewSession]:
     """Validate and return the immutable bundle plus mutable review session."""
     session_path = Path(session_path).expanduser().resolve()
-    root = session_path.parent
     session = load_workspace_json(session_path, "missing-voice review session")
+    return _validate_missing_voice_reuse_review(session_path, session)
+
+
+def _validate_missing_voice_reuse_review(
+    session_path: Path, session: JsonObject
+) -> tuple[ReviewBundle, ReviewSession]:
+    root = session_path.parent
     bundle_path = root / "bundle.json"
     bundle = load_workspace_json(bundle_path, "missing-voice review bundle")
     if (

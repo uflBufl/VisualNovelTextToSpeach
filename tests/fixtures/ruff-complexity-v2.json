@@ -1196,7 +1196,7 @@
       "path": "vntts/authoring/missing_voice_reuse_binding.py",
       "scope": "publish_missing_voice_reuse_binding",
       "count": 1,
-      "maximum": 104
+      "maximum": 102
     },
     {
       "code": "PLR0915",

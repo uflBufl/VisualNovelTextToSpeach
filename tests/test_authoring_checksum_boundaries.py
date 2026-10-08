@@ -93,7 +93,7 @@ class ChecksumBoundaryTest(unittest.TestCase):
             plan, session, _queue_id = create_missing_voice_reuse_binding_review(root)
             self._disappear_after(
                 missing_voice_reuse_binding,
-                "load_missing_voice_reuse_review",
+                "_capture_binding_review",
                 plan,
                 lambda: missing_voice_reuse_binding.publish_missing_voice_reuse_binding(
                     plan, session, root / "outputs"

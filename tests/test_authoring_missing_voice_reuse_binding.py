@@ -144,6 +144,77 @@ class AuthoringMissingVoiceReuseBindingTest(unittest.TestCase):
             {queue_id: source_state_item_sha256},
         )
 
+    def test_review_change_after_validation_cannot_publish_or_return_existing(self):
+        for existing in (False, True):
+            for changed_field in ("decision", "updated_at"):
+                with (
+                    self.subTest(existing=existing, changed_field=changed_field),
+                    TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    plan_path, session_path, queue_id = (
+                        create_missing_voice_reuse_binding_review(root)
+                    )
+                    bundle, _session = load_missing_voice_reuse_review(session_path)
+                    cohort = bundle["cohorts"][0]
+                    selected = cohort["complete_candidate_labels"][0]
+                    record_missing_voice_reuse_heard(
+                        session_path, cohort["cohort_id"], queue_id, selected
+                    )
+                    record_missing_voice_reuse_decision(
+                        session_path, cohort["cohort_id"], selected
+                    )
+                    output = root / "binding"
+                    if existing:
+                        publish_missing_voice_reuse_binding(
+                            plan_path, session_path, output
+                        )
+                    output_before = (
+                        {
+                            path.relative_to(output): path.read_bytes()
+                            for path in output.rglob("*")
+                            if path.is_file()
+                        }
+                        if existing
+                        else {}
+                    )
+                    validate = binding_module._validate_missing_voice_reuse_review
+
+                    def change_review(path, session):
+                        result = validate(path, session)
+                        changed = json.loads(session_path.read_text())
+                        if changed_field == "decision":
+                            changed["decisions"][0]["decision"] = "neither"
+                            session_path.write_text(json.dumps(changed))
+                        else:
+                            changed["updated_at"] = "2026-10-09T00:00:00+00:00"
+                            session_path.write_text(json.dumps(changed))
+                        load_missing_voice_reuse_review(session_path)
+                        return result
+
+                    with patch.object(
+                        binding_module,
+                        "_validate_missing_voice_reuse_review",
+                        change_review,
+                    ):
+                        with self.assertRaisesRegex(
+                            MissingVoiceReuseBindingError, "review session changed"
+                        ):
+                            publish_missing_voice_reuse_binding(
+                                plan_path, session_path, output
+                            )
+                    self.assertEqual(output.exists(), existing)
+                    if existing:
+                        self.assertEqual(
+                            {
+                                path.relative_to(output): path.read_bytes()
+                                for path in output.rglob("*")
+                                if path.is_file()
+                            },
+                            output_before,
+                        )
+                    self.assertFalse(list(root.glob(".missing-voice-binding-*")))
+
     def test_manifest_change_after_capture_cannot_publish_or_return_existing(self):
         for existing in (False, True):
             with self.subTest(existing=existing), TemporaryDirectory() as directory:
@@ -159,13 +230,15 @@ class AuthoringMissingVoiceReuseBindingTest(unittest.TestCase):
                 changed = json.loads(source.read_text(encoding="utf-8"))
                 changed["unreviewed_metadata"] = "must not be imported"
                 original_open = Path.open
-                original_review_loader = binding_module.load_missing_voice_reuse_review
+                original_review_loader = (
+                    binding_module._validate_missing_voice_reuse_review
+                )
                 ready = False
                 reads = 0
 
-                def mark_source_boundary(path):
+                def mark_source_boundary(path, session):
                     nonlocal ready
-                    result = original_review_loader(path)
+                    result = original_review_loader(path, session)
                     ready = True
                     return result
 
@@ -180,7 +253,7 @@ class AuthoringMissingVoiceReuseBindingTest(unittest.TestCase):
                 with (
                     patch.object(
                         binding_module,
-                        "load_missing_voice_reuse_review",
+                        "_validate_missing_voice_reuse_review",
                         side_effect=mark_source_boundary,
                     ),
                     patch.object(Path, "open", change_on_second_read),
@@ -231,18 +304,25 @@ class AuthoringMissingVoiceReuseBindingTest(unittest.TestCase):
             plan_path, session_path, _queue_id = self.create_failed_review(root)
             key_path = session_path.with_name(".blind-key.json")
             original_key = key_path.read_bytes()
-            load_review = binding_module.load_missing_voice_reuse_review
+            load_review = binding_module._validate_missing_voice_reuse_review
             output = root / "binding"
-            for replacement in ([], {"candidates": None}, {"candidates": [{}]}):
+            for replacement in (
+                [],
+                {"candidates": None},
+                {"candidates": [{}]},
+                {**json.loads(original_key), "unreviewed_metadata": "changed"},
+            ):
 
-                def change_key(path):
-                    review = load_review(path)
+                def change_key(path, session):
+                    review = load_review(path, session)
                     key_path.write_text(json.dumps(replacement), encoding="utf-8")
                     return review
 
                 with self.subTest(key=replacement):
                     with patch.object(
-                        binding_module, "load_missing_voice_reuse_review", change_key
+                        binding_module,
+                        "_validate_missing_voice_reuse_review",
+                        change_key,
                     ):
                         with self.assertRaisesRegex(
                             MissingVoiceReuseBindingError, "Missing-voice blind"

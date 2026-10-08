@@ -32,7 +32,9 @@ from vntts.authoring.missing_voice_reuse import (
 )
 from vntts.authoring.missing_voice_reuse_review import (
     MissingVoiceReuseReviewError,
-    load_missing_voice_reuse_review,
+    ReviewBundle,
+    ReviewSession,
+    _validate_missing_voice_reuse_review,
 )
 from vntts.authoring.publication import (
     no_replace_destination,
@@ -104,8 +106,14 @@ def publish_missing_voice_reuse_binding(
         plan = load_missing_voice_reuse_plan(plan_path)
         document = _validate_plan(plan)
         _require_fresh_plan(document)
-        bundle, session = load_missing_voice_reuse_review(session_path)
-    except (MissingVoiceReuseError, MissingVoiceReuseReviewError) as error:
+        session_snapshot, bundle, session, key_snapshot, key = _capture_binding_review(
+            session_path
+        )
+    except (
+        MissingVoiceReuseError,
+        MissingVoiceReuseReviewError,
+        AuthoringAuthorityError,
+    ) as error:
         raise MissingVoiceReuseBindingError(str(error)) from error
     if document.get("candidate_mode") is not None:
         raise MissingVoiceReuseBindingError(
@@ -121,13 +129,6 @@ def publish_missing_voice_reuse_binding(
         raise MissingVoiceReuseBindingError(
             "Every missing-voice cohort requires a completed review decision"
         )
-    key_path = session_path.with_name(".blind-key.json")
-    key = load_json_object(
-        key_path,
-        "Missing-voice blind key",
-        error_type=MissingVoiceReuseBindingError,
-        object_label="Missing-voice blind key",
-    )
     candidate_by_label = {
         _text_field(value, "label", "Missing-voice blind candidate label"): value
         for value in _object_list(
@@ -247,7 +248,7 @@ def publish_missing_voice_reuse_binding(
         "source_workspace_sha256": document["source"]["workspace_sha256"],
         "review_bundle_id": bundle["bundle_id"],
         "review_bundle_sha256": session["bundle_sha256"],
-        "review_session_sha256": _file_sha256(session_path),
+        "review_session_sha256": session_snapshot.sha256,
         "blind_key_sha256": bundle["blind_key_sha256"],
         "cohort_ids": sorted(target_by_cohort),
         "selected_candidates": selected_candidates,
@@ -285,7 +286,7 @@ def publish_missing_voice_reuse_binding(
     if output.exists():
         try:
             _validate_binding_bundle(output, document, binding)
-            assert_authority_snapshot(source_snapshot, "missing-voice source manifest")
+            _assert_binding_snapshots(source_snapshot, session_snapshot, key_snapshot)
         except (
             AuthoringWorkbenchError,
             SourceReferenceBindingError,
@@ -368,7 +369,7 @@ def publish_missing_voice_reuse_binding(
                 sort_keys=True,
             )
             _validate_binding_bundle(staging, document, binding)
-            assert_authority_snapshot(source_snapshot, "missing-voice source manifest")
+            _assert_binding_snapshots(source_snapshot, session_snapshot, key_snapshot)
             rename_directory_no_replace(staging, output)
     except (
         AuthoringWorkbenchError,
@@ -377,6 +378,34 @@ def publish_missing_voice_reuse_binding(
     ) as error:
         raise MissingVoiceReuseBindingError(str(error)) from error
     return _result(output, binding, created=True)
+
+
+def _capture_binding_review(
+    session_path: Path,
+) -> tuple[
+    AuthoritySnapshot, ReviewBundle, ReviewSession, AuthoritySnapshot, JsonObject
+]:
+    session_snapshot = capture_authority_file(
+        session_path, "missing-voice review session"
+    )
+    bundle, session = _validate_missing_voice_reuse_review(
+        session_path, session_snapshot.json_document("missing-voice review session")
+    )
+    key_snapshot = capture_authority_file(
+        session_path.with_name(".blind-key.json"), "missing-voice blind key"
+    )
+    if key_snapshot.sha256 != bundle["blind_key_sha256"]:
+        raise MissingVoiceReuseBindingError("Missing-voice blind key changed")
+    key = key_snapshot.json_document("missing-voice blind key")
+    return session_snapshot, bundle, session, key_snapshot, key
+
+
+def _assert_binding_snapshots(
+    source: AuthoritySnapshot, session: AuthoritySnapshot, key: AuthoritySnapshot
+) -> None:
+    assert_authority_snapshot(source, "missing-voice source manifest")
+    assert_authority_snapshot(session, "missing-voice review session")
+    assert_authority_snapshot(key, "missing-voice blind key")
 
 
 def _capture_binding_source_manifest(
