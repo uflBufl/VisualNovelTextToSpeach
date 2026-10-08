@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 import yaml
 
 from scripts.smoke_speech_runtime import ROOT, check_runtime, main
-from tests.test_cuda_probe import FakeTorch
+from tests.cuda_fixtures import FakeTorch
 
 
 class RuntimeSmokeTest(unittest.TestCase):

@@ -7,43 +7,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
+from tests.cuda_fixtures import FakeTorch
 from vntts.cuda_probe import CudaProbeError, inspect_cuda, main
-
-
-class FakeCuda:
-    def __init__(self, available=True):
-        self.available = available
-
-    def is_available(self):
-        return self.available
-
-    def current_device(self):
-        return 1
-
-    def get_device_properties(self, index):
-        assert index == 1
-        return type("Properties", (), {"name": "Test GPU"})()
-
-    def mem_get_info(self, index):
-        assert index == 1
-        return 12, 34
-
-    def get_device_capability(self, index):
-        assert index == 1
-        return 8, 9
-
-    def is_bf16_supported(self):
-        return True
-
-
-class FakeTorch:
-    __version__ = "2.9.0+cu128"
-
-    def __init__(self, available=True, cuda_runtime="12.8"):
-        self.cuda = FakeCuda(available)
-        self.version = type("Version", (), {"cuda": cuda_runtime})()
-        cudnn = type("Cudnn", (), {"version": staticmethod(lambda: 91002)})()
-        self.backends = type("Backends", (), {"cudnn": cudnn})()
 
 
 class CudaProbeTest(unittest.TestCase):
