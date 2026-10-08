@@ -4,20 +4,19 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import (
     GeneratedAudioIndex,
     write_generated_audio_manifest,
 )
-from vntts_artifacts.story_index import write_story_index_document
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
-    write_voice_generation_queue,
 )
 
 import vntts.authoring.audio_event_projection_fallback as successor_module
 from tests.audio_output_fixtures import FakeAudioOutput
-from tests.authoring_fixtures import write_legacy_fixture
+from tests.authoring_fixtures import (
+    create_audio_event_projection_fixture,
+)
 from tests.symlink_support import symlink_or_skip
 from vntts.authoring.audio_event_projection_fallback import (
     create_audio_event_projection_fallback_workspace,
@@ -26,10 +25,7 @@ from vntts.authoring.audio_event_projection_fallback import (
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
 from vntts.authoring.game_pack import _decision_records
-from vntts.authoring.generation_manifest import write_generated_manifest_from_state
-from vntts.authoring.legacy_import import import_legacy_job
-from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
-from vntts.authoring.workbench import AuthoringWorkbenchError, create_resume_workspace
+from vntts.authoring.workbench import AuthoringWorkbenchError
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.generated_audio import (
     GeneratedAudioFallbackBackend,
@@ -41,106 +37,6 @@ from vntts.speech_backend import SpeechBackendCapabilities
 
 
 class AudioEventProjectionFallbackTests(unittest.TestCase):
-    def _base(self, root, text="No! *gasp*"):
-        fixture = write_legacy_fixture(root / "legacy", text=text)
-        old_queue = VoiceGenerationQueue.load(fixture["queue"])
-        document = dict(old_queue.items[0].document)
-        document.update({"speaker": "Poacher I", "voice_character": "Poacher I"})
-        write_voice_generation_queue(fixture["queue"], old_queue.metadata, [document])
-        queue = VoiceGenerationQueue.load(fixture["queue"])
-        queue_item = queue.items[0]
-        policy = MissingVoicePolicy(NARRATOR_ROLES, ("Poacher I",))
-        state_path = fixture["state"]
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-        state["active"] = None
-        item = state["items"][fixture["queue_id"]]
-        item.update(
-            {
-                "status": "generated",
-                "review_status": "rejected",
-                "speaker": "Poacher I",
-                "requested_voice_character": "Poacher I",
-                "voice_character": "Narrator",
-                "narrator_character": "Rhiannon",
-                "synthesis_configuration": {
-                    "missing_voice_policy": policy.to_document(),
-                    "synthesis_character_overrides": {"poacheri": "Narrator"},
-                },
-                "synthesis_fallback": {
-                    "schema_version": 1,
-                    "kind": "missing_voice_to_narrator",
-                    "policy": policy.to_document(),
-                    "source_voice_character": "Poacher I",
-                    "synthesis_voice_character": "Narrator",
-                    "narrator_character": "Rhiannon",
-                },
-            }
-        )
-        state["queue_sha256"] = sha256_file(fixture["queue"])
-        state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
-        write_generated_manifest_from_state(
-            state,
-            state_path.parent,
-            state_path.parent / "manifest.json",
-        )
-        write_story_index_document(
-            fixture["job"]["story_index"],
-            {
-                "game": "Reverse: 1999",
-                "language": "en",
-                "generated_at": "2026-08-28T00:00:00+00:00",
-            },
-            [
-                {
-                    "record_type": "line",
-                    "line_id": queue_item.line_id,
-                    "text_sha256": queue_item.text_sha256,
-                    "text": queue_item.text,
-                    "speaker": queue_item.speaker,
-                    "voice_character": queue_item.voice_character,
-                    "kind": "dialogue",
-                    "chapter": "315401",
-                    "sequence": 7,
-                    "source_audio_status": "absent",
-                    "source_audio_reason": "fixture_absent",
-                    "source_kind": "story",
-                    "speakable": True,
-                }
-            ],
-        )
-        voice_manifest = Path(fixture["job"]["voice_manifest"])
-        (voice_manifest.parent / "rhiannon.wav").write_bytes(b"voice-reference")
-        voice_manifest.write_text(
-            json.dumps(
-                {
-                    "version": 2,
-                    "voices": [
-                        {
-                            "character": "Rhiannon",
-                            "speaker": "Rhiannon",
-                            "references": ["rhiannon.wav"],
-                        }
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
-        imported = import_legacy_job(
-            fixture["job_directory"], root / "imports"
-        ).destination
-        workspace = create_resume_workspace(
-            imported,
-            root / "base-workspaces",
-            story_index=fixture["job"]["story_index"],
-            voice_manifest=voice_manifest,
-            narrator_character="Rhiannon",
-            backend="moss-tts",
-            model="model",
-            generation_profile="stable",
-            missing_voice_policy=policy,
-        )
-        return workspace.directory, queue_item
-
     def _rebind_batch(self, directory, workspace, queue_id):
         batch = workspace["audio_event_projection_fallback"]
         batch["batch_id"] = canonical_document_sha256(
@@ -163,7 +59,7 @@ class AudioEventProjectionFallbackTests(unittest.TestCase):
     def test_batch_versions_and_invalid_json_values_raise_workbench_errors(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            base, item = self._base(root / "source")
+            base, item = create_audio_event_projection_fixture(root / "source")
             created = create_audio_event_projection_fallback_workspace(
                 base, [item.queue_id], root / "successors"
             )
@@ -191,7 +87,7 @@ class AudioEventProjectionFallbackTests(unittest.TestCase):
     def test_bound_base_files_are_rechecked_after_state_validation(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            base, item = self._base(root / "source")
+            base, item = create_audio_event_projection_fixture(root / "source")
             created = create_audio_event_projection_fallback_workspace(
                 base, [item.queue_id], root / "successors"
             )
@@ -232,7 +128,7 @@ class AudioEventProjectionFallbackTests(unittest.TestCase):
     def test_base_authority_identity_and_symlinks_are_not_accepted(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            base, item = self._base(root / "source")
+            base, item = create_audio_event_projection_fixture(root / "source")
             created = create_audio_event_projection_fallback_workspace(
                 base, [item.queue_id], root / "successors"
             )
@@ -288,7 +184,7 @@ class AudioEventProjectionFallbackTests(unittest.TestCase):
     def test_projection_ledger_metadata_is_bound_to_the_queue(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            base, item = self._base(root / "source")
+            base, item = create_audio_event_projection_fixture(root / "source")
             created = create_audio_event_projection_fallback_workspace(
                 base, [item.queue_id], root / "successors"
             )
@@ -314,7 +210,7 @@ class AudioEventProjectionFallbackTests(unittest.TestCase):
     def test_exact_projection_is_idempotent_checksum_bound_and_used_at_runtime(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            base, queue_item = self._base(root / "source")
+            base, queue_item = create_audio_event_projection_fixture(root / "source")
             base_state = (base / "generated-audio/generation-state.json").read_bytes()
             first = create_audio_event_projection_fallback_workspace(
                 base, (queue_item.queue_id,), root / "workspaces"
@@ -389,7 +285,9 @@ class AudioEventProjectionFallbackTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             for index, text in enumerate(("*gasp*", "No!")):
-                base, queue_item = self._base(root / f"invalid-{index}", text)
+                base, queue_item = create_audio_event_projection_fixture(
+                    root / f"invalid-{index}", text
+                )
                 with self.assertRaisesRegex(
                     AuthoringWorkbenchError, "mixed speech and events"
                 ):
@@ -397,7 +295,7 @@ class AudioEventProjectionFallbackTests(unittest.TestCase):
                         base, (queue_item.queue_id,), root / f"workspaces-{index}"
                     )
 
-            base, queue_item = self._base(root / "mixed")
+            base, queue_item = create_audio_event_projection_fixture(root / "mixed")
             result = create_audio_event_projection_fallback_workspace(
                 base, (queue_item.queue_id,), root / "workspaces"
             )

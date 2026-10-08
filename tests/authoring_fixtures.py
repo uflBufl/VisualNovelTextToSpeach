@@ -41,6 +41,7 @@ from vntts.authoring.cohort_review import (
 )
 from vntts.authoring.generation_manifest import write_generated_manifest_from_state
 from vntts.authoring.legacy_import import import_legacy_job
+from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
 from vntts.authoring.robustness_corpus import publish_speech_robustness_corpus
 from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
 from vntts.authoring.workbench import WorkspaceCreationResult, create_resume_workspace
@@ -885,5 +886,106 @@ def create_reviewed_waveform_fixture(
         backend="moss-tts",
         model="model",
         generation_profile="stable",
+    )
+    return workspace.directory, queue_item
+
+
+def create_audio_event_projection_fixture(
+    root: Path, text: str = "No! *gasp*"
+) -> tuple[Path, VoiceGenerationQueueItem]:
+    fixture = write_legacy_fixture(root / "legacy", text=text)
+    old_queue = VoiceGenerationQueue.load(fixture["queue"])
+    document = dict(old_queue.items[0].document)
+    document.update({"speaker": "Poacher I", "voice_character": "Poacher I"})
+    write_voice_generation_queue(fixture["queue"], old_queue.metadata, [document])
+    queue = VoiceGenerationQueue.load(fixture["queue"])
+    queue_item = queue.items[0]
+    policy = MissingVoicePolicy(NARRATOR_ROLES, ("Poacher I",))
+    state_path = fixture["state"]
+    state = load_json_object(state_path, "successor fixture state")
+    state["active"] = None
+    item = _object(_object(state["items"])[fixture["queue_id"]])
+    item.update(
+        {
+            "status": "generated",
+            "review_status": "rejected",
+            "speaker": "Poacher I",
+            "requested_voice_character": "Poacher I",
+            "voice_character": "Narrator",
+            "narrator_character": "Rhiannon",
+            "synthesis_configuration": {
+                "missing_voice_policy": policy.to_document(),
+                "synthesis_character_overrides": {"poacheri": "Narrator"},
+            },
+            "synthesis_fallback": {
+                "schema_version": 1,
+                "kind": "missing_voice_to_narrator",
+                "policy": policy.to_document(),
+                "source_voice_character": "Poacher I",
+                "synthesis_voice_character": "Narrator",
+                "narrator_character": "Rhiannon",
+            },
+        }
+    )
+    state["queue_sha256"] = sha256_file(fixture["queue"])
+    state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    write_generated_manifest_from_state(
+        state,
+        state_path.parent,
+        state_path.parent / "manifest.json",
+    )
+    write_story_index_document(
+        fixture["job"]["story_index"],
+        {
+            "game": "Reverse: 1999",
+            "language": "en",
+            "generated_at": "2026-08-28T00:00:00+00:00",
+        },
+        [
+            {
+                "record_type": "line",
+                "line_id": queue_item.line_id,
+                "text_sha256": queue_item.text_sha256,
+                "text": queue_item.text,
+                "speaker": queue_item.speaker,
+                "voice_character": queue_item.voice_character,
+                "kind": "dialogue",
+                "chapter": "315401",
+                "sequence": 7,
+                "source_audio_status": "absent",
+                "source_audio_reason": "fixture_absent",
+                "source_kind": "story",
+                "speakable": True,
+            }
+        ],
+    )
+    voice_manifest = Path(fixture["job"]["voice_manifest"])
+    (voice_manifest.parent / "rhiannon.wav").write_bytes(b"voice-reference")
+    voice_manifest.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "voices": [
+                    {
+                        "character": "Rhiannon",
+                        "speaker": "Rhiannon",
+                        "references": ["rhiannon.wav"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    imported = import_legacy_job(fixture["job_directory"], root / "imports").destination
+    workspace = create_resume_workspace(
+        imported,
+        root / "base-workspaces",
+        story_index=fixture["job"]["story_index"],
+        voice_manifest=voice_manifest,
+        narrator_character="Rhiannon",
+        backend="moss-tts",
+        model="model",
+        generation_profile="stable",
+        missing_voice_policy=policy,
     )
     return workspace.directory, queue_item
