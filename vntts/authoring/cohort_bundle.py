@@ -20,10 +20,13 @@ from vntts.authoring.cohort_review import (
     DEFAULT_CLEAN_SAMPLES_PER_BUCKET,
     CohortReviewError,
     CohortReviewProjection,
+    _bound_workspace_paths,
     _load_document,
     _required_sha256,
     _required_text,
     _sample_cohort_queue_ids,
+    _validate_bound_workspace_fingerprint,
+    _validate_bound_workspace_identity,
     _validate_decision_against_plan,
     _write_document_no_replace,
     build_cohort_review_decision,
@@ -1574,24 +1577,12 @@ def _sample_source_paths(source: _SourceDocument) -> _SampleSourcePaths:
         raise CohortReviewError("Bundle workspace configuration cannot be a symlink")
     payload = _read_bytes(configuration_path, "bundle workspace configuration")
     configuration = _decode_json(payload, "bundle workspace configuration")
-    if (
-        not isinstance(configuration, dict)
-        or configuration.get("workspace_id") != source["workspace_id"]
-        or configuration.get("config_fingerprint")
-        != source["plan"]["workspace_config_fingerprint"]
-    ):
-        raise CohortReviewError("Bundle workspace configuration identity changed")
-    queue_path = _contained_source_path(
-        workspace, configuration.get("queue"), "bundle queue"
-    )
-    output = _contained_source_path(
-        workspace, configuration.get("output"), "bundle output"
-    )
-    if not output.is_dir() or output.is_symlink():
-        raise CohortReviewError("Bundle output directory is unavailable or unsafe")
-    state_path = output / "generation-state.json"
-    if queue_path.is_symlink() or state_path.is_symlink():
-        raise CohortReviewError("Bundle queue and state must not be symlinks")
+    if not isinstance(configuration, dict):
+        raise CohortReviewError("Bundle workspace configuration must be an object")
+    _validate_bound_workspace_identity(workspace, configuration, source["plan"])
+    _validate_bound_workspace_fingerprint(configuration, source["plan"])
+    queue_path, state_path = _bound_workspace_paths(workspace)
+    output = state_path.parent
     return _SampleSourcePaths(
         workspace=workspace,
         configuration_path=configuration_path,

@@ -891,6 +891,60 @@ class AuthoringCohortBundleTest(unittest.TestCase):
 
         self.assertEqual(len(samples), 2)
 
+    def test_live_and_resumed_samples_reject_changed_workspace_configuration(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_sources(root)[0][0]
+            bundle = build_cohort_review_bundle([workspace])
+            publication = root / "bundle.json"
+            write_cohort_review_bundle(bundle, publication)
+            configuration_path = workspace / "workspace.json"
+            original = json.loads(configuration_path.read_text(encoding="utf-8"))
+
+            for field, value in (
+                ("schema", "forged"),
+                ("schema_version", True),
+                ("workspace_id", "foreign-workspace"),
+                ("narrator_character", "Changed narrator"),
+                ("run_config", {**original["run_config"], "model": "changed"}),
+                ("queue", "queue-alias.jsonl"),
+                ("output", "audio-alias"),
+            ):
+                with self.subTest(field=field):
+                    configuration_path.write_text(
+                        json.dumps({**original, field: value}), encoding="utf-8"
+                    )
+                    with self.assertRaises(CohortReviewError):
+                        load_cohort_review_bundle_samples(bundle)
+                    with self.assertRaises(CohortReviewError):
+                        load_resumable_cohort_review_bundle_samples(
+                            publication, persist=False
+                        )
+
+    def test_live_and_resumed_samples_reject_source_symlink_aliases(self):
+        for relative in (
+            "queue.jsonl",
+            "generated-audio",
+            "generated-audio/generation-state.json",
+        ):
+            with self.subTest(relative=relative), TemporaryDirectory() as directory:
+                root = Path(directory)
+                workspace = self.create_sources(root)[0][0]
+                bundle = build_cohort_review_bundle([workspace])
+                publication = root / "bundle.json"
+                write_cohort_review_bundle(bundle, publication)
+                original = workspace / relative
+                target = original.with_name(f"{original.name}.original")
+                original.rename(target)
+                symlink_or_skip(original, target, target_is_directory=target.is_dir())
+
+                with self.assertRaises(CohortReviewError):
+                    load_cohort_review_bundle_samples(bundle)
+                with self.assertRaises(CohortReviewError):
+                    load_resumable_cohort_review_bundle_samples(
+                        publication, persist=False
+                    )
+
     def test_live_sample_rejects_invalid_review_item_metadata(self):
         with TemporaryDirectory() as directory:
             sources = self.create_sources(Path(directory))

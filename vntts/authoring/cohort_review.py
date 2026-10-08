@@ -717,7 +717,7 @@ def _bound_workspace_document(directory: Path) -> JsonObject:
 
 
 def _validate_bound_workspace_identity(
-    directory: Path, workspace: JsonObject, plan_document: JsonObject
+    directory: Path, workspace: JsonObject, plan_document: Mapping[str, object]
 ) -> None:
     if (
         workspace.get("schema") != WORKSPACE_SCHEMA
@@ -738,7 +738,7 @@ def _validate_bound_workspace_identity(
 
 
 def _validate_bound_workspace_fingerprint(
-    workspace: JsonObject, plan_document: JsonObject
+    workspace: JsonObject, plan_document: Mapping[str, object]
 ) -> None:
     source = workspace.get("source")
     import_id = source.get("import_id") if isinstance(source, dict) else None
