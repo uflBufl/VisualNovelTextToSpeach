@@ -1515,7 +1515,11 @@ def _copy_file(source: str | Path, destination: Path) -> None:
     source = source.resolve()
     before = sha256_file(source)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, destination)
+    if destination.is_file():
+        if sha256_file(destination) != before:
+            raise OfflinePackError(f"Offline pack destination conflicts: {destination}")
+    else:
+        shutil.copyfile(source, destination)
     if sha256_file(source) != before or sha256_file(destination) != before:
         raise OfflinePackError(f"Offline pack source changed: {source}")
 

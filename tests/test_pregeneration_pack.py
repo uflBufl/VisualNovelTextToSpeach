@@ -38,6 +38,7 @@ from vntts.pregeneration_pack import (
     _link_verified_file,
     _load_terminal_generation,
     _optional_sequence_snapshot,
+    _portable_generated_record,
     _portable_voice_entries,
     _stage_live_sequence,
     _story_audio_pack,
@@ -388,6 +389,39 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 self.skipTest("symlinks are unavailable on this host")
             with self.assertRaises(OfflinePackError):
                 _copy_file(alias, root / "pack.wav")
+
+    def test_current_route_cannot_overwrite_reused_base_audio(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "published.wav"
+            source.write_bytes(b"published audio")
+            changed = root / "current.wav"
+            changed.write_bytes(b"changed after terminal validation")
+            manifest = root / "staging" / "manifest.json"
+            digest = sha256_file(source)
+            record = {"audio_sha256": digest}
+            _portable_generated_record(record, source, manifest, reuse=True)
+            destination = manifest.parent / f"audio/{digest}.wav"
+
+            with self.assertRaisesRegex(OfflinePackError, "destination conflicts"):
+                _portable_generated_record(record, changed, manifest)
+
+            self.assertEqual(source.read_bytes(), b"published audio")
+            self.assertTrue(source.samefile(destination))
+
+    def test_duplicate_copy_reuses_verified_destination_without_writing(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.wav"
+            source.write_bytes(b"same audio")
+            destination = root / "staging" / "audio.wav"
+            _copy_file(source, destination)
+            with patch(
+                "vntts.pregeneration_pack.shutil.copyfile",
+                side_effect=AssertionError("verified staged file must be reused"),
+            ):
+                _copy_file(source, destination)
+            self.assertEqual(destination.read_bytes(), source.read_bytes())
 
     def test_incremental_reuse_hard_links_verified_audio(self):
         with TemporaryDirectory() as directory:
