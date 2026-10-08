@@ -574,10 +574,6 @@ Planned implementation order after approval:
 
 - [ ] **Remaining native acquisition boundaries:** qualify `_launch_owned_process` and Windows job initialization separately from the completed server-resource cleanup. Trace real Windows API failure behavior before changing guards; keep suspended-child ownership and the existing two-second wait budget. Gate: failed job acquisition plus kill/wait failures preserves the acquisition error and leaves no runnable child; retain real-Windows qualification where mocks cannot prove ownership.
 
-## Active - Consolidate verified story and successor fixtures
-
-- [ ] Freeze code and run local selector first, normal strict MyPy/Ruff/format/exact complexity/lock checks and disabled shared-owner rule scans. Independently review all migrated callers and retained differing contracts, sweep equivalent semantic writers and foreign case constructions across tests/scripts/vntts, commit each ownership repair separately, run branch selector against fetched main and push. Remove only verified TODO stages and update bounded memory.
-
 ## Investigate remaining shared test setup ownership
 
 - [ ] Trace the remaining voice manifest/reference builders, deterministic ManualThreadPool, audition WAV/backend/ambiguous-input helpers and native pause probe fake backend that still cross unittest module boundaries. Preserve real per-helper data, synchronous-vs-streaming/native and callback/instance tracking contracts; reuse existing typed owners where equivalent. Inspect each direct/local/alias and dynamic consumer before selecting the next safe staged migration, then run affected selectors and normal types. Raw test-module import counts are leads, not a blanket defect count.
