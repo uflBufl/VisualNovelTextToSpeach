@@ -15,7 +15,10 @@ from PySide6.QtGui import QPixmap  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog, QSizePolicy  # noqa: E402
 
-from tests.bulk_generation_fixtures import SyntheticRenderer  # noqa: E402
+from tests.pregeneration_fixtures import (  # noqa: E402
+    InProcessPocketGenerator,
+    InterruptingPocketGenerator,
+)
 from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from tests.story_fixtures import (
     write_content,  # noqa: E402
@@ -27,17 +30,8 @@ from tests.voice_manifest_fixtures import (  # noqa: E402
 )
 from vntts.app import TrayApplication  # noqa: E402
 from vntts.async_ui import LatestTaskRunner  # noqa: E402
-from vntts.authoring.bulk_generation import run_bulk_generation  # noqa: E402
-from vntts.authoring.missing_voice_policy import (  # noqa: E402
-    NARRATOR_ROLES,
-    MissingVoicePolicy,
-)
 from vntts.game_content_importer import GameContentImportError  # noqa: E402
 from vntts.game_narrator_ui import GameNarratorDialog  # noqa: E402
-from vntts.pregeneration_generation import (  # noqa: E402
-    OfflineGenerationCancelled,
-    OfflineGenerationWorker,
-)
 from vntts.pregeneration_queue import PregenerationInputStore  # noqa: E402
 from vntts.pregeneration_recovery import OfflineRecoveryWorker  # noqa: E402
 from vntts.pregeneration_setup import (  # noqa: E402
@@ -52,7 +46,6 @@ from vntts.pregeneration_voices import (  # noqa: E402
 )
 from vntts.settings import AppSettings  # noqa: E402
 from vntts.speech_presentation import engine_model_label  # noqa: E402
-from vntts.synthesis import SynthesisCompletion  # noqa: E402
 from vntts.ui_text import plain_label_text  # noqa: E402
 from vntts.voice_library import VoiceLibrary  # noqa: E402
 from vntts.voices import CharacterVoiceRegistry, remember_voice_binding  # noqa: E402
@@ -67,114 +60,6 @@ def write_voice_references(manifest: Path) -> None:
             audio,
             24_000,
             subtype="PCM_16",
-        )
-
-
-class InProcessPocketGenerator(OfflineGenerationWorker):
-    def __init__(self):
-        super().__init__()
-        self.rendered = False
-        self.calls = 0
-
-    def generate(
-        self, generation_input, voice_plan, cancel_event=None, *, queue_ids=None
-    ):
-        output = generation_input.directory.parent / (
-            f"generation-output-{generation_input.identity[:16]}"
-        )
-        renderer = SyntheticRenderer(
-            [
-                SynthesisCompletion.COMPLETE
-                if self.calls == 0
-                else SynthesisCompletion.LIMITED
-            ]
-        )
-        self.calls += 1
-        renderer.name = "pocket-tts"
-        renderer.model_name = "pocket-tts"
-        run_bulk_generation(
-            generation_input.queue,
-            output,
-            renderer,
-            provider="pocket-tts",
-            model="pocket-tts",
-            generation_profile=voice_plan.synthesis_profile,
-            retries=0,
-            cancellation=cancel_event,
-            missing_voice_policy=MissingVoicePolicy(
-                NARRATOR_ROLES,
-                generation_input.narrator_fallback_roles,
-            ),
-            narrator_character="Narrator",
-            include_queue_ids=queue_ids,
-            approve_validated_audio=True,
-        )
-        self.rendered = True
-        return self.inspect(generation_input)
-
-
-class InterruptingPocketGenerator(InProcessPocketGenerator):
-    def __init__(self, *, interrupt):
-        super().__init__()
-        self.interrupt = interrupt
-        self.rendered_texts = []
-
-    def generate(
-        self, generation_input, voice_plan, cancel_event=None, *, queue_ids=None
-    ):
-        output = generation_input.directory.parent / (
-            f"generation-output-{generation_input.identity[:16]}"
-        )
-        cancel_now = self.interrupt and bool(self.rendered_texts)
-        renderer = SyntheticRenderer(
-            [
-                SynthesisCompletion.CANCELLED
-                if cancel_now
-                else SynthesisCompletion.COMPLETE
-            ]
-        )
-        renderer.name = "pocket-tts"
-        renderer.model_name = "pocket-tts"
-        run_bulk_generation(
-            generation_input.queue,
-            output,
-            renderer,
-            provider="pocket-tts",
-            model="pocket-tts",
-            generation_profile="default",
-            retries=0,
-            cancellation=cancel_event,
-            missing_voice_policy=MissingVoicePolicy(
-                NARRATOR_ROLES,
-                generation_input.narrator_fallback_roles,
-            ),
-            narrator_character="Narrator",
-            include_queue_ids=queue_ids,
-            approve_validated_audio=True,
-        )
-        self.rendered_texts.extend(request.text for request in renderer.requests)
-        if cancel_now:
-            raise OfflineGenerationCancelled("Synthetic generation interrupted")
-        self.rendered = True
-        return self.inspect(generation_input)
-
-    def repair(
-        self,
-        generation_input,
-        voice_plan,
-        _generation_result,
-        *,
-        action,
-        queue_ids,
-        cancel_event=None,
-    ):
-        if action != "safe_resume":
-            raise AssertionError(f"Unexpected test repair: {action}")
-        return self.generate(
-            generation_input,
-            voice_plan,
-            cancel_event,
-            queue_ids=queue_ids,
         )
 
 
