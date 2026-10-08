@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
+from tests.speech_worker_fixtures import FakeProcess
 from tests.symlink_support import symlink_or_skip
 from vntts.speech_backend import TTSConfigurationError, TTSSynthesisError
 from vntts.speech_worker import (
@@ -121,33 +122,6 @@ class BackendFactoryTests(unittest.TestCase):
         )
 
         native.assert_called_once_with(registry, model_name="model.gguf")
-
-
-class FakeProcess:
-    def __init__(self, health):
-        output = BytesIO()
-        if health is not None:
-            _write_frame(output, health)
-        output.seek(0)
-        self.stdin = BytesIO()
-        self.stdout = output
-        self.stderr = BytesIO()
-        self.returncode = None
-
-    def poll(self):
-        return self.returncode
-
-    def wait(self, timeout=None):
-        del timeout
-        if self.returncode is None:
-            self.returncode = 0
-        return self.returncode
-
-    def terminate(self):
-        self.returncode = -15
-
-    def kill(self):
-        self.returncode = -9
 
 
 class SpeechWorkerTest(unittest.TestCase):

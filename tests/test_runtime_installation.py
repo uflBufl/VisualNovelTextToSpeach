@@ -236,7 +236,7 @@ class RuntimeInstallationTest(unittest.TestCase):
                 self.assertEqual(list(old[0].parents[1].iterdir()), [old[0].parent])
 
     def test_worker_claim_is_released_after_shutdown_or_startup_failure(self):
-        from tests.test_speech_worker import FakeProcess
+        from tests.speech_worker_fixtures import FakeProcess
         from vntts.speech_worker import IsolatedSpeechBackend
         from vntts.voices import CharacterVoiceRegistry
 
