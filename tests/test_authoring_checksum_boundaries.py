@@ -9,11 +9,9 @@ from tests import test_authoring_queue_builder as builder_fixtures
 from tests import (
     test_authoring_queue_extension as queue_fixtures,
 )
-from tests import (
-    test_authoring_reviewed_waveform_publication as waveform_fixtures,
-)
 from tests.authoring_fixtures import (
     create_explicit_fallback_merge_fixture,
+    create_reviewed_waveform_fixture,
     create_voice_quality_review,
 )
 from tests.missing_voice_reuse_fixtures import (
@@ -74,9 +72,7 @@ class ChecksumBoundaryTest(unittest.TestCase):
     def test_reviewed_waveform_missing_queue_stays_a_workbench_error(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            base, _item = waveform_fixtures.ReviewedWaveformPublicationTests()._base(
-                root
-            )
+            base, _item = create_reviewed_waveform_fixture(root)
             self._disappear_after(
                 reviewed_waveform_publication,
                 "load_stable_workspace_generation_state",

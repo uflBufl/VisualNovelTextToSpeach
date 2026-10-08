@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TypedDict
 
 import numpy as np
+import soundfile as sf
 from vntts_artifacts.audio import (
     PCM16_MONO_WAV_FORMAT,
     probe_pcm16_mono_wav,
@@ -807,3 +808,82 @@ def create_explicit_fallback_merge_fixture(root: Path) -> tuple[Path, Path, str]
         base_directory / "generated-audio/manifest.json",
     )
     return base_directory, source, queue_id
+
+
+def create_reviewed_waveform_fixture(
+    root: Path,
+) -> tuple[Path, VoiceGenerationQueueItem]:
+    fixture = write_legacy_fixture(root / "legacy", text="An approved line.")
+    old_queue = VoiceGenerationQueue.load(fixture["queue"])
+    document = dict(old_queue.items[0].document)
+    document.update({"speaker": "Narrator", "voice_character": "Narrator"})
+    write_voice_generation_queue(fixture["queue"], old_queue.metadata, [document])
+    queue_item = VoiceGenerationQueue.load(fixture["queue"]).items[0]
+    state_path = fixture["state"]
+    state = load_json_object(state_path, "successor fixture state")
+    item = _object(_object(state["items"])[fixture["queue_id"]])
+    item.update({"status": "approved", "review_status": "approved"})
+    state["active"] = None
+    state["queue_sha256"] = sha256_file(fixture["queue"])
+    state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    write_story_index_document(
+        fixture["job"]["story_index"],
+        {
+            "game": "Reverse: 1999",
+            "language": "en",
+            "generated_at": "2026-08-29T00:00:00+00:00",
+        },
+        [
+            {
+                "record_type": "line",
+                "line_id": queue_item.line_id,
+                "text_sha256": queue_item.text_sha256,
+                "text": queue_item.text,
+                "speaker": queue_item.speaker,
+                "voice_character": queue_item.voice_character,
+                "kind": "narration",
+                "chapter": "315401",
+                "sequence": 1,
+                "source_audio_status": "absent",
+                "source_audio_reason": "fixture_absent",
+                "source_kind": "story",
+                "speakable": True,
+            }
+        ],
+    )
+    voice_manifest = Path(fixture["job"]["voice_manifest"])
+    reference = voice_manifest.parent / "centurion.ogg"
+    sf.write(
+        reference,
+        np.sin(np.linspace(0, 8 * np.pi, 8_000, dtype=np.float32)) * 0.2,
+        16_000,
+        format="OGG",
+        subtype="VORBIS",
+    )
+    voice_manifest.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "voices": [
+                    {
+                        "character": "Centurion",
+                        "speaker": "centurion",
+                        "references": ["centurion.ogg"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    imported = import_legacy_job(fixture["job_directory"], root / "imports").destination
+    workspace = create_resume_workspace(
+        imported,
+        root / "base-workspaces",
+        story_index=fixture["job"]["story_index"],
+        voice_manifest=voice_manifest,
+        narrator_character="Centurion",
+        backend="moss-tts",
+        model="model",
+        generation_profile="stable",
+    )
+    return workspace.directory, queue_item
