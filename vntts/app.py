@@ -3594,7 +3594,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             plan = self.pregeneration_dialog.voice_plan()
             content = self.pregeneration_dialog.current_content()
             if isinstance(content, GameContent):
-                selected_ids = self.pregeneration_dialog.selected_story_ids()
+                selected_ids = set(self.pregeneration_dialog.selected_story_ids())
                 selected = [
                     item
                     for item in content.selections

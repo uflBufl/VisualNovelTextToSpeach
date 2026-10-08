@@ -521,6 +521,44 @@ class PregenerationSetupTest(unittest.TestCase):
         self.assertIn("Outdated Reverse: 1999", discovery.errors[0])
         inspect.assert_not_called()
 
+    def test_large_story_selection_uses_linear_membership_work(self):
+        class CountedId(str):
+            comparisons = 0
+            __hash__ = str.__hash__
+
+            def __eq__(self, other):
+                type(self).comparisons += 1
+                return super().__eq__(other)
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            selections = tuple(
+                replace(
+                    content.selections[0],
+                    selection_id=CountedId(f"story-{index}"),
+                    line_ids=(f"line-{index}",),
+                    line_count=1,
+                    generation_text_characters=index + 1,
+                )
+                for index in range(256)
+            )
+            content = replace(content, selections=selections)
+            requested = tuple(str(value.selection_id) for value in reversed(selections))
+            CountedId.comparisons = 0
+            estimate = estimate_preparation(content, requested)
+            job = PregenerationJobStore(root / "jobs").create_or_resume(
+                content, requested
+            )
+            comparisons = CountedId.comparisons
+            self.assertEqual(estimate, job.estimate)
+            self.assertEqual(job.selected_story_ids, tuple(reversed(requested)))
+            self.assertEqual(
+                job.selected_line_ids, tuple(f"line-{i}" for i in range(256))
+            )
+            self.assertEqual(estimate.generation_text_characters, sum(range(1, 257)))
+            self.assertLess(comparisons, 8 * len(selections))
+
     def test_preparation_estimate_and_job_are_checksum_bound_and_resumable(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

@@ -498,15 +498,16 @@ def estimate_preparation(
     content: GameContent, selected_story_ids: Iterable[object]
 ) -> PreparationEstimate:
     selected_ids = _normalized_selection_ids(content, selected_story_ids)
+    selected_id_set = set(selected_ids)
     selected = tuple(
-        value for value in content.selections if value.selection_id in selected_ids
+        value for value in content.selections if value.selection_id in selected_id_set
     )
     generation_lines = sum(value.generation_lines for value in selected)
     speakers: set[str] = set()
     for value in selected:
         if value.generation_lines:
             speakers.update(value.speakers)
-    text_characters = _generation_text_characters(content, selected_ids)
+    text_characters = sum(value.generation_text_characters for value in selected)
     rough_audio_seconds = _rough_audio_seconds(text_characters)
     return PreparationEstimate(
         selected_lines=sum(value.line_count for value in selected),
@@ -645,8 +646,11 @@ class PregenerationJobStore:
         self, content: GameContent, selected_story_ids: Iterable[object]
     ) -> PregenerationJob:
         selected_ids = _normalized_selection_ids(content, selected_story_ids)
+        selected_id_set = set(selected_ids)
         selected = tuple(
-            value for value in content.selections if value.selection_id in selected_ids
+            value
+            for value in content.selections
+            if value.selection_id in selected_id_set
         )
         line_ids = tuple(line_id for value in selected for line_id in value.line_ids)
         identity = hashlib.sha256()
@@ -1005,16 +1009,6 @@ def _selection_from_records(
     return selection
 
 
-def _generation_text_characters(
-    content: GameContent, selected_ids: Iterable[str]
-) -> int:
-    return sum(
-        selection.generation_text_characters
-        for selection in content.selections
-        if selection.selection_id in selected_ids
-    )
-
-
 def _rough_audio_seconds(text_characters: int) -> int:
     return (
         text_characters + ROUGH_SPEECH_CHARACTERS_PER_SECOND - 1
@@ -1031,10 +1025,11 @@ def _normalized_selection_ids(
     unknown = tuple(value for value in requested if value not in declared)
     if unknown:
         raise PregenerationSetupError(f"Unknown story selection: {', '.join(unknown)}")
+    requested_ids = set(requested)
     return tuple(
         value.selection_id
         for value in content.selections
-        if value.selection_id in requested
+        if value.selection_id in requested_ids
     )
 
 
