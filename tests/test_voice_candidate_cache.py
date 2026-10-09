@@ -5,8 +5,9 @@ import sys
 import tempfile
 import time
 import unittest
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from tests.symlink_support import symlink_or_skip
@@ -24,6 +25,115 @@ class VoiceCandidateCacheTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    def test_oversized_directory_scan_stops_and_closes_without_deleting(self) -> None:
+        old = self._candidate("old")
+        job = self.jobs / ("a" * 24)
+        packs = job / "game-packs"
+        packs.mkdir(parents=True)
+        original_scandir = cache.os.scandir
+        for target, limit_name in (
+            (self.jobs, "_MAX_JOBS"),
+            (packs, "_MAX_PACKS_PER_JOB"),
+            (old.resolve(), "_MAX_CANDIDATE_TREE_ENTRIES"),
+        ):
+            with self.subTest(target=target):
+                scanned, closed = [], []
+
+                def entries():
+                    for index in range(3):
+                        scanned.append(index)
+                        yield SimpleNamespace(
+                            path=str(target / str(index)),
+                            name=str(index),
+                            is_dir=lambda: False,
+                        )
+                    raise AssertionError("scan exceeded the admission budget")
+
+                @contextmanager
+                def bounded_scan():
+                    try:
+                        yield entries()
+                    finally:
+                        closed.append(True)
+
+                def scandir(path):
+                    return (
+                        bounded_scan()
+                        if not isinstance(path, int) and Path(path) == target
+                        else original_scandir(path)
+                    )
+
+                with (
+                    patch.object(cache, limit_name, 2),
+                    patch.object(cache.os, "scandir", side_effect=scandir),
+                ):
+                    self.assertEqual(
+                        prune_obsolete_voice_candidate_caches(self.root, self.jobs), ()
+                    )
+                self.assertEqual(scanned, [0, 1, 2])
+                self.assertEqual(closed, [True])
+                self.assertTrue(old.exists())
+
+    def test_candidate_tree_budget_counts_nested_entries_and_accepts_exact_limit(
+        self,
+    ) -> None:
+        old = self._candidate("old")
+        nested = old / "nested"
+        nested.mkdir()
+        (nested / "first.wav").write_bytes(b"first")
+        (nested / "second.wav").write_bytes(b"second")
+        with patch.object(cache, "_MAX_CANDIDATE_TREE_ENTRIES", 3):
+            self.assertEqual(
+                prune_obsolete_voice_candidate_caches(self.root, self.jobs), ()
+            )
+        self.assertEqual((nested / "first.wav").read_bytes(), b"first")
+        with patch.object(cache, "_MAX_CANDIDATE_TREE_ENTRIES", 4):
+            self.assertEqual(
+                prune_obsolete_voice_candidate_caches(self.root, self.jobs),
+                (old.resolve(),),
+            )
+        self.assertFalse(old.exists())
+
+    def test_queued_candidate_directory_alias_defers_cleanup_before_descent(
+        self,
+    ) -> None:
+        old = self._candidate("old")
+        child = old / "nested"
+        child.mkdir()
+        outside = self.root.parent / "outside"
+        outside.mkdir()
+        (outside / "reference.wav").write_bytes(b"outside audio")
+        canonical_child = child.resolve()
+        saved = self.root.parent / "saved-child"
+        replaced, scanned = [], []
+        original_is_dir, original_scandir = cache.S_ISDIR, cache.os.scandir
+
+        def replace_after_inspection(mode):
+            is_directory = original_is_dir(mode)
+            if is_directory and not replaced:
+                child.rename(saved)
+                symlink_or_skip(child, outside, target_is_directory=True)
+                replaced.append(True)
+            return is_directory
+
+        def forbid_alias_descent(path):
+            if Path(path) == canonical_child:
+                scanned.append(path)
+                raise AssertionError("queued directory alias was followed")
+            return original_scandir(path)
+
+        with (
+            patch.object(cache, "S_ISDIR", side_effect=replace_after_inspection),
+            patch.object(cache.os, "scandir", side_effect=forbid_alias_descent),
+        ):
+            self.assertEqual(
+                prune_obsolete_voice_candidate_caches(self.root, self.jobs), ()
+            )
+        self.assertEqual(replaced, [True])
+        self.assertEqual(scanned, [])
+        self.assertTrue(old.exists())
+        self.assertEqual((outside / "reference.wav").read_bytes(), b"outside audio")
 
     def test_removes_unreferenced_cache_but_keeps_current_manifest(self) -> None:
         old = self._candidate("old")

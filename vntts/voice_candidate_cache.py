@@ -10,6 +10,7 @@ import shutil
 from collections.abc import Iterable, Iterator
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
+from stat import S_ISDIR
 from threading import Lock, RLock
 
 from vntts.authoring.advisory_lock import AdvisoryLockBusyError, exclusive_advisory_lock
@@ -225,14 +226,24 @@ def _protected_candidates(root: Path, paths: Iterable[str | Path]) -> set[str]:
     return protected
 
 
+def _bounded_directory_entries(directory: Path, limit: int) -> tuple[Path, ...] | None:
+    found: list[Path] = []
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            if len(found) == limit:
+                return None
+            found.append(Path(entry.path))
+    return tuple(found)
+
+
 def _references_in_jobs(root: Path, jobs: Path) -> set[str] | None:
     if not jobs.exists():
         return set()
     if not jobs.is_dir():
         return None
     references: set[str] = set()
-    directories = tuple(jobs.iterdir())
-    if len(directories) > _MAX_JOBS:
+    directories = _bounded_directory_entries(jobs, _MAX_JOBS)
+    if directories is None:
         return None
     for directory in directories:
         if _unsafe(directory):
@@ -270,8 +281,8 @@ def _pack_manifests(job_directory: Path) -> Iterator[Path | None]:
     if not packs.is_dir():
         yield None
         return
-    directories = tuple(packs.iterdir())
-    if len(directories) > _MAX_PACKS_PER_JOB:
+    directories = _bounded_directory_entries(packs, _MAX_PACKS_PER_JOB)
+    if directories is None:
         yield None
         return
     for directory in directories:
@@ -332,18 +343,23 @@ def _candidate_for_path(
 
 
 def _safe_candidate_tree(directory: Path) -> bool:
+    pending = [directory]
     entries = 0
-
-    def raise_walk_error(error: OSError) -> None:
-        raise error
-
-    for base, directories, files in os.walk(
-        directory, followlinks=False, onerror=raise_walk_error
-    ):
-        for name in (*directories, *files):
-            entries += 1
-            if entries > _MAX_CANDIDATE_TREE_ENTRIES or _unsafe(Path(base) / name):
+    while pending:
+        current = pending.pop()
+        if _unsafe(current):
+            return False
+        paths = _bounded_directory_entries(
+            current, _MAX_CANDIDATE_TREE_ENTRIES - entries
+        )
+        if paths is None:
+            return False
+        entries += len(paths)
+        for path in paths:
+            if _unsafe(path):
                 return False
+            if S_ISDIR(path.stat(follow_symlinks=False).st_mode):
+                pending.append(path)
     return True
 
 
