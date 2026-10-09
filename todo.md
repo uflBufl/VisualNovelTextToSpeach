@@ -1,9 +1,5 @@
 # TODO
 
-## Investigate source-reference listening report state capture
-
-- [ ] In source_reference_review._load_evaluation_generation / publish_source_reference_listening_reports, prove whether loaded generation-state semantics can differ from the later recorded state SHA. Use the existing public evaluation/generation fixture: supply a different admissible model on generated items only during load_generation_state, restore original bytes, and check report model versus recorded original SHA. If this survives existing evidence validation, use captured _read_json plus load_generation_state_from_snapshot and carry its payload SHA; preserve final freshness and audio/source/variant checks, then expand the verified repair. Queue/voice metadata-only alternatives were inspected and excluded: consumed identities are constrained by comparison/evaluation checks; do not treat their similar syntax as a defect.
-
 ## Qualify remaining model dependency risks
 
 - [ ] Trace whether root Coqui/XTTS, Chatterbox, MOSS SoundEffect and MOSS Delay
