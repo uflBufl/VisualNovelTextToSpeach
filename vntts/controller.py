@@ -2775,8 +2775,8 @@ class AppController:
                 return False
             if key in self.primed_voice_keys:
                 return False
-            self.primed_voice_keys.add(key)
             future = self.speech_executor.submit(prime, character)
+            self.primed_voice_keys.add(key)
             self.voice_prime_futures.add(future)
         future.add_done_callback(self._voice_prime_finished)
         return True

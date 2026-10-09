@@ -5576,6 +5576,30 @@ class MainTest(unittest.TestCase):
             controller._voice_prime_finished
         )
 
+    def test_voice_prime_submission_failure_does_not_mark_voice_as_primed(self):
+        controller = AppController(AppSettings(), tts_factory=Mock())
+        controller.speech_backend = Mock()
+        controller.speech_executor = Mock()
+        failure = RuntimeError("executor unavailable")
+        future = Mock()
+        controller.speech_executor.submit.side_effect = (failure, future)
+
+        with self.assertRaises(RuntimeError) as caught:
+            controller._prime_observed_voice("Kamuta")
+        self.assertIs(caught.exception, failure)
+        self.assertEqual(controller.primed_voice_keys, set())
+        self.assertEqual(controller.voice_prime_futures, set())
+        controller.speech_backend.prime.assert_not_called()
+
+        self.assertTrue(controller._prime_observed_voice("Kamuta"))
+        self.assertFalse(controller._prime_observed_voice("Kamuta"))
+        self.assertEqual(controller.primed_voice_keys, {"kamuta"})
+        self.assertEqual(controller.voice_prime_futures, {future})
+        self.assertEqual(controller.speech_executor.submit.call_count, 2)
+        future.add_done_callback.assert_called_once_with(
+            controller._voice_prime_finished
+        )
+
     def test_controller_primes_one_likely_chapter_voice_per_observation(self):
         preloader = Mock()
         preloader.recommend.return_value = ("Fatutu", "Selone")
