@@ -829,9 +829,9 @@ def _source_audio_duration_seconds(
     value = entry.get("source_audio_duration_seconds")
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    value = float(value)
-    if not math.isfinite(value) or not 0 < value <= 600:
+    if not 0 < value <= 600:
         return None
+    value = float(value)
     if completion_contract != VERIFIED_SOURCE_AUDIO_COMPLETION:
         return None
     media_id = entry.get("source_audio_duration_media_id")
@@ -856,7 +856,10 @@ def _source_audio_duration_seconds(
         "available_media_ids"
     ) != [media_id]:
         return None
-    measured = sample_count / sample_rate
+    try:
+        measured = sample_count / sample_rate
+    except OverflowError:
+        return None
     return value if math.isclose(value, measured, rel_tol=0, abs_tol=0.000001) else None
 
 

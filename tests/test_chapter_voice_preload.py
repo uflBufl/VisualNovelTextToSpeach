@@ -858,6 +858,53 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
             ),
         )
 
+    def test_source_audio_numeric_overflow_is_ignored_without_rejecting_huge_ratios(
+        self,
+    ):
+        for label, fields, expected_duration in (
+            ("duration overflow", {"source_audio_duration_seconds": 10**400}, None),
+            (
+                "sample count overflow",
+                {"source_audio_duration_sample_count": 10**400},
+                None,
+            ),
+            (
+                "finite huge ratio",
+                {
+                    "source_audio_duration_sample_count": 30000 * 10**400,
+                    "source_audio_duration_sample_rate": 24000 * 10**400,
+                },
+                1.25,
+            ),
+        ):
+            with self.subTest(label=label), TemporaryDirectory() as directory:
+                path = Path(directory) / "story-index.jsonl"
+                write_verified_source_story(path)
+                records = [json.loads(row) for row in path.read_text().splitlines()]
+                records[1].update(fields)
+                path.write_text("\n".join(json.dumps(row) for row in records) + "\n")
+                document = records[0] | {
+                    "dialogue": [records[1] | {"speaker_name": records[1]["speaker"]}]
+                }
+                indexed = ChapterVoicePreloader.load_optional(path).dialogue[0]
+                projected = ChapterVoicePreloader.from_document(document).dialogue[0]
+
+                self.assertEqual(
+                    indexed.source_audio_duration_seconds, expected_duration
+                )
+                self.assertEqual(
+                    projected.source_audio_duration_seconds, expected_duration
+                )
+                self.assertEqual(projected.source_audio_completeness, "unknown")
+                self.assertFalse(projected.source_audio_authoritative)
+                self.assertEqual(
+                    indexed.source_audio_completeness,
+                    "unknown" if expected_duration is None else "full",
+                )
+                self.assertEqual(
+                    indexed.source_audio_authoritative, expected_duration is not None
+                )
+
     def test_snapshot_preserves_verified_audio_and_rejects_changed_evidence(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "story-index.jsonl"
