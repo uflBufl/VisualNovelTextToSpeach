@@ -370,10 +370,10 @@ def _safe_sentence_boundaries(text: str) -> tuple[re.Match[str], ...]:
 
 def _ends_with_nonterminal_abbreviation(prefix: str) -> bool:
     stripped = prefix.rstrip()
-    word = re.search(r"([A-Za-z]+)\.$", stripped)
+    word = re.search(r"(?<![A-Za-z])([A-Za-z]+)\.$", stripped)
     if word and word.group(1).casefold() in NONTERMINAL_ENGLISH_ABBREVIATIONS:
         return True
-    if re.search(r"(?:\b[A-Za-z]\.){2,}$", stripped):
+    if re.search(r"(?<!\b[A-Za-z]\.)(?:\b[A-Za-z]\.){2,}$", stripped):
         return True
     return re.search(r"\b[A-Z]\.$", stripped) is not None
 

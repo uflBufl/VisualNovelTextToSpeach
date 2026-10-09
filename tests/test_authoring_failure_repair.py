@@ -30,6 +30,22 @@ from vntts.synthesis import (
 
 
 class AuthoringFailureRepairTest(unittest.TestCase):
+    def test_pause_boundaries_preserve_abbreviations_and_reject_long_runs(self):
+        for prefix in ("A" * 4096 + "3.", "A." * 4096 + "3."):
+            text = prefix + " Next sentence starts here."
+            with self.subTest(prefix_length=len(prefix)):
+                self.assertEqual(
+                    inline_sentence_pause_prompt(text),
+                    (prefix + " [pause 0.18s] Next sentence starts here.", 1),
+                )
+        for prefix in ("Dr.", "Mr.", "A.B.", "Long.A.B.", "2A.B.C.", "éA.B.C."):
+            text = prefix + " Next sentence starts here."
+            with (
+                self.subTest(prefix=prefix),
+                self.assertRaisesRegex(ValueError, "requires a sentence boundary"),
+            ):
+                inline_sentence_pause_prompt(text)
+
     def test_policy_is_canonical_exact_and_round_trips(self):
         policy = FailureRepairPolicy(
             ("line:b", "line:a"),

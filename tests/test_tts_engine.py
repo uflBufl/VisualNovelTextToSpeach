@@ -158,6 +158,28 @@ class TTSEngineTest(unittest.TestCase):
             "Wait, this is still appearing.",
         )
 
+    def test_terminal_punctuation_preserves_mixed_and_interior_runs(self):
+        for text, expected in (
+            ("", ""),
+            ("  ", ""),
+            (" ... ", "."),
+            ("Hello .", "Hello ."),
+            ("Hello ….", "Hello …."),
+            ("Hello .……", "Hello .."),
+            ("Hello ……...", "Hello ……."),
+            ("Hello,,", "Hello,."),
+            ("Hello ;;", "Hello ;."),
+            ("Hello :", "Hello."),
+            ("Hello \n ...", "Hello."),
+            ("I ... don't know ... yet.", "I ... don't know ... yet."),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(prepare_speech_text(text), expected)
+        for punctuation in (" ", ".", "…"):
+            text = "A" + punctuation * 4096 + "B,"
+            with self.subTest(punctuation=punctuation):
+                self.assertEqual(prepare_speech_text(text), text[:-1] + ".")
+
     def test_synthesize_normalizes_only_the_spoken_copy(self):
         engine, tts, _ = self.create_engine()
 

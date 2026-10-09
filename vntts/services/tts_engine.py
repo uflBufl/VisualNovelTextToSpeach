@@ -1,4 +1,3 @@
-import re
 import warnings
 from collections.abc import Callable, Mapping, Sequence
 from os import PathLike
@@ -113,12 +112,15 @@ torchaudio_load_deprecation = (
     r"In 2\.9, this function's implementation will be changed to use "
     r"torchaudio\.load_with_torchcodec"
 )
-terminal_incomplete_punctuation = re.compile(r"\s*(?:\.{2,}|…+|[,;:])\s*$")
 
 
 def prepare_speech_text(text: str) -> str:
     text = text.strip()
-    return terminal_incomplete_punctuation.sub(".", text)
+    if text.endswith(("..", "…", ",", ";", ":")):
+        punctuation = text[-1]
+        stem = text.rstrip(punctuation) if punctuation in ".…" else text[:-1]
+        return stem.rstrip() + "."
+    return text
 
 
 def get_tts_profile(name: str) -> dict[str, object]:
