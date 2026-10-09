@@ -254,6 +254,66 @@ class VoiceLibraryTest(unittest.TestCase):
                 {"Alice", "Bob"},
             )
 
+    def test_validate_reads_each_unique_blob_once_and_checks_unbound_alternatives(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            shared, unused = root / "shared.wav", root / "unused.wav"
+            write_wav(shared, b"\x00\x00")
+            write_wav(unused, b"\x01\x00")
+            library = VoiceLibrary(root / "library")
+            first = library.discover("Alice", shared, bind_if_missing=True)
+            library.discover("Bob", shared, bind_if_missing=True)
+            other = library.discover("Unbound", unused)
+            index = library.path.read_bytes()
+            with (
+                patch.object(
+                    voice_library, "sha256_file", wraps=voice_library.sha256_file
+                ) as hashing,
+                patch.object(
+                    voice_library.wave, "open", wraps=voice_library.wave.open
+                ) as headers,
+            ):
+                library.validate()
+            self.assertEqual(
+                [call.args[0] for call in hashing.call_args_list],
+                [first.path, other.path],
+            )
+            self.assertEqual(headers.call_count, 2)
+            for alternative in (first, other):
+                with self.subTest(role=alternative.role):
+                    payload = alternative.path.read_bytes()
+                    try:
+                        alternative.path.write_bytes(b"corrupted")
+                        with self.assertRaisesRegex(
+                            VoiceLibraryError, "checksum failed"
+                        ):
+                            library.validate()
+                    finally:
+                        alternative.path.write_bytes(payload)
+                    self.assertEqual(library.path.read_bytes(), index)
+            library.validate()
+
+    def test_validate_rejects_bound_checksum_missing_from_inventory_before_blob_reads(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "voice.wav"
+            write_wav(reference, b"\x00\x00")
+            library = VoiceLibrary(root / "library")
+            library.discover("Role", reference, bind_if_missing=True)
+            document = json.loads(library.path.read_bytes())
+            document["alternatives"]["role:"]["items"] = []
+            library.path.write_text(json.dumps(document))
+            index = library.path.read_bytes()
+            with (
+                patch.object(voice_library, "sha256_file") as hashing,
+                self.assertRaisesRegex(VoiceLibraryError, "not an alternative"),
+            ):
+                library.validate()
+            hashing.assert_not_called()
+            self.assertEqual(library.path.read_bytes(), index)
+
     def test_copy_to_keeps_index_and_blobs_from_one_snapshot(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)

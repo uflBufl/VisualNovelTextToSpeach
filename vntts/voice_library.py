@@ -453,12 +453,13 @@ class VoiceLibrary:
     def validate(self) -> None:
         """Check every recorded blob and every binding reference."""
         document = self._load()
-        for group in document["alternatives"].values():
-            for item in group["items"]:
-                self._validate_blob(item["sha256"])
-        for binding in document["bindings"].values():
-            for checksum in binding["source_sha256s"]:
-                self._validate_blob(checksum)
+        checksums = dict.fromkeys(
+            item["sha256"]
+            for group in document["alternatives"].values()
+            for item in group["items"]
+        )
+        for checksum in checksums:
+            self._validate_blob(checksum)
 
     def link_person(self, canonical_role: str, alias: str) -> None:
         """Link story names without merging their existing voice routes."""
