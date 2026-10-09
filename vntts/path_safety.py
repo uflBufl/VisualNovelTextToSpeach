@@ -1,12 +1,25 @@
-"""Shared filesystem containment checks."""
+"""Shared filesystem containment and regular-file admission."""
 
 import os
+import stat
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
+from typing import BinaryIO
 
 
 def open_regular_candidate(path: str | os.PathLike[str], flags: int) -> int:
     # Reject FIFOs with fstat without waiting for a writer, even after a path swap.
     return os.open(path, flags | getattr(os, "O_NONBLOCK", 0))
+
+
+@contextmanager
+def open_regular_binary(path: str | os.PathLike[str]) -> Iterator[BinaryIO]:
+    """Own a binary stream only after its opened descriptor is a regular file."""
+    with open(path, "rb", opener=open_regular_candidate) as source:
+        if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+            raise OSError(f"{path} is not a regular file")
+        yield source
 
 
 def no_replace_destination(value: str | Path) -> Path:
@@ -89,5 +102,6 @@ __all__ = [
     "contained_regular_file",
     "no_replace_destination",
     "open_regular_candidate",
+    "open_regular_binary",
     "safe_relative_path",
 ]

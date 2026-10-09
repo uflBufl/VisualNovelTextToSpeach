@@ -17,7 +17,7 @@ from vntts.runtime_installation import (
     ensure_speech_runtime,
     runtime_installation_available,
 )
-from vntts.runtime_ownership import claim_runtime, cleanup_managed_runtimes
+from vntts.runtime_ownership import claim_runtime, cleanup_managed_runtimes, read_record
 from vntts.runtime_paths import find_managed_speech_runtime, managed_runtime_location
 from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
 from vntts.speech_worker import (
@@ -131,6 +131,71 @@ class RuntimeInstallationTest(unittest.TestCase):
         ):
             cleanup_managed_runtimes("pocket-tts", new[0])
         self.assertFalse(old[0].exists())
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "POSIX FIFO admission")
+    def test_special_runtime_records_fail_closed_without_blocking_cleanup(self):
+        old = self.prepared_runtime()
+        use = claim_runtime("pocket-tts", old[0])
+        old[1].unlink()
+        new = self.prepared_runtime()
+        native_open = os.open
+        native_path_open = Path.open
+        markers = (
+            use.path,
+            new[0].parent / "owner.json",
+            new[0].parents[2] / "verified.json",
+        )
+        for marker in markers:
+            with self.subTest(marker=marker.name):
+                payload = marker.read_bytes()
+                marker.unlink()
+                os.mkfifo(marker)
+                descriptors = []
+
+                def observe_open(path, flags, *args, **kwargs):
+                    if Path(path) == marker:
+                        self.assertTrue(
+                            flags & os.O_NONBLOCK,
+                            "record admission must not wait for a writer",
+                        )
+                    descriptor = native_open(path, flags, *args, **kwargs)
+                    if Path(path) == marker:
+                        descriptors.append(descriptor)
+                    return descriptor
+
+                def reject_blocking_path_open(path, *args, **kwargs):
+                    if path == marker:
+                        self.fail("special record must not use blocking Path.open")
+                    return native_path_open(path, *args, **kwargs)
+
+                try:
+                    with (
+                        patch("vntts.path_safety.os.open", side_effect=observe_open),
+                        patch.object(Path, "open", reject_blocking_path_open),
+                    ):
+                        self.assertEqual(read_record(marker), {})
+                        if marker == use.path:
+                            with patch(
+                                "vntts.runtime_ownership.inspect_process_status",
+                                return_value="dead",
+                            ):
+                                cleanup_managed_runtimes("pocket-tts", new[0])
+                            self.assertTrue(old[0].is_dir())
+                        elif marker.name == "owner.json":
+                            self.assertIsNone(claim_runtime("pocket-tts", new[0]))
+                        else:
+                            self.assertIsNone(find_managed_speech_runtime("pocket-tts"))
+                    self.assertTrue(descriptors)
+                    for descriptor in descriptors:
+                        with self.assertRaises(OSError):
+                            os.fstat(descriptor)
+                finally:
+                    marker.unlink()
+                    marker.write_bytes(payload)
+        use.close()
+        cleanup_managed_runtimes("pocket-tts", new[0])
+        self.assertFalse(old[0].exists())
+        self.assertEqual(find_managed_speech_runtime("pocket-tts"), new[0])
 
     def test_dead_windows_dword_pid_does_not_hold_runtime(self):
         old = self.prepared_runtime()

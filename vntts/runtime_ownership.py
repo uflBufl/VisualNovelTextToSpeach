@@ -18,6 +18,7 @@ from vntts.authoring.advisory_lock import AdvisoryLockBusyError, exclusive_advis
 from vntts.authoring.generation_lease import inspect_process_status
 from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import decode_json
+from vntts.path_safety import open_regular_binary
 from vntts.runtime_paths import RUNTIME_ENVIRONMENT_VARIABLES
 from vntts.services.tts_engine import TTSConfigurationError
 
@@ -57,7 +58,7 @@ def read_record(path: PathInput) -> dict[str, object]:
     if path.is_symlink() or path.is_junction():
         return {}
     try:
-        with path.open("rb") as source:
+        with open_regular_binary(path) as source:
             payload = source.read(_RUNTIME_RECORD_READ_LIMIT + 1)
         if len(payload) > _RUNTIME_RECORD_READ_LIMIT:
             return {}
