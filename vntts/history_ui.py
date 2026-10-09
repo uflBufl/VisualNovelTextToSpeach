@@ -167,18 +167,20 @@ class DialogueHistoryDialog(CloseGuardedDialog):
         entry = (
             self.visible_entries[row] if 0 <= row < len(self.visible_entries) else None
         )
-        can_speak = (
-            entry is not None
-            and not self.replay_runner.active
-            and not self.stop_runner.active
-        )
-        self.replay_button.setEnabled(can_speak)
+        self._update_replay_button(entry)
         if entry is None:
             self.details.clear()
             return
         recorded_at = datetime.fromisoformat(entry.recorded_at).astimezone()
         self.details.setPlainText(
             f"{entry.character} · {recorded_at:%b %d, %Y %H:%M}\n\n{entry.text}"
+        )
+
+    def _update_replay_button(self, entry: DialogueHistoryEntry | None) -> None:
+        self.replay_button.setEnabled(
+            entry is not None
+            and not self.replay_runner.active
+            and not self.stop_runner.active
         )
 
     def replay_selected(self) -> None:
@@ -207,9 +209,7 @@ class DialogueHistoryDialog(CloseGuardedDialog):
 
     def _replay_finished(self, _result: object, error: Exception | None) -> None:
         self.stop_button.setEnabled(False)
-        self.replay_button.setEnabled(
-            self.current_entry() is not None and not self.stop_runner.active
-        )
+        self._update_replay_button(self.current_entry())
         if error is not None:
             self.status.setText(
                 f"Could not speak this line: {error}. Check voice settings, then try again."
@@ -247,6 +247,7 @@ class DialogueHistoryDialog(CloseGuardedDialog):
         if error is not None:
             self._close_pending = False
             self.stop_button.setEnabled(self.replay_runner.active)
+            self._update_replay_button(self.current_entry())
             self.status.setText(f"Unable to stop speech: {error}")
             return
         if _result is False and self.replay_runner.active:
@@ -258,7 +259,7 @@ class DialogueHistoryDialog(CloseGuardedDialog):
             return
         self.replay_runner.cancel()
         self.stop_button.setEnabled(False)
-        self.replay_button.setEnabled(self.current_entry() is not None)
+        self._update_replay_button(self.current_entry())
         self.status.setText("Speech stopped.")
         if self._close_pending:
             self._close_pending = False

@@ -238,6 +238,10 @@ class DialogueHistoryDialogTest(unittest.TestCase):
                 else:
                     dialog.close()
                 self.wait_for(stop_started.is_set)
+                cursor = dialog.details.textCursor()
+                cursor.select(cursor.SelectionType.Document)
+                dialog.details.setTextCursor(cursor)
+                selected_details = cursor.selectedText()
                 replay_release.set()
                 self.wait_for(lambda: not dialog.replay_runner.active)
                 dialog.close()
@@ -246,9 +250,14 @@ class DialogueHistoryDialogTest(unittest.TestCase):
                 self.assertTrue(dialog.stop_runner.active)
                 stop_release.set()
                 self.wait_for(lambda: not dialog.stop_runner.active)
+                self.assertEqual(
+                    dialog.details.textCursor().selectedText(), selected_details
+                )
                 if outcome == "failed-stop":
                     self.assertTrue(dialog.isVisible())
                     self.assertIn("stop failed", dialog.status.text())
+                    self.assertTrue(dialog.replay_button.isEnabled())
+                    self.assertFalse(dialog.stop_button.isEnabled())
                     dialog.close()
                 self.assertFalse(dialog.isVisible())
 
