@@ -80,7 +80,7 @@ vntts-conflict-review = "vntts.authoring.terminal_conflict_review_ui:main"
 
 [tool.uv]
 # The application owns the artifact release used by its pinned extractor too.
-override-dependencies = ["vntts-artifacts[audio]==0.7.3"]
+override-dependencies = ["vntts-artifacts[audio]==0.7.4"]
 
 [tool.uv.sources]
 torch = [
@@ -95,7 +95,7 @@ torchcodec = [
     { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
     { index = "pytorch-cu130", marker = "sys_platform == 'linux'" },
 ]
-vntts-artifacts = { git = "https://github.com/AlexRedby/vntts-artifacts.git", rev = "e5c95a9ee4ecc23936840981d63c80d9a00448c5" }
+vntts-artifacts = { git = "https://github.com/AlexRedby/vntts-artifacts.git", rev = "8a8a8d5c82b316aa8a313655b71ce1344ddf4af1" }
 reverse1999-extractor = { git = "https://github.com/AlexRedby/r1999-extractor.git", rev = "ef50c5df189b45ee376ab1d0a371eae5233ac241" }
 
 durable-file = { git = "https://github.com/AlexRedby/vntts-artifacts.git", rev = "0e22c629dde9de070eb7f13c87609e5905277ab9" }

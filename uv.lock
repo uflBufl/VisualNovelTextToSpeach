@@ -11,7 +11,7 @@ resolution-markers = [
 ]
 
 [manifest]
-overrides = [{ name = "vntts-artifacts", extras = ["audio"], git = "https://github.com/AlexRedby/vntts-artifacts.git?rev=e5c95a9ee4ecc23936840981d63c80d9a00448c5" }]
+overrides = [{ name = "vntts-artifacts", extras = ["audio"], git = "https://github.com/AlexRedby/vntts-artifacts.git?rev=8a8a8d5c82b316aa8a313655b71ce1344ddf4af1" }]
 
 [[package]]
 name = "absl-py"
@@ -4405,7 +4405,7 @@ requires-dist = [
     { name = "torchcodec", marker = "sys_platform == 'linux'", specifier = ">=0.16,<0.17", index = "https://download.pytorch.org/whl/cu130" },
     { name = "torchcodec", marker = "sys_platform == 'win32'", specifier = ">=0.16,<0.17" },
     { name = "transformers", specifier = ">=4.57.6,<5" },
-    { name = "vntts-artifacts", extras = ["audio"], git = "https://github.com/AlexRedby/vntts-artifacts.git?rev=e5c95a9ee4ecc23936840981d63c80d9a00448c5" },
+    { name = "vntts-artifacts", extras = ["audio"], git = "https://github.com/AlexRedby/vntts-artifacts.git?rev=8a8a8d5c82b316aa8a313655b71ce1344ddf4af1" },
 ]
 provides-extras = ["rapidocr", "speaker-identity"]
 
@@ -4425,8 +4425,8 @@ notebook = [
 
 [[package]]
 name = "vntts-artifacts"
-version = "0.7.3"
-source = { git = "https://github.com/AlexRedby/vntts-artifacts.git?rev=e5c95a9ee4ecc23936840981d63c80d9a00448c5#e5c95a9ee4ecc23936840981d63c80d9a00448c5" }
+version = "0.7.4"
+source = { git = "https://github.com/AlexRedby/vntts-artifacts.git?rev=8a8a8d5c82b316aa8a313655b71ce1344ddf4af1#8a8a8d5c82b316aa8a313655b71ce1344ddf4af1" }
 dependencies = [
     { name = "durable-file" },
 ]
