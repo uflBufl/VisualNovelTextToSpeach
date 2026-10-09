@@ -38,6 +38,7 @@ from vntts.authoring.publication import (
 )
 from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.cleanup import temporary_directory
+from vntts.document_identity import is_lowercase_sha256
 
 AUDIO_EVENT_REVIEW_SCHEMA = "vntts.authoring-audio-event-review"
 AUDIO_EVENT_REVIEW_VERSION = 1
@@ -503,11 +504,7 @@ def _validate_source_evidence(value: object) -> dict[str, object]:
     if value.get("synthesis_voice_character") is not None:
         raise AudioEventReviewError("Audio-event source must not claim synthesis voice")
     story_digest = value.get("source_story_index_sha256")
-    if (
-        not isinstance(story_digest, str)
-        or len(story_digest) != 64
-        or any(character not in "0123456789abcdef" for character in story_digest)
-    ):
+    if not is_lowercase_sha256(story_digest):
         raise AudioEventReviewError("Audio-event source story index hash is invalid")
     return value
 

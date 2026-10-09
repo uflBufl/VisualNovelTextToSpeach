@@ -40,7 +40,7 @@ from vntts.authoring.speech_quality import (
 from vntts.authoring.workspace_foundation import load_json_object_snapshot
 from vntts.cleanup import temporary_directory
 from vntts.cli import cli_error, cli_messages
-from vntts.document_identity import canonical_document_sha256
+from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 from vntts.json_types import is_json_object as _is_json_document
 from vntts.settings import get_local_data_directory
 from vntts.speech_backend_contract import RenderableBackend, is_renderable_backend
@@ -1391,7 +1391,7 @@ def _required_exact_text(value: object, label: str) -> str:
 
 
 def _required_sha256(value: object, label: str) -> str:
-    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+    if not is_lowercase_sha256(value):
         raise ModelBenchmarkError(f"Benchmark corpus {label} must be lowercase SHA-256")
     return value
 

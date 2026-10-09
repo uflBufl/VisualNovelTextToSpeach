@@ -20,6 +20,7 @@ from vntts_artifacts.story_index import (
 )
 
 from vntts.cleanup import temporary_directory
+from vntts.document_identity import is_lowercase_sha256
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
     load_source_audio_semantic_evidence,
@@ -850,7 +851,7 @@ def _source_audio_duration_seconds(
         or isinstance(sample_count, bool)
         or not isinstance(sample_count, int)
         or sample_count <= 0
-        or re.fullmatch(r"[0-9a-f]{64}", media_sha256) is None
+        or not is_lowercase_sha256(media_sha256)
         or not decoder
     ):
         return None

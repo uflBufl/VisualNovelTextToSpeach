@@ -46,9 +46,6 @@ from vntts.authoring.reconciliation_schema import (
     AuthoringReconciliationSchemaError,
 )
 from vntts.authoring.reconciliation_schema import (
-    SHA256_PATTERN as _SHA256,
-)
-from vntts.authoring.reconciliation_schema import (
     WORKSPACE_NAME_PATTERN as _WORKSPACE_NAME,
 )
 from vntts.authoring.reconciliation_schema import (
@@ -72,6 +69,7 @@ from vntts.authoring.workspace_config import (
     workspace_audio_event_spoken_projection_queue_ids,
 )
 from vntts.cleanup import temporary_directory
+from vntts.document_identity import is_lowercase_sha256
 
 
 class AuthoringReconciliationError(RuntimeError):
@@ -555,9 +553,7 @@ def _pending_review_action(
     bundle = bundle_actions.get((workspace_id, item.queue_id))
     action = "human_cohort_review" if bundle is not None else "review_plan_required"
     expected_audio_sha256 = result.get("file_sha256")
-    if not isinstance(expected_audio_sha256, str) or not _SHA256.fullmatch(
-        expected_audio_sha256
-    ):
+    if not is_lowercase_sha256(expected_audio_sha256):
         raise AuthoringReconciliationError(
             f"Pending review item lacks WAV authority: {item.queue_id}"
         )
@@ -1061,9 +1057,7 @@ def _project_terminal_merge_actions(
             continue
         source = terminal[0]
         state_item_sha256 = source.get("state_item_sha256")
-        if not isinstance(state_item_sha256, str) or not _SHA256.fullmatch(
-            state_item_sha256
-        ):
+        if not is_lowercase_sha256(state_item_sha256):
             raise AuthoringReconciliationError(
                 f"Terminal merge source lacks state authority: {action['queue_id']}"
             )
@@ -1105,7 +1099,7 @@ def _snapshot_workspace_voice_controls(
     if len(records) != len(controls) + 1:
         raise AuthoringReconciliationError("Workspace voice control is malformed")
     for value, expected, label in records:
-        if not isinstance(expected, str) or _SHA256.fullmatch(expected) is None:
+        if not is_lowercase_sha256(expected):
             raise AuthoringReconciliationError(
                 f"Workspace {label} SHA-256 is malformed"
             )
@@ -1126,7 +1120,7 @@ def _snapshot_state_audio(
     if result.get("status") not in {"generated", "approved"}:
         return None
     expected = result.get("file_sha256")
-    if not isinstance(expected, str) or _SHA256.fullmatch(expected) is None:
+    if not is_lowercase_sha256(expected):
         raise AuthoringReconciliationError(
             f"Generated item lacks WAV authority: {item.queue_id}"
         )

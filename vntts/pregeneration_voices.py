@@ -46,7 +46,7 @@ from vntts.chapter_voice_preload import (
     _validated_source_audio_line_ids,
 )
 from vntts.cleanup import attempt_cleanup
-from vntts.document_identity import canonical_document_sha256
+from vntts.document_identity import canonical_document_sha256, is_sha256
 from vntts.json_types import has_schema_version
 from vntts.person_link_suggestions import (
     PersonLinkSuggestion,
@@ -442,10 +442,10 @@ class VoiceDecisionStore:
             result: dict[str, JsonObject] = {}
             for key, value in values.items():
                 if (
-                    not _is_sha256(key)
+                    not is_sha256(key)
                     or not isinstance(value, dict)
                     or value.get("group_id") is None
-                    or not _is_sha256(value.get("decision_context_sha256"))
+                    or not is_sha256(value.get("decision_context_sha256"))
                 ):
                     raise ValueError("decision entry is invalid")
                 _required_text(value.get("source_id"), "voice source")
@@ -1886,7 +1886,7 @@ def _matching_independent_choice(
         ] != candidate_identities:
             continue
         context = previous.get("decision_context_sha256")
-        if not isinstance(context, str) or not _is_sha256(context):
+        if not isinstance(context, str) or not is_sha256(context):
             continue
         source = decisions.choice_for(group_id, context)
         if (
@@ -2022,7 +2022,7 @@ def _validate_player_voice_variant(variant: object, index: int) -> None:
     duration = variant.get("duration_seconds")
     quality = variant.get("quality_score")
     checks = (
-        ("variant_id", _is_sha256(variant.get("variant_id"))),
+        ("variant_id", is_sha256(variant.get("variant_id"))),
         ("character", isinstance(character, str) and bool(character.strip())),
         (
             "portrait",
@@ -2033,7 +2033,7 @@ def _validate_player_voice_variant(variant: object, index: int) -> None:
             "voice_character",
             isinstance(voice_character, str) and bool(voice_character.strip()),
         ),
-        ("reference_sha256", _is_sha256(variant.get("reference_sha256"))),
+        ("reference_sha256", is_sha256(variant.get("reference_sha256"))),
         (
             "source_voice_ids",
             _canonical_texts(variant.get("source_voice_ids"), allow_empty=True),
@@ -2062,7 +2062,7 @@ def _validate_player_voice_variant(variant: object, index: int) -> None:
         (
             "portrait_image_sha256",
             variant.get("portrait_image_sha256") is None
-            or _is_sha256(variant["portrait_image_sha256"]),
+            or is_sha256(variant["portrait_image_sha256"]),
         ),
         (
             "candidate_origin",
@@ -2165,7 +2165,7 @@ def _manifest_candidate_variants(
     if (
         report.is_symlink()
         or not report.is_file()
-        or not _is_sha256(player.get("candidate_report_sha256"))
+        or not is_sha256(player.get("candidate_report_sha256"))
         or sha256_file(report) != player["candidate_report_sha256"]
     ):
         raise PregenerationVoiceError("Player voice candidate report changed")
@@ -2225,7 +2225,7 @@ def validated_player_voice_candidates(
         document.get(PLAYER_VOICE_CANDIDATES_FIELD), "player voice candidates"
     )
     story_sha256 = player.get("story_index_sha256")
-    if not isinstance(story_sha256, str) or not _is_sha256(story_sha256):
+    if not isinstance(story_sha256, str) or not is_sha256(story_sha256):
         raise PregenerationVoiceError(
             "Player voice candidate story checksum is invalid"
         )
@@ -2401,23 +2401,13 @@ def _path_identity(value: str | Path | None) -> JsonObject | None:
 
 
 def _decision_key(group_id: str, decision_context_sha256: str) -> str:
-    if not _is_sha256(group_id) or not _is_sha256(decision_context_sha256):
+    if not is_sha256(group_id) or not is_sha256(decision_context_sha256):
         raise PregenerationVoiceError("Voice decision identity is invalid")
     return _digest([group_id, decision_context_sha256])
 
 
 def _digest(value: object) -> str:
     return canonical_document_sha256(value, allow_nan=True)
-
-
-def _is_sha256(value: object) -> bool:
-    if not isinstance(value, str) or len(value) != 64:
-        return False
-    try:
-        int(value, 16)
-    except ValueError:
-        return False
-    return True
 
 
 def _required_text(value: object, label: str) -> str:

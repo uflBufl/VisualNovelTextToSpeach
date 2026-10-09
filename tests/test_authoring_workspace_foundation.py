@@ -77,6 +77,25 @@ class AuthoringWorkspaceFoundationTest(unittest.TestCase):
         with self.assertRaisesRegex(FoundationError, "hexadecimal"):
             require_sha256("z" * 64, "Digest", error_type=FoundationError)
 
+    def test_sha256_validation_rejects_integer_syntax_and_unicode_digits(self):
+        for digest in ("a" * 64, "A" * 64, "0123456789abcdef" * 4):
+            self.assertEqual(
+                require_sha256(digest, "Digest", error_type=FoundationError), digest
+            )
+        for digest in (
+            "+" + "a" * 63,
+            "-" + "a" * 63,
+            "0x" + "a" * 62,
+            "a_" + "b" * 62,
+            "a" * 63 + " ",
+            "０" * 64,
+        ):
+            with (
+                self.subTest(digest=digest),
+                self.assertRaisesRegex(FoundationError, "hexadecimal"),
+            ):
+                require_sha256(digest, "Digest", error_type=FoundationError)
+
     def test_json_object_label_preserves_domain_error_wording(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "state.json"

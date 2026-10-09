@@ -7,6 +7,7 @@ import json
 from collections.abc import Mapping, MutableSequence
 from pathlib import Path
 
+from vntts.document_identity import is_sha256
 from vntts.path_safety import contained_path, contained_regular_file, safe_relative_path
 
 
@@ -70,10 +71,8 @@ def require_sha256(
     """Return one full hexadecimal SHA-256 value or fail with a typed error."""
     if not isinstance(value, str) or len(value) != 64:
         raise error_type(f"{label} must be a full SHA-256")
-    try:
-        int(value, 16)
-    except ValueError as error:
-        raise error_type(f"{label} must be hexadecimal") from error
+    if not is_sha256(value):
+        raise error_type(f"{label} must be hexadecimal")
     return value
 
 

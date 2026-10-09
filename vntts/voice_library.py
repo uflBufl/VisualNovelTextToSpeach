@@ -24,6 +24,7 @@ from vntts_artifacts.voice_manifest import normalize_character_name
 
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.cleanup import cleanup_on_exit
+from vntts.document_identity import is_lowercase_sha256
 
 VOICE_LIBRARY_VERSION = 3
 _VOICE_LIBRARY_VERSIONS = frozenset({1, 2, VOICE_LIBRARY_VERSION})
@@ -625,7 +626,7 @@ class VoiceLibrary:
             pass
 
     def _validate_blob(self, checksum: str) -> Path:
-        if not _is_sha256(checksum):
+        if not is_lowercase_sha256(checksum):
             raise VoiceLibraryError("Voice blob checksum must be lowercase SHA-256")
         path = self._blob_path(checksum)
         if path.is_symlink() or not path.is_file():
@@ -896,21 +897,13 @@ def _selected_checksums(
     values = (
         (source_sha256,) if source_sha256 is not None else tuple(source_sha256s or ())
     )
-    if not values or any(not _is_sha256(value) for value in values):
+    if not values or any(not is_lowercase_sha256(value) for value in values):
         if values:
             raise VoiceLibraryError("Voice source checksum must be lowercase SHA-256")
         return ()
     if len(set(values)) != len(values):
         raise VoiceLibraryError("Voice source checksums must be unique")
     return values
-
-
-def _is_sha256(value: object) -> TypeGuard[str]:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(char in "0123456789abcdef" for char in value)
-    )
 
 
 def _validate_document(document: object) -> TypeGuard[_VoiceLibraryDocument]:
@@ -1005,7 +998,7 @@ def _validate_alternative_group(identity: object, group: object) -> None:
     ]
     if len(checksums) != len(group["items"]):
         raise VoiceLibraryError("Voice alternatives must have unique checksums")
-    if any(not _is_sha256(checksum) for checksum in checksums):
+    if any(not is_lowercase_sha256(checksum) for checksum in checksums):
         raise VoiceLibraryError("Voice alternative checksum is invalid")
     if len(set(checksums)) != len(checksums):
         raise VoiceLibraryError("Voice alternatives must have unique checksums")
@@ -1026,7 +1019,7 @@ def _validate_binding(
     raw_checksums = binding.get("source_sha256s")
     if (
         not isinstance(raw_checksums, list)
-        or any(not _is_sha256(checksum) for checksum in raw_checksums)
+        or any(not is_lowercase_sha256(checksum) for checksum in raw_checksums)
         or len(set(raw_checksums)) != len(raw_checksums)
     ):
         raise VoiceLibraryError("Voice binding checksums are invalid")

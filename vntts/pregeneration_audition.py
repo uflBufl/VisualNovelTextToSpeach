@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import secrets
 import tempfile
 import threading
@@ -46,7 +45,7 @@ from vntts.authoring.speech_quality import (
     inspect_generated_speech_samples,
 )
 from vntts.cleanup import attempt_cleanup, cleanup_on_exit
-from vntts.document_identity import canonical_document_sha256
+from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 from vntts.pregeneration_voices import VoiceCandidate, VoiceGroup, VoicePlan
 from vntts.reference_quality import analyze_reference
 from vntts.speech_backend_runtime import shutdown_speech_backend
@@ -841,8 +840,7 @@ def _cached_preview_metadata(
         ) from error
     if (
         document.get("identity") != identity
-        or not isinstance(document.get("audio_sha256"), str)
-        or not re.fullmatch(r"[0-9a-f]{64}", document["audio_sha256"])
+        or not is_lowercase_sha256(document.get("audio_sha256"))
         or document["audio_sha256"] != audio_sha256
         or (seed is not None and (type(seed) is not int or not 0 <= seed < 2**64))
         or (seed is None) != (plan.synthesis_backend == "pocket-tts")

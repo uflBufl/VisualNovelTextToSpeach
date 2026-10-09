@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -16,13 +15,12 @@ from vntts.authoring.authority import (
     capture_authority_file,
 )
 from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
-from vntts.document_identity import canonical_document_sha256
+from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 from vntts.path_safety import contained_regular_file, safe_relative_path
 
 FAILURE_REFERENCE_BINDING_SCHEMA = "vntts.authoring-failure-reference-binding"
 FAILURE_REFERENCE_BINDING_VERSION = 2
 _LEGACY_FAILURE_REFERENCE_BINDING_VERSION = 1
-_SHA256 = re.compile(r"[0-9a-f]{64}")
 _AUTHORITY_FIELDS = {
     "workspace_id",
     "workspace_sha256",
@@ -433,7 +431,7 @@ def _text(value: object, label: str) -> str:
 
 
 def _sha256(value: object, label: str) -> str:
-    if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
+    if not is_lowercase_sha256(value):
         raise FailureReferenceBindingError(f"{label} must be a lowercase SHA-256")
     return value
 

@@ -615,6 +615,66 @@ class PregenerationSetupTest(unittest.TestCase):
 
             self.assertFalse((root / "jobs").exists())
 
+    def test_saved_job_rejects_integer_syntax_in_sha256(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            store = PregenerationJobStore(root / "jobs")
+            job = store.create_or_resume(content, ("main-1",))
+            path = store.path_for(job.job_id)
+            for digest in ("a" * 64, "A" * 64):
+                document = {**job.to_document(), "story_index_sha256": digest}
+                write_versioned_json(path, 1, document)
+                self.assertEqual(store.load(job.job_id).story_index_sha256, digest)
+            for digest in (
+                "+" + "a" * 63,
+                "-" + "a" * 63,
+                "0x" + "a" * 62,
+                "a_" + "b" * 62,
+                "０" * 64,
+            ):
+                write_versioned_json(
+                    path, 1, {**job.to_document(), "story_index_sha256": digest}
+                )
+                with (
+                    self.subTest(digest=digest),
+                    self.assertRaisesRegex(PregenerationSetupError, "SHA-256"),
+                ):
+                    store.load(job.job_id)
+
+    def test_preparation_and_pack_ids_require_ascii_hex_digits(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            store = PregenerationJobStore(root / "jobs")
+            job = store.create_or_resume(content, ("main-1",))
+            packs = store.path_for(job.job_id).parent / "game-packs"
+            valid = ("a" * 24, "B" * 24)
+            invalid = (
+                "+" + "a" * 23,
+                "-" + "a" * 23,
+                "0x" + "a" * 22,
+                "a_" + "b" * 22,
+                "０" * 24,
+            )
+            manifests = []
+            for identity in (*valid, *invalid):
+                manifest = packs / f"pack-{identity}" / "game-pack.json"
+                manifest.parent.mkdir(parents=True)
+                manifest.write_text("{}", encoding="utf-8")
+                if identity in valid:
+                    self.assertEqual(
+                        store.path_for(identity), store.root / identity / "job.json"
+                    )
+                    manifests.append(manifest)
+                else:
+                    with (
+                        self.subTest(identity=identity),
+                        self.assertRaisesRegex(PregenerationSetupError, "identity"),
+                    ):
+                        store.path_for(identity)
+            self.assertCountEqual(store.published_packs(job), manifests)
+
     def test_saved_job_rejects_non_text_selected_line_id(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

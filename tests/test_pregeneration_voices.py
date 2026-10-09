@@ -1754,6 +1754,28 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             self.assertFalse(VoicePlanStore(jobs).path_for(job).exists())
 
+    def test_decision_lookup_rejects_malformed_hashes(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "decisions.json"
+            decisions = VoiceDecisionStore(path)
+            for digest in ("a" * 64, "A" * 64):
+                self.assertIsNone(decisions.choice_for(digest, digest))
+            for digest in (
+                "+" + "a" * 63,
+                "-" + "a" * 63,
+                "0x" + "a" * 62,
+                "a_" + "b" * 62,
+                "a" * 63 + " ",
+                "０" * 64,
+            ):
+                for group_id, context in ((digest, "b" * 64), ("b" * 64, digest)):
+                    with (
+                        self.subTest(group_id=group_id, context=context),
+                        self.assertRaisesRegex(PregenerationVoiceError, "identity"),
+                    ):
+                        decisions.choice_for(group_id, context)
+            self.assertFalse(path.exists())
+
     def test_decision_store_accepts_explicit_confirmation_of_automatic_route(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

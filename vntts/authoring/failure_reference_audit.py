@@ -46,6 +46,7 @@ from vntts.authoring.workbench import (
     load_workspace_authority,
 )
 from vntts.authoring.workspace_foundation import contained_regular_file
+from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import is_json_object
 from vntts.reference_quality import ReferenceQualityReport, analyze_reference_bytes
 
@@ -1310,11 +1311,7 @@ def _validate_selection_authority_fields(
 ) -> None:
     for field in hash_fields:
         digest = value[field]
-        if (
-            not isinstance(digest, str)
-            or len(digest) != 64
-            or any(character not in "0123456789abcdef" for character in digest)
-        ):
+        if not is_lowercase_sha256(digest):
             raise FailureReferenceAuditError(
                 "Reference audit selection authority hash is malformed"
             )

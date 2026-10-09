@@ -40,7 +40,7 @@ from vntts.chapter_voice_preload import (
     _validated_source_audio_line_ids,
 )
 from vntts.cleanup import attempt_cleanup
-from vntts.document_identity import file_sha256
+from vntts.document_identity import file_sha256, is_lowercase_sha256
 from vntts.game_audio_decoder import Cancellation, ProgressCallback, ensure_game_decoder
 from vntts.path_safety import contained_regular_file
 from vntts.pregeneration_setup import (
@@ -793,9 +793,7 @@ class Reverse1999GameImporter:
         return (
             isinstance(media_id, int)
             and not isinstance(media_id, bool)
-            and isinstance(media_sha256, str)
-            and len(media_sha256) == 64
-            and all(character in "0123456789abcdef" for character in media_sha256)
+            and is_lowercase_sha256(media_sha256)
         )
 
     @classmethod

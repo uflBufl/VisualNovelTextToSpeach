@@ -235,6 +235,7 @@ from vntts.authoring.workspace_foundation import (
     load_json_object,
     load_json_object_snapshot,
 )
+from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import is_json_object as _is_json_document
 from vntts.speech_presentation import speech_runtime_label
 from vntts.synthesis import (
@@ -1526,7 +1527,7 @@ def _failure_has_bound_synthesis_controls(record: Mapping[str, object]) -> bool:
         if not isinstance(value, str) or not value.strip() or value != value.strip():
             return False
     digest = record.get("synthesis_control_digest")
-    return isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest) is not None
+    return is_lowercase_sha256(digest)
 
 
 def _failure_report_provider(record: _FailureReportRecord) -> str:

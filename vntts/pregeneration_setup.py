@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
+from string import hexdigits
 from time import perf_counter, process_time
 from typing import TYPE_CHECKING
 
@@ -34,6 +35,7 @@ from vntts.chapter_voice_preload import (
     _has_authoritative_source_audio,
     _validated_source_audio_line_ids,
 )
+from vntts.document_identity import is_sha256
 from vntts.settings import AppSettings
 from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.versioned_json import read_versioned_json, write_versioned_json
@@ -786,9 +788,7 @@ class PregenerationJobStore:
                     for path in (manifest.parent, manifest)
                 )
             ):
-                try:
-                    int(identity, 16)
-                except ValueError:
+                if not all(character in hexdigits for character in identity):
                     continue
                 manifests.append(manifest)
         return tuple(manifests)
@@ -814,12 +814,12 @@ class PregenerationJobStore:
         return prepared
 
     def path_for(self, job_id: str) -> Path:
-        if not isinstance(job_id, str) or len(job_id) != 24:
+        if (
+            not isinstance(job_id, str)
+            or len(job_id) != 24
+            or not all(character in hexdigits for character in job_id)
+        ):
             raise PregenerationSetupError("Preparation identity is invalid")
-        try:
-            int(job_id, 16)
-        except ValueError as error:
-            raise PregenerationSetupError("Preparation identity is invalid") from error
         return self.root / job_id / "job.json"
 
 
@@ -1050,9 +1050,8 @@ def _optional_text(value: object) -> str | None:
 
 def _sha256_text(document: Mapping[str, object], name: str) -> str:
     value = _required_text(document, name)
-    if len(value) != 64:
+    if not is_sha256(value):
         raise ValueError(f"{name} must be SHA-256 text")
-    int(value, 16)
     return value
 
 

@@ -3,6 +3,7 @@
 import hashlib
 import json
 from os import PathLike
+from string import hexdigits
 from typing import TypeGuard
 
 from durable_file import sha256_file
@@ -30,6 +31,15 @@ def canonical_document_sha256(document: object, *, allow_nan: bool = False) -> s
     return hashlib.sha256(payload).hexdigest()
 
 
+def is_sha256(value: object) -> TypeGuard[str]:
+    """Require exactly 64 ASCII hexadecimal digits, retaining either case."""
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in hexdigits for character in value)
+    )
+
+
 def is_lowercase_sha256(value: object) -> TypeGuard[str]:
     return (
         isinstance(value, str)
@@ -38,4 +48,9 @@ def is_lowercase_sha256(value: object) -> TypeGuard[str]:
     )
 
 
-__all__ = ["canonical_document_sha256", "file_sha256", "is_lowercase_sha256"]
+__all__ = [
+    "canonical_document_sha256",
+    "file_sha256",
+    "is_lowercase_sha256",
+    "is_sha256",
+]

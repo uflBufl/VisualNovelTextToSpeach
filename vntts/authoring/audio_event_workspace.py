@@ -20,6 +20,7 @@ from vntts.authoring.authority import (
     capture_authority_file,
 )
 from vntts.authoring.workspace_foundation import contained_regular_file
+from vntts.document_identity import is_lowercase_sha256
 
 AUDIO_EVENT_WORKSPACE_SCHEMA = "vntts.authoring-audio-event-workspace"
 AUDIO_EVENT_WORKSPACE_VERSION = 2
@@ -30,7 +31,6 @@ AUDIO_EVENT_MODEL = "exact-source-event"
 AUDIO_EVENT_PROFILE = "exact-copy-v1"
 AUDIO_EVENT_VOICE = "Audio Event"
 
-_SHA256 = re.compile(r"[0-9a-f]{64}")
 _WORKSPACE_ID = re.compile(r"resume-[0-9a-f]{24}-[0-9a-f]{16}")
 _COMPOSITION_FIELDS = {
     "schema",
@@ -152,7 +152,7 @@ def _validate_composition_workspace_schema(value: object) -> dict[str, object]:
             "Workspace audio-event composition binding is malformed"
         )
     for field in _COMPOSITION_HASH_FIELDS:
-        if not _SHA256.fullmatch(str(value.get(field) or "")):
+        if not is_lowercase_sha256(str(value.get(field) or "")):
             raise AudioEventWorkspaceError(f"Workspace audio-event {field} is invalid")
     return value
 

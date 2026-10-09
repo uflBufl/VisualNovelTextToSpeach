@@ -9,6 +9,7 @@ from collections.abc import Mapping, Set
 from pathlib import Path
 
 from vntts.authoring.authority import canonical_document_sha256
+from vntts.document_identity import is_lowercase_sha256
 
 AUTHORING_RECONCILIATION_SCHEMA = "vntts.authoring-authority-reconciliation"
 AUTHORING_RECONCILIATION_VERSION = 1
@@ -57,7 +58,7 @@ def validate_authoring_reconciliation_document(report: object) -> dict[str, obje
     ):
         raise AuthoringReconciliationSchemaError("Unsupported authoring reconciliation")
     report_id = document.get("report_id")
-    if not isinstance(report_id, str) or not SHA256_PATTERN.fullmatch(report_id):
+    if not is_lowercase_sha256(report_id):
         raise AuthoringReconciliationSchemaError(
             "Authoring reconciliation ID is invalid"
         )
@@ -661,7 +662,7 @@ def _optional_text(value: object, label: str) -> str | None:
 
 
 def _required_sha256(value: object, label: str) -> str:
-    if not isinstance(value, str) or not SHA256_PATTERN.fullmatch(value):
+    if not is_lowercase_sha256(value):
         raise AuthoringReconciliationSchemaError(f"{label} must be lowercase SHA-256")
     return value
 

@@ -17,6 +17,7 @@ from durable_file import atomic_write_json
 from vntts import application_directories
 from vntts.authoring.advisory_lock import AdvisoryLockBusyError, exclusive_advisory_lock
 from vntts.authoring.generation_lease import inspect_process_status
+from vntts.document_identity import is_lowercase_sha256
 from vntts.runtime_paths import RUNTIME_ENVIRONMENT_VARIABLES
 from vntts.services.tts_engine import TTSConfigurationError
 
@@ -83,7 +84,7 @@ def owned_generation(backend: str, runtime: PathInput) -> Path | None:
     except ValueError:
         return None
     if (
-        not re.fullmatch(r"[0-9a-f]{64}", recipe)
+        not is_lowercase_sha256(recipe)
         or folder != "generations"
         or environment != "environment"
         or not re.fullmatch(r"[0-9a-f]{32}", generation)
@@ -244,7 +245,7 @@ def _cleanup_managed_runtimes(
     removed = 0
     for location in base.iterdir():
         if (
-            not re.fullmatch(r"[0-9a-f]{64}", location.name)
+            not is_lowercase_sha256(location.name)
             or location.is_symlink()
             or location.is_junction()
         ):

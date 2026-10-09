@@ -24,6 +24,7 @@ from vntts_artifacts.atomic_io import atomic_output_path
 
 from vntts.audio_lifecycle import audio_lifecycle_context
 from vntts.diagnostics import macos_permission_warnings
+from vntts.document_identity import is_lowercase_sha256
 from vntts.ocr_review import OCR_REVIEW_SCHEMA_VERSION, OCRReviewMetadata
 from vntts.onboarding import probe_audio_output, probe_tesseract
 from vntts.settings import AppSettings
@@ -1397,7 +1398,7 @@ def _plain_support_value(value: object) -> str | None:
 
 def _sha256_support_value(value: object) -> str | None:
     value = str(value or "")
-    return value if re.fullmatch(r"[0-9a-f]{64}", value) else None
+    return value if is_lowercase_sha256(value) else None
 
 
 def _nonnegative_support_int(value: object) -> int | None:
