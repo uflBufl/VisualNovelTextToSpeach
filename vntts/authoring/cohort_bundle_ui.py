@@ -1469,6 +1469,8 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
             self.heard[(workspace_id, cohort_id)].add(queue_id)
             self.status.setText(f"HEARD: {target.item.line_id}")
         self._playback_target = None
+        # Closing must wait for the checkpoint before deferred multimedia cleanup.
+        self._checkpoint_observations()
         selected_queue_id = selected.item.queue_id if selected is not None else None
         playback_serial = self._playback_serial
         # Qt Multimedia can still be inside its backend's EndOfMedia callback here.
@@ -1493,9 +1495,13 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
             self._select_queue_id(selected_queue_id)
         key = self._current_key()
         samples = self._current_samples()
-        if key is not None and samples and len(self.heard[key]) == len(samples):
+        if (
+            self.status.text().startswith("HEARD:")
+            and key is not None
+            and samples
+            and len(self.heard[key]) == len(samples)
+        ):
             self.status.setText("Ready to decide this cohort")
-        self._checkpoint_observations()
 
     def _media_error(self, _error: object, message: str = "") -> None:
         self._playback_target = None

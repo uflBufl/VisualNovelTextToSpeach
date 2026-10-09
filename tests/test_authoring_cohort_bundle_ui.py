@@ -831,6 +831,66 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertIn("Other or unclear defect", reopened.table.item(0, 1).text())
             self.assertTrue((root / "bundle.observations.json").is_file())
 
+    def test_close_before_end_of_media_cleanup_preserves_heard_checkpoint(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            publication = root / "bundle.json"
+            write_cohort_review_bundle(self.create_bundle(root), publication)
+            dialog = CohortReviewBundleDialog(publication)
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+            sample = dialog._selected_sample()
+            dialog.play_selected()
+            self.wait_for(lambda: dialog._playback_target is not None)
+            dialog.player.stop.reset_mock()
+            dialog.player.setSource.reset_mock()
+
+            dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+            dialog.player.stop.assert_not_called()
+            dialog.player.setSource.assert_not_called()
+            dialog.close()
+
+            self.assertTrue(dialog.isVisible())
+            self.wait_for(lambda: not dialog.isVisible())
+            self.assertTrue((root / "bundle.observations.json").is_file())
+            reopened = CohortReviewBundleDialog(publication)
+            reopened.show()
+            self.wait_for(lambda: reopened.table.rowCount() == 1)
+            key = (sample.workspace_id, sample.cohort_id)
+            self.assertIn(sample.item.queue_id, reopened.heard[key])
+
+    def test_checkpoint_error_remains_visible_after_deferred_playback_cleanup(self):
+        def failing_writer(*_arguments):
+            raise OSError("checkpoint disk failure")
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            publication = root / "bundle.json"
+            write_cohort_review_bundle(self.create_bundle(root), publication)
+            dialog = CohortReviewBundleDialog(
+                publication, observation_writer=failing_writer
+            )
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+            dialog.play_selected()
+            self.wait_for(lambda: dialog._playback_target is not None)
+            callbacks = []
+            with patch(
+                "vntts.authoring.cohort_bundle_ui.QTimer.singleShot",
+                side_effect=lambda _delay, *args: callbacks.append(args[-1]),
+            ):
+                dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+                dialog.close()
+                self.assertTrue(dialog.isVisible())
+                self.wait_for(lambda: not dialog._observation_active)
+                self.assertIn("checkpoint disk failure", dialog.status.text())
+                self.assertFalse(dialog._close_after_observation)
+                self.assertEqual(len(callbacks), 1)
+                callbacks.pop()()
+            self.assertIn("LISTENING CHECKPOINT FAILED", dialog.status.text())
+            self.assertIn("checkpoint disk failure", dialog.status.text())
+            self.assertTrue(dialog.isVisible())
+
     def test_observation_checkpoint_is_background_coalesced_and_close_safe(self):
         started = threading.Event()
         release = threading.Event()
