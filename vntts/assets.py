@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import shutil
@@ -593,10 +594,7 @@ class VoicePackManager:
             except BaseException as error:
                 self._remove_failed_copies(copied, error)
                 raise
-            registry = self._publish_pack(
-                pack_path, manifest_path, updated_manifest, copied
-            )
-            self._remove_unreferenced_files(pack_path, registry)
+            self._publish_pack(pack_path, manifest_path, updated_manifest, copied)
             return manifest_path
 
     def import_pack(
@@ -647,10 +645,9 @@ class VoicePackManager:
                 raise
             entries.sort(key=lambda item: str(item["character"]).casefold())
             output_manifest: Path = pack_path / "manifest.json"
-            imported_registry = self._publish_pack(
+            self._publish_pack(
                 pack_path, output_manifest, {"version": 2, "voices": entries}, copied
             )
-            self._remove_unreferenced_files(pack_path, imported_registry)
             return output_manifest
 
     @staticmethod
@@ -689,14 +686,14 @@ class VoicePackManager:
         manifest_path: Path,
         document: dict[str, object],
         copied: Sequence[Path],
-    ) -> CharacterVoiceRegistry:
+    ) -> None:
         checksum_path = pack_path / asset_manifest_name
         replacement_started = False
-        rollback_incomplete = False
         backup_directory: Path | None = None
 
         def cleanup_backup() -> None:
-            if backup_directory is not None and not rollback_incomplete:
+            # Successful publication owns cleanup separately below.
+            if backup_directory is not None and not replacement_started:
                 shutil.rmtree(backup_directory)
 
         try:
@@ -735,7 +732,37 @@ class VoicePackManager:
             if not replacement_started:
                 self._remove_failed_copies(copied, error)
             raise
-        return registry
+        assert backup_directory is not None
+        self._cleanup_published_pack(pack_path, backup_directory, registry)
+
+    def _cleanup_published_pack(
+        self,
+        pack_path: Path,
+        backup_directory: Path,
+        registry: CharacterVoiceRegistry,
+    ) -> None:
+        for phase, path, cleanup in (
+            (
+                "backup cleanup",
+                backup_directory,
+                partial(shutil.rmtree, backup_directory),
+            ),
+            (
+                "reference cleanup",
+                pack_path / "references",
+                partial(self._remove_unreferenced_files, pack_path, registry),
+            ),
+        ):
+            try:
+                cleanup()
+            except OSError as error:
+                logging.getLogger(__name__).warning(
+                    "Voice pack published at %s; %s failed for %s: %s",
+                    pack_path,
+                    phase,
+                    path,
+                    error,
+                )
 
     @staticmethod
     def _remove_unreferenced_files(

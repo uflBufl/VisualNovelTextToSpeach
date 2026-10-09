@@ -1290,6 +1290,124 @@ class VoicePackManagerTest(unittest.TestCase):
             self.assertEqual(len(cleanup_attempts), 2)
             self.assertEqual(len(primary.__notes__), 2)
 
+    def test_postpublication_cleanup_failures_preserve_committed_voice_pack(self):
+        for import_mode in ("voice", "pack"):
+            for failed_phase in ("backup", "reference"):
+                with (
+                    self.subTest(import_mode=import_mode, failed_phase=failed_phase),
+                    TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    old = root / "old.wav"
+                    new = root / "new.wav"
+                    old.write_bytes(b"old voice")
+                    new.write_bytes(b"new voice")
+                    manager = VoicePackManager(root / "managed")
+                    manifest = manager.import_voice("Ada", [old])
+                    old_reference = (
+                        CharacterVoiceRegistry.from_file(manifest)
+                        .resolve("Ada")
+                        .references[0]
+                    )
+                    source_manifest = VoicePackManager(root / "source").import_voice(
+                        "Ada", [new]
+                    )
+                    original_rmtree = shutil.rmtree
+                    original_unlink = type(root).unlink
+                    cleanup_attempts = []
+
+                    def remove_backup(path, *args, **kwargs):
+                        cleanup_attempts.append("backup")
+                        if failed_phase == "backup":
+                            raise PermissionError("backup cleanup denied")
+                        return original_rmtree(path, *args, **kwargs)
+
+                    def remove_reference(path, *args, **kwargs):
+                        if path == old_reference:
+                            cleanup_attempts.append("reference")
+                            if failed_phase == "reference":
+                                raise PermissionError("reference cleanup denied")
+                        return original_unlink(path, *args, **kwargs)
+
+                    with (
+                        patch("vntts.assets.shutil.rmtree", side_effect=remove_backup),
+                        patch.object(
+                            type(root),
+                            "unlink",
+                            autospec=True,
+                            side_effect=remove_reference,
+                        ),
+                        self.assertLogs("vntts.assets", level="WARNING") as warnings,
+                    ):
+                        imported = (
+                            manager.import_voice("Ada", [new])
+                            if import_mode == "voice"
+                            else manager.import_pack(
+                                source_manifest, pack_name="custom"
+                            )
+                        )
+                    self.assertEqual(imported, manifest)
+                    self.assertEqual(manager.validate(imported), manifest)
+                    references = (
+                        CharacterVoiceRegistry.from_file(imported)
+                        .resolve("Ada")
+                        .references
+                    )
+                    self.assertEqual(
+                        [path.read_bytes() for path in references], [b"new voice"]
+                    )
+                    self.assertEqual(cleanup_attempts, ["backup", "reference"])
+                    self.assertEqual(
+                        old_reference.exists(), failed_phase == "reference"
+                    )
+                    backups = tuple(manifest.parent.glob(".voice-pack-backup-*"))
+                    self.assertEqual(len(backups), int(failed_phase == "backup"))
+                    self.assertEqual(len(warnings.output), 1)
+                    self.assertIn(f"{failed_phase} cleanup", warnings.output[0])
+                    self.assertIn("cleanup denied", warnings.output[0])
+                    self.assertIn(
+                        str(backups[0] if backups else manifest.parent / "references"),
+                        warnings.output[0],
+                    )
+
+    def test_postpublication_cleanup_preserves_process_exit_exceptions(self):
+        for import_mode in ("voice", "pack"):
+            for failed_phase in ("backup", "reference"):
+                for error_type in (KeyboardInterrupt, SystemExit):
+                    with (
+                        self.subTest(
+                            import_mode=import_mode,
+                            failed_phase=failed_phase,
+                            error_type=error_type,
+                        ),
+                        TemporaryDirectory() as directory,
+                    ):
+                        root = Path(directory)
+                        source = root / "voice.wav"
+                        source.write_bytes(b"voice")
+                        manager = VoicePackManager(root / "managed")
+                        source_manifest = VoicePackManager(
+                            root / "source"
+                        ).import_voice("Ada", [source])
+                        failure = error_type("cleanup interrupted")
+                        target = (
+                            "vntts.assets.shutil.rmtree"
+                            if failed_phase == "backup"
+                            else "vntts.assets.VoicePackManager._remove_unreferenced_files"
+                        )
+                        with (
+                            patch(target, side_effect=failure),
+                            self.assertNoLogs("vntts.assets", level="WARNING"),
+                            self.assertRaises(error_type) as raised,
+                        ):
+                            if import_mode == "voice":
+                                manager.import_voice("Ada", [source])
+                            else:
+                                manager.import_pack(source_manifest, pack_name="custom")
+                        self.assertIs(raised.exception, failure)
+                        manifest = manager.storage_root / "custom" / "manifest.json"
+                        self.assertEqual(manager.validate(manifest), manifest)
+
     def test_import_manifest_removes_replaced_managed_references(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
