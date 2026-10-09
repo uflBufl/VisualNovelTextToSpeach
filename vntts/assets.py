@@ -23,6 +23,7 @@ from vntts_artifacts.voice_manifest import validate_voice_manifest
 
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.cleanup import attempt_cleanup, cleanup_on_exit
+from vntts.document_identity import file_sha256
 from vntts.json_types import decode_json
 from vntts.path_safety import open_regular_binary
 from vntts.settings import get_local_data_directory
@@ -232,7 +233,7 @@ class ModelAssetManager:
             raise ModelIntegrityError(f"Model file is missing: {filename}")
         if path.stat().st_size != size:
             raise ModelIntegrityError(f"Model file size changed: {filename}")
-        if sha256_file(path) != metadata.get("sha256"):
+        if file_sha256(path, error_type=ModelIntegrityError) != metadata.get("sha256"):
             raise ModelIntegrityError(f"Model checksum failed: {filename}")
 
     def download(
@@ -796,7 +797,9 @@ class VoicePackManager:
         version = manifest.get("version")
         if type(version) is not int or version != 1:
             raise ModelIntegrityError("Unsupported voice checksum manifest version")
-        if manifest.get("manifest_sha256") != sha256_file(manifest_path):
+        if manifest.get("manifest_sha256") != file_sha256(
+            manifest_path, error_type=ModelIntegrityError
+        ):
             raise ModelIntegrityError("Voice manifest checksum failed")
         files = manifest.get("files")
         if not isinstance(files, dict):
@@ -812,7 +815,10 @@ class VoicePackManager:
             if not isinstance(filename, str):
                 raise ModelIntegrityError("Voice checksum filename is malformed")
             path = manifest_path.parent / filename
-            if not path.is_file() or sha256_file(path) != expected:
+            if (
+                not path.is_file()
+                or file_sha256(path, error_type=ModelIntegrityError) != expected
+            ):
                 raise ModelIntegrityError(
                     f"Voice reference checksum failed: {filename}"
                 )

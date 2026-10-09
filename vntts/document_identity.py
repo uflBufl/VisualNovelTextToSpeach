@@ -6,15 +6,16 @@ from os import PathLike
 from string import hexdigits
 from typing import TypeGuard
 
-from durable_file import sha256_file
+from vntts.path_safety import open_regular_binary
 
 
 def file_sha256(
     path: str | PathLike[str], *, error_type: type[Exception] = ValueError
 ) -> str:
-    """Stream one file checksum through the caller's domain error boundary."""
+    """Stream one regular-file checksum through the caller's error boundary."""
     try:
-        return sha256_file(path)
+        with open_regular_binary(path) as source:
+            return hashlib.file_digest(source, "sha256").hexdigest()
     except OSError as error:
         raise error_type(str(error)) from error
 

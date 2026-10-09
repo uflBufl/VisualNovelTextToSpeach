@@ -1,5 +1,6 @@
 """Public authoring commands retain their error contract if a source disappears."""
 
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -229,7 +230,7 @@ class ChecksumBoundaryTest(unittest.TestCase):
                 workspace, plan, decision
             )
             loader = voice_quality_gate.load_workspace_authority
-            original_open = Path.open
+            original_open = os.open
             authority_loaded = False
 
             def load_then_arm(*args, **kwargs):
@@ -239,7 +240,7 @@ class ChecksumBoundaryTest(unittest.TestCase):
                 return result
 
             def open_unless_reference(path, *args, **kwargs):
-                if authority_loaded and path.suffix == ".wav":
+                if authority_loaded and Path(path).suffix == ".wav":
                     raise PermissionError("Reference became unreadable")
                 return original_open(path, *args, **kwargs)
 
@@ -249,9 +250,7 @@ class ChecksumBoundaryTest(unittest.TestCase):
                     "load_workspace_authority",
                     side_effect=load_then_arm,
                 ),
-                patch.object(
-                    Path, "open", autospec=True, side_effect=open_unless_reference
-                ),
+                patch("vntts.path_safety.os.open", side_effect=open_unless_reference),
             ):
                 with self.assertRaises(
                     voice_quality_gate.VoiceQualityGateError

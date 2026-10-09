@@ -9,13 +9,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, NotRequired, TypeAlias, TypedDict
 
-from durable_file import atomic_write_json, atomic_write_text, sha256_file
+from durable_file import atomic_write_json, atomic_write_text
 
 from vntts.authoring.publication import (
     AtomicPublicationError,
     rename_directory_no_replace,
     staged_directory,
 )
+from vntts.document_identity import file_sha256
 from vntts.json_types import decode_json
 
 PathInput: TypeAlias = str | Path
@@ -63,7 +64,7 @@ def _tree_sha256(path: Path) -> str:
             relative = candidate.relative_to(path).as_posix().encode("utf-8")
             digest.update(len(relative).to_bytes(8, "big"))
             digest.update(relative)
-            digest.update(bytes.fromhex(sha256_file(candidate)))
+            digest.update(bytes.fromhex(file_sha256(candidate, error_type=OSError)))
     return digest.hexdigest()
 
 
@@ -71,7 +72,9 @@ def _verify(model_directory: Path, model: ManagedModelFiles) -> VerificationResu
     actual_files: dict[str, str | None] = {}
     for filename, expected in (model.file_sha256s or {}).items():
         path = model_directory / filename
-        actual_files[filename] = sha256_file(path) if path.is_file() else None
+        actual_files[filename] = (
+            file_sha256(path, error_type=OSError) if path.is_file() else None
+        )
         if actual_files[filename] != expected:
             return f"model file changed: {filename}", None, actual_files
     actual_tree = (

@@ -389,14 +389,14 @@ class SpeakerIdentityTest(unittest.TestCase):
                     )
                 with patch.object(
                     managed_model_installation,
-                    "sha256_file",
-                    wraps=managed_model_installation.sha256_file,
+                    "file_sha256",
+                    wraps=managed_model_installation.file_sha256,
                 ) as hash_file:
                     repeated = install_managed_speaker_identity_model(
                         root=root / "managed", source=source
                     )
                 hash_file.assert_called_once_with(
-                    Path(installed["model_directory"], "model.bin")
+                    Path(installed["model_directory"], "model.bin"), error_type=OSError
                 )
                 self.assertEqual(repeated["status"], "installed")
                 self.assertEqual(

@@ -21,6 +21,7 @@ from durable_file import atomic_write_json, sha256_file
 from vntts.application_directories import get_local_data_directory
 from vntts.authoring.advisory_lock import AdvisoryLockBusyError, exclusive_advisory_lock
 from vntts.cleanup import cleanup_on_exit, temporary_directory
+from vntts.document_identity import file_sha256
 from vntts.json_types import decode_json
 from vntts.path_safety import open_regular_binary
 from vntts.runtime_paths import get_bundle_root
@@ -348,9 +349,8 @@ def _probe_cached_decoder(executable: Path, cancellation: Cancellation | None) -
                 path = executable.parent / name
                 if path.is_symlink() or not path.is_file():
                     return False
-                with open_regular_binary(path) as source:
-                    if hashlib.file_digest(source, "sha256").hexdigest() != checksum:
-                        return False
+                if file_sha256(path, error_type=OSError) != checksum:
+                    return False
             probe_game_decoder(executable, cancellation)
             return True
         except OSError, ValueError, TypeError, AttributeError:

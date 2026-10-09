@@ -10,9 +10,8 @@ from hashlib import blake2b
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TypeAlias
 
-from durable_file import sha256_file
-
 from vntts.cleanup import attempt_cleanup
+from vntts.document_identity import file_sha256
 from vntts.path_safety import contained_path
 from vntts.runtime_paths import resolve_speech_runtime_root
 from vntts.services.tts_engine import TTSConfigurationError
@@ -97,7 +96,7 @@ def activate_backend_runtime(
 
 @lru_cache(maxsize=1024)
 def _file_content_identity(path: str, size: int, _modified_ns: int) -> str:
-    return f"sha256:{sha256_file(path)}:{size}"
+    return f"sha256:{file_sha256(path, error_type=OSError)}:{size}"
 
 
 def _source_identity(source: object) -> str:

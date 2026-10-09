@@ -46,7 +46,11 @@ from vntts.authoring.speech_quality import (
     inspect_generated_speech_samples,
 )
 from vntts.cleanup import attempt_cleanup, cleanup_on_exit
-from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
+from vntts.document_identity import (
+    canonical_document_sha256,
+    file_sha256,
+    is_lowercase_sha256,
+)
 from vntts.json_types import decode_json
 from vntts.path_safety import open_regular_binary
 from vntts.pregeneration_voices import VoiceCandidate, VoiceGroup, VoicePlan
@@ -838,8 +842,7 @@ def _cached_preview_metadata(
         if not isinstance(document, dict):
             raise ValueError("preview manifest must be an object")
         seed = document["seed"]
-        with open_regular_binary(target) as source:
-            audio_sha256 = hashlib.file_digest(source, "sha256").hexdigest()
+        audio_sha256 = file_sha256(target, error_type=OSError)
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise VoiceAuditionError(
             f"Cached voice preview manifest is invalid: {error}"
@@ -959,9 +962,8 @@ def _cached_preview(
         if expected_audio_sha256 is not None and audio_sha256 != expected_audio_sha256:
             raise VoiceAuditionError("Voice preview changed while it was validated")
         info = _inspect_preview(BytesIO(payload), text)
-        with open_regular_binary(target) as source:
-            if hashlib.file_digest(source, "sha256").hexdigest() != audio_sha256:
-                raise VoiceAuditionError("Voice preview changed while it was validated")
+        if file_sha256(target, error_type=OSError) != audio_sha256:
+            raise VoiceAuditionError("Voice preview changed while it was validated")
     except (OSError, ValueError, VoiceAuditionError) as error:
         raise VoiceAuditionError(f"Cached voice preview is invalid: {error}") from error
     if reused and plan.synthesis_backend == "moss-tts":

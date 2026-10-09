@@ -1,5 +1,12 @@
 # TODO
 
+## Audit game-audio decoder preparation
+
+- [ ] Expand admitted streaming hashing through the existing `document_identity.file_sha256` owner (retain signature/domain-error cause) and verified assets, managed-model, backend source-identity and preview/cache consumers. Keep owned publication hashes distinct and use caller-specific errors. Add real FIFO/path-swap and restored-input checks, retain authoring missing-source contracts and migrate the speaker-model hash hook without weakening its one-hash assertion.
+- [ ] Classify the remaining generic SHA inventory (60 production imports/267 direct calls at the initial scan) by actual persisted input vs owned staging/output lifecycle before further migration. Start with asset/model verification; retain unqualified generic paths as staged investigation, not a claim that every checksum needs the same policy.
+- [ ] Record each evidenced improvement with its consumer/error/persistence contract, implement it and search equivalent causes repository-wide. Preserve pinned downloads, explicit Homebrew consent, bounded native process cleanup, cached verification/fallback and staged publication.
+- [ ] Run local-first affected tests, final freshly fetched-main branch checks and independent review; remove completed TODO work, commit each repair separately and normally push main.
+
 ## Coordinate source-audio producer numeric admission
 
 - [ ] In `reverse1999-extractor`, qualify and fix `SourceAudioDurationProbe.probe` optional decoder ratio overflow: positive unbounded `playSamples=10**400` and `sampleRate=1` raise outside its tolerant exception tuple. Add `OverflowError` to that boundary, test overflowing and finite huge ratios, and release/pin only through the separately authorized cross-repository workflow; the current VNTTS consumer repair does not fix the pinned producer.
