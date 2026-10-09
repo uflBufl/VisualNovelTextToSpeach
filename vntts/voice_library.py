@@ -938,9 +938,11 @@ def _validate_person_aliases(document: dict[object, object]) -> dict[object, obj
     for alias, canonical in aliases.items():
         if (
             not isinstance(alias, str)
+            or not alias
             or normalize_character_name(alias) != alias
             or not isinstance(canonical, str)
             or not canonical.strip()
+            or not normalize_character_name(canonical)
             or normalize_character_name(canonical) == alias
         ):
             raise VoiceLibraryError("Voice library person alias is invalid")
@@ -985,10 +987,15 @@ def _validate_person_link_migrations(
                     raise VoiceLibraryError(
                         "Voice library person link migration is invalid"
                     )
+                _role_identity(role, variant_key)
 
 
 def _validate_alternative_group(identity: object, group: object) -> None:
-    if not isinstance(group, dict) or not isinstance(group.get("items"), list):
+    if (
+        not isinstance(group, dict)
+        or not {"role", "variant_key", "items"} <= group.keys()
+        or not isinstance(group.get("items"), list)
+    ):
         raise VoiceLibraryError("Invalid voice alternative inventory")
     expected, _role, _variant = _role_identity(
         group.get("role"), group.get("variant_key")
@@ -1011,7 +1018,18 @@ def _validate_alternative_group(identity: object, group: object) -> None:
 def _validate_binding(
     identity: object, binding: object, alternatives: dict[object, object]
 ) -> None:
-    if not isinstance(binding, dict):
+    if (
+        not isinstance(binding, dict)
+        or not {
+            "role",
+            "variant_key",
+            "route",
+            "source_sha256s",
+            "source_id",
+            "provenance",
+        }
+        <= binding.keys()
+    ):
         raise VoiceLibraryError("Invalid voice binding")
     expected, _role, _variant = _role_identity(
         binding.get("role"), binding.get("variant_key")

@@ -155,6 +155,87 @@ class VoiceLibraryTest(unittest.TestCase):
 
             self.assertEqual(library.bindings(), ())
 
+    def test_missing_required_document_fields_are_rejected_without_rewriting(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "voice.wav"
+            write_wav(reference, b"\x00\x00")
+            library = VoiceLibrary(root / "library")
+            choice = library.discover("Role", reference, bind_if_missing=True)
+            original = library.path.read_text()
+            for version in (1, 2, 3):
+                for collection in ("alternatives", "bindings"):
+                    for field in json.loads(original)[collection]["role:"]:
+                        with self.subTest(
+                            version=version, collection=collection, field=field
+                        ):
+                            document = json.loads(original)
+                            document["version"] = version
+                            if version < 3:
+                                document.pop("person_link_migrations")
+                            if version == 1:
+                                document.pop("person_aliases")
+                            del document[collection]["role:"][field]
+                            library.path.write_text(json.dumps(document))
+                            index = library.path.read_bytes()
+                            for read in (
+                                library.validate,
+                                library.bindings,
+                                lambda: library.alternatives("Role"),
+                            ):
+                                with self.assertRaises(VoiceLibraryError):
+                                    read()
+                                self.assertEqual(library.path.read_bytes(), index)
+            document = json.loads(original)
+            document["alternatives"]["role:"]["extra"] = "retained"
+            document["bindings"]["role:"]["extra"] = "retained"
+            library.path.write_text(json.dumps(document))
+            library.validate()
+            self.assertIsNone(library.binding("Role").variant_key)
+            self.assertIsNone(library.binding("Role").source_id)
+            self.assertEqual(library.alternatives("Role")[0].sha256, choice.sha256)
+
+    def test_persisted_person_names_use_writer_identity_validation(self):
+        with TemporaryDirectory() as directory:
+            library = VoiceLibrary(directory)
+            library.select("Aderyn", route="narrator")
+            library.link_person("Rhiannon", "Aderyn")
+            original = library.path.read_text()
+            for alias, canonical, variant in (
+                ("", "Rhiannon", None),
+                ("aderyn", "!!!", None),
+                ("aderyn", "Rhiannon", ""),
+                ("aderyn", "Rhiannon", "!!!"),
+            ):
+                with self.subTest(alias=alias, canonical=canonical, variant=variant):
+                    document = json.loads(original)
+                    document["person_aliases"] = {alias: canonical}
+                    document["person_link_migrations"] = {
+                        alias: [
+                            {
+                                "role": alias,
+                                "variant_key": variant,
+                                "linked_variant_key": voice_library._linked_variant_key(
+                                    alias, variant
+                                ),
+                            }
+                        ]
+                    }
+                    library.path.write_text(json.dumps(document))
+                    index = library.path.read_bytes()
+                    for read in (
+                        library.validate,
+                        lambda: library.canonical_role("Aderyn"),
+                        lambda: library.unlink_person("Aderyn"),
+                    ):
+                        with self.assertRaises(VoiceLibraryError):
+                            read()
+                        self.assertEqual(library.path.read_bytes(), index)
+            library.path.write_text(original)
+            library.validate()
+            self.assertTrue(library.unlink_person("Aderyn"))
+            self.assertEqual(library.binding("Aderyn").route, "narrator")
+
     def test_boolean_document_version_is_rejected(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory) / "library"
