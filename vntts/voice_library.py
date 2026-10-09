@@ -265,7 +265,7 @@ class VoiceLibrary:
             document = self._load()
             results: list[VoiceBinding] = []
             changed = False
-            changed_identities: list[str] = []
+            changed_identities: set[str] = set()
             for selection in selections:
                 identity, display_role, display_variant = self._role_identity(
                     selection.role, selection.variant_key, document
@@ -274,7 +274,8 @@ class VoiceLibrary:
                 if selection.only_if_unbound and current is not None:
                     results.append(_to_binding(current))
                     continue
-                self._rollback_before(rollback, document, (identity,))
+                if identity not in changed_identities:
+                    self._rollback_before(rollback, document, (identity,))
                 selected_checksums = tuple(selection.source_sha256s)
                 _validate_route_source(
                     selection.route, selected_checksums, selection.source_id
@@ -302,7 +303,7 @@ class VoiceLibrary:
                     ),
                 )
                 document["bindings"][identity] = binding
-                changed_identities.append(identity)
+                changed_identities.add(identity)
                 results.append(_to_binding(binding))
                 changed = True
             if changed:

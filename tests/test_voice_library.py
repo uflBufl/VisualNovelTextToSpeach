@@ -502,6 +502,40 @@ class VoiceLibraryTest(unittest.TestCase):
             self.assertTrue(library.rollback_bindings(rollback))
             self.assertIsNone(library.binding("Alice"))
 
+    def test_reused_rollback_token_preserves_original_choice_across_duplicate_batch(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "library"
+            library = VoiceLibrary(root)
+            for peer_before_batch in (False, True):
+                with self.subTest(peer_before_batch=peer_before_batch):
+                    library.clear("Alice")
+                    rollback = library.binding_rollback()
+                    library.select(
+                        "Alice", route="narrator", timestamp="first", rollback=rollback
+                    )
+                    expected = (
+                        VoiceLibrary(root).select(
+                            "Alice", route="voice", source_id="preset:alba"
+                        )
+                        if peer_before_batch
+                        else None
+                    )
+                    results = library.select_many(
+                        (
+                            VoiceSelection("Alice", "narrator", timestamp="second"),
+                            VoiceSelection("Alice", "live-fallback", timestamp="third"),
+                        ),
+                        rollback=rollback,
+                    )
+                    self.assertEqual(
+                        tuple(item.route for item in results),
+                        ("narrator", "live-fallback"),
+                    )
+                    self.assertTrue(library.rollback_bindings(rollback))
+                    self.assertEqual(library.binding("Alice"), expected)
+
     def test_reference_descriptor_cleanup_preserves_read_error(self) -> None:
         native_close, native_fstat = os.close, os.fstat
         for primary_type in (OSError, KeyboardInterrupt, None):
