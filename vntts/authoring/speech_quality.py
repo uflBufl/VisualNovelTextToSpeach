@@ -5,7 +5,6 @@ from __future__ import annotations
 import io
 import math
 import re
-import wave
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -125,28 +124,15 @@ def measure_generated_speech_bytes(
     if not isinstance(content, bytes):
         raise BulkGenerationError("Generated speech payload must be bytes")
     try:
-        with wave.open(io.BytesIO(content), "rb") as source:
-            if source.getcomptype() != "NONE":
-                raise Pcm16MonoWavError("compressed WAV is not supported")
-            if source.getnchannels() != 1 or source.getsampwidth() != 2:
-                raise Pcm16MonoWavError("expected mono 16-bit PCM WAV")
-            sample_rate = source.getframerate()
-            sample_count = source.getnframes()
-            samples: NDArray[np.int16] = np.frombuffer(
-                source.readframes(sample_count), dtype="<i2"
-            )
-    except (EOFError, OSError, ValueError, wave.Error, Pcm16MonoWavError) as error:
+        samples, info = read_pcm16_mono_wav(io.BytesIO(content))
+    except (OSError, Pcm16MonoWavError) as error:
         raise BulkGenerationError(
             f"Unable to analyze generated speech: {error}"
         ) from error
-    if sample_rate < 1 or len(samples) != sample_count:
-        raise BulkGenerationError(
-            "Unable to analyze generated speech: invalid WAV data"
-        )
     return measure_generated_speech_samples(
         samples,
-        sample_rate=sample_rate,
-        duration_seconds=sample_count / sample_rate,
+        sample_rate=info.sample_rate,
+        duration_seconds=info.duration_seconds,
         analysis_version=analysis_version,
     )
 

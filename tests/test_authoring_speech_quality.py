@@ -213,6 +213,32 @@ class AuthoringSpeechQualityTest(unittest.TestCase):
             self.assertEqual(measure_generated_speech(path), expected)
             self.assertEqual(inspect_generated_speech(path), expected)
 
+    def test_bytes_reader_preserves_path_format_errors(self):
+        complete = wav_bytes([1000, -1000])
+        invalid = (b"RIFF", complete[:-1], complete[:-2])
+        with io.BytesIO() as stream:
+            with wave.open(stream, "wb") as writer:
+                writer.setnchannels(2)
+                writer.setsampwidth(2)
+                writer.setframerate(125)
+                writer.writeframes(b"\0" * 8)
+            invalid += (stream.getvalue(),)
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "invalid.wav"
+            for version in (1, 2):
+                for payload in invalid:
+                    with self.subTest(version=version, size=len(payload)):
+                        path.write_bytes(payload)
+                        with self.assertRaises(BulkGenerationError) as path_error:
+                            measure_generated_speech(path, analysis_version=version)
+                        with self.assertRaises(BulkGenerationError) as bytes_error:
+                            measure_generated_speech_bytes(
+                                payload, analysis_version=version
+                            )
+                        self.assertEqual(
+                            str(bytes_error.exception), str(path_error.exception)
+                        )
+
     def test_manifest_rounded_duration_remains_supported(self):
         quality = measure_generated_speech_samples(
             np.ones(1), sample_rate=44100, duration_seconds=0.0, analysis_version=1
