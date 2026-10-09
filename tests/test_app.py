@@ -34,6 +34,7 @@ from vntts.app import (  # noqa: E402
     SettingsDialog,
     TrayApplication,
     build_story_match_recovery_prompt,
+    build_unknown_speaker_prompt,
     create_application_icon,
     main,
 )
@@ -2068,6 +2069,28 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(tray_application._queued_unknown_speakers, [])
         self.assertTrue(tray_application.resume_live_after_unknown_mapping)
         tray_application.shutdown()
+
+    def test_queued_unknown_speaker_prompt_cannot_reopen_during_shutdown(self):
+        for resolved in (False, True):
+            with self.subTest(resolved=resolved):
+                tray = TrayApplication(
+                    self.application,
+                    AppSettings(),
+                    controller_factory=Mock(return_value=Mock(is_live_running=False)),
+                )
+                if resolved:
+                    tray._queued_unknown_speakers.append("Hotelier")
+                tray._finish_unknown_speaker_mapping(
+                    "Selone", resolved=resolved, resume_live=False
+                )
+                tray.shutdown()
+                with patch(
+                    "vntts.app.build_unknown_speaker_prompt",
+                    wraps=build_unknown_speaker_prompt,
+                ) as build_prompt:
+                    self.application.processEvents()
+                build_prompt.assert_not_called()
+                self.assertIsNone(tray.unknown_speaker_prompt)
 
     def test_duplicate_unknown_speaker_is_ignored_while_mapping_is_open(self):
         controller = Mock(is_live_running=False)

@@ -3886,6 +3886,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._show_unknown_speaker_prompt(speaker)
 
     def _show_unknown_speaker_prompt(self, speaker: str) -> None:
+        if self._shutting_down:
+            return
         if self.unknown_speaker_prompt is not None:
             self.unknown_speaker_prompt.close()
         # A QMessageBox parented to a hidden dashboard becomes a macOS sheet.
