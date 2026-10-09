@@ -2,18 +2,32 @@
 
 ## Qualify remaining model dependency risks
 
-- [ ] Trace whether root Coqui/XTTS, Chatterbox, MOSS SoundEffect and MOSS Delay
-      actually reach Transformers `load_custom_generate` with remote custom
-      generation. Their locks match GHSA-x9r9-c232-4q39/PYSEC-2026-4174;
-      the October 2 advisory lists no patched release. Distinguish that path
-      from deliberately trusted AutoModel loading and local-only ASR. Record
-      exact loader/model evidence; do not introduce an unproven ignore.
-- [ ] Once an upstream fix or compatible replacement is available, qualify it
-      within each model stack before changing its lock. Root Coqui 0.27.5
-      requires Transformers <5; retain loaded-module provenance and model
-      generation/voice checks. Qwen's remaining Accelerate, setuptools, Torch
-      and Transformers findings belong to the existing Qwen qualification
-      task below, including this newly reported custom-generation advisory.
+- [ ] Qualify the upstream Transformers custom-generation consent fix in each
+      affected model stack before changing locks. Commit
+      `cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55` is included in released 5.17.0,
+      but GHSA-x9r9-c232-4q39/PYSEC-2026-4174 still lack a fixed-release mapping;
+      do not equate source verification with runtime compatibility or add an
+      unproven ignore. Retain loaded-module provenance and actual model
+      generation/voice checks for any upgrade, backport or replacement.
+- [ ] Resolve compatibility before updating root Coqui 0.27.5 (Transformers <5
+      and private generation API) or Chatterbox Nano's pinned Git package
+      (requires Transformers ==5.2.0). The supported UI/profile/CLI paths do not
+      supply remote custom_generate, but root's public Python synthesis kwargs
+      can; preserve that API while qualifying a compatible fix.
+- [ ] Qualify the fixed candidate against MOSS Delay's trusted remote processor
+      and model loading, including AutoModel's injected GenerationMixin and
+      automatic custom-generation lookup. The captured default model snapshot
+      has no custom_generate files; mutable/default or custom repositories are
+      not a permanent reachability exemption. Preserve revision forwarding,
+      CUDA/BF16 refusal, dtype/attention options and actual generated audio.
+- [ ] Qualify MOSS SoundEffect's pinned pipeline and local text-encoder forward
+      path against a compatible fixed Transformers build. Its exact model
+      snapshot has no custom_generate files and the normal pipeline does not
+      call HF generate; retain pinned source/model provenance, CUDA/BF16 and
+      audio-quality checks rather than generalizing to arbitrary custom models.
+      Qwen's remaining Accelerate, setuptools, Torch and Transformers findings
+      belong to the existing Qwen qualification task below, including this
+      custom-generation advisory.
 
 ## Validate OpenMOSS progress on Windows
 
