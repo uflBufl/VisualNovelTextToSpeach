@@ -12,6 +12,8 @@ import numpy as np
 from numpy.typing import NDArray
 from vntts_artifacts.atomic_io import atomic_output_path
 
+from vntts.path_safety import open_regular_binary
+
 PathInput: TypeAlias = str | os.PathLike[str]
 AudioArray: TypeAlias = NDArray[np.float32]
 CacheKey = TypeVar("CacheKey")
@@ -94,7 +96,7 @@ class PersistentAudioCache:
         if path is None or path.is_symlink():
             return None
         try:
-            with path.open("rb") as source:
+            with open_regular_binary(path) as source:
                 loaded = np.lib.format.read_array(source, allow_pickle=False)
             audio = _prepared_audio(loaded)
             if audio is None:

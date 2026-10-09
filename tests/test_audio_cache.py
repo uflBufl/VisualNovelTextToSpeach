@@ -1,3 +1,4 @@
+import os
 import unittest
 from collections import OrderedDict
 from pathlib import Path
@@ -173,6 +174,53 @@ class PersistentAudioCacheTest(unittest.TestCase):
 
             self.assertIsNone(cache.get("archive"))
             self.assertEqual(path.read_bytes(), original)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "POSIX FIFO admission")
+    def test_special_entries_are_misses_before_parsing_and_recency_updates(self):
+        native_open, native_path_open = os.open, Path.open
+        for swap in (False, True):
+            with self.subTest(swap=swap), TemporaryDirectory() as directory:
+                cache = PersistentAudioCache(directory)
+                expected = np.array([0.1, -0.1], dtype=np.float32)
+                path = cache.put("entry", expected)
+                original = path.read_bytes()
+                fifo = Path(directory) / "replacement"
+                os.mkfifo(fifo)
+                if not swap:
+                    fifo.replace(path)
+                descriptors = []
+
+                def admit(pathname, flags):
+                    self.assertEqual(Path(pathname), path)
+                    self.assertTrue(
+                        flags & os.O_NONBLOCK, "cache must not wait for a writer"
+                    )
+                    if swap:
+                        fifo.replace(path)
+                    descriptor = native_open(pathname, flags)
+                    descriptors.append(descriptor)
+                    return descriptor
+
+                def reject_blocking_path_open(candidate, *args, **kwargs):
+                    if candidate == path:
+                        self.fail("cache entry must not use blocking Path.open")
+                    return native_path_open(candidate, *args, **kwargs)
+
+                with (
+                    patch("vntts.path_safety.os.open", side_effect=admit),
+                    patch.object(Path, "open", reject_blocking_path_open),
+                    patch("vntts.audio_cache.np.lib.format.read_array") as parse,
+                    patch.object(cache, "_touch_newest") as touch,
+                ):
+                    self.assertIsNone(cache.get("entry"))
+                    parse.assert_not_called()
+                    touch.assert_not_called()
+                self.assertEqual(len(descriptors), 1)
+                with self.assertRaises(OSError):
+                    os.fstat(descriptors[0])
+                path.unlink()
+                path.write_bytes(original)
+                np.testing.assert_array_equal(cache.get("entry"), expected)
 
     def test_uncacheable_audio_preserves_the_existing_entry(self):
         with TemporaryDirectory() as directory:
