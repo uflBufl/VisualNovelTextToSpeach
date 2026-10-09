@@ -618,12 +618,12 @@ class ModelListeningDialog(CloseGuardedDialog):
             self.status.setText(f"Could not open report; saved at {self.report_path}.")
 
     def start_auto_playback(self) -> None:
-        if self.current_trial is not None:
+        if self.current_trial is not None and self.playback_timer.isActive():
             self.auto_play_pending_b = True
             self.play("a", automatic=True)
 
     def play(self, side: Side, *, automatic: bool = False) -> None:
-        if self.current_trial is None:
+        if self.current_trial is None or not self.playback_timer.isActive():
             return
         if side == "b":
             self.auto_play_pending_b = False

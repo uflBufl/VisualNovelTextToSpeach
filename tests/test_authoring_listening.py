@@ -1076,7 +1076,7 @@ class AuthoringListeningDialogTest(unittest.TestCase):
         playback = FakePlayback()
         dialog = ModelListeningDialog(
             session,
-            auto_play=False,
+            auto_play=kwargs.pop("auto_play", False),
             playback_factory=lambda: playback,
             **kwargs,
         )
@@ -1304,6 +1304,27 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             self.assertEqual(len(dialog.playback.play_calls), 3)
             self.assertEqual(dialog.stop.text(), "Pause")
             dialog.deleteLater()
+
+    def test_close_cancels_queued_auto_playback(self):
+        for side in ("a", "b"):
+            with self.subTest(side=side), TemporaryDirectory() as directory:
+                _session, dialog = self.create_dialog(
+                    Path(directory), auto_play=side == "a"
+                )
+                dialog.show()
+                if side == "b":
+                    dialog.start_auto_playback()
+                    dialog.playback.finish()
+                    dialog.poll_playback()
+                playback = dialog.playback
+                play_count = len(playback.play_calls)
+
+                dialog.close()
+                self.application.processEvents()
+
+                self.assertTrue(playback.closed)
+                self.assertEqual(len(playback.play_calls), play_count)
+                dialog.deleteLater()
 
     def test_seek_skip_and_track_click(self):
         with TemporaryDirectory() as directory:
