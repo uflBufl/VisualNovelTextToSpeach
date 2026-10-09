@@ -1,5 +1,9 @@
 # TODO
 
+## Coordinate source-audio producer numeric admission
+
+- [ ] In `reverse1999-extractor`, qualify and fix `SourceAudioDurationProbe.probe` optional decoder ratio overflow: positive unbounded `playSamples=10**400` and `sampleRate=1` raise outside its tolerant exception tuple. Add `OverflowError` to that boundary, test overflowing and finite huge ratios, and release/pin only through the separately authorized cross-repository workflow; the current VNTTS consumer repair does not fix the pinned producer.
+
 ## Qualify remaining model dependency risks
 
 - [ ] Rerun `scripts/dependency_audit.py` after explicit permission to send

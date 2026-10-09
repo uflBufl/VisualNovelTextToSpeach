@@ -2830,6 +2830,22 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     ),
                 ):
                     load_generation_state(result.state, queue)
+            for field in ("start_seconds", "end_seconds", "duration_seconds"):
+                for value in (10**400, float("inf"), float("nan"), True, -1, "bad"):
+                    malformed = json.loads(original)
+                    malformed["items"][item["queue_id"]]["failure"]["pause_diagnosis"][
+                        "spans"
+                    ][0][field] = value
+                    result.state.write_text(json.dumps(malformed), encoding="utf-8")
+                    before = result.state.read_bytes()
+                    with (
+                        self.subTest(field=field, value=value),
+                        self.assertRaisesRegex(
+                            BulkGenerationError, "pause span timing"
+                        ),
+                    ):
+                        load_generation_state(result.state, queue)
+                    self.assertEqual(result.state.read_bytes(), before)
             tampered = json.loads(original)
             tampered["items"][item["queue_id"]]["failure"]["pause_diagnosis"][
                 "attempt_binding"

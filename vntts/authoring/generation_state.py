@@ -10,7 +10,6 @@ from dataclasses import asdict
 from pathlib import Path, PurePosixPath
 from typing import Callable, TypeAlias
 
-import numpy as np
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
@@ -49,6 +48,7 @@ from vntts.authoring.speech_quality import (
     PAUSE_DIAGNOSIS_VERSION,
     SPEECH_QUALITY_ANALYSIS_VERSION,
     measure_generated_speech_samples,
+    optional_finite_number,
 )
 from vntts.authoring.terminal_conflict_records import (
     TerminalConflictRecordError,
@@ -579,29 +579,17 @@ def _validate_pause_diagnosis(
         ):
             raise BulkGenerationError(f"State item {queue_id!r} pause span is invalid")
         values = [
-            span.get("start_seconds"),
-            span.get("end_seconds"),
-            span.get("duration_seconds"),
+            optional_finite_number(span.get(field))
+            for field in ("start_seconds", "end_seconds", "duration_seconds")
         ]
-        if any(
-            not isinstance(value, (int, float))
-            or isinstance(value, bool)
-            or not np.isfinite(value)
-            or value < 0
-            for value in values
-        ):
+        if any(value is None or value < 0 for value in values):
             raise BulkGenerationError(
                 f"State item {queue_id!r} pause span timing is invalid"
             )
-        start_value, end_value, duration_value = values
-        assert isinstance(start_value, (int, float))
-        assert isinstance(end_value, (int, float))
-        assert isinstance(duration_value, (int, float))
-        start, end, duration = (
-            float(start_value),
-            float(end_value),
-            float(duration_value),
-        )
+        start, end, duration = values
+        assert start is not None
+        assert end is not None
+        assert duration is not None
         if (
             start < previous_end
             or end <= start
