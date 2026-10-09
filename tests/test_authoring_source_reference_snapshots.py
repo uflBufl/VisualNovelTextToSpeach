@@ -73,6 +73,57 @@ class SourceReferenceSnapshotsTest(unittest.TestCase):
         self.assertEqual(narrator["speaker"], "narrator")
         return document[source_review.SOURCE_REFERENCE_BINDINGS_FIELD]
 
+    def test_listening_reports_refuse_model_from_another_state_snapshot(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _plan, evaluation, generation, _quality = (
+                publish_source_reference_quality_fixture(root)
+            )
+            original = generation.state.read_bytes()
+            replacement = json.loads(original)
+            for item in replacement["items"].values():
+                item["model"] = "different-admissible-model"
+            replacement_payload = json.dumps(replacement).encode("utf-8")
+            read_bytes, read_text = Path.read_bytes, Path.read_text
+            captures = []
+
+            def read_replacement(reader, path, *arguments, **keywords):
+                if path.resolve() != generation.state.resolve():
+                    return reader(path, *arguments, **keywords)
+                path.write_bytes(replacement_payload)
+                try:
+                    captures.append(path)
+                    return reader(path, *arguments, **keywords)
+                finally:
+                    path.write_bytes(original)
+
+            output = root / "listening-reports"
+            with (
+                patch.object(
+                    Path,
+                    "read_bytes",
+                    autospec=True,
+                    side_effect=partial(read_replacement, read_bytes),
+                ),
+                patch.object(
+                    Path,
+                    "read_text",
+                    autospec=True,
+                    side_effect=partial(read_replacement, read_text),
+                ),
+                self.assertRaisesRegex(
+                    source_review.SourceReferenceReviewError,
+                    "generation state changed",
+                ),
+            ):
+                source_review.publish_source_reference_listening_reports(
+                    evaluation.directory, generation.state, output
+                )
+            self.assertTrue(captures)
+            self.assertEqual(generation.state.read_bytes(), original)
+            self.assertFalse(output.exists())
+            self.assertFalse(list(root.glob(".listening-reports.staging-*")))
+
     def test_quality_selection_uses_the_review_bytes_in_its_provenance(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

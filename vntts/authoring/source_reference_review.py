@@ -34,8 +34,8 @@ from vntts_artifacts.voice_manifest import (
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     JsonDocument,
-    load_generation_state,
 )
+from vntts.authoring.generation_state import load_generation_state_from_snapshot
 from vntts.authoring.listening import (
     ModelListeningError,
     create_listening_session_from_reports,
@@ -1731,6 +1731,7 @@ def _load_evaluation_generation(
     VoiceGenerationQueue,
     tuple[VoiceManifestEntry, ...],
     JsonDocument,
+    str,
 ]:
     comparison_path, comparison_payload, comparison = _read_json(
         evaluation_directory / "comparison.json", "source-reference evaluation"
@@ -1762,7 +1763,12 @@ def _load_evaluation_generation(
     try:
         queue = VoiceGenerationQueue.load(queue_path)
         _manifest, voices = load_voice_manifest(manifest_path, allow_legacy=False)
-        state = load_generation_state(state_path, queue_path)
+        state_path, state_payload, state_document = _read_json(
+            state_path, "generation state"
+        )
+        state = load_generation_state_from_snapshot(
+            state_path, queue, queue_sha256, state_document=state_document
+        )
     except (
         BulkGenerationError,
         VoiceGenerationQueueError,
@@ -1780,6 +1786,7 @@ def _load_evaluation_generation(
         queue,
         voices,
         state,
+        hashlib.sha256(state_payload).hexdigest(),
     )
 
 
@@ -2045,10 +2052,10 @@ def publish_source_reference_listening_reports(
         queue,
         voices,
         state,
+        state_sha256,
     ) = _load_evaluation_generation(evaluation_directory, state_path)
     comparison_sha256 = hashlib.sha256(comparison_payload).hexdigest()
     state_path = Path(state_path).expanduser().resolve()
-    state_sha256 = _file_sha256(state_path)
     output = no_replace_destination(output)
     if output.exists() or output.is_symlink():
         raise SourceReferenceReviewError(
