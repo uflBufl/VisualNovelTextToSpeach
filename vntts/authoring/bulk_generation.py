@@ -579,23 +579,10 @@ def generation_review_authority(
     state_path: str | Path, queue_id: str
 ) -> ReviewAuthority:
     """Snapshot one reviewable state item and its exact validated WAV."""
-    state_path = Path(state_path).expanduser().resolve()
-    state = load_generation_state(state_path)
-    item = _state_items(state).get(queue_id)
-    if item is None or item.get("status") not in {
-        "generated",
-        "approved",
-    }:
+    authority = generation_review_authorities(state_path, (queue_id,)).get(queue_id)
+    if authority is None:
         raise BulkGenerationError(f"Generated queue item does not exist: {queue_id}")
-    relative = _safe_relative(item.get("path"), f"State item {queue_id!r} path")
-    audio = _within(state_path.parent, relative, "Generated WAV")
-    _validate_success_file(queue_id, item, audio)
-    return ReviewAuthority(
-        queue_sha256=_generation_text(state.get("queue_sha256"), "Queue SHA-256"),
-        state_sha256=sha256_file(state_path),
-        item_sha256=_canonical_sha256(item),
-        audio_sha256=sha256_file(audio),
-    )
+    return authority
 
 
 def generation_review_authorities(
@@ -608,9 +595,11 @@ def generation_review_authorities(
     )
     if not selected_queue_ids:
         return {}
-    state = load_generation_state(state_path)
+    document, state_sha256, _payload = load_json_object_snapshot(
+        state_path, "generation state", error_type=BulkGenerationError
+    )
+    state = validate_generation_state_document(document, state_path.parent, None, None)
     items = _state_items(state)
-    state_sha256 = sha256_file(state_path)
     authorities: dict[str, ReviewAuthority] = {}
     for queue_id in selected_queue_ids:
         item = items.get(queue_id)

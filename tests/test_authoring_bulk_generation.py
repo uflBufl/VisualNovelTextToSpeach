@@ -576,6 +576,77 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             1,
         )
 
+    def test_review_authorities_hash_the_state_used_for_items(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            result = self.run_generation(queue, root / "output", SyntheticRenderer())
+            original = result.state.read_bytes()
+            original_sha256 = hashlib.sha256(original).hexdigest()
+            baseline = generation_review_authority(result.state, item["queue_id"])
+            self.assertEqual(baseline.state_sha256, original_sha256)
+            self.assertEqual(
+                generation_review_authorities(result.state, [item["queue_id"]]),
+                {item["queue_id"]: baseline},
+            )
+            for queue_id in ("unknown-item", f" {item['queue_id']} "):
+                with (
+                    self.subTest(queue_id=queue_id),
+                    self.assertRaisesRegex(
+                        BulkGenerationError, "Generated queue item does not exist"
+                    ),
+                ):
+                    generation_review_authority(result.state, queue_id)
+            foreign_state = json.loads(original)
+            foreign_state["items"][item["queue_id"]]["model"] = "foreign-review-model"
+            foreign = json.dumps(foreign_state, sort_keys=True).encode("utf-8")
+            result.state.write_bytes(foreign)
+            load_generation_state(result.state, queue)
+            result.state.write_bytes(original)
+            original_read_bytes = Path.read_bytes
+            original_read_text = Path.read_text
+            for capture, selection in (
+                (generation_review_authority, item["queue_id"]),
+                (generation_review_authorities, [item["queue_id"]]),
+            ):
+                captured = False
+
+                def read_bytes(path):
+                    nonlocal captured
+                    if path != result.state or captured:
+                        return original_read_bytes(path)
+                    captured = True
+                    result.state.write_bytes(foreign)
+                    try:
+                        return original_read_bytes(path)
+                    finally:
+                        result.state.write_bytes(original)
+
+                def read_text(path, *arguments, **options):
+                    nonlocal captured
+                    if path != result.state or captured:
+                        return original_read_text(path, *arguments, **options)
+                    captured = True
+                    result.state.write_bytes(foreign)
+                    try:
+                        return original_read_text(path, *arguments, **options)
+                    finally:
+                        result.state.write_bytes(original)
+
+                with (
+                    self.subTest(capture=capture.__name__),
+                    patch.object(Path, "read_bytes", read_bytes),
+                    patch.object(Path, "read_text", read_text),
+                    self.assertRaisesRegex(
+                        BulkGenerationError,
+                        "Generation state changed while review authorities were captured",
+                    ),
+                ):
+                    capture(result.state, selection)
+                self.assertTrue(captured)
+                self.assertEqual(result.state.read_bytes(), original)
+
     def test_explicit_regeneration_replaces_only_pending_review_audio(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
