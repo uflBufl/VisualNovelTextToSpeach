@@ -197,8 +197,9 @@ def probe_game_decoder(
                     wav.getnchannels(),
                     wav.getsampwidth(),
                     wav.getframerate(),
+                    wav.getnframes(),
                     wav.readframes(241),
-                ) != (1, 2, 24000, pcm):
+                ) != (1, 2, 24000, 240, pcm):
                     raise DecoderSetupError(
                         "Game-audio decoder failed its audio integrity check"
                     )

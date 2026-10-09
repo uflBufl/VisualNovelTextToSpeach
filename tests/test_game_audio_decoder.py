@@ -156,6 +156,31 @@ class GameAudioDecoderTest(unittest.TestCase):
                     ):
                         decoder.probe_game_decoder("decoder")
 
+    def test_native_probe_rejects_incomplete_declared_frame_count(self):
+        output = io.BytesIO()
+        pcm = b"\x34\x12" * 240
+        with decoder.wave.open(output, "wb") as wav:
+            wav.setparams((1, 2, 24000, 0, "NONE", "not compressed"))
+            wav.writeframes(pcm)
+        for frames in (240, 241, 242, 2**30):
+            with self.subTest(declared_frames=frames):
+                payload = bytearray(output.getvalue())
+                payload[40:44] = (frames * 2).to_bytes(4, "little")
+
+                def write_output(arguments, *_args, **_kwargs):
+                    Path(arguments[3]).write_bytes(payload)
+
+                with patch.object(decoder, "_run", side_effect=write_output):
+                    if frames == 240:
+                        self.assertEqual(
+                            decoder.probe_game_decoder("decoder"), "decoder"
+                        )
+                    else:
+                        with self.assertRaisesRegex(
+                            decoder.DecoderSetupError, "audio integrity"
+                        ):
+                            decoder.probe_game_decoder("decoder")
+
     def test_staging_readonly_system_files_is_repeatable(self):
         source = self.root / "system-tool"
         source.write_bytes(b"tool")
