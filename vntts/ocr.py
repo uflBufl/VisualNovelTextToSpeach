@@ -1,4 +1,3 @@
-import json
 import math
 import os
 from collections.abc import Callable, Mapping, Sequence
@@ -7,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from threading import Lock
 from time import monotonic
-from typing import Protocol, TypeVar
+from typing import Protocol, Self, TypeVar
 from uuid import uuid4
 
 import pytesseract
@@ -21,6 +20,7 @@ from vntts.dialog import (
     is_probable_character_name,
     parse_dialog,
 )
+from vntts.json_types import decode_json
 from vntts.ocr_review import OCR_REVIEW_SCHEMA_VERSION
 from vntts.versioned_json import write_versioned_json
 
@@ -123,6 +123,18 @@ class DialogRegion:
             raise ValueError("Dialog region values must be positive and normalized")
         if self.left + self.width > 1 or self.top + self.height > 1:
             raise ValueError("Dialog region must fit inside the screen")
+
+    @classmethod
+    def from_mapping(cls, value: object) -> Self:
+        if not isinstance(value, Mapping):
+            raise ValueError("dialog_region must be an object")
+        coordinates: list[float] = []
+        for name in ("left", "top", "width", "height"):
+            coordinate = value.get(name)
+            if not isinstance(coordinate, (int, float)):
+                raise ValueError(f"dialog_region {name} must be a number")
+            coordinates.append(coordinate)
+        return cls(*coordinates)
 
     def crop(self, image: Image.Image) -> Image.Image:
         return image.crop(self._pixel_box(*image.size))
@@ -270,13 +282,8 @@ def get_dialog_region_file() -> Path:
 def load_dialog_region(path: str | Path) -> DialogRegion:
     path = Path(path).expanduser()
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-        return DialogRegion(
-            left=value["left"],
-            top=value["top"],
-            width=value["width"],
-            height=value["height"],
-        )
+        value = decode_json(path.read_text(encoding="utf-8"))
+        return DialogRegion.from_mapping(value)
     except (OSError, KeyError, TypeError, ValueError) as error:
         raise ValueError(f"Unable to load dialog region {path}: {error}") from error
 

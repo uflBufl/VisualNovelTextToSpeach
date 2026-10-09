@@ -4,6 +4,7 @@ import shutil
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import MappingProxyType
 from unittest.mock import Mock, patch
 
 from PIL import Image
@@ -31,6 +32,37 @@ from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 
 class DialogRegionTest(unittest.TestCase):
+    def test_mapping_uses_domain_coordinate_validation(self):
+        values = {"left": 0, "top": 0.1, "width": 0.5, "height": 0.5}
+        self.assertEqual(
+            DialogRegion.from_mapping(MappingProxyType(values)),
+            DialogRegion(0, 0.1, 0.5, 0.5),
+        )
+        for invalid, message in (
+            ([], "dialog_region must be an object"),
+            ({}, "dialog_region left must be a number"),
+            ({**values, "left": False}, "numbers"),
+            ({**values, "width": float("nan")}, "finite numbers"),
+            ({**values, "width": 2}, "fit inside"),
+        ):
+            with (
+                self.subTest(value=invalid),
+                self.assertRaisesRegex(ValueError, message),
+            ):
+                DialogRegion.from_mapping(invalid)
+
+    def test_deep_region_json_reports_load_error_without_rewriting(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "region.json"
+            payload = b"[" * 100000 + b"0" + b"]" * 100000
+            path.write_bytes(payload)
+            with self.assertRaisesRegex(
+                ValueError, "Unable to load dialog region"
+            ) as caught:
+                load_dialog_region(path)
+            self.assertIsInstance(caught.exception.__cause__, json.JSONDecodeError)
+            self.assertEqual(path.read_bytes(), payload)
+
     def test_non_finite_coordinates_are_rejected_before_cropping(self):
         for values in (
             (float("nan"), 0.1, 0.5, 0.5),

@@ -79,7 +79,7 @@ class GameProfile:
         *,
         source_schema: int = profiles_schema_version,
     ) -> Self:
-        region = _dialog_region(values.get("dialog_region"))
+        region = DialogRegion.from_mapping(values.get("dialog_region"))
         profile_id = values["id"]
         if not isinstance(profile_id, str) or not profile_id.strip():
             raise ValueError("profile IDs must be nonempty strings")
@@ -348,15 +348,3 @@ def _audio_source_policy(value: object) -> str:
         if isinstance(value, str) and value in audio_source_policies
         else default_audio_source_policy
     )
-
-
-def _dialog_region(value: object) -> DialogRegion:
-    if not isinstance(value, Mapping):
-        raise ValueError("dialog_region must be an object")
-    coordinates: list[float] = []
-    for name in ("left", "top", "width", "height"):
-        coordinate = value.get(name)
-        if not isinstance(coordinate, (int, float)):
-            raise ValueError(f"dialog_region {name} must be a number")
-        coordinates.append(coordinate)
-    return DialogRegion(*coordinates)
