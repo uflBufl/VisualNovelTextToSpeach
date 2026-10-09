@@ -16,6 +16,8 @@ from vntts.cleanup import attempt_cleanup
 from vntts.path_safety import contained_path
 from vntts.runtime_paths import resolve_speech_runtime_root
 from vntts.services.tts_engine import TTSConfigurationError
+from vntts.services.tts_engine import validate_speed as validate_speed
+from vntts.services.tts_engine import validate_volume as validate_volume
 
 if TYPE_CHECKING:
     from vntts.runtime_ownership import RuntimeUse
@@ -91,22 +93,6 @@ def activate_backend_runtime(
     if site_packages_text not in sys.path:
         sys.path.insert(0, site_packages_text)
     return site_packages
-
-
-def validate_volume(volume: object) -> float:
-    if isinstance(volume, bool) or not isinstance(volume, (int, float)):
-        raise TTSConfigurationError("Volume must be a number from 0 to 1")
-    if not 0 <= volume <= 1:
-        raise TTSConfigurationError("Volume must be between 0 and 1")
-    return float(volume)
-
-
-def validate_speed(speed: object) -> float:
-    if isinstance(speed, bool) or not isinstance(speed, (int, float)):
-        raise TTSConfigurationError("Speech speed must be a number")
-    if not 0.5 <= speed <= 1.5:
-        raise TTSConfigurationError("Speech speed must be between 0.5 and 1.5")
-    return float(speed)
 
 
 @lru_cache(maxsize=1024)
