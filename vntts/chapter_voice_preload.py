@@ -132,21 +132,15 @@ class ChapterVoicePreloader:
                 sequence = 0
             line_id = str(entry.get("line_id") or "").strip() or None
             text_hash = str(entry.get("text_sha256") or "").strip() or None
-            source_audio_status = _source_audio_status(entry)
-            source_audio_id = (
-                str(
-                    entry.get("source_audio_id") or entry.get("source_voice_id") or ""
-                ).strip()
-                or None
-            )
-            source_audio_duration_seconds = _source_audio_duration_seconds(
+            (
+                source_audio_status,
+                source_audio_id,
+                source_audio_duration_seconds,
+                source_audio_completeness,
+                source_audio_authoritative,
+            ) = _source_audio_extension(
                 entry,
                 completion_contract=completion_contract or None,
-            )
-            source_audio_completeness = _source_audio_completeness(
-                entry,
-                completion_contract=completion_contract or None,
-                duration_seconds=source_audio_duration_seconds,
                 semantic_authorized=False,
             )
             rows.append(
@@ -161,6 +155,7 @@ class ChapterVoicePreloader:
                     source_audio_id,
                     source_audio_duration_seconds,
                     source_audio_completeness,
+                    source_audio_authoritative=source_audio_authoritative,
                 )
             )
         return cls(rows, lookahead_rows=lookahead_rows)

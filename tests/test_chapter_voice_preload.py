@@ -15,6 +15,7 @@ from vntts.chapter_voice_preload import (
     ChapterDialogue,
     ChapterMatch,
     ChapterVoicePreloader,
+    _normalize,
 )
 
 
@@ -801,6 +802,42 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
         self.assertEqual(line.source_audio_duration_seconds, 1.25)
         self.assertEqual(line.source_audio_completeness, "full")
         self.assertTrue(line.source_audio_authoritative)
+
+    def test_document_and_index_project_complete_source_audio_without_evidence(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "story-index.jsonl"
+            write_verified_source_story(path)
+            path.with_name("source-audio-semantic-evidence.json").unlink()
+            story = load_story_index_document(path)
+            document = story.metadata | {
+                "dialogue": [
+                    record.document | {"speaker_name": record.speaker}
+                    for record in story.records
+                ]
+            }
+            indexed = ChapterVoicePreloader.load_optional(path)
+            projected = ChapterVoicePreloader.from_document(document)
+
+        self.assertEqual(projected.dialogue, indexed.dialogue)
+        self.assertEqual(
+            projected.dialogue,
+            (
+                ChapterDialogue(
+                    "test:0",
+                    "24006",
+                    10,
+                    "Kamuta",
+                    "These old ones are enough to carry everyone.",
+                    hashlib.sha256(
+                        b"These old ones are enough to carry everyone."
+                    ).hexdigest(),
+                    "available",
+                    "voice-7",
+                    1.25,
+                    "unknown",
+                ),
+            ),
+        )
 
     def test_snapshot_preserves_verified_audio_and_rejects_changed_evidence(self):
         with TemporaryDirectory() as directory:
