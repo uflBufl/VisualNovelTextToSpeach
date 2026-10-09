@@ -35,6 +35,7 @@ from vntts.audio_output import (
 from vntts.chapter_voice_preload import ChapterDialogue
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 from vntts.json_types import decode_json
+from vntts.path_safety import open_regular_binary
 from vntts.playback import (
     PlaybackOutcome as PlaybackOutcome,
 )
@@ -455,7 +456,8 @@ class GeneratedAudioLibrary:
             self._warn_once(entry, f"Generated audio path is unsafe: {entry.audio}")
             return None, "generated-audio-entry-unsafe-path"
         try:
-            payload = entry.audio.read_bytes()
+            with open_regular_binary(entry.audio) as source:
+                payload = source.read()
         except OSError:
             self._warn_once(
                 entry, f"Generated audio is missing or modified: {entry.audio}"

@@ -1,5 +1,6 @@
 import json
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -198,19 +199,24 @@ class FailureReferenceBindingTest(unittest.TestCase):
                 **json.loads(original),
                 "authority": "changed without a new identity",
             }
-            read_bytes = Path.read_bytes
+            original_open = open
             for value in (altered, [], None):
                 changed = json.dumps(value).encode()
                 reads = 0
 
-                def capture_changed_binding(candidate):
+                @contextmanager
+                def capture_changed_binding(candidate, *args, **kwargs):
                     nonlocal reads
+                    candidate = Path(candidate)
                     if candidate.resolve() != path.resolve():
-                        return read_bytes(candidate)
+                        with original_open(candidate, *args, **kwargs) as stream:
+                            yield stream
+                        return
                     reads += 1
                     path.write_bytes(changed)
                     try:
-                        return read_bytes(candidate)
+                        with original_open(candidate, *args, **kwargs) as stream:
+                            yield stream
                     finally:
                         if reads == 1:
                             path.write_bytes(original)
@@ -218,7 +224,11 @@ class FailureReferenceBindingTest(unittest.TestCase):
                 try:
                     with (
                         self.subTest(value=value),
-                        patch.object(Path, "read_bytes", capture_changed_binding),
+                        patch(
+                            "vntts.path_safety.open",
+                            side_effect=capture_changed_binding,
+                            create=True,
+                        ),
                     ):
                         with self.assertRaises(FailureReferenceBindingError):
                             load_failure_reference_binding_document(output)

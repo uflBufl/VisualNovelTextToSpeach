@@ -18,6 +18,7 @@ from vntts.authoring.publication import (
 )
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 from vntts.json_types import decode_json
+from vntts.path_safety import open_regular_binary
 
 SILENCE_FAILURE_EVIDENCE_SCHEMA = "vntts.authoring-silence-failure-evidence"
 SILENCE_FAILURE_EVIDENCE_VERSION = 1
@@ -165,7 +166,8 @@ def _validate_evidence_wav(wav: Path, expected_sha256: object) -> None:
     if wav.is_symlink() or not wav.is_file():
         raise SilenceFailureEvidenceError("Silence-failure evidence WAV is missing")
     try:
-        payload = wav.read_bytes()
+        with open_regular_binary(wav) as source:
+            payload = source.read()
         _probe_pcm16_mono_bytes(payload)
     except OSError as error:
         raise SilenceFailureEvidenceError(

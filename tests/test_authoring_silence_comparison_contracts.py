@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import io
 import json
 import tempfile
 import unittest
@@ -19,6 +20,7 @@ from vntts.authoring.silence_comparison import (
     load_silence_comparison_input_plan,
     publish_silence_comparison,
 )
+from vntts.path_safety import open_regular_binary
 
 
 class SilenceComparisonContractsTest(unittest.TestCase):
@@ -81,12 +83,17 @@ class SilenceComparisonContractsTest(unittest.TestCase):
             _sample, root, _path, document = self.fixture(Path(directory))
             audio = root / document["samples"][0]["segmented_copy"]
             alternate = (root / document["samples"][0]["raw_copy"]).read_bytes()
-            read = Path.read_bytes
+            original_open = open_regular_binary
 
-            def substituted(path):
-                return alternate if path == audio else read(path)
+            def substituted(path, *args, **kwargs):
+                if Path(path) == audio:
+                    return io.BytesIO(alternate)
+                return original_open(path, *args, **kwargs)
 
-            with patch.object(Path, "read_bytes", substituted):
+            with patch(
+                "vntts.authoring.silence_comparison.open_regular_binary",
+                side_effect=substituted,
+            ):
                 with self.assertRaises(SilenceComparisonError):
                     load_silence_comparison(root)
 

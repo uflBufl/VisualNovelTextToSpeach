@@ -60,8 +60,9 @@ class AuthoringAuthorityTest(unittest.TestCase):
                     with self.assertRaisesRegex(error_type, "Test authority changed"):
                         assert_authority_snapshot(snapshot, "test authority", **kwargs)
                     path.write_bytes(b"{}")
-                    with patch.object(
-                        Path, "read_bytes", side_effect=PermissionError("denied")
+                    with patch(
+                        "vntts.authoring.authority.open_regular_binary",
+                        side_effect=PermissionError("denied"),
                     ):
                         with self.assertRaisesRegex(
                             error_type, "Unable to recheck test authority"

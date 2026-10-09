@@ -1,5 +1,8 @@
+import hashlib
+import io
 import os
 import unittest
+import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -9,9 +12,18 @@ from vntts import (
     assets,
     game_audio_decoder,
     pregeneration_audition,
+    pregeneration_audition_ui,
     support,
     versioned_json,
     voice_candidate_cache,
+)
+from vntts.authoring import (
+    authority,
+    bulk_generation,
+    cohort_bundle,
+    failure_reference_audit,
+    silence_comparison,
+    silence_evidence,
 )
 from vntts.authoring.generation_manifest import (
     BulkGenerationError,
@@ -243,6 +255,144 @@ class BoundedDocumentAdmissionTest(unittest.TestCase):
                     self.assertEqual(len(descriptors), 1)
                     with self.assertRaises(OSError):
                         os.fstat(descriptors[0])
+
+
+class VerifiedEvidenceAdmissionTest(unittest.TestCase):
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "POSIX FIFO admission")
+    def test_verified_readers_reject_a_path_swapped_to_fifo_before_content(self):
+        native_open, native_path_open = os.open, Path.open
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            path = root / "verified.wav"
+            fifo = root / "replacement"
+            content = io.BytesIO()
+            with wave.open(content, "wb") as output:
+                output.setnchannels(1)
+                output.setsampwidth(2)
+                output.setframerate(24_000)
+                output.writeframes(b"\x01\x00\x02\x00")
+            payload = content.getvalue()
+            digest = hashlib.sha256(payload).hexdigest()
+            snapshot = authority.AuthoritySnapshot(path, payload, digest)
+            review = bulk_generation.ReviewAuthority(digest, digest, digest, digest)
+            audit = failure_reference_audit.FailureReferenceAudit(
+                root, "audit", 1, 1, 1
+            )
+            document = {
+                "groups": [
+                    {
+                        "group_id": "group",
+                        "synthesis_voice_character": "Ada",
+                        "cases": [{"queue_id": "queue", "text": "Hello."}],
+                        "decision_options": ["accept"],
+                        "candidates": [
+                            {
+                                "candidate_id": "candidate",
+                                "audio": path.name,
+                                "sha256": digest,
+                            }
+                        ],
+                    }
+                ]
+            }
+            readers = (
+                (
+                    "capture",
+                    lambda: authority.capture_authority_file(path, "input", root=root),
+                    authority.AuthoringAuthorityError,
+                ),
+                (
+                    "recheck",
+                    lambda: authority.assert_authority_snapshot(snapshot),
+                    authority.AuthoringAuthorityError,
+                ),
+                (
+                    "custom recheck",
+                    lambda: authority.assert_authority_snapshot(
+                        snapshot, error_type=PathBoundaryError
+                    ),
+                    PathBoundaryError,
+                ),
+                (
+                    "cohort WAV",
+                    lambda: bulk_generation._review_snapshot_audio(
+                        path, "queue", review
+                    ),
+                    BulkGenerationError,
+                ),
+                (
+                    "silence evidence",
+                    lambda: silence_evidence._validate_evidence_wav(path, digest),
+                    silence_evidence.SilenceFailureEvidenceError,
+                ),
+                (
+                    "failure candidate",
+                    lambda: failure_reference_audit._prepare_failure_reference_audio(
+                        audit, document, "group", "candidate"
+                    ),
+                    OSError,
+                ),
+                (
+                    "cohort snapshot",
+                    lambda: cohort_bundle._read_bytes(path, "cohort input"),
+                    cohort_bundle.CohortReviewError,
+                ),
+                (
+                    "silence WAV",
+                    lambda: silence_comparison._read_source_wav(path, "source"),
+                    silence_comparison.SilenceComparisonError,
+                ),
+                (
+                    "silence plan",
+                    lambda: silence_comparison._read_silence_comparison_input_plan(
+                        path
+                    ),
+                    silence_comparison.SilenceComparisonError,
+                ),
+                (
+                    "audition WAV",
+                    lambda: pregeneration_audition_ui._read_verified_audio(
+                        path, digest
+                    ),
+                    OSError,
+                ),
+            )
+            for label, read, error_type in readers:
+                with self.subTest(reader=label):
+                    original = b"{}" if label == "silence plan" else payload
+                    path.unlink(missing_ok=True)
+                    path.write_bytes(original)
+                    os.mkfifo(fifo)
+                    descriptors = []
+
+                    def swap_and_open(candidate, flags):
+                        self.assertEqual(Path(candidate), path)
+                        self.assertTrue(
+                            flags & os.O_NONBLOCK,
+                            "verified evidence must not wait for a writer",
+                        )
+                        fifo.replace(path)
+                        descriptor = native_open(candidate, flags)
+                        descriptors.append(descriptor)
+                        return descriptor
+
+                    def reject_blocking_path_open(candidate, *args, **kwargs):
+                        if candidate == path:
+                            self.fail("verified input must not use blocking Path.open")
+                        return native_path_open(candidate, *args, **kwargs)
+
+                    with (
+                        patch("vntts.path_safety.os.open", side_effect=swap_and_open),
+                        patch.object(Path, "open", reject_blocking_path_open),
+                        self.assertRaisesRegex(error_type, "regular file"),
+                    ):
+                        read()
+                    self.assertEqual(len(descriptors), 1)
+                    with self.assertRaises(OSError):
+                        os.fstat(descriptors[0])
+                    path.unlink()
+                    path.write_bytes(original)
+                    read()
 
 
 if __name__ == "__main__":

@@ -1,5 +1,9 @@
 # TODO
 
+## Qualify stream-owned artifact readers
+
+- [ ] Qualify path-only imported WAV/hash readers used by `generation_manifest.validate_success_file_with_samples` before a separate dependency stage. Existing imported PCM API coerces `Path` and cannot consume an admitted stream; shared descriptor ownership needs a compatible stream/bytes API in the producer with historical WAV/error tests, then version/pin/integration qualification. Do not copy its PCM parser into VNTTS or claim pre-open `is_file` prevents a swap.
+
 ## Coordinate source-audio producer numeric admission
 
 - [ ] In `reverse1999-extractor`, qualify and fix `SourceAudioDurationProbe.probe` optional decoder ratio overflow: positive unbounded `playSamples=10**400` and `sampleRate=1` raise outside its tolerant exception tuple. Add `OverflowError` to that boundary, test overflowing and finite huge ratios, and release/pin only through the separately authorized cross-repository workflow; the current VNTTS consumer repair does not fix the pinned producer.

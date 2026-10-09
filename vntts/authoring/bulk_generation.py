@@ -239,6 +239,7 @@ from vntts.authoring.workspace_foundation import (
 from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
+from vntts.path_safety import open_regular_binary
 from vntts.speech_presentation import speech_runtime_label
 from vntts.synthesis import (
     SynthesisCachePolicy,
@@ -766,7 +767,8 @@ def _review_snapshot_audio(
     audio: Path, queue_id: str, authority: ReviewAuthority
 ) -> bytes:
     try:
-        payload = audio.read_bytes()
+        with open_regular_binary(audio) as source:
+            payload = source.read()
     except OSError as error:
         raise BulkGenerationError(
             f"Generated WAV is unreadable for {queue_id!r}: {error}"

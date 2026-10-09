@@ -2,6 +2,7 @@ import hashlib
 import json
 import shutil
 import unittest
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -105,22 +106,29 @@ class FailureReferencePreviewTest(unittest.TestCase):
                 "Changed after the final media read."
             )
             rendered = False
-            read_bytes = Path.read_bytes
+            original_open = open
 
             def on_render(_backend, _request):
                 nonlocal rendered
                 rendered = True
 
-            def change_after_capture(candidate_path):
-                payload = read_bytes(candidate_path)
-                if candidate_path == audio and rendered:
-                    path.write_text(json.dumps(changed))
-                return payload
+            @contextmanager
+            def change_after_capture(candidate_path, *args, **kwargs):
+                try:
+                    with original_open(candidate_path, *args, **kwargs) as stream:
+                        yield stream
+                finally:
+                    if Path(candidate_path) == audio and rendered:
+                        path.write_text(json.dumps(changed))
 
             factory = _PreviewBackendFactory(on_render=on_render)
             service = FailureReferencePreviewService(audit, backend_factory=factory)
             try:
-                with patch.object(Path, "read_bytes", change_after_capture):
+                with patch(
+                    "vntts.path_safety.open",
+                    side_effect=change_after_capture,
+                    create=True,
+                ):
                     with self.assertRaisesRegex(
                         FailureReferenceAuditError, "identity changed"
                     ):

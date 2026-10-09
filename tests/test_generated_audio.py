@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import unittest
 import wave
 from copy import deepcopy
@@ -280,21 +281,21 @@ class GeneratedAudioTest(unittest.TestCase):
             blocked = Event()
             release = Event()
             old_results = []
-            original_read_bytes = Path.read_bytes
+            original_open = open
 
-            def read_bytes(path):
+            def open_audio(path, *args, **kwargs):
                 if path == old_audio.resolve() and current_thread() is worker:
                     blocked.set()
                     if not release.wait(2):
                         raise TimeoutError("Timed out waiting for manifest reload")
-                return original_read_bytes(path)
+                return original_open(path, *args, **kwargs)
 
             worker = Thread(
                 target=lambda: old_results.append(
                     library.find("game:unknown", line_hash)
                 )
             )
-            with patch.object(Path, "read_bytes", read_bytes):
+            with patch("vntts.path_safety.open", side_effect=open_audio, create=True):
                 worker.start()
                 try:
                     self.assertTrue(blocked.wait(2))
@@ -1377,6 +1378,55 @@ class GeneratedAudioTest(unittest.TestCase):
             audio.unlink()
 
             self.assertFalse(backend.has_generated_line(resolver.dialogue[0]))
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "POSIX FIFO admission")
+    def test_special_generated_wav_is_missing_before_hash_and_decode(self):
+        native_open, native_path_open = os.open, Path.open
+        for swap in (False, True):
+            with self.subTest(swap=swap), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                library, audio = self.create_library(root)
+                line_hash = text_sha256("Hello.")
+                original = audio.read_bytes()
+                fifo = root / "replacement"
+                os.mkfifo(fifo)
+                if not swap:
+                    fifo.replace(audio)
+                descriptors = []
+
+                def admit(path, flags):
+                    self.assertEqual(Path(path), audio)
+                    self.assertTrue(
+                        flags & os.O_NONBLOCK, "preflight must not wait for a writer"
+                    )
+                    if swap:
+                        fifo.replace(audio)
+                    descriptor = native_open(path, flags)
+                    descriptors.append(descriptor)
+                    return descriptor
+
+                def reject_blocking_path_open(path, *args, **kwargs):
+                    if path == audio:
+                        self.fail("generated WAV must not use blocking Path.open")
+                    return native_path_open(path, *args, **kwargs)
+
+                with (
+                    patch("vntts.path_safety.os.open", side_effect=admit),
+                    patch.object(Path, "open", reject_blocking_path_open),
+                    patch("vntts.generated_audio.hashlib.sha256") as hash_audio,
+                    patch("vntts.generated_audio._read_pcm16_mono_wav_bytes") as decode,
+                ):
+                    prepared, state = library.find_with_preflight("game:1", line_hash)
+                    self.assertIsNone(prepared)
+                    self.assertEqual(state, "generated-audio-entry-missing")
+                    hash_audio.assert_not_called()
+                    decode.assert_not_called()
+                self.assertEqual(len(descriptors), 1)
+                with self.assertRaises(OSError):
+                    os.fstat(descriptors[0])
+                audio.unlink()
+                audio.write_bytes(original)
+                self.assertIsNotNone(library.find("game:1", line_hash))
 
     def test_generated_wav_swap_between_identity_lookup_and_read_is_rejected(self):
         with TemporaryDirectory() as directory:

@@ -48,6 +48,7 @@ from vntts.authoring.workbench import (
 from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import decode_json, is_json_object
+from vntts.path_safety import open_regular_binary
 from vntts.reference_quality import ReferenceQualityReport, analyze_reference_bytes
 
 JsonDocument: TypeAlias = dict[str, object]
@@ -1113,7 +1114,8 @@ def _prepare_failure_reference_audio(
             f"Reference audit candidate is unknown: {candidate_id}"
         )
     path = _contained_regular_file(audit.directory, candidate["audio"])
-    payload = path.read_bytes()
+    with open_regular_binary(path) as source:
+        payload = source.read()
     digest = hashlib.sha256(payload).hexdigest()
     if digest != candidate["sha256"]:
         raise FailureReferenceAuditError("Reference audit audio changed")

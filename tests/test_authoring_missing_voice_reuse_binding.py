@@ -229,7 +229,7 @@ class AuthoringMissingVoiceReuseBindingTest(unittest.TestCase):
                 ).resolve()
                 changed = json.loads(source.read_text(encoding="utf-8"))
                 changed["unreviewed_metadata"] = "must not be imported"
-                original_open = Path.open
+                original_open = open
                 original_review_loader = (
                     binding_module._validate_missing_voice_reuse_review
                 )
@@ -256,7 +256,11 @@ class AuthoringMissingVoiceReuseBindingTest(unittest.TestCase):
                         "_validate_missing_voice_reuse_review",
                         side_effect=mark_source_boundary,
                     ),
-                    patch.object(Path, "open", change_on_second_read),
+                    patch(
+                        "vntts.path_safety.open",
+                        side_effect=change_on_second_read,
+                        create=True,
+                    ),
                     self.assertRaisesRegex(
                         MissingVoiceReuseBindingError, "manifest changed"
                     ),

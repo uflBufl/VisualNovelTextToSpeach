@@ -3833,17 +3833,17 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
             displayed = list_review_items(created.directory)[0]
 
-            read_bytes = Path.read_bytes
+            original_open = open
             wav_reads = []
 
-            def track_audio_reads(path):
+            def track_audio_reads(path, *args, **kwargs):
                 if path.suffix == ".wav":
                     wav_reads.append(path)
-                return read_bytes(path)
+                return original_open(path, *args, **kwargs)
 
             with (
-                patch.object(
-                    Path, "read_bytes", autospec=True, side_effect=track_audio_reads
+                patch(
+                    "vntts.path_safety.open", side_effect=track_audio_reads, create=True
                 ),
                 patch.object(
                     bulk_generation_module,
