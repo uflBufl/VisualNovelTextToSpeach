@@ -1005,7 +1005,15 @@ def _staging_path(target: Path) -> Path:
         suffix=".wav",
         dir=target.parent,
     )
-    os.close(descriptor)
+    try:
+        os.close(descriptor)
+    except BaseException as error:
+        attempt_cleanup(
+            lambda: Path(name).unlink(missing_ok=True),
+            description="Voice preview stage acquisition cleanup",
+            primary_error=error,
+        )
+        raise
     return Path(name)
 
 

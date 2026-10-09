@@ -21,6 +21,7 @@ from vntts.pregeneration_audition import (
     VoiceAuditionError,
     VoiceAuditionIncomplete,
     VoiceAuditionPreviewService,
+    _staging_path,
     _validate_request,
 )
 from vntts.pregeneration_setup import PregenerationJobStore, inspect_story_index
@@ -546,6 +547,60 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
                     service.generate(plan, group, group.candidates[0].source_id)
 
             self.assertFalse(tuple((root / "auditions").glob("*.wav")))
+
+    def test_preview_stage_close_failure_cleans_up_before_handoff(self):
+        for fail_cleanup in (False, True):
+            with (
+                self.subTest(fail_cleanup=fail_cleanup),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory).resolve()
+                target = root / "preview.wav"
+                target.write_bytes(b"existing preview")
+                primary = OSError("stage descriptor close failed")
+                cleanup_error = OSError("stage unlink failed")
+                cleanup_error.add_note("nested unlink note")
+                original_close, original_unlink = os.close, Path.unlink
+                cleanup_paths = []
+
+                def close(descriptor):
+                    original_close(descriptor)
+                    raise primary
+
+                def unlink(path, *, missing_ok=False):
+                    cleanup_paths.append(path)
+                    self.assertTrue(missing_ok)
+                    if fail_cleanup:
+                        raise cleanup_error
+                    original_unlink(path, missing_ok=missing_ok)
+
+                with (
+                    patch(
+                        "vntts.pregeneration_audition.os.close", side_effect=close
+                    ) as close_mock,
+                    patch.object(Path, "unlink", autospec=True, side_effect=unlink),
+                    self.assertRaises(OSError) as raised,
+                ):
+                    _staging_path(target)
+
+                self.assertIs(raised.exception, primary)
+                close_mock.assert_called_once()
+                self.assertEqual(len(cleanup_paths), 1)
+                self.assertEqual(cleanup_paths[0].parent, root)
+                self.assertTrue(cleanup_paths[0].name.startswith(".preview-"))
+                self.assertEqual(
+                    getattr(primary, "__notes__", []),
+                    [
+                        "Voice preview stage acquisition cleanup failed: stage unlink failed",
+                        "nested unlink note",
+                    ]
+                    if fail_cleanup
+                    else [],
+                )
+                self.assertEqual(
+                    len(list(root.glob(".preview-*.wav"))), int(fail_cleanup)
+                )
+                self.assertEqual(target.read_bytes(), b"existing preview")
 
     def test_preview_cleanup_failures_keep_publish_error_and_attempt_all_owners(self):
         with TemporaryDirectory() as temporary_directory:
