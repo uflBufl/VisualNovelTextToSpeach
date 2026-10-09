@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass, replace
 from io import BytesIO
 from pathlib import Path
 from time import monotonic
-from typing import NamedTuple, Protocol, TypeAlias
+from typing import BinaryIO, NamedTuple, Protocol, TypeAlias
 
 import numpy as np
 from durable_file import sha256_file
@@ -838,7 +838,8 @@ def _cached_preview_metadata(
         if not isinstance(document, dict):
             raise ValueError("preview manifest must be an object")
         seed = document["seed"]
-        audio_sha256 = sha256_file(target)
+        with open_regular_binary(target) as source:
+            audio_sha256 = hashlib.file_digest(source, "sha256").hexdigest()
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise VoiceAuditionError(
             f"Cached voice preview manifest is invalid: {error}"
@@ -880,7 +881,7 @@ def _preflight_candidate_references(
             )
 
 
-def _inspect_preview(path: Path, text: str) -> AudioQuality:
+def _inspect_preview(path: Path | BinaryIO, text: str) -> AudioQuality:
     audio_quality: AudioQuality | None = None
     try:
         audio_quality, samples = inspect_generated_wav_with_samples(path)
@@ -952,10 +953,15 @@ def _cached_preview(
     if target.is_symlink():
         raise VoiceAuditionError("Cached voice preview must not be a symbolic link")
     try:
-        info = _inspect_preview(target, text)
-        audio_sha256 = sha256_file(target)
+        with open_regular_binary(target) as source:
+            payload = source.read()
+        audio_sha256 = hashlib.sha256(payload).hexdigest()
         if expected_audio_sha256 is not None and audio_sha256 != expected_audio_sha256:
             raise VoiceAuditionError("Voice preview changed while it was validated")
+        info = _inspect_preview(BytesIO(payload), text)
+        with open_regular_binary(target) as source:
+            if hashlib.file_digest(source, "sha256").hexdigest() != audio_sha256:
+                raise VoiceAuditionError("Voice preview changed while it was validated")
     except (OSError, ValueError, VoiceAuditionError) as error:
         raise VoiceAuditionError(f"Cached voice preview is invalid: {error}") from error
     if reused and plan.synthesis_backend == "moss-tts":

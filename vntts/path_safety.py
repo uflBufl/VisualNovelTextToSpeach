@@ -4,8 +4,8 @@ import os
 import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
+from io import BufferedReader
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
-from typing import BinaryIO
 
 
 def open_regular_candidate(path: str | os.PathLike[str], flags: int) -> int:
@@ -14,7 +14,7 @@ def open_regular_candidate(path: str | os.PathLike[str], flags: int) -> int:
 
 
 @contextmanager
-def open_regular_binary(path: str | os.PathLike[str]) -> Iterator[BinaryIO]:
+def open_regular_binary(path: str | os.PathLike[str]) -> Iterator[BufferedReader]:
     """Own a binary stream only after its opened descriptor is a regular file."""
     with open(path, "rb", opener=open_regular_candidate) as source:
         if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):

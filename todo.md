@@ -2,8 +2,7 @@
 
 ## Finish checksum-bound preview validation
 
-- [ ] Bind cached/final preview metadata and speech checks to one captured WAV payload in `_cached_preview`, retaining the post-inspection path SHA check. Pre/post hashes alone admit transient A -> B -> A; legacy sidecar-less previews can mix old metadata with a replacement SHA. Preserve staging preflight, metadata API/bounds/FIFO, seed/retry/recovery/publication behavior; add both regressions and retarget exact per-phase decode and permanent-replacement hooks.
-- [ ] Run local-first preview checks and fresh-main branch selector on the final frozen image; independently review the final phase, remove completed work and commit/push separately.
+- [ ] Commit the verified preview phase changes separately and normally push this cycle to main; remove this section after the push is confirmed. Final local selection3757/full branch3911, static checks and independent review pass.
 
 ## Coordinate source-audio producer numeric admission
 
