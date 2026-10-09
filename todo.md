@@ -1,9 +1,5 @@
 # TODO
 
-## Finish checksum-bound preview validation
-
-- [ ] Commit the verified preview phase changes separately and normally push this cycle to main; remove this section after the push is confirmed. Final local selection3757/full branch3911, static checks and independent review pass.
-
 ## Coordinate source-audio producer numeric admission
 
 - [ ] In `reverse1999-extractor`, qualify and fix `SourceAudioDurationProbe.probe` optional decoder ratio overflow: positive unbounded `playSamples=10**400` and `sampleRate=1` raise outside its tolerant exception tuple. Add `OverflowError` to that boundary, test overflowing and finite huge ratios, and release/pin only through the separately authorized cross-repository workflow; the current VNTTS consumer repair does not fix the pinned producer.
