@@ -740,12 +740,15 @@ class VoiceAuditionPanelTest(unittest.TestCase):
     def test_only_requested_samples_generate_and_cached_candidate_can_be_accepted(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            plan, group, _manifest = ambiguous_fixture(root)
+            plan, group, manifest = ambiguous_fixture(root)
             plan, group = with_second_candidate(plan, group)
             plan, second = with_second_group(plan, group)
             decisions = Mock()
             previews = Mock()
             previews.generate.return_value = generated_preview(root)
+            previews.reference_audio.return_value = (
+                manifest.parent / "references" / "rhiannon.wav"
+            )
             previews.backend.runtime_status = "GPU: RTX 2070 SUPER <8 GB>"
             pool = ManualThreadPool()
             panel = VoiceAuditionPanel(
@@ -758,6 +761,11 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.assertEqual(pool.tasks, [])
             panel.a_original.click()
             previews.generate.assert_not_called()
+            previews.reference_audio.assert_called_once_with(
+                plan, group, group.candidates[0].source_id
+            )
+            self.assertTrue(panel.a_use.isEnabled())
+            self.assertEqual(pool.tasks, [])
             panel.a_play.click()
             self.assertEqual(panel.runtime.textFormat(), Qt.TextFormat.PlainText)
             self.assertIn("GPU: RTX 2070 SUPER", panel.runtime.text())
