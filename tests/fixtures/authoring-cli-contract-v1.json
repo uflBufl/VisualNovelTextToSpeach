@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "command_count": 100,
-  "sha256": "952228f0ba6cdc7b48a767b058cbf22f87199e68c845296f92031a581c8425d3",
+  "sha256": "1efd1a9f33680eb6a094a8cc36defcb5c4003e4c7d7cb607d495b7feeb8441eb",
   "commands": [
     "discover-legacy",
     "import-legacy",

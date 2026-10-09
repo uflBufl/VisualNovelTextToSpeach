@@ -1,6 +1,5 @@
 import argparse
 import ast
-import hashlib
 import json
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -10,57 +9,8 @@ from unittest.mock import Mock, patch
 
 import vntts.authoring.cli_voice_quality as voice_cli
 from vntts.authoring.cli import COMMAND_FAMILIES, create_parser, main
+from vntts.authoring.cli_contract import parser_contract
 from vntts.authoring.cli_voice_quality import COMMANDS, VoiceQualityGateError, handle
-
-PARSER_CONTRACT_SHA256 = (
-    "0d80e497c7db029b094a5c3d4e77720a9df8cb86db982c98d145a61f29ecf2e3"
-)
-
-
-def _subparser_action(parser):
-    return next(
-        action
-        for action in parser._actions
-        if isinstance(action, argparse._SubParsersAction)
-    )
-
-
-def _parser_contract(parser):
-    subparsers = _subparser_action(parser)
-    help_by_command = {
-        action.dest: action.help for action in subparsers._choices_actions
-    }
-    contract = {}
-    for command in sorted(COMMANDS):
-        actions = []
-        for action in subparsers.choices[command]._actions:
-            if action.dest == "help":
-                continue
-            default = action.default
-            if action.dest == "workspaces_root" and isinstance(default, Path):
-                default = "<default-workspaces-root>"
-            elif isinstance(default, Path):
-                default = str(default)
-            actions.append(
-                {
-                    "options": action.option_strings,
-                    "dest": action.dest,
-                    "required": action.required,
-                    "nargs": action.nargs,
-                    "default": default,
-                    "type": None if action.type is None else action.type.__name__,
-                    "choices": (
-                        None if action.choices is None else list(action.choices)
-                    ),
-                    "action": type(action).__name__,
-                    "metavar": action.metavar,
-                }
-            )
-        contract[command] = {
-            "help": help_by_command[command],
-            "actions": actions,
-        }
-    return contract
 
 
 class AuthoringCliVoiceQualityTest(unittest.TestCase):
@@ -79,15 +29,9 @@ class AuthoringCliVoiceQualityTest(unittest.TestCase):
         self.assertEqual(len(owners), 1)
         self.assertIs(owners[0].handler, handle)
 
-    def test_parser_contract_and_order_match_the_captured_legacy_cli(self):
+    def test_command_order_matches_the_captured_cli(self):
         parser = create_parser()
-        contract = _parser_contract(parser)
-        digest = hashlib.sha256(
-            json.dumps(contract, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
-
-        self.assertEqual(digest, PARSER_CONTRACT_SHA256)
-        names = list(_subparser_action(parser).choices)
+        names = list(parser_contract(parser))
         expected = (
             "failure-reference-binding",
             "voice-quality-gate",

@@ -172,6 +172,7 @@ def parser_contract(parser: argparse.ArgumentParser) -> dict[str, object]:
                     "type": getattr(action.type, "__name__", None),
                     "help": action.help,
                     "action": type(action).__name__,
+                    "metavar": action.metavar,
                 }
                 for action in command_parser._actions
                 if action.dest != "help"

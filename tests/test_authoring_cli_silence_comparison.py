@@ -1,6 +1,5 @@
 import argparse
 import ast
-import hashlib
 import json
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -11,58 +10,12 @@ from unittest.mock import patch
 
 import vntts.authoring.cli_silence_comparison as silence_cli
 from vntts.authoring.cli import COMMAND_FAMILIES, create_parser, main
+from vntts.authoring.cli_contract import parser_contract
 from vntts.authoring.cli_silence_comparison import (
     COMMANDS,
     SilenceComparisonError,
     handle,
 )
-
-PARSER_CONTRACT_SHA256 = (
-    "0099becfa9fd34e355d879d373d98dcd3f0c8f61b1b7aa90880be40c9c8f3a89"
-)
-
-
-def _subparser_action(parser):
-    return next(
-        action
-        for action in parser._actions
-        if isinstance(action, argparse._SubParsersAction)
-    )
-
-
-def _parser_contract(parser):
-    subparsers = _subparser_action(parser)
-    help_by_command = {
-        action.dest: action.help for action in subparsers._choices_actions
-    }
-    contract = {}
-    for command in sorted(COMMANDS):
-        actions = []
-        for action in subparsers.choices[command]._actions:
-            if action.dest == "help":
-                continue
-            default = action.default
-            if isinstance(default, Path):
-                default = str(default)
-            actions.append(
-                {
-                    "options": action.option_strings,
-                    "dest": action.dest,
-                    "required": action.required,
-                    "nargs": action.nargs,
-                    "default": default,
-                    "type": None if action.type is None else action.type.__name__,
-                    "choices": (
-                        None if action.choices is None else list(action.choices)
-                    ),
-                    "action": type(action).__name__,
-                }
-            )
-        contract[command] = {
-            "help": help_by_command[command],
-            "actions": actions,
-        }
-    return contract
 
 
 class AuthoringCliSilenceComparisonTest(unittest.TestCase):
@@ -79,15 +32,9 @@ class AuthoringCliSilenceComparisonTest(unittest.TestCase):
         self.assertEqual(len(owners), 1)
         self.assertIs(owners[0].handler, handle)
 
-    def test_parser_contract_and_order_match_the_captured_legacy_cli(self):
+    def test_command_order_matches_the_captured_cli(self):
         parser = create_parser()
-        contract = _parser_contract(parser)
-        digest = hashlib.sha256(
-            json.dumps(contract, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
-
-        self.assertEqual(digest, PARSER_CONTRACT_SHA256)
-        names = list(_subparser_action(parser).choices)
+        names = list(parser_contract(parser))
         expected = (
             "failure-repair-plan",
             "silence-comparison-publish",

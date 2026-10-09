@@ -51,6 +51,21 @@ class AuthoringCliDispatchTest(unittest.TestCase):
         self.assertEqual(len(contract), fixture["command_count"])
         self.assertEqual(parser_contract_sha256(parser), fixture["sha256"])
 
+    def test_whole_parser_snapshot_detects_help_metavar_changes(self):
+        parser = create_parser()
+        before = parser_contract_sha256(parser)
+        subparsers = next(
+            action
+            for action in parser._actions
+            if isinstance(action, argparse._SubParsersAction)
+        )
+        command_parser = subparsers.choices["terminal-conflict-resolution"]
+        argument = next(
+            action for action in command_parser._actions if action.dest != "help"
+        )
+        argument.metavar = "CHANGED_ARGUMENT_LABEL"
+        self.assertNotEqual(parser_contract_sha256(parser), before)
+
     def test_migrated_parser_defaults_and_order_remain_stable(self):
         parser = create_parser()
         help_text = parser.format_help()
