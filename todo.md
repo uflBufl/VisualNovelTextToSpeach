@@ -1,11 +1,11 @@
 # TODO
 
-## Audit game-audio decoder preparation
+## Continue regular-file admission through remaining integrity owners
 
-- [ ] Expand admitted streaming hashing through the existing `document_identity.file_sha256` owner (retain signature/domain-error cause) and verified assets, managed-model, backend source-identity and preview/cache consumers. Keep owned publication hashes distinct and use caller-specific errors. Add real FIFO/path-swap and restored-input checks, retain authoring missing-source contracts and migrate the speaker-model hash hook without weakening its one-hash assertion.
-- [ ] Classify the remaining generic SHA inventory (60 production imports/267 direct calls at the initial scan) by actual persisted input vs owned staging/output lifecycle before further migration. Start with asset/model verification; retain unqualified generic paths as staged investigation, not a claim that every checksum needs the same policy.
-- [ ] Record each evidenced improvement with its consumer/error/persistence contract, implement it and search equivalent causes repository-wide. Preserve pinned downloads, explicit Homebrew consent, bounded native process cleanup, cached verification/fallback and staged publication.
-- [ ] Run local-first affected tests, final freshly fetched-main branch checks and independent review; remove completed TODO work, commit each repair separately and normally push main.
+- [ ] Qualify `assets.ModelAssetManager._write_checksum_manifest` for both downloaded files and `_adopt_existing_model`, and `VoicePackManager._write_voice_checksums` for newly copied and retained references. Reuse `document_identity.file_sha256` where the regular-file contract holds; preserve digest/size/schema, domain errors and voice-pack rollback/publication order. Gate: actual acquisition failure or FIFO swap, unchanged valid manifests and successful recovery.
+- [ ] Qualify all four `asset_ui` checksum phases (snapshot pre/post validation, selected-file completion and imported-manifest identity). Manager validation does not protect the preceding or later hashes. Preserve source-change detection, existing OSError fallback, pending/acceptance state and cancellation; add admission/recovery checks before migrating to the shared owner.
+- [ ] Qualify managed-model metadata/notice reads and external-source copying in `authoring.managed_model_installation` separately from its now-admitted file/tree hashes. Preserve status/domain errors, staged-directory cleanup, notice/metadata comparison and no-replace publication. Gate: actual input-acquisition refusal and valid installation/status recovery; do not claim the SHA helper protects the earlier copy/read phases.
+- [ ] Classify the rest of the generic SHA inventory by persisted input vs owned staging/output lifecycle (initial scan: 60 production imports/267 direct calls). Migrate only evidenced regular-file consumers with their actual error, alias/root, byte-binding and publication contracts. Keep a concrete staged inventory in `.codex/investigations/`; run local-first affected tests, independent review and fresh-main branch checks for each implementation stage.
 
 ## Coordinate source-audio producer numeric admission
 
