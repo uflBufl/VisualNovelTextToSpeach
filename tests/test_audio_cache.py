@@ -1,4 +1,5 @@
 import os
+import struct
 import unittest
 from collections import OrderedDict
 from pathlib import Path
@@ -221,6 +222,53 @@ class PersistentAudioCacheTest(unittest.TestCase):
                 path.unlink()
                 path.write_bytes(original)
                 np.testing.assert_array_equal(cache.get("entry"), expected)
+
+    def test_malformed_npy_headers_are_misses_without_changing_entries(self):
+        with TemporaryDirectory() as directory:
+            cache = PersistentAudioCache(directory)
+            path = Path(directory) / "corrupt.npy"
+            for version in ((1, 0), (2, 0), (3, 0)):
+                with self.subTest(version=version, damage="shape overflow"):
+                    with path.open("wb") as destination:
+                        np.lib.format.write_array_header_2_0(
+                            destination,
+                            {
+                                "descr": "<f4",
+                                "fortran_order": False,
+                                "shape": (2**100,),
+                            },
+                        )
+                    if version != (2, 0):
+                        payload = path.read_bytes()
+                        header = payload[12:]
+                        path.write_bytes(
+                            np.lib.format.magic(*version)
+                            + struct.pack(
+                                "<H" if version == (1, 0) else "<I", len(header)
+                            )
+                            + header
+                        )
+                    original = path.read_bytes()
+                    with patch.object(cache, "_touch_newest") as touch:
+                        self.assertIsNone(cache.get("corrupt"))
+                        touch.assert_not_called()
+                    self.assertEqual(path.read_bytes(), original)
+                if version != (3, 0):
+                    with self.subTest(version=version, damage="unterminated tokens"):
+                        header = b"(\n"
+                        path.write_bytes(
+                            np.lib.format.magic(*version)
+                            + struct.pack(
+                                "<H" if version == (1, 0) else "<I", len(header)
+                            )
+                            + header
+                        )
+                        original = path.read_bytes()
+                        self.assertIsNone(cache.get("corrupt"))
+                        self.assertEqual(path.read_bytes(), original)
+            expected = np.array([0.1, -0.1], dtype=np.float32)
+            cache.put("corrupt", expected)
+            np.testing.assert_array_equal(cache.get("corrupt"), expected)
 
     def test_uncacheable_audio_preserves_the_existing_entry(self):
         with TemporaryDirectory() as directory:

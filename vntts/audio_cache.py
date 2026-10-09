@@ -6,6 +6,7 @@ from pathlib import Path
 from stat import S_ISREG
 from threading import RLock
 from time import time_ns
+from tokenize import TokenError
 from typing import Generic, TypeAlias, TypeVar
 
 import numpy as np
@@ -103,7 +104,7 @@ class PersistentAudioCache:
                 return None
             self._touch_newest(path)
             return audio
-        except OSError, ValueError, TypeError, EOFError:
+        except OSError, ValueError, TypeError, EOFError, OverflowError, TokenError:
             return None
 
     def put(self, key: object, audio: object) -> Path | None:
