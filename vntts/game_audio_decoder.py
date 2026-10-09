@@ -332,20 +332,25 @@ def _probe_cached_decoder(executable: Path, cancellation: Cancellation | None) -
                 raise ValueError("verification record is too large")
             verified_files: object = decode_json(payload)
             if (
-                isinstance(verified_files, dict)
-                and executable.name in verified_files
-                and all(
-                    isinstance(name, str)
-                    and Path(name).name == name
-                    and isinstance(checksum, str)
-                    and not (path := executable.parent / name).is_symlink()
-                    and path.is_file()
-                    and sha256_file(path) == checksum
-                    for name, checksum in verified_files.items()
-                )
+                not isinstance(verified_files, dict)
+                or executable.name not in verified_files
             ):
-                probe_game_decoder(executable, cancellation)
-                return True
+                return False
+            for name, checksum in verified_files.items():
+                if (
+                    not isinstance(name, str)
+                    or Path(name).name != name
+                    or not isinstance(checksum, str)
+                ):
+                    return False
+                path = executable.parent / name
+                if path.is_symlink() or not path.is_file():
+                    return False
+                with open_regular_binary(path) as source:
+                    if hashlib.file_digest(source, "sha256").hexdigest() != checksum:
+                        return False
+            probe_game_decoder(executable, cancellation)
+            return True
         except OSError, ValueError, TypeError, AttributeError:
             pass
     return False

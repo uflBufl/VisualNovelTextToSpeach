@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import os
 import subprocess
 import sys
 import unittest
@@ -180,6 +181,50 @@ class GameAudioDecoderTest(unittest.TestCase):
                             decoder.DecoderSetupError, "audio integrity"
                         ):
                             decoder.probe_game_decoder("decoder")
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_cached_binary_fifo_swap_is_rejected_and_valid_cache_recovers(self):
+        executable = self.root / "vgmstream-cli"
+        payload = b"verified decoder"
+        executable.write_bytes(payload)
+        (self.root / "verified.json").write_text(
+            json.dumps({executable.name: hashlib.sha256(payload).hexdigest()})
+        )
+        native_open, native_path_open = os.open, Path.open
+        descriptors = []
+
+        def swap_and_open(candidate, flags, mode=0o777, *, dir_fd=None):
+            if Path(candidate) == executable:
+                self.assertTrue(flags & os.O_NONBLOCK)
+                executable.unlink()
+                os.mkfifo(executable)
+            descriptor = native_open(candidate, flags, mode, dir_fd=dir_fd)
+            if Path(candidate) == executable:
+                descriptors.append(descriptor)
+            return descriptor
+
+        def reject_plain_binary_open(candidate, *args, **kwargs):
+            if candidate == executable:
+                self.fail("cached decoder hashing must not use blocking Path.open")
+            return native_path_open(candidate, *args, **kwargs)
+
+        with (
+            patch("vntts.path_safety.os.open", side_effect=swap_and_open),
+            patch.object(Path, "open", reject_plain_binary_open),
+            patch.object(decoder, "probe_game_decoder") as probe,
+        ):
+            self.assertFalse(decoder._probe_cached_decoder(executable, None))
+        probe.assert_not_called()
+        self.assertEqual(len(descriptors), 1)
+        with self.assertRaises(OSError):
+            os.fstat(descriptors[0])
+        executable.unlink()
+        executable.write_bytes(payload)
+        with patch.object(decoder, "probe_game_decoder") as probe:
+            self.assertTrue(decoder._probe_cached_decoder(executable, None))
+        probe.assert_called_once_with(executable, None)
 
     def test_staging_readonly_system_files_is_repeatable(self):
         source = self.root / "system-tool"
