@@ -4,6 +4,7 @@ from collections import OrderedDict
 from hashlib import blake2b
 from pathlib import Path
 from stat import S_ISREG
+from threading import RLock
 from time import time_ns
 from typing import Generic, TypeAlias, TypeVar
 
@@ -35,24 +36,28 @@ class BoundedCache(Generic[CacheKey, CacheValue]):
     def __init__(self, max_entries: int) -> None:
         self.max_entries = max(0, int(max_entries))
         self._values: OrderedDict[CacheKey, CacheValue] = OrderedDict()
+        self._lock = RLock()
 
     def get(self, key: CacheKey) -> CacheValue | None:
-        try:
-            self._values.move_to_end(key)
-        except KeyError:
-            return None
-        return self._values[key]
+        with self._lock:
+            try:
+                self._values.move_to_end(key)
+            except KeyError:
+                return None
+            return self._values[key]
 
     def put(self, key: CacheKey, value: CacheValue) -> None:
-        if self.max_entries == 0:
-            return
-        self._values[key] = value
-        self._values.move_to_end(key)
-        while len(self._values) > self.max_entries:
-            self._values.popitem(last=False)
+        with self._lock:
+            if self.max_entries == 0:
+                return
+            self._values[key] = value
+            self._values.move_to_end(key)
+            while len(self._values) > self.max_entries:
+                self._values.popitem(last=False)
 
     def clear(self) -> None:
-        self._values.clear()
+        with self._lock:
+            self._values.clear()
 
 
 class PersistentAudioCache:

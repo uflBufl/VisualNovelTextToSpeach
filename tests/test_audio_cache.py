@@ -1,13 +1,87 @@
 import unittest
+from collections import OrderedDict
 from pathlib import Path
 from stat import S_IFREG
 from tempfile import TemporaryDirectory
+from threading import Event, Thread, current_thread
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
 
-from vntts.audio_cache import PersistentAudioCache
+from vntts.audio_cache import BoundedCache, PersistentAudioCache
+
+
+class BoundedCacheTest(unittest.TestCase):
+    def test_read_keeps_its_value_until_concurrent_eviction_or_clear(self):
+        for clear in (False, True):
+            with self.subTest(clear=clear):
+                moved, release = Event(), Event()
+                writer_started, writer_finished = Event(), Event()
+                returned, errors = [], []
+                reader = None
+
+                class PausingValues(OrderedDict):
+                    def move_to_end(values, key):
+                        super().move_to_end(key)
+                        if current_thread() is reader:
+                            moved.set()
+                            if not release.wait(3):
+                                raise TimeoutError("reader was not released")
+
+                cache = BoundedCache(1)
+                cache._values = PausingValues()
+                cache.put("one", 1)
+
+                def read():
+                    try:
+                        returned.append(cache.get("one"))
+                    except Exception as error:
+                        errors.append(error)
+
+                mutate = cache.clear if clear else lambda: cache.put("two", 2)
+
+                def write():
+                    writer_started.set()
+                    try:
+                        mutate()
+                    except Exception as error:
+                        errors.append(error)
+                    finally:
+                        writer_finished.set()
+
+                reader = Thread(target=read)
+                writer = Thread(target=write)
+                reader.start()
+                try:
+                    self.assertTrue(moved.wait(2))
+                    writer.start()
+                    self.assertTrue(writer_started.wait(2))
+                    self.assertFalse(writer_finished.wait(0.1))
+                finally:
+                    release.set()
+                    reader.join(2)
+                    if writer.ident is not None:
+                        writer.join(2)
+                self.assertFalse(reader.is_alive())
+                self.assertFalse(writer.is_alive())
+                self.assertEqual(errors, [])
+                self.assertEqual(returned, [1])
+                self.assertIsNone(cache.get("one"))
+                self.assertEqual(cache.get("two"), None if clear else 2)
+
+    def test_eviction_allows_reentrant_value_cleanup(self):
+        cache = BoundedCache(1)
+        observed = []
+
+        class Value:
+            def __del__(self):
+                observed.append(cache.get("two"))
+
+        cache.put("one", Value())
+        cache.put("two", 2)
+
+        self.assertEqual(observed, [2])
 
 
 class PersistentAudioCacheTest(unittest.TestCase):
