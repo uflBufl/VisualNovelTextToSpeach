@@ -94,15 +94,15 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
                 & Qt.TextInteractionFlag.TextSelectableByMouse
             )
             self.assertEqual(
-                dialog.decision_context.values["game_speaker"].text(), "Dobharchu"
+                dialog.decision_context.values["game_speaker"], "Dobharchu"
             )
             self.assertIn(
                 "legacy review format",
-                dialog.decision_context.values["model"].text(),
+                dialog.decision_context.values["model"],
             )
             self.assertIn(
                 "later voice binding",
-                dialog.decision_context.values["effect"].text(),
+                dialog.decision_context.values["effect"],
             )
 
             self.finish_audio(dialog, "reference")
@@ -215,6 +215,41 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
 
         self.assertEqual(message, "Exact game portrait is not installed")
         self.assertLessEqual(maximum_height, 48)
+
+    def test_decision_context_normalizes_strings_and_preserves_summary_widgets(self):
+        from vntts.authoring.review_context_ui import ReviewDecisionContext
+
+        card = ReviewDecisionContext()
+        self.addCleanup(card.deleteLater)
+        card.set_context(
+            {"purpose": "  Compare  ", "reference": None, "controls": 0, "effect": " "},
+            technical="  provenance  ",
+        )
+        self.assertTrue(all(isinstance(value, str) for value in card.values.values()))
+        self.assertEqual(card.values["reference"], "Unknown")
+        self.assertEqual(card.purpose.text(), "You are deciding: Compare")
+        self.assertEqual(
+            card.identity.text(),
+            "Speaker in game: Unknown | Voice used: Unknown | Reference: Unknown",
+        )
+        self.assertEqual(
+            card.synthesis.text(), "Synthesis: Unknown | Unknown | Unknown | 0"
+        )
+        self.assertEqual(card.effect.text(), "Your decision will: Unknown")
+        self.assertEqual(card.identity.accessibleName(), "Speaker voice and reference")
+        self.assertTrue(card.identity.wordWrap())
+        self.assertTrue(
+            card.identity.textInteractionFlags()
+            & Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.assertEqual(card.technical.text(), "provenance")
+        card.technical_toggle.setChecked(True)
+        card.set_context({})
+        self.assertEqual(card.purpose.text(), "You are deciding: Unknown")
+        self.assertEqual(card.values["controls"], "Unknown")
+        self.assertTrue(card.technical_toggle.isHidden())
+        self.assertFalse(card.technical_toggle.isChecked())
+        self.assertTrue(card.technical.isHidden())
 
     def test_model_label_shortens_both_native_path_formats(self):
         from vntts.authoring.review_context_ui import review_model_label

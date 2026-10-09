@@ -245,19 +245,19 @@ class AuthoringMissingVoiceReuseReviewUiTest(unittest.TestCase):
             dialog = MissingVoiceReuseReviewDialog(session_path)
 
             values = dialog.decision_context.values
-            self.assertEqual(values["game_speaker"].text(), "Aderyn")
+            self.assertEqual(values["game_speaker"], "Aderyn")
             self.assertEqual(
-                values["synthesis_voice"].text(),
+                values["synthesis_voice"],
                 "Hidden for this blind comparison",
             )
             self.assertEqual(
-                values["reference"].text(),
+                values["reference"],
                 "Hidden for this blind comparison",
             )
-            self.assertEqual(values["backend"].text(), "moss-tts")
-            self.assertEqual(values["generation_profile"].text(), "stable")
-            self.assertIn("Seed: 0", values["controls"].text())
-            self.assertIn("bind one complete candidate", values["effect"].text())
+            self.assertEqual(values["backend"], "moss-tts")
+            self.assertEqual(values["generation_profile"], "stable")
+            self.assertIn("Seed: 0", values["controls"])
+            self.assertIn("bind one complete candidate", values["effect"])
             self.assertIn("Plan:", dialog.decision_context.technical.text())
             dialog.deleteLater()
 

@@ -222,16 +222,16 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
             self.assertFalse(dialog.stop.isEnabled())
             self.assertTrue(dialog.stop.accessibleName())
             self.assertEqual(
-                dialog.decision_context.values["game_speaker"].text(),
+                dialog.decision_context.values["game_speaker"],
                 dialog._current["speaker"],
             )
             self.assertIn(
                 "compared blind",
-                dialog.decision_context.values["reference"].text(),
+                dialog.decision_context.values["reference"],
             )
             self.assertIn(
                 "require repair",
-                dialog.decision_context.values["effect"].text(),
+                dialog.decision_context.values["effect"],
             )
             dialog.play_buttons[0].click()
             self.assertFalse(dialog.neither.isEnabled())

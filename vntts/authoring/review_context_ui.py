@@ -51,26 +51,21 @@ class ReviewDecisionContext(QGroupBox):
     """Present the same operator-facing decision facts across review dialogs."""
 
     FIELD_ORDER = (
-        ("purpose", "You are deciding"),
-        ("game_speaker", "Speaker in game"),
-        ("synthesis_voice", "Voice used"),
-        ("reference", "Reference audio"),
-        ("backend", "Backend"),
-        ("model", "Model"),
-        ("generation_profile", "Generation profile"),
-        ("controls", "Generation controls"),
-        ("effect", "Your decision will"),
+        "purpose",
+        "game_speaker",
+        "synthesis_voice",
+        "reference",
+        "backend",
+        "model",
+        "generation_profile",
+        "controls",
+        "effect",
     )
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("Decision context", parent)
         self.setAccessibleName("Authoring decision context")
-        self.values: dict[str, QLabel] = {}
-        for key, label in self.FIELD_ORDER:
-            value = QLabel("Unknown")
-            value.setAccessibleName(label)
-            value.hide()
-            self.values[key] = value
+        self.values: dict[str, str] = dict.fromkeys(self.FIELD_ORDER, "Unknown")
 
         self.purpose = self._summary_label("Decision purpose and effect")
         self.identity = self._summary_label("Speaker voice and reference")
@@ -110,11 +105,11 @@ class ReviewDecisionContext(QGroupBox):
 
     def set_context(self, values: Mapping[str, object], *, technical: str = "") -> None:
         """Update every canonical field; absent values stay explicit."""
-        for key, _label in self.FIELD_ORDER:
+        for key in self.FIELD_ORDER:
             value = values.get(key, "Unknown")
             text = str(value).strip() if value is not None else ""
-            self.values[key].setText(text or "Unknown")
-        value = {key: widget.text() for key, widget in self.values.items()}
+            self.values[key] = text or "Unknown"
+        value = self.values
         self.purpose.setText(f"You are deciding: {value['purpose']}")
         self.identity.setText(
             f"Speaker in game: {value['game_speaker']} | "

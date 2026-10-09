@@ -174,12 +174,12 @@ class FailureReferenceAuditUiTest(unittest.TestCase):
             )
             self.assertIn("Voice target: Rhiannon", dialog.summary.text())
             self.assertEqual(
-                dialog.decision_context.values["synthesis_voice"].text(), "Rhiannon"
+                dialog.decision_context.values["synthesis_voice"], "Rhiannon"
             )
-            self.assertIn("blinded", dialog.decision_context.values["reference"].text())
+            self.assertIn("blinded", dialog.decision_context.values["reference"])
             self.assertIn(
                 "does not approve",
-                dialog.decision_context.values["effect"].text(),
+                dialog.decision_context.values["effect"],
             )
             self.assertTrue(dialog.preview_text_choice.accessibleName())
             self.assertTrue(dialog.affected_text.isVisibleTo(dialog))

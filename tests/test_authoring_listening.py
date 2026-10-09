@@ -1131,11 +1131,11 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             self.assertEqual(dialog.trial_heading.text(), "Trial 1 of 3 | line-0")
             self.assertIn(
                 "blind comparison",
-                dialog.decision_context.values["model"].text(),
+                dialog.decision_context.values["model"],
             )
             self.assertIn(
                 "preference only",
-                dialog.decision_context.values["effect"].text(),
+                dialog.decision_context.values["effect"],
             )
             self.assertEqual(
                 dialog.dialogue.toPlainText(), "Shared listening line 0 ..."
