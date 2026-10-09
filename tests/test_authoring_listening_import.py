@@ -3,7 +3,7 @@ import json
 import os
 import shutil
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -12,6 +12,7 @@ from vntts_artifacts.file_integrity import sha256_file
 
 from tests.authoring_fixtures import tree_hashes
 from tests.listening_fixtures import write_listening_fixture
+from vntts.authoring import listening_import as listening_import_module
 from vntts.authoring.cli import main
 from vntts.authoring.listening_import import (
     IMPORT_SCHEMA,
@@ -26,6 +27,40 @@ from vntts.authoring.publication import (
 
 
 class ListeningImportTest(unittest.TestCase):
+    def test_final_inspection_read_failure_preserves_cause_and_cli_error(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = write_listening_fixture(root)
+            before = tree_hashes(root)
+            failure = PermissionError("Final listening source read was blocked")
+            original_check = listening_import_module._verify_controls_unchanged
+
+            def fail_final_read(inspection):
+                with patch.object(
+                    listening_import_module, "sha256_file", side_effect=failure
+                ):
+                    return original_check(inspection)
+
+            with patch.object(
+                listening_import_module,
+                "_verify_controls_unchanged",
+                side_effect=fail_final_read,
+            ):
+                with self.assertRaises(ListeningImportError) as caught:
+                    inspect_listening_session(source)
+                self.assertIs(caught.exception.__cause__, failure)
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with (
+                    redirect_stdout(stdout),
+                    redirect_stderr(stderr),
+                    self.assertRaises(SystemExit) as exited,
+                ):
+                    main(["inspect-listening", str(source)])
+                self.assertEqual(exited.exception.code, 2)
+                self.assertIn(str(failure), stderr.getvalue())
+                self.assertEqual(stdout.getvalue(), "")
+            self.assertEqual(tree_hashes(root), before)
+
     def test_atomic_publication_failure_is_translated_and_cleans_staging(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -118,6 +118,42 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
                 self.assertEqual(_tree_hashes(root), before)
                 self.assertEqual(list((root / "rebased").iterdir()), [])
 
+    def test_final_rechecks_translate_io_errors_and_clean_up(self):
+        for verifier_name in (
+            "_assert_workspace_authority_snapshots",
+            "_assert_rebase_snapshots",
+        ):
+            with (
+                self.subTest(verifier=verifier_name),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                _fixture, source, target = _prepare(root)
+                before = _tree_hashes(root)
+                verifier = getattr(config_rebase_module, verifier_name)
+                failure = PermissionError("final authority is unreadable")
+
+                def fail_final_hash(*args, **kwargs):
+                    with patch.object(
+                        config_rebase_module, "sha256_file", side_effect=failure
+                    ):
+                        return verifier(*args, **kwargs)
+
+                with (
+                    patch.object(
+                        config_rebase_module, verifier_name, side_effect=fail_final_hash
+                    ),
+                    self.assertRaisesRegex(
+                        AuthoringWorkbenchError, "final authority is unreadable"
+                    ) as caught,
+                ):
+                    rebase_workspace_config(source, target, root / "rebased")
+
+                self.assertIs(caught.exception.__cause__, failure)
+                self.assertEqual(_tree_hashes(root), before)
+                self.assertEqual(list((root / "rebased").iterdir()), [])
+                self.assertFalse(list(root.rglob(".generation-lease.json")))
+
     def test_rebase_projects_the_captured_target_state(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

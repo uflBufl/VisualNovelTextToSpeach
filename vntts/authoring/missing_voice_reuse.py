@@ -1553,6 +1553,7 @@ def _validate_inline_pause_prompt(prompt: JsonObject, target: JsonObject) -> Non
         )
 
 
+@publication_errors(MissingVoiceReuseError)
 def _assert_sources_unchanged(
     directory: Path,
     workspace_sha256: str,

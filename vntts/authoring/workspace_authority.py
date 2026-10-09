@@ -52,6 +52,7 @@ from vntts.authoring.offline_fallback_authority import (
     OfflineFallbackAuthorityError,
     validate_offline_fallback_authority_records,
 )
+from vntts.authoring.publication import publication_errors
 from vntts.authoring.queue_extension import (
     WORKSPACE_SCHEMA as QUEUE_EXTENSION_WORKSPACE_SCHEMA,
 )
@@ -1519,6 +1520,7 @@ def _stable_workspace_state(
     return loaded
 
 
+@publication_errors(AuthoringWorkbenchError)
 def _load_workspace_snapshot(
     workspace_directory: str | Path, label: str
 ) -> tuple[Path, WorkspaceDocument, str]:

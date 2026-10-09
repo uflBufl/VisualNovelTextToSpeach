@@ -1,12 +1,13 @@
 import json
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import vntts.story_index_snapshot as story_snapshot_module
+from tests.authoring_fixtures import tree_hashes
 from tests.missing_voice_reuse_fixtures import (
     build_failed_missing_voice_reuse_plan_fixture,
     build_missing_voice_reuse_plan_fixture,
@@ -76,6 +77,69 @@ class AuthoringMissingVoiceReuseTest(unittest.TestCase):
 
     def build_failed_plan(self, fixture, workspace):
         return build_failed_missing_voice_reuse_plan_fixture(fixture, workspace)
+
+    def test_final_source_read_failure_preserves_cause_and_prevents_plan_output(self):
+        for kind in ("document", "reference"):
+            with self.subTest(kind=kind), TemporaryDirectory() as directory:
+                root = Path(directory)
+                _, _, workspace = self.create_workspace(root)
+                before = tree_hashes(root)
+                output = root / "plan.json"
+                failure = PermissionError("Final reuse source read was blocked")
+                original_check = reuse_module._assert_sources_unchanged
+                original_hash = reuse_module.sha256_file
+
+                def fail_final_read(*arguments):
+                    target = arguments[0] / "workspace.json"
+                    if kind == "reference":
+                        target = (
+                            arguments[0]
+                            / "inputs/voice"
+                            / arguments[-1][0]["ordered_references"][0]["path"]
+                        )
+
+                    def rehash(path):
+                        if path == target:
+                            raise failure
+                        return original_hash(path)
+
+                    with patch.object(reuse_module, "sha256_file", side_effect=rehash):
+                        return original_check(*arguments)
+
+                with patch.object(
+                    reuse_module,
+                    "_assert_sources_unchanged",
+                    side_effect=fail_final_read,
+                ):
+                    with self.assertRaises(MissingVoiceReuseError) as caught:
+                        self.build_plan(workspace)
+                    self.assertIs(caught.exception.__cause__, failure)
+                    stdout, stderr = StringIO(), StringIO()
+                    with (
+                        redirect_stdout(stdout),
+                        redirect_stderr(stderr),
+                        self.assertRaises(SystemExit) as exited,
+                    ):
+                        authoring_main(
+                            [
+                                "missing-voice-reuse-plan",
+                                str(workspace),
+                                "Aderyn",
+                                "--cohort",
+                                "adult family=314601.png",
+                                "--candidate-voice",
+                                "Adult Aderyn",
+                                "--candidate-voice",
+                                "Centurion",
+                                "--output",
+                                str(output),
+                            ]
+                        )
+                    self.assertEqual(exited.exception.code, 2)
+                    self.assertIn(str(failure), stderr.getvalue())
+                    self.assertEqual(stdout.getvalue(), "")
+                self.assertFalse(output.exists())
+                self.assertEqual(tree_hashes(root), before)
 
     def test_plan_is_exact_small_and_does_not_mutate_workspace(self):
         with TemporaryDirectory() as directory:

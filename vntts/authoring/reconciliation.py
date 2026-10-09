@@ -1228,10 +1228,15 @@ def _assert_snapshots_unchanged(snapshots: SnapshotHashes) -> None:
                     f"Authority appeared during reconciliation: {path}"
                 )
             continue
-        if path.is_symlink() or not path.is_file() or sha256_file(path) != expected:
+        try:
+            if path.is_symlink() or not path.is_file() or sha256_file(path) != expected:
+                raise AuthoringReconciliationError(
+                    f"Authority changed during reconciliation: {path}"
+                )
+        except OSError as error:
             raise AuthoringReconciliationError(
-                f"Authority changed during reconciliation: {path}"
-            )
+                f"Unable to recheck authority {path}: {error}"
+            ) from error
 
 
 def _json_inventory(root: Path) -> tuple[str, ...]:

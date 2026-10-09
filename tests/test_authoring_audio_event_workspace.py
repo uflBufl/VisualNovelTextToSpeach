@@ -16,6 +16,7 @@ import vntts.authoring.workbench as workbench_module
 import vntts.authoring.workspace_creation as workspace_creation_module
 from tests.authoring_fixtures import (
     create_test_workspace,
+    tree_hashes,
 )
 from tests.authoring_fixtures import (
     write_audio_event_source_story as write_source_story,
@@ -52,6 +53,50 @@ from vntts.authoring.workbench import (
 
 
 class AudioEventWorkspaceTest(unittest.TestCase):
+    def test_final_source_recheck_translates_io_error_and_cleans_up(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, _queue_item, composition = self._base_and_composition(root)
+            before = {
+                path: digest
+                for path, digest in tree_hashes(root).items()
+                if not path.endswith(".guard")
+            }
+            verifier = workspace_creation_module._verify_audio_event_publication_sources
+            failure = PermissionError("final source is unreadable")
+
+            def fail_final_hash(*args, **kwargs):
+                with patch.object(
+                    workspace_creation_module, "sha256_file", side_effect=failure
+                ):
+                    return verifier(*args, **kwargs)
+
+            with (
+                patch.object(
+                    workspace_creation_module,
+                    "_verify_audio_event_publication_sources",
+                    side_effect=fail_final_hash,
+                ),
+                self.assertRaisesRegex(
+                    AuthoringWorkbenchError, "final source is unreadable"
+                ) as caught,
+            ):
+                create_audio_event_composition_workspace(
+                    base, composition.directory, root / "successors"
+                )
+
+            self.assertIs(caught.exception.__cause__, failure)
+            self.assertEqual(
+                {
+                    path: digest
+                    for path, digest in tree_hashes(root).items()
+                    if not path.endswith(".guard")
+                },
+                before,
+            )
+            self.assertEqual(list((root / "successors").iterdir()), [])
+            self.assertFalse(list(root.rglob(".generation-lease.json")))
+
     def _base_and_composition(self, root, *, approve=True, outcome_merge=False):
         _fixture, _imported, created = create_test_workspace(root, text="Tsk!")
         base = created.directory

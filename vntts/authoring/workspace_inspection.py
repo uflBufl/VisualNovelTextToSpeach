@@ -60,6 +60,7 @@ from vntts.authoring.missing_voice_policy import (
     MissingVoicePolicy,
     MissingVoicePolicyError,
 )
+from vntts.authoring.publication import publication_errors
 from vntts.authoring.source_reference_bindings import (
     SourceReferenceBindingError,
     queue_voice_overrides_from_manifest,
@@ -645,6 +646,7 @@ def list_review_items(
     return () if snapshot is None else snapshot.items
 
 
+@publication_errors(AuthoringWorkbenchError)
 def load_review_items_snapshot(
     workspace_directory: str | Path, queue_ids: object = None
 ) -> ReviewItemsSnapshot | None:
@@ -1190,6 +1192,7 @@ def _load_workbench_projection_read(
         )
 
 
+@publication_errors(AuthoringWorkbenchError)
 def _load_workbench_projection_read_scoped(
     workspace_directory: str | Path,
     *,

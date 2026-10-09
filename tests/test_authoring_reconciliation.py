@@ -1,6 +1,6 @@
 import json
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from copy import deepcopy
 from io import StringIO
 from pathlib import Path
@@ -890,6 +890,46 @@ class AuthoringReconciliationTest(unittest.TestCase):
                 ),
             ):
                 build_authoring_reconciliation(workspace, bundles)
+
+    def test_final_snapshot_read_error_preserves_cause_and_cli_fails_cleanly(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, workspace, _, _, bundles, _, _ = self.create_fixture(root)
+            before = tree_hashes(root)
+            output = root / "report.json"
+            failure = PermissionError("Authority read was blocked")
+            stdout = StringIO()
+            stderr = StringIO()
+            with patch.object(
+                reconciliation_module, "sha256_file", side_effect=failure
+            ):
+                with self.assertRaisesRegex(
+                    AuthoringReconciliationError, "Unable to recheck authority"
+                ) as caught:
+                    build_authoring_reconciliation(workspace, bundles)
+                self.assertIs(caught.exception.__cause__, failure)
+                with (
+                    redirect_stdout(stdout),
+                    redirect_stderr(stderr),
+                    self.assertRaises(SystemExit) as exited,
+                ):
+                    reconciliation_main(
+                        [
+                            "--primary-workspace",
+                            str(workspace),
+                            "--bundle-root",
+                            str(bundles),
+                            "--output",
+                            str(output),
+                        ]
+                    )
+            self.assertEqual(exited.exception.code, 2)
+            self.assertIn("Unable to recheck authority", stderr.getvalue())
+            self.assertIn(str(failure), stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertFalse(output.exists())
+            self.assertEqual(tree_hashes(root), before)
 
     def test_report_publication_is_no_replace_and_cli_matches(self):
         with TemporaryDirectory() as directory:

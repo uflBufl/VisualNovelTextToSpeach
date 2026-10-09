@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import vntts.authoring.workbench as workbench_module
 import vntts.authoring.workspace_creation as workspace_creation_module
-from tests.authoring_fixtures import create_failed_reference_workspace
+from tests.authoring_fixtures import create_failed_reference_workspace, tree_hashes
 from tests.bulk_generation_fixtures import SyntheticRenderer
 from tests.symlink_support import symlink_or_skip
 from vntts.authoring import (
@@ -48,6 +48,54 @@ from vntts.authoring.workbench import (
 
 
 class FailureReferenceBindingTest(unittest.TestCase):
+    def test_final_source_recheck_translates_io_error_and_cleans_up(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit, workspace, *_rest = self.create_decided_audit(root)
+            binding = root / "binding"
+            publish_failure_reference_binding(audit, binding)
+            before = {
+                path: digest
+                for path, digest in tree_hashes(root).items()
+                if not path.endswith(".guard")
+            }
+            verifier = (
+                workspace_creation_module._assert_failure_reference_sources_unchanged
+            )
+            failure = PermissionError("final source is unreadable")
+
+            def fail_final_hash(*args, **kwargs):
+                with patch.object(
+                    workspace_creation_module, "sha256_file", side_effect=failure
+                ):
+                    return verifier(*args, **kwargs)
+
+            with (
+                patch.object(
+                    workspace_creation_module,
+                    "_assert_failure_reference_sources_unchanged",
+                    side_effect=fail_final_hash,
+                ),
+                self.assertRaisesRegex(
+                    AuthoringWorkbenchError, "final source is unreadable"
+                ) as caught,
+            ):
+                create_failure_reference_workspace(
+                    workspace, binding, root / "successors"
+                )
+
+            self.assertIs(caught.exception.__cause__, failure)
+            self.assertEqual(
+                {
+                    path: digest
+                    for path, digest in tree_hashes(root).items()
+                    if not path.endswith(".guard")
+                },
+                before,
+            )
+            self.assertEqual(list((root / "successors").iterdir()), [])
+            self.assertFalse(list(root.rglob(".generation-lease.json")))
+
     def create_decided_audit(self, root):
         workspace, queue_id = create_failed_reference_workspace(root)
         state_path = workspace / "generated-audio/generation-state.json"

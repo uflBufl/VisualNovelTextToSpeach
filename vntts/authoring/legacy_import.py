@@ -1332,6 +1332,7 @@ def _validate_existing_artifacts(
             )
 
 
+@publication_errors(LegacyAuthoringImportError)
 def _verify_source_controls_unchanged(plan: _ImportPlan) -> None:
     for artifact in plan.artifacts:
         if (

@@ -95,6 +95,7 @@ from vntts.authoring.offline_fallback_authority import (
 from vntts.authoring.publication import (
     AtomicPublicationError,
     generation_publication_leases,
+    publication_errors,
     staged_directory,
 )
 from vntts.authoring.publication import (
@@ -994,6 +995,7 @@ def _stage_failure_reference_workspace(
     return binding_config, destination
 
 
+@publication_errors(AuthoringWorkbenchError)
 def _assert_failure_reference_sources_unchanged(
     snapshots: Iterable[WorkspaceSnapshot],
 ) -> None:
@@ -1267,6 +1269,7 @@ def _publish_audio_event_workspace(
     return WorkspaceCreationResult(destination, True)
 
 
+@publication_errors(AuthoringWorkbenchError)
 def _verify_audio_event_publication_sources(
     snapshots: Iterable[WorkspaceSnapshot],
 ) -> None:
@@ -2172,6 +2175,7 @@ def _validate_carry_forward_results(
         )
 
 
+@publication_errors(AuthoringWorkbenchError)
 def _publish_carry_forward_staging(
     target_state_path: Path,
     target_state: GenerationState,
@@ -2825,6 +2829,7 @@ def _read_source_bytes(path: Path, label: str) -> tuple[bytes, str]:
     return payload, hashlib.sha256(payload).hexdigest()
 
 
+@publication_errors(AuthoringWorkbenchError)
 def _verify_selected_sources(selected_sources: Iterable[SelectedSource]) -> None:
     for path, digest, label in selected_sources:
         if not path.is_file() or sha256_file(path) != digest:
@@ -2867,6 +2872,7 @@ def _selected_voice_manifest(
     return manifest
 
 
+@publication_errors(AuthoringWorkbenchError)
 def _verify_import_sources(
     source: Path,
     copied: Iterable[ArtifactRecord],

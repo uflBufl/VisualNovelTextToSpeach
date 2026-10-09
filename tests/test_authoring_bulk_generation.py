@@ -19,6 +19,7 @@ from vntts_artifacts.generated_audio import GeneratedAudioIndex
 
 import vntts.authoring.bulk_generation as bulk_module
 import vntts.authoring.generation_lease as generation_lease_module
+from tests.authoring_fixtures import tree_hashes
 from tests.bulk_generation_fixtures import (
     SyntheticRenderer,
     audio_samples,
@@ -553,6 +554,136 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         )
         self.assertEqual(decision["evidence"]["base_result"]["provider"], "moss-tts")
         self.assertEqual(stored["status"], "live_fallback")
+
+    def test_review_authority_final_read_error_preserves_cause_and_sources(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            result = self.run_generation(queue, root / "output", SyntheticRenderer())
+            before = tree_hashes(root)
+            failure = PermissionError("Review state recheck was blocked")
+            checksum = bulk_module.sha256_file
+
+            def unreadable_state(path):
+                if Path(path) == result.state:
+                    raise failure
+                return checksum(path)
+
+            with (
+                patch.object(bulk_module, "sha256_file", side_effect=unreadable_state),
+                self.assertRaises(BulkGenerationError) as caught,
+            ):
+                generation_review_authority(result.state, item["queue_id"])
+
+            self.assertIs(caught.exception.__cause__, failure)
+            self.assertEqual(tree_hashes(root), before)
+
+    def test_cohort_final_read_errors_preserve_authority_and_clean_staging(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            items = [queue_item("first"), queue_item("second")]
+            queue = write_queue(root / "queue.jsonl", items)
+            result = self.run_generation(queue, root / "output", SyntheticRenderer())
+            authorities = generation_review_authorities(
+                result.state, [item["queue_id"] for item in items]
+            )
+            decisions = {
+                items[0]["queue_id"]: "rejected",
+                items[1]["queue_id"]: "approved",
+            }
+            before = tree_hashes(root)
+            for name, failed_read in (
+                ("_assert_cohort_review_snapshot_stable", 1),
+                ("_assert_cohort_commit_authority", 2),
+            ):
+                with self.subTest(recheck=name):
+                    check = getattr(bulk_module, name)
+                    checksum = bulk_module.sha256_file
+                    failure = PermissionError("Cohort state recheck was blocked")
+                    state_reads = 0
+
+                    def unreadable_state(path):
+                        nonlocal state_reads
+                        if Path(path) == result.state:
+                            state_reads += 1
+                            if state_reads == failed_read:
+                                raise failure
+                        return checksum(path)
+
+                    def fail_final_check(*args, **kwargs):
+                        with patch.object(
+                            bulk_module, "sha256_file", side_effect=unreadable_state
+                        ):
+                            return check(*args, **kwargs)
+
+                    with (
+                        patch.object(bulk_module, name, side_effect=fail_final_check),
+                        self.assertRaises(BulkGenerationError) as caught,
+                    ):
+                        bulk_module.review_generation_cohort(
+                            result.state,
+                            queue,
+                            authorities,
+                            decisions,
+                            provenance={"test": "unreadable-final-authority"},
+                        )
+
+                    self.assertIs(caught.exception.__cause__, failure)
+                    self.assertEqual(state_reads, failed_read)
+                    self.assertEqual(tree_hashes(root), before)
+                    self.assertFalse(list(result.state.parent.glob("*.tmp")))
+                    self.assertFalse(
+                        (result.state.parent / ".generation-lease.json").exists()
+                    )
+
+    def test_live_fallback_final_read_error_preserves_authority_and_cleans_staging(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            renderer = SyntheticRenderer([SynthesisCompletion.LIMITED])
+            renderer.name = "pocket-tts"
+            renderer.model_name = "pocket-tts"
+            result = run_bulk_generation(
+                queue,
+                root / "output",
+                renderer,
+                provider="pocket-tts",
+                model="pocket-tts",
+                generation_profile="default",
+                retries=0,
+            )
+            before = tree_hashes(root)
+            failure = PermissionError("Fallback authority recheck was blocked")
+            check = bulk_module._assert_live_fallback_commit_sources
+
+            def fail_final_check(*args, **kwargs):
+                with patch.object(bulk_module, "sha256_file", side_effect=failure):
+                    return check(*args, **kwargs)
+
+            with (
+                patch.object(
+                    bulk_module,
+                    "_assert_live_fallback_commit_sources",
+                    side_effect=fail_final_check,
+                ),
+                self.assertRaises(BulkGenerationError) as caught,
+            ):
+                authorize_live_fallback(
+                    result.state,
+                    queue,
+                    item["queue_id"],
+                    reason="automatic_recovery_exhausted",
+                    model="pocket-tts",
+                )
+
+            self.assertIs(caught.exception.__cause__, failure)
+            self.assertEqual(tree_hashes(root), before)
+            self.assertFalse(list(result.state.parent.glob("*.tmp")))
+            self.assertFalse((result.state.parent / ".generation-lease.json").exists())
 
     def test_batch_review_authorities_share_one_state_snapshot(self):
         with TemporaryDirectory() as directory:

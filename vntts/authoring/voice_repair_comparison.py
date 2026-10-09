@@ -28,6 +28,7 @@ from vntts.authoring.cohort_review import (
 )
 from vntts.authoring.publication import (
     AtomicPublicationError,
+    publication_errors,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -1465,6 +1466,7 @@ def _validate_variants(variants: Sequence[JsonObject]) -> None:
             _required_sha256(reference.get("sha256"), "Comparison reference SHA-256")
 
 
+@publication_errors(VoiceRepairComparisonError)
 def _rehash_sources(
     directory: Path,
     workspace_sha256: str,

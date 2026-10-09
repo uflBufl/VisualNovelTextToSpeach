@@ -183,7 +183,7 @@ from vntts.authoring.missing_voice_policy import (
     MissingVoicePolicy,
     MissingVoicePolicyError,
 )
-from vntts.authoring.publication import no_replace_destination
+from vntts.authoring.publication import no_replace_destination, publication_errors
 from vntts.authoring.silence_evidence import publish_silence_failure_evidence
 from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
 from vntts.authoring.speech_quality import (
@@ -585,6 +585,7 @@ def generation_review_authority(
     return authority
 
 
+@publication_errors(BulkGenerationError)
 def generation_review_authorities(
     state_path: str | Path, queue_ids: Sequence[object]
 ) -> dict[str, ReviewAuthority]:
@@ -774,6 +775,7 @@ def _review_snapshot_audio(
     return payload
 
 
+@publication_errors(BulkGenerationError)
 def _assert_cohort_review_snapshot_stable(
     state_path: Path,
     queue_path: Path,
@@ -3699,6 +3701,7 @@ def _write_conservative_cohort_manifest(
         )
 
 
+@publication_errors(BulkGenerationError)
 def _assert_cohort_commit_authority(
     state_path: Path,
     queue_path: Path,
@@ -4171,6 +4174,7 @@ def _commit_live_fallback(
                 pass
 
 
+@publication_errors(BulkGenerationError)
 def _assert_live_fallback_commit_sources(
     state_path: Path,
     queue_path: Path,

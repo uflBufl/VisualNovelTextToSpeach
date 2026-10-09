@@ -42,7 +42,8 @@ def create_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    options = create_parser().parse_args(argv)
+    parser = create_parser()
+    options = parser.parse_args(argv)
     try:
         report = build_authoring_reconciliation(
             options.primary_workspace,
@@ -53,7 +54,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if options.output is not None:
             write_authoring_reconciliation(report, options.output)
     except AuthoringReconciliationError as error:
-        create_parser().error(str(error))
+        parser.error(str(error))
     payload = report.document
     if options.output is not None:
         payload = {

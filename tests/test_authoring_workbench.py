@@ -4,7 +4,7 @@ import os
 import shutil
 import subprocess
 import unittest
-from contextlib import redirect_stdout
+from contextlib import nullcontext, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -201,6 +201,85 @@ def write_terminal_merge_reconciliation(root, base, source, queue_id):
 
 
 class AuthoringWorkbenchTest(unittest.TestCase):
+    def test_workspace_final_read_errors_preserve_domain_cause_and_sources(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, _, workspace = create_test_workspace(root)
+            workspace_path = workspace.directory / "workspace.json"
+            state_path = workspace.directory / "generated-audio/generation-state.json"
+            before = tree_hashes(root)
+            for module, read, hook, target in (
+                (
+                    workspace_authority_module,
+                    workspace_authority_module.load_workspace_authority,
+                    "_load_workspace",
+                    workspace_path,
+                ),
+                (workspace_inspection_module, inspect_workspace, None, state_path),
+                (workspace_inspection_module, inspect_workspace, None, workspace_path),
+                (
+                    workspace_inspection_module,
+                    workspace_inspection_module.load_review_items_snapshot,
+                    "_list_review_items_from_read",
+                    state_path,
+                ),
+            ):
+                with self.subTest(read=read.__name__, target=target.name):
+                    failure = PermissionError("Workspace authority recheck was blocked")
+                    checksum = module.sha256_file
+                    final_read = hook is None
+                    original = getattr(module, hook) if hook is not None else None
+
+                    def unavailable(path):
+                        if final_read and Path(path) == target:
+                            raise failure
+                        return checksum(path)
+
+                    def block_after_read(*args, **kwargs):
+                        nonlocal final_read
+                        result = original(*args, **kwargs)
+                        final_read = True
+                        return result
+
+                    with (
+                        patch.object(module, "sha256_file", side_effect=unavailable),
+                        patch.object(module, hook, side_effect=block_after_read)
+                        if hook is not None
+                        else nullcontext(),
+                        self.assertRaises(AuthoringWorkbenchError) as caught,
+                    ):
+                        read(workspace.directory)
+
+                    self.assertIs(caught.exception.__cause__, failure)
+                    self.assertEqual(tree_hashes(root), before)
+
+    def test_stable_workspace_final_read_error_uses_the_callers_error_type(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, _, workspace = create_test_workspace(root)
+            document = json.loads(
+                (workspace.directory / "workspace.json").read_text(encoding="utf-8")
+            )
+            before = tree_hashes(root)
+            failure = PermissionError("Stable workspace state recheck was blocked")
+            for error_type in (ValueError, AuthoringWorkbenchError):
+                with (
+                    self.subTest(error_type=error_type.__name__),
+                    patch.object(
+                        workspace_state_module, "sha256_file", side_effect=failure
+                    ),
+                    self.assertRaises(error_type) as caught,
+                ):
+                    workspace_state_module.load_stable_workspace_generation_state(
+                        workspace.directory,
+                        document,
+                        "unreadable",
+                        error_type=error_type,
+                    )
+
+                self.assertIs(caught.exception.__cause__, failure)
+                self.assertEqual(tree_hashes(root), before)
+
     def test_workspace_state_rejects_non_object_generation_state(self):
         with TemporaryDirectory() as directory:
             _fixture, _imported, workspace = create_test_workspace(Path(directory))
@@ -2232,69 +2311,114 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             ["sentence_boundary_segmentation"],
         )
 
-    def test_outcome_merge_copies_only_exact_reviewed_repair_and_is_idempotent(self):
+    def _create_outcome_merge_repair(self, root):
         from tests.bulk_generation_fixtures import SyntheticRenderer
         from vntts.authoring.bulk_generation import (
-            load_generation_state,
             run_bulk_generation,
         )
         from vntts.synthesis import SynthesisCompletion
 
         text = "The first sentence is complete. The second sentence is also complete."
+        fixture, imported, source = create_carry_source_workspace(root, text=text)
+        queue_path = source.directory / "queue.jsonl"
+        source_state_path = source.directory / "generated-audio/generation-state.json"
+        failed_renderer = SyntheticRenderer(
+            [SynthesisCompletion.LIMITED], diagnostics_backend="moss-tts"
+        )
+        failed_renderer.name = "moss-tts"
+        failed_renderer.model_name = "model with spaces"
+        run_bulk_generation(
+            queue_path,
+            source.directory / "generated-audio",
+            failed_renderer,
+            provider="moss-tts",
+            model="model with spaces",
+            generation_profile="stable",
+            retries=0,
+            seed=0,
+            include_queue_ids=(fixture["queue_id"],),
+            regenerate_existing=True,
+        )
+        source_state_before = source_state_path.read_bytes()
+        policy = FailureRepairPolicy(sentence_segment_queue_ids=(fixture["queue_id"],))
+        repaired = create_resume_workspace(
+            imported,
+            root / "repairs",
+            story_index=fixture["job"]["story_index"],
+            voice_manifest=fixture["job"]["voice_manifest"],
+            backend="moss-tts",
+            model="model with spaces",
+            generation_profile="stable",
+            narrator_character="Rhiannon",
+            failure_repair_policy=policy,
+            carry_forward_from=source.directory,
+        )
+        success_renderer = SyntheticRenderer(diagnostics_backend="moss-tts")
+        success_renderer.name = "moss-tts"
+        success_renderer.model_name = "model with spaces"
+        run_bulk_generation(
+            repaired.directory / "queue.jsonl",
+            repaired.directory / "generated-audio",
+            success_renderer,
+            provider="moss-tts",
+            model="model with spaces",
+            generation_profile="stable",
+            retries=0,
+            seed=0,
+            include_queue_ids=(fixture["queue_id"],),
+            failure_repair_policy=policy,
+        )
+        return fixture, source, repaired, source_state_before
+
+    def test_outcome_merge_final_read_error_preserves_sources_and_cleans_up(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            fixture, imported, source = create_carry_source_workspace(root, text=text)
-            queue_path = source.directory / "queue.jsonl"
+            fixture, source, repaired, _ = self._create_outcome_merge_repair(root)
+            review_workspace_item(repaired.directory, fixture["queue_id"], "approved")
+            sources_before = (
+                tree_hashes(source.directory),
+                tree_hashes(repaired.directory),
+            )
+            publisher = workspace_outcome_merge_module._publish_staged_outcome_merge
+            failure = PermissionError("outcome merge authority is unreadable")
+
+            def fail_final_hash(*args, **kwargs):
+                with patch.object(
+                    workspace_outcome_merge_module, "sha256_file", side_effect=failure
+                ):
+                    return publisher(*args, **kwargs)
+
+            with (
+                patch.object(
+                    workspace_outcome_merge_module,
+                    "_publish_staged_outcome_merge",
+                    side_effect=fail_final_hash,
+                ),
+                self.assertRaisesRegex(
+                    AuthoringWorkbenchError, "outcome merge authority is unreadable"
+                ) as caught,
+            ):
+                merge_workspace_outcomes(
+                    source.directory, (repaired.directory,), root / "merged"
+                )
+            self.assertIs(caught.exception.__cause__, failure)
+            self.assertEqual(
+                (tree_hashes(source.directory), tree_hashes(repaired.directory)),
+                sources_before,
+            )
+            self.assertEqual(list((root / "merged").iterdir()), [])
+            self.assertFalse(list(root.rglob(".generation-lease.json")))
+
+    def test_outcome_merge_copies_only_exact_reviewed_repair_and_is_idempotent(self):
+        from vntts.authoring.bulk_generation import load_generation_state
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, source, repaired, source_state_before = (
+                self._create_outcome_merge_repair(root)
+            )
             source_state_path = (
                 source.directory / "generated-audio/generation-state.json"
-            )
-            failed_renderer = SyntheticRenderer(
-                [SynthesisCompletion.LIMITED], diagnostics_backend="moss-tts"
-            )
-            failed_renderer.name = "moss-tts"
-            failed_renderer.model_name = "model with spaces"
-            run_bulk_generation(
-                queue_path,
-                source.directory / "generated-audio",
-                failed_renderer,
-                provider="moss-tts",
-                model="model with spaces",
-                generation_profile="stable",
-                retries=0,
-                seed=0,
-                include_queue_ids=(fixture["queue_id"],),
-                regenerate_existing=True,
-            )
-            source_state_before = source_state_path.read_bytes()
-            policy = FailureRepairPolicy(
-                sentence_segment_queue_ids=(fixture["queue_id"],)
-            )
-            repaired = create_resume_workspace(
-                imported,
-                root / "repairs",
-                story_index=fixture["job"]["story_index"],
-                voice_manifest=fixture["job"]["voice_manifest"],
-                backend="moss-tts",
-                model="model with spaces",
-                generation_profile="stable",
-                narrator_character="Rhiannon",
-                failure_repair_policy=policy,
-                carry_forward_from=source.directory,
-            )
-            success_renderer = SyntheticRenderer(diagnostics_backend="moss-tts")
-            success_renderer.name = "moss-tts"
-            success_renderer.model_name = "model with spaces"
-            run_bulk_generation(
-                repaired.directory / "queue.jsonl",
-                repaired.directory / "generated-audio",
-                success_renderer,
-                provider="moss-tts",
-                model="model with spaces",
-                generation_profile="stable",
-                retries=0,
-                seed=0,
-                include_queue_ids=(fixture["queue_id"],),
-                failure_repair_policy=policy,
             )
             with self.assertRaisesRegex(
                 AuthoringWorkbenchError, "no reviewed repair outcomes"
@@ -2307,7 +2431,6 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 repaired.directory / "generated-audio/generation-state.json"
             )
             repair_state_before = repair_state_path.read_bytes()
-
             merged = merge_workspace_outcomes(
                 source.directory, (repaired.directory,), root / "merged"
             )
@@ -2880,6 +3003,121 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                     generation_profile="stable",
                     narrator_character="Rhiannon",
                 )
+
+    def test_resume_final_input_rechecks_translate_io_errors_and_clean_up(self):
+        for verifier_name, failing_hash in (
+            ("_verify_import_sources", 1),
+            ("_verify_import_sources", 2),
+            ("_verify_selected_sources", 1),
+        ):
+            with (
+                self.subTest(verifier=verifier_name, failing_hash=failing_hash),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                fixture, imported, _created = self.create_workspace(root)
+                before = tree_hashes(root)
+                verifier = getattr(workspace_creation_module, verifier_name)
+                original_hash = workspace_creation_module.sha256_file
+                failure = PermissionError("final input is unreadable")
+                hash_calls = 0
+
+                def fail_hash(path):
+                    nonlocal hash_calls
+                    hash_calls += 1
+                    if hash_calls == failing_hash:
+                        raise failure
+                    return original_hash(path)
+
+                def fail_final_hash(*args, **kwargs):
+                    with patch.object(
+                        workspace_creation_module, "sha256_file", side_effect=fail_hash
+                    ):
+                        return verifier(*args, **kwargs)
+
+                with (
+                    patch.object(
+                        workspace_creation_module,
+                        verifier_name,
+                        side_effect=fail_final_hash,
+                    ),
+                    self.assertRaisesRegex(
+                        AuthoringWorkbenchError, "final input is unreadable"
+                    ) as caught,
+                ):
+                    create_resume_workspace(
+                        imported,
+                        root / "successors",
+                        story_index=fixture["job"]["story_index"],
+                        voice_manifest=fixture["job"]["voice_manifest"],
+                        backend="moss-tts",
+                        model="model with spaces",
+                        generation_profile="stable",
+                        narrator_character="Rhiannon",
+                    )
+
+                self.assertIs(caught.exception.__cause__, failure)
+                self.assertEqual(tree_hashes(root), before)
+                self.assertEqual(list((root / "successors").iterdir()), [])
+                self.assertFalse(list(root.rglob(".generation-lease.json")))
+
+    def test_carry_forward_final_rechecks_translate_io_errors_and_clean_up(self):
+        for authority in ("state", "wav"):
+            with self.subTest(authority=authority), TemporaryDirectory() as directory:
+                root = Path(directory)
+                fixture, imported, source = create_carry_source_workspace(root)
+                review_workspace_item(source.directory, fixture["queue_id"], "approved")
+                target_manifest = write_carry_target_manifest(root)
+                before = tree_hashes(root)
+                publisher = workspace_creation_module._publish_carry_forward_staging
+                original_hash = workspace_creation_module.sha256_file
+                failure = PermissionError("carry-forward authority is unreadable")
+
+                def fail_final_hash(target_state_path, target_state, source, snapshots):
+                    snapshots = tuple(snapshots)
+                    failed_path = (
+                        source.state_path if authority == "state" else snapshots[0][0]
+                    )
+
+                    def fail_hash(path):
+                        if path == failed_path:
+                            raise failure
+                        return original_hash(path)
+
+                    with patch.object(
+                        workspace_creation_module, "sha256_file", side_effect=fail_hash
+                    ):
+                        return publisher(
+                            target_state_path, target_state, source, snapshots
+                        )
+
+                with (
+                    patch.object(
+                        workspace_creation_module,
+                        "_publish_carry_forward_staging",
+                        side_effect=fail_final_hash,
+                    ),
+                    self.assertRaisesRegex(
+                        AuthoringWorkbenchError, "carry-forward authority is unreadable"
+                    ) as caught,
+                ):
+                    create_resume_workspace(
+                        imported,
+                        root / "successors",
+                        story_index=fixture["job"]["story_index"],
+                        voice_manifest=target_manifest,
+                        backend="moss-tts",
+                        model="model with spaces",
+                        generation_profile="stable",
+                        narrator_character="Paper Heron",
+                        carry_forward_from=source.directory,
+                        carry_forward_characters=("Rhiannon",),
+                    )
+
+                self.assertIs(caught.exception.__cause__, failure)
+                self.assertEqual(tree_hashes(root), before)
+                self.assertEqual(list((root / "successors").iterdir()), [])
+                self.assertFalse(list(root.rglob(".generation-lease.json")))
 
     def test_import_manifest_mutation_during_creation_aborts_without_workspace(self):
         with TemporaryDirectory() as directory:

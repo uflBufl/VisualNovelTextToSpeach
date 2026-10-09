@@ -1056,7 +1056,7 @@
       "path": "tests/test_authoring_workbench.py",
       "scope": "AuthoringWorkbenchTest.test_outcome_merge_copies_only_exact_reviewed_repair_and_is_idempotent",
       "count": 1,
-      "maximum": 68
+      "maximum": 53
     },
     {
       "code": "PLR0915",

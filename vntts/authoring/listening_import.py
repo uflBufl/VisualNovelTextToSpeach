@@ -690,6 +690,7 @@ def _validate_existing(
     return ListeningImportResult(destination, manifest, False)
 
 
+@publication_errors(ListeningImportError)
 def _verify_controls_unchanged(inspection: ListeningImportInspection) -> None:
     for role, source, _relative, digest in inspection.artifacts:
         if not source.is_file() or sha256_file(source) != digest:

@@ -31,6 +31,7 @@ from vntts.authoring.missing_voice_policy import MissingVoicePolicy
 from vntts.authoring.publication import (
     AtomicPublicationError,
     generation_publication_leases,
+    publication_errors,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -284,6 +285,7 @@ def _publish_rebase_workspace(
         return _publish_staged_rebase(staging, destination, rebase, leases)
 
 
+@publication_errors(AuthoringWorkbenchError)
 def _assert_workspace_authority_snapshots(selection: _RebaseSelection) -> None:
     for directory, digest, label in (
         (selection.source_directory, selection.source_workspace_sha256, "source"),
@@ -935,6 +937,7 @@ def _validate_staged_rebase(
         lease.assert_owned()
 
 
+@publication_errors(AuthoringWorkbenchError)
 def _assert_rebase_snapshots(snapshots: Sequence[tuple[Path, str]]) -> None:
     for path, digest in snapshots:
         if not path.is_file() or sha256_file(path) != digest:

@@ -1,12 +1,13 @@
 import hashlib
 import json
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
-from tests.authoring_fixtures import create_test_workspace
+from tests.authoring_fixtures import create_test_workspace, tree_hashes
 from tests.symlink_support import symlink_or_skip
 from vntts.authoring import voice_repair_comparison as comparison_module
 from vntts.authoring.bulk_generation import _canonical_sha256
@@ -78,6 +79,48 @@ class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
             symlink_or_skip(root / "missing.wav", outside)
             with self.assertRaisesRegex(VoiceRepairComparisonError, "symlink"):
                 comparison_module._candidate_source_manifest(manifest, plan)
+
+    def test_final_source_read_failure_preserves_cause_and_prevents_plan_output(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, workspace, _ = self.create_rejected_workspace(root)
+            before = tree_hashes(root)
+            output = root / "comparison.json"
+            failure = PermissionError("Final repair source read was blocked")
+            original_check = comparison_module._rehash_sources
+
+            def fail_final_read(*arguments):
+                with patch.object(
+                    comparison_module, "sha256_file", side_effect=failure
+                ):
+                    return original_check(*arguments)
+
+            with patch.object(
+                comparison_module, "_rehash_sources", side_effect=fail_final_read
+            ):
+                with self.assertRaises(VoiceRepairComparisonError) as caught:
+                    build_voice_repair_comparison_plan(workspace, "Rhiannon")
+                self.assertIs(caught.exception.__cause__, failure)
+                stdout, stderr = StringIO(), StringIO()
+                with (
+                    redirect_stdout(stdout),
+                    redirect_stderr(stderr),
+                    self.assertRaises(SystemExit) as exited,
+                ):
+                    authoring_main(
+                        [
+                            "voice-repair-comparison-plan",
+                            str(workspace),
+                            "Rhiannon",
+                            "--output",
+                            str(output),
+                        ]
+                    )
+                self.assertEqual(exited.exception.code, 2)
+                self.assertIn(str(failure), stderr.getvalue())
+                self.assertEqual(stdout.getvalue(), "")
+            self.assertFalse(output.exists())
+            self.assertEqual(tree_hashes(root), before)
 
     def test_plan_binds_exact_unresolved_item_and_supported_profiles(self):
         with TemporaryDirectory() as directory:

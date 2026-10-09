@@ -32,6 +32,7 @@ from vntts.authoring.generation_manifest import write_generated_manifest_from_st
 from vntts.authoring.publication import (
     AtomicPublicationError,
     generation_publication_leases,
+    publication_errors,
     staged_directory,
 )
 from vntts.authoring.publication import (
@@ -596,6 +597,7 @@ def _commit_staged_outcome_merge(
     return WorkspaceCreationResult(destination, True)
 
 
+@publication_errors(AuthoringWorkbenchError)
 def _publish_staged_outcome_merge(
     base: _OutcomeMergeBase,
     source_values: Sequence[Path],

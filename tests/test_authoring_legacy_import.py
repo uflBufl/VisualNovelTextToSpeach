@@ -2,7 +2,7 @@ import io
 import json
 import os
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -12,7 +12,7 @@ from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
 )
 
-from tests.authoring_fixtures import write_legacy_fixture
+from tests.authoring_fixtures import tree_hashes, write_legacy_fixture
 from vntts.authoring import legacy_import as legacy_module
 from vntts.authoring.cli import main
 from vntts.authoring.legacy_import import (
@@ -27,6 +27,58 @@ from vntts.authoring.publication import AtomicPublicationError
 
 
 class LegacyAuthoringImportTest(unittest.TestCase):
+    def test_final_inspection_read_failure_is_a_domain_error_and_discovery_diagnostic(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = write_legacy_fixture(root)
+            before = tree_hashes(root)
+            failure = PermissionError("Final legacy source read was blocked")
+            original_check = legacy_module._verify_source_controls_unchanged
+
+            def fail_final_read(plan):
+                with patch.object(legacy_module, "sha256_file", side_effect=failure):
+                    return original_check(plan)
+
+            with patch.object(
+                legacy_module,
+                "_verify_source_controls_unchanged",
+                side_effect=fail_final_read,
+            ):
+                with self.assertRaises(LegacyAuthoringImportError) as caught:
+                    inspect_standalone_generation(
+                        fixture["queue"], fixture["state"].parent
+                    )
+                self.assertIs(caught.exception.__cause__, failure)
+                candidates = discover_legacy_jobs(fixture["job_directory"].parent)
+                selected = next(
+                    item
+                    for item in candidates
+                    if item.job_directory.resolve()
+                    == fixture["job_directory"].resolve()
+                )
+                self.assertIn(str(failure), selected.compatibility_error)
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with (
+                    redirect_stdout(stdout),
+                    redirect_stderr(stderr),
+                    self.assertRaises(SystemExit) as exited,
+                ):
+                    main(
+                        [
+                            "inspect-standalone",
+                            "--queue",
+                            str(fixture["queue"]),
+                            "--output",
+                            str(fixture["state"].parent),
+                        ]
+                    )
+                self.assertEqual(exited.exception.code, 2)
+                self.assertIn(str(failure), stderr.getvalue())
+                self.assertEqual(stdout.getvalue(), "")
+            self.assertEqual(tree_hashes(root), before)
+
     def test_atomic_publication_failure_is_translated_and_cleans_staging(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
