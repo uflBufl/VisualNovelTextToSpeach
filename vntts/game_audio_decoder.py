@@ -22,6 +22,7 @@ from vntts.application_directories import get_local_data_directory
 from vntts.authoring.advisory_lock import AdvisoryLockBusyError, exclusive_advisory_lock
 from vntts.cleanup import cleanup_on_exit, temporary_directory
 from vntts.json_types import decode_json
+from vntts.path_safety import open_regular_binary
 from vntts.runtime_paths import get_bundle_root
 from vntts.subprocess_utils import terminate_process
 
@@ -324,7 +325,7 @@ def _probe_cached_decoder(executable: Path, cancellation: Cancellation | None) -
     manifest = executable.parent / "verified.json"
     if manifest.is_file() and not manifest.is_symlink() and not manifest.is_junction():
         try:
-            with manifest.open("rb") as source:
+            with open_regular_binary(manifest) as source:
                 payload = source.read(_VERIFICATION_RECORD_READ_LIMIT + 1)
             if len(payload) > _VERIFICATION_RECORD_READ_LIMIT:
                 raise ValueError("verification record is too large")

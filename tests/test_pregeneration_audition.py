@@ -507,20 +507,14 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
             self.addCleanup(service.close)
             source_id = group.candidates[0].source_id
             preview = service.generate(plan, group, source_id)
-            manifest = preview.path.with_suffix(".json")
-            original_open = Path.open
             source = io.BytesIO(b"{}" + b" " * 4096)
             read = Mock(wraps=source.read)
             source.read = read
 
-            def open_growing_manifest(path, *args, **kwargs):
-                if path == manifest:
-                    return source
-                return original_open(path, *args, **kwargs)
-
             with (
-                patch.object(
-                    Path, "open", autospec=True, side_effect=open_growing_manifest
+                patch(
+                    "vntts.pregeneration_audition.open_regular_binary",
+                    return_value=source,
                 ),
                 self.assertRaisesRegex(VoiceAuditionError, "manifest is too large"),
             ):

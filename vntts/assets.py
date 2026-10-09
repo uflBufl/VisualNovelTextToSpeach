@@ -24,6 +24,7 @@ from vntts_artifacts.voice_manifest import validate_voice_manifest
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.cleanup import attempt_cleanup, cleanup_on_exit
 from vntts.json_types import decode_json
+from vntts.path_safety import open_regular_binary
 from vntts.settings import get_local_data_directory
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
 
@@ -183,7 +184,7 @@ class ModelAssetManager:
         try:
             if manifest_path.is_symlink() or manifest_path.is_junction():
                 raise ValueError("checksum manifest is an alias")
-            with manifest_path.open("rb") as source:
+            with open_regular_binary(manifest_path) as source:
                 payload = source.read(_ASSET_MANIFEST_READ_LIMIT + 1)
             if len(payload) > _ASSET_MANIFEST_READ_LIMIT:
                 raise ValueError("checksum manifest is too large")
@@ -884,7 +885,7 @@ def read_json(path: str | os.PathLike[str], default: object) -> object:
     if path.is_symlink() or path.is_junction():
         return default
     try:
-        with path.open("rb") as source:
+        with open_regular_binary(path) as source:
             payload = source.read(_VOICE_MANIFEST_READ_LIMIT + 1)
         if len(payload) > _VOICE_MANIFEST_READ_LIMIT:
             return default

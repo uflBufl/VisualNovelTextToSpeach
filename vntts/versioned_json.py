@@ -11,6 +11,7 @@ from durable_file import atomic_write_json
 
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.json_types import decode_json
+from vntts.path_safety import open_regular_binary
 
 Document = TypeVar("Document")
 _DOCUMENT_READ_LIMIT = 64 * 1024 * 1024
@@ -30,7 +31,7 @@ def read_versioned_json_snapshot(
 ) -> tuple[dict[str, object], bytes]:
     """Read one document, returning its payload and exact raw-byte digest."""
     path = Path(path)
-    with path.open("rb") as source:
+    with open_regular_binary(path) as source:
         raw = source.read(_DOCUMENT_READ_LIMIT + 1)
     if len(raw) > _DOCUMENT_READ_LIMIT:
         raise ValueError(f"{document_name} exceeds the size limit")
@@ -131,7 +132,7 @@ def write_versioned_json(
 
 def file_revision(path: Path) -> bytes | None:
     try:
-        with path.open("rb") as source:
+        with open_regular_binary(path) as source:
             raw = source.read(_DOCUMENT_READ_LIMIT + 1)
     except FileNotFoundError:
         return None

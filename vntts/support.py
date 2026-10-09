@@ -28,6 +28,7 @@ from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import decode_json
 from vntts.ocr_review import OCR_REVIEW_SCHEMA_VERSION, OCRReviewMetadata
 from vntts.onboarding import probe_audio_output, probe_tesseract
+from vntts.path_safety import open_regular_binary
 from vntts.settings import AppSettings
 from vntts.versioned_json import read_versioned_json
 from vntts.voice_library import VoiceLibrary
@@ -519,7 +520,7 @@ def _read_bounded_json_lines(
     if path is None:
         return ()
     try:
-        with path.open("rb") as source:
+        with open_regular_binary(path) as source:
             source.seek(0, 2)
             offset = max(0, source.tell() - maximum_bytes)
             source.seek(offset)
@@ -972,7 +973,7 @@ def _read_previous_generation_timelines(path: Path) -> dict[str, object] | None:
         return None
     limit = 2 * 1024 * 1024
     try:
-        with path.open("rb") as source:
+        with open_regular_binary(path) as source:
             payload = source.read(limit + 1)
     except OSError:
         return None
@@ -1182,7 +1183,7 @@ class PregenerationSupportState:
         if self.path.is_symlink():
             return None
         try:
-            with self.path.open("rb") as source:
+            with open_regular_binary(self.path) as source:
                 payload = source.read(_PERSISTED_SUPPORT_READ_LIMIT + 1)
         except OSError:
             return None
@@ -1308,7 +1309,7 @@ def _pregeneration_state_summary(path: str | Path | None) -> SupportDocument:
         return {"available": False, "reason": "state path is unsafe"}
     limit = 32 * 1024 * 1024
     try:
-        with path.open("rb") as source:
+        with open_regular_binary(path) as source:
             payload = source.read(limit + 1)
     except FileNotFoundError:
         return {"available": False, "reason": "state is not present"}
@@ -1642,7 +1643,7 @@ def _active_pack_identity(path: str, _modified_ns: int, size: int) -> SupportDoc
             "reason": "pack manifest exceeds support read limit",
         }
     try:
-        with Path(path).open("rb") as source:
+        with open_regular_binary(path) as source:
             payload = source.read(_ACTIVE_CONTENT_READ_LIMIT + 1)
     except OSError, UnicodeError, json.JSONDecodeError:
         return {"available": False, "reason": "pack manifest could not be read"}
@@ -1697,7 +1698,7 @@ def _active_story_ids(root: Path, component: SupportDocument) -> SupportDocument
         path.relative_to(root)
         if path.stat().st_size > _ACTIVE_CONTENT_READ_LIMIT:
             raise ValueError("story index exceeds support read limit")
-        with path.open("rb") as source:
+        with open_regular_binary(path) as source:
             payload = source.read(_ACTIVE_CONTENT_READ_LIMIT + 1)
         if len(payload) > _ACTIVE_CONTENT_READ_LIMIT:
             raise ValueError("story index exceeds support read limit")

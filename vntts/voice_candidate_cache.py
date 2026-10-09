@@ -15,6 +15,7 @@ from threading import Lock, RLock
 
 from vntts.authoring.advisory_lock import AdvisoryLockBusyError, exclusive_advisory_lock
 from vntts.json_types import decode_json
+from vntts.path_safety import open_regular_binary
 
 _JOB_ID = re.compile(r"[0-9a-f]{24}")
 _PACK_ID = re.compile(r"pack-[0-9a-f]{24}")
@@ -300,7 +301,7 @@ def _references_in_document(root: Path, path: Path) -> set[str] | None:
     if _unsafe(path) or not path.is_file():
         return None
     try:
-        with path.open("rb") as source:
+        with open_regular_binary(path) as source:
             raw = source.read(_MAX_REFERENCE_DOCUMENT_BYTES + 1)
         if len(raw) > _MAX_REFERENCE_DOCUMENT_BYTES:
             return None

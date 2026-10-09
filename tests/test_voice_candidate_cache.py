@@ -287,7 +287,7 @@ class VoiceCandidateCacheTest(unittest.TestCase):
         job.mkdir()
         reference = job / "voice-plan.json"
         reference.write_text("{}", encoding="utf-8")
-        original_open = Path.open
+        original_open = open
 
         def grow_before_read(path, mode="r", *args, **kwargs):
             if path == reference and mode in {"r", "rb"}:
@@ -297,7 +297,7 @@ class VoiceCandidateCacheTest(unittest.TestCase):
 
         with (
             patch.object(cache, "_MAX_REFERENCE_DOCUMENT_BYTES", 128),
-            patch.object(Path, "open", autospec=True, side_effect=grow_before_read),
+            patch("vntts.path_safety.open", side_effect=grow_before_read, create=True),
         ):
             self.assertEqual(
                 prune_obsolete_voice_candidate_caches(self.root, self.jobs), ()
