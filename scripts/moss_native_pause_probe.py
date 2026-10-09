@@ -26,6 +26,7 @@ from vntts_artifacts.file_integrity import sha256_file
 
 from vntts import support
 from vntts.authoring.speech_quality import analyze_generated_speech_samples
+from vntts.cleanup import attempt_cleanup
 from vntts.moss_cpp_backend import (
     MossCppVoiceRouterBackend,
     NativeHeaders,
@@ -499,14 +500,18 @@ def _write_archive(output: Path, archive: Path, *, recursive: bool = False) -> N
     descriptor, temporary = tempfile.mkstemp(
         prefix=f".{archive.name}-", dir=archive.parent
     )
-    os.close(descriptor)
     try:
+        os.close(descriptor)
         with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_STORED) as bundle:
             for path in sorted(paths):
                 bundle.write(path, path.relative_to(output).as_posix())
         Path(temporary).replace(archive)
-    except BaseException:
-        Path(temporary).unlink(missing_ok=True)
+    except BaseException as error:
+        attempt_cleanup(
+            lambda: Path(temporary).unlink(missing_ok=True),
+            description="Probe archive temporary file cleanup",
+            primary_error=error,
+        )
         raise
 
 

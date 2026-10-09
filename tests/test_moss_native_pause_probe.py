@@ -62,6 +62,68 @@ def _options(root):
 
 
 class MossNativePauseProbeTest(unittest.TestCase):
+    def test_failed_archive_preserves_existing_destination_and_primary_error(self):
+        for stage in ("close", "write", "replace"):
+            for fail_cleanup in (False, True):
+                with (
+                    self.subTest(stage=stage, fail_cleanup=fail_cleanup),
+                    TemporaryDirectory() as temporary,
+                ):
+                    root = Path(temporary)
+                    output = root / "probe"
+                    output.mkdir()
+                    (output / "report.json").write_text("{}")
+                    archive = root / "probe.zip"
+                    archive.write_bytes(b"existing archive")
+                    primary = KeyboardInterrupt(stage)
+                    cleanup_error = OSError("unlink failed")
+                    cleanup_error.add_note("unlink detail")
+                    failure_target = {
+                        "close": "os.close",
+                        "write": "zipfile.ZipFile.write",
+                        "replace": "pathlib.Path.replace",
+                    }[stage]
+                    original_close = probe.os.close
+                    original_unlink = Path.unlink
+                    staging_path = None
+
+                    def fail(*args, **kwargs):
+                        nonlocal staging_path
+                        staging_path = next(root.glob(".probe.zip-*"))
+                        if stage == "close":
+                            original_close(args[0])
+                        raise primary
+
+                    def unlink(path, *, missing_ok=False):
+                        if fail_cleanup:
+                            raise cleanup_error
+                        original_unlink(path, missing_ok=missing_ok)
+
+                    with (
+                        patch(failure_target, side_effect=fail),
+                        patch.object(
+                            Path, "unlink", autospec=True, side_effect=unlink
+                        ) as cleanup,
+                        self.assertRaises(KeyboardInterrupt) as caught,
+                    ):
+                        probe._write_archive(output, archive)
+
+                    self.assertIs(caught.exception, primary)
+                    cleanup.assert_called_once_with(staging_path, missing_ok=True)
+                    self.assertEqual(archive.read_bytes(), b"existing archive")
+                    self.assertEqual(
+                        getattr(primary, "__notes__", []),
+                        [
+                            "Probe archive temporary file cleanup failed: unlink failed",
+                            "unlink detail",
+                        ]
+                        if fail_cleanup
+                        else [],
+                    )
+                    self.assertEqual(
+                        len(list(root.glob(".probe.zip-*"))), int(fail_cleanup)
+                    )
+
     def test_unrelated_log_events_do_not_disrupt_native_evidence(self):
         class LoggedBackend(_FakeBackend):
             def render(self, request):
