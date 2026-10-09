@@ -573,7 +573,7 @@ def _render_attempt(
         record["result"] = {
             "cache_source": result.diagnostics.cache_source,
             "sample_rate": int(result.sample_rate),
-            "pcm_frames": int(len(result.pcm)),
+            "pcm_frames": len(result.pcm),
             "diagnostic_frames": int(result.diagnostics.sample_count),
             "timing_ms": round(float(result.timing.total_ms), 3),
             "limits": {

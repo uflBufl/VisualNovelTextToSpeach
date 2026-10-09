@@ -64,7 +64,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             path = create_listening_session(
                 options.benchmark, options.output, seed=options.seed
             )
-            return int(cli_success(f"Created blind listening session: {path}"))
+            return cli_success(f"Created blind listening session: {path}")
         if options.command == "start-reports":
             path = create_listening_session_from_reports(
                 options.reports,
@@ -72,19 +72,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 seed=options.seed,
                 sample_ids=options.sample_ids,
             )
-            return int(cli_success(f"Created blind listening session: {path}"))
+            return cli_success(f"Created blind listening session: {path}")
         if options.command == "ui":
             from vntts.authoring.listening_ui import launch_listening_workbench
 
-            return int(launch_listening_workbench(options.session))
+            return launch_listening_workbench(options.session)
         session = load_listening_session(options.session)
         if options.command == "status":
             completed, total = listening_progress(session)
-            return int(cli_success(f"Listening progress: {completed}/{total} trials"))
+            return cli_success(f"Listening progress: {completed}/{total} trials")
         if options.command == "next":
             trial = next_pending_trial(session)
             if trial is None:
-                return int(cli_success("Listening session is complete"))
+                return cli_success("Listening session is complete")
             print(json.dumps(trial, ensure_ascii=False, indent=2))
             return 0
         if options.command == "score":
@@ -96,27 +96,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                 report_path=Path(options.session).resolve().with_name("report.json"),
             )
             completed, total = listening_progress(updated)
-            return int(
-                cli_success(
-                    f"Saved {options.trial_id}; progress: {completed}/{total} trials"
-                )
+            return cli_success(
+                f"Saved {options.trial_id}; progress: {completed}/{total} trials"
             )
         output = options.output or Path(options.session).resolve().with_name(
             "report.json"
         )
         report = aggregate_listening_report(options.session, output)
-        return int(
-            cli_success(
-                f"Listening report: {output} ({report['completed_trials']} completed, "
-                f"{report['pending_trials']} pending)"
-            )
+        return cli_success(
+            f"Listening report: {output} ({report['completed_trials']} completed, "
+            f"{report['pending_trials']} pending)"
         )
     except ModuleNotFoundError as error:
         if error.name and error.name.startswith("PySide6"):
-            return int(cli_error("Qt UI is not installed"))
+            return cli_error("Qt UI is not installed")
         raise
     except (ModelListeningError, OSError, json.JSONDecodeError) as error:
-        return int(cli_error(error))
+        return cli_error(error)
 
 
 if __name__ == "__main__":

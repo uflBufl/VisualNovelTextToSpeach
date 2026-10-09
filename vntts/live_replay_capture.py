@@ -774,13 +774,13 @@ def _load_capture_story(story_path: Path) -> tuple[StoryResolver, str]:
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     if arguments.interval_ms is not None and arguments.interval_ms < 1:
-        return int(cli_error("interval-ms must be positive"))
+        return cli_error("interval-ms must be positive")
     if arguments.duration_seconds is not None and (
         not math.isfinite(arguments.duration_seconds) or arguments.duration_seconds <= 0
     ):
-        return int(cli_error("duration-seconds must be finite and positive"))
+        return cli_error("duration-seconds must be finite and positive")
     if arguments.max_accepted_frames is not None and arguments.max_accepted_frames < 1:
-        return int(cli_error("max-accepted-frames must be positive"))
+        return cli_error("max-accepted-frames must be positive")
     settings = load_app_settings()
     profile = GameProfileStore.load().get(settings.active_profile_id)
     region = get_dialog_region(profile.dialog_region if profile is not None else None)
@@ -798,7 +798,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise LiveReplayCaptureError("Story index is unavailable or unsafe")
             resolver, story_sha256 = _load_capture_story(story_path)
         except (OSError, RuntimeError, ValueError) as error:
-            return int(cli_error(error))
+            return cli_error(error)
     try:
         session = LiveReplayCaptureSession(
             arguments.output,
@@ -855,16 +855,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         except KeyboardInterrupt:
             result = session.finish()
     except (OSError, RuntimeError, ValueError) as error:
-        return int(cli_error(error))
-    return int(
-        cli_messages(
-            (
-                f"Captured {result.dialogue_count} dialogue groups and "
-                f"{result.frame_count} exact frames",
-                f"Boundary decisions requiring review: {result.boundary_review_count}",
-                result.corpus,
-                result.report,
-            )
+        return cli_error(error)
+    return cli_messages(
+        (
+            f"Captured {result.dialogue_count} dialogue groups and "
+            f"{result.frame_count} exact frames",
+            f"Boundary decisions requiring review: {result.boundary_review_count}",
+            result.corpus,
+            result.report,
         )
     )
 

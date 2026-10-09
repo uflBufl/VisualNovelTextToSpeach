@@ -427,8 +427,8 @@ def trim_excess_edge_silence(
         return EdgeSilenceTrim(samples.copy(), 0, 0)
     first = int(active[0])
     last = int(active[-1])
-    trigger = int(round(trigger_seconds * sample_rate))
-    padding = int(round(padding_seconds * sample_rate))
+    trigger = round(trigger_seconds * sample_rate)
+    padding = round(padding_seconds * sample_rate)
     leading = max(0, first - padding) if first > trigger else 0
     trailing_silence = len(samples) - last - 1
     trailing = max(0, trailing_silence - padding) if trailing_silence > trigger else 0
@@ -636,7 +636,7 @@ def _combined_segment_result(
         raise ValueError("Sentence-segment render results have incompatible channels")
     sample_rate = next(iter(sample_rates))
     parts = []
-    pause_samples = int(round(sample_rate * pause_ms / 1000.0))
+    pause_samples = round(sample_rate * pause_ms / 1000.0)
     for index, value in enumerate(results):
         parts.append(np.asarray(value.pcm))
         if index + 1 < len(results) and pause_samples:

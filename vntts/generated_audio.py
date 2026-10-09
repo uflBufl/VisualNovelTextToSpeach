@@ -1370,7 +1370,7 @@ class AudioRoutePlaybackOwner:
                     samples,
                     route.prepared.sample_rate,
                 )
-                sample_count = int(len(samples))
+                sample_count = len(samples)
                 expected_playback_ms = sample_count * 1000 / sample_rate
                 if self.generated_audio_stop.is_set() or (
                     playback_guard is not None and not playback_guard()

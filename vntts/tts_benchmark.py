@@ -945,7 +945,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         return cli_messages(messages)
     except (OSError, RuntimeError, TypeError, ValueError) as error:
-        return int(cli_error(error))
+        return cli_error(error)
 
 
 if __name__ == "__main__":

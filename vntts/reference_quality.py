@@ -244,21 +244,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         report = analyze_reference_set(arguments.reference)
         atomic_write_json(arguments.output, report)
     except (OSError, TypeError, ValueError) as error:
-        return int(cli_error(error))
+        return cli_error(error)
     rejected = sum(
         reference["objective_preflight"] == "reject"
         for reference in report["references"]
     )
-    return int(
-        cli_messages(
-            (
-                f"Reference preflight: {len(report['references']) - rejected} passed, "
-                f"{rejected} rejected",
-                arguments.output,
-            ),
-            exit_code=1 if rejected else 0,
-            error=bool(rejected),
-        )
+    return cli_messages(
+        (
+            f"Reference preflight: {len(report['references']) - rejected} passed, "
+            f"{rejected} rejected",
+            arguments.output,
+        ),
+        exit_code=1 if rejected else 0,
+        error=bool(rejected),
     )
 
 

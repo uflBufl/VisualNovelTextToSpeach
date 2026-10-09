@@ -1132,11 +1132,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     generated_manifest = _generated_audio_manifest_for_run(arguments, settings)
     audio_policy = arguments.audio_source_policy or settings.audio_source_policy
     if not story_index:
-        return int(cli_error("Configure or pass --story-index"))
+        return cli_error("Configure or pass --story-index")
     if not sequence_plan:
-        return int(cli_error("Configure or pass --sequence-plan"))
+        return cli_error("Configure or pass --sequence-plan")
     if arguments.timeout <= 0:
-        return int(cli_error("timeout must be positive"))
+        return cli_error("timeout must be positive")
     try:
         result = seal_sequence_replay(
             arguments.capture_corpus,
@@ -1149,20 +1149,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             timeout_seconds=arguments.timeout,
         )
     except (OSError, RuntimeError, TypeError, ValueError) as error:
-        return int(cli_error(error))
-    return int(
-        cli_messages(
+        return cli_error(error)
+    return cli_messages(
+        (
+            f"Sealed {result.dialogue_count} sequence-bound dialogue events",
             (
-                f"Sealed {result.dialogue_count} sequence-bound dialogue events",
-                (
-                    "Operator boundary/mapping review required"
-                    if result.operator_review_required
-                    else "No inferred boundary or mapping review flags"
-                ),
-                result.corpus,
-                result.review,
-                result.replay_report,
-            )
+                "Operator boundary/mapping review required"
+                if result.operator_review_required
+                else "No inferred boundary or mapping review flags"
+            ),
+            result.corpus,
+            result.review,
+            result.replay_report,
         )
     )
 

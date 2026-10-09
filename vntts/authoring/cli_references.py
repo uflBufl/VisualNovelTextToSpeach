@@ -507,7 +507,7 @@ def _handle_missing_voice_reuse(arguments: argparse.Namespace) -> int:
             launch_missing_voice_reuse_review,
         )
 
-        return int(launch_missing_voice_reuse_review(arguments.session))
+        return launch_missing_voice_reuse_review(arguments.session)
     if arguments.command == "missing-voice-reuse-binding":
         reuse_binding = publish_missing_voice_reuse_binding(
             arguments.plan, arguments.session, arguments.output

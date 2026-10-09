@@ -1142,9 +1142,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     story_index = arguments.story_index or settings.story_index
     sequence_plan = arguments.sequence_plan or settings.live_sequence_plan
     if not story_index:
-        return int(cli_error("Configure or pass --story-index"))
+        return cli_error("Configure or pass --story-index")
     if not sequence_plan:
-        return int(cli_error("Configure or pass --sequence-plan"))
+        return cli_error("Configure or pass --sequence-plan")
     try:
         result = recover_live_replay_capture(
             arguments.capture_corpus,
@@ -1158,7 +1158,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             complete_visible_chapter=arguments.complete_visible_chapter,
         )
     except (OSError, RuntimeError, TypeError, ValueError) as error:
-        return int(cli_error(error))
+        return cli_error(error)
     messages: list[str | Path] = [
         f"Longest explicit recovered run: {result.event_count} events",
         (

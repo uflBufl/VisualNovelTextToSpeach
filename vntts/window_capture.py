@@ -200,8 +200,8 @@ class MacOSWindowBackend:
         layer = int(get_value(getattr(quartz, "kCGWindowLayer"), 0))
         bounds = get_value(getattr(quartz, "kCGWindowBounds")) or {}
         get_bound = getattr(bounds, "get")
-        width = int(round(float(get_bound("Width", 0))))
-        height = int(round(float(get_bound("Height", 0))))
+        width = round(float(get_bound("Width", 0)))
+        height = round(float(get_bound("Height", 0)))
         owner = str(get_value(getattr(quartz, "kCGWindowOwnerName")) or "").strip()
         name = str(get_value(getattr(quartz, "kCGWindowName")) or "").strip()
         if not owner or layer != 0 or width <= 0 or height <= 0:
@@ -270,10 +270,10 @@ class MacOSWindowBackend:
             bounds = getattr(item, "get")(getattr(quartz, "kCGWindowBounds")) or {}
             get_bound = getattr(bounds, "get")
             geometry = WindowGeometry(
-                left=int(round(float(get_bound("X", 0)))),
-                top=int(round(float(get_bound("Y", 0)))),
-                width=int(round(float(get_bound("Width", 0)))),
-                height=int(round(float(get_bound("Height", 0)))),
+                left=round(float(get_bound("X", 0))),
+                top=round(float(get_bound("Y", 0))),
+                width=round(float(get_bound("Width", 0))),
+                height=round(float(get_bound("Height", 0))),
             )
             if geometry.width <= 0 or geometry.height <= 0:
                 raise WindowCaptureError(

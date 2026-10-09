@@ -242,7 +242,7 @@ class ReplayAudioOutput:
         self.played.append(
             {
                 "sample_rate": int(sample_rate),
-                "sample_count": int(len(samples)),
+                "sample_count": len(samples),
                 "pcm_sha256": hashlib.sha256(samples.tobytes()).hexdigest(),
             }
         )
@@ -2447,16 +2447,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         output = arguments.output or arguments.corpus.with_suffix(".report.json")
         atomic_write_json(output, report)
     except (OSError, TypeError, ValueError) as error:
-        return int(cli_error(error))
-    return int(
-        cli_messages(
-            (
-                f"Live replay {'passed' if report['successful'] else 'failed'}",
-                output,
-            ),
-            exit_code=0 if report["successful"] else 1,
-            error=not bool(report["successful"]),
-        )
+        return cli_error(error)
+    return cli_messages(
+        (
+            f"Live replay {'passed' if report['successful'] else 'failed'}",
+            output,
+        ),
+        exit_code=0 if report["successful"] else 1,
+        error=not bool(report["successful"]),
     )
 
 

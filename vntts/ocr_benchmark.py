@@ -287,7 +287,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         output = write_report(report, arguments.output)
     except (OSError, RuntimeError, TypeError, ValueError) as error:
-        return int(cli_error(error))
+        return cli_error(error)
     summary = report["summary"]
     return cli_messages(
         (

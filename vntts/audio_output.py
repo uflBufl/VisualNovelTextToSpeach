@@ -354,7 +354,7 @@ def match_output_sample_rate(
         if not isinstance(device, Mapping):
             return audio, source_sample_rate
         default_samplerate = device["default_samplerate"]
-        target_sample_rate = int(round(float(default_samplerate)))
+        target_sample_rate = round(float(default_samplerate))
     except Exception:
         return audio, source_sample_rate
     if target_sample_rate <= 0 or target_sample_rate == source_sample_rate:

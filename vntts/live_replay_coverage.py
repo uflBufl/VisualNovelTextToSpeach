@@ -297,19 +297,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             reviews=arguments.review,
         )
     except (OSError, RuntimeError, TypeError, ValueError) as error:
-        return int(cli_error(error))
-    return int(
-        cli_messages(
+        return cli_error(error)
+    return cli_messages(
+        (
             (
-                (
-                    "Complete technical visible-chapter coverage"
-                    if report["technical_coverage_complete"]
-                    else "Visible-chapter coverage remains incomplete"
-                ),
-                f"Covered {report['covered_visible_event_count']}/"
-                f"{report['expected_visible_event_count']} visible events",
-                path,
-            )
+                "Complete technical visible-chapter coverage"
+                if report["technical_coverage_complete"]
+                else "Visible-chapter coverage remains incomplete"
+            ),
+            f"Covered {report['covered_visible_event_count']}/"
+            f"{report['expected_visible_event_count']} visible events",
+            path,
         )
     )
 
