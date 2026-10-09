@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeAlias
@@ -198,7 +199,7 @@ def _validate_review(
     try:
         comparison_document = comparison.json_document("copied comparison")
         report_document = report.json_document("copied report")
-        result_info = probe_pcm16_mono_wav(result.path)
+        result_info = probe_pcm16_mono_wav(io.BytesIO(result.payload))
     except (AuthoringAuthorityError, OSError, Pcm16MonoWavError) as error:
         raise RenderHypothesisRecordError(str(error)) from error
     arm = next(

@@ -11,6 +11,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 from typing import Iterator, NotRequired, TypeAlias, TypedDict, TypeGuard
 
@@ -58,6 +59,7 @@ from vntts.authoring.workbench import (
 )
 from vntts.authoring.workbench_contracts import ReviewItem
 from vntts.json_types import decode_json, has_schema_version, is_json_object
+from vntts.path_safety import open_regular_binary
 
 TERMINAL_CONFLICT_REVIEW_SCHEMA = "vntts.authoring-terminal-conflict-review"
 TERMINAL_CONFLICT_REVIEW_VERSION = 1
@@ -470,12 +472,14 @@ def _stable_review_candidates(
                 f"Conflict WAV changed while copied: {queue_id}"
             )
         destination.write_bytes(audio_bytes)
-        if hashlib.sha256(destination.read_bytes()).hexdigest() != digest:
+        with open_regular_binary(destination) as stream:
+            copied_payload = stream.read()
+        if hashlib.sha256(copied_payload).hexdigest() != digest:
             raise TerminalConflictReviewError(
                 f"Conflict WAV changed while copied: {queue_id}"
             )
         try:
-            info = probe_pcm16_mono_wav(destination)
+            info = probe_pcm16_mono_wav(BytesIO(copied_payload))
         except Pcm16MonoWavError as error:
             raise TerminalConflictReviewError(str(error)) from error
         stable_candidates.append(
@@ -819,11 +823,12 @@ def _validate_candidate_audio(candidate: object, root: Path, digest: str) -> Non
     if not _is_review_candidate(candidate):
         raise TerminalConflictReviewError("Terminal conflict candidate is malformed")
     audio = _contained_file(root, candidate["audio"], "candidate WAV")
-    payload = audio.read_bytes()
+    with open_regular_binary(audio) as stream:
+        payload = stream.read()
     if hashlib.sha256(payload).hexdigest() != digest:
         raise TerminalConflictReviewError("Terminal conflict WAV changed")
     try:
-        info = probe_pcm16_mono_wav(audio)
+        info = probe_pcm16_mono_wav(BytesIO(payload))
     except Pcm16MonoWavError as error:
         raise TerminalConflictReviewError(str(error)) from error
     if (

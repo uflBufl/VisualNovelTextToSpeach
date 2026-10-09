@@ -10,6 +10,7 @@ from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path, PurePosixPath
 from typing import TypeAlias
 
@@ -43,6 +44,7 @@ from vntts.authoring.workspace_foundation import load_json_object
 from vntts.cleanup import temporary_directory
 from vntts.document_identity import canonical_document_sha256
 from vntts.json_types import decode_json, is_json_object
+from vntts.path_safety import open_regular_binary
 
 LEGACY_JOB_SCHEMA = "r1999.pregeneration-job"
 LEGACY_JOB_SCHEMA_VERSION = 1
@@ -1015,13 +1017,15 @@ def _validate_generated_wav(
         raise LegacyAuthoringImportError(
             f"Generated WAV for {queue_id!r} does not exist: {path}"
         )
-    actual_hash = sha256_file(path)
+    with open_regular_binary(path) as stream:
+        payload = stream.read()
+    actual_hash = hashlib.sha256(payload).hexdigest()
     if expected_hash != actual_hash:
         raise LegacyAuthoringImportError(
             f"Generated WAV checksum mismatch for {queue_id!r}: {path}"
         )
     try:
-        return probe_pcm16_mono_wav(path)
+        return probe_pcm16_mono_wav(BytesIO(payload))
     except Pcm16MonoWavError as error:
         raise LegacyAuthoringImportError(
             f"Generated WAV for {queue_id!r} is invalid: {error}"

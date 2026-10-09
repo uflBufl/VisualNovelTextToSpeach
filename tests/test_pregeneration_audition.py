@@ -13,6 +13,7 @@ from unittest.mock import ANY, Mock, call, patch
 import numpy as np
 import soundfile as sf
 
+import vntts.pregeneration_audition as audition_module
 from tests.pregeneration_fixtures import FakeBackend, ambiguous_fixture, clean_wav_bytes
 from tests.story_fixtures import write_content
 from tests.voice_manifest_fixtures import write_manifest
@@ -953,6 +954,37 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
             self.assertEqual(len(tuple((root / "auditions").glob("*.wav"))), 1)
             self.assertEqual([request.seed for request in backend.requests], [0, 0])
             self.assertEqual(preview.seed, 0)
+
+    def test_reference_audio_uses_checksum_bound_payload(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            plan, group, manifest = ambiguous_fixture(root)
+            candidate = group.candidates[0]
+            reference = manifest.parent / "references" / "rhiannon.wav"
+            service = VoiceAuditionPreviewService(root / "auditions")
+            probe = audition_module.probe_pcm16_mono_wav
+
+            def replace_before_decode(source):
+                reference.write_bytes(b"replaced after checksum")
+                return probe(source)
+
+            try:
+                with patch.object(
+                    audition_module,
+                    "probe_pcm16_mono_wav",
+                    side_effect=replace_before_decode,
+                ):
+                    self.assertEqual(
+                        service.reference_audio(plan, group, candidate.source_id),
+                        reference,
+                    )
+                self.assertEqual(reference.read_bytes(), b"replaced after checksum")
+                with self.assertRaisesRegex(
+                    VoiceAuditionError, "changed after planning"
+                ):
+                    service.reference_audio(plan, group, candidate.source_id)
+            finally:
+                service.close()
 
 
 if __name__ == "__main__":

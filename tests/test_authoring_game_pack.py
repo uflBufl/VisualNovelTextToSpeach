@@ -5,7 +5,7 @@ import shutil
 import tempfile
 import unittest
 from contextlib import redirect_stdout
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
@@ -2167,6 +2167,102 @@ class AuthoringGamePackTest(unittest.TestCase):
             self.assertEqual(
                 Path(payload["live_sequence_plan"]), pack.live_sequence_plan.path
             )
+
+    def test_reference_projection_decodes_checked_stereo_flac_payload(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.flac"
+            game_pack_module.sf.write(
+                source, [[0.2, -0.1], [-0.2, 0.1]], 24_000, subtype="PCM_24"
+            )
+            source_payload = source.read_bytes()
+            digest = hashlib.sha256(source_payload).hexdigest()
+            destination = root / "projected.wav"
+            read_audio = game_pack_module.sf.read
+
+            def replace_before_decode(stream, **kwargs):
+                source.write_bytes(b"replaced after checksum")
+                return read_audio(stream, **kwargs)
+
+            with patch.object(
+                game_pack_module.sf, "read", side_effect=replace_before_decode
+            ):
+                record = game_pack_module._project_voice_reference(
+                    source,
+                    PurePosixPath(source.name),
+                    PurePosixPath(destination.name),
+                    destination,
+                    "Role",
+                    digest,
+                )
+            samples, sample_rate = read_audio(destination)
+            self.assertEqual(sample_rate, 24_000)
+            self.assertEqual(samples.shape, (2,))
+            for actual, expected in zip(samples, (0.05, -0.05), strict=True):
+                self.assertAlmostEqual(actual, expected, delta=1 / 32768)
+            self.assertEqual(record["source_sha256"], digest)
+            self.assertEqual(record["output_sha256"], sha256_file(destination))
+            self.assertEqual(record["sample_count"], 2)
+            self.assertEqual(record["channels"], 1)
+            self.assertEqual(record["subtype"], "PCM_16")
+
+    def test_reference_projection_metadata_and_hash_use_same_output_payload(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.flac"
+            game_pack_module.sf.write(source, [0.2, -0.2], 24_000)
+            digest = sha256_file(source)
+            destination = root / "projected.wav"
+            probe = game_pack_module.probe_pcm16_mono_wav
+            copied = []
+
+            def replace_before_decode(stream):
+                copied.append(destination.read_bytes())
+                destination.write_bytes(b"replaced after capture")
+                return probe(stream)
+
+            with patch.object(
+                game_pack_module,
+                "probe_pcm16_mono_wav",
+                side_effect=replace_before_decode,
+            ):
+                record = game_pack_module._project_voice_reference(
+                    source,
+                    PurePosixPath(source.name),
+                    PurePosixPath(destination.name),
+                    destination,
+                    "Role",
+                    digest,
+                )
+            self.assertEqual(len(copied), 1)
+            self.assertEqual(
+                record["output_sha256"], hashlib.sha256(copied[0]).hexdigest()
+            )
+            self.assertEqual(record["sample_rate"], 24_000)
+            self.assertEqual(record["sample_count"], 2)
+            self.assertEqual(destination.read_bytes(), b"replaced after capture")
+
+    def test_reference_projection_rejects_source_checksum_before_decode(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.flac"
+            source.write_bytes(b"changed source")
+            destination = root / "projected.wav"
+            with (
+                patch.object(game_pack_module.sf, "read") as decode,
+                self.assertRaisesRegex(FinalGamePackError, "changed before projection"),
+            ):
+                game_pack_module._project_voice_reference(
+                    source,
+                    PurePosixPath(source.name),
+                    PurePosixPath(destination.name),
+                    destination,
+                    "Role",
+                    "0" * 64,
+                )
+            decode.assert_not_called()
+            self.assertFalse(destination.exists())
+            self.assertEqual(source.read_bytes(), b"changed source")
 
 
 if __name__ == "__main__":

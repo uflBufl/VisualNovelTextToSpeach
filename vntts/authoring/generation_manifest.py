@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import io
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol, TypeAlias, TypedDict, TypeGuard
+from typing import BinaryIO, Protocol, TypeAlias, TypedDict, TypeGuard
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts.audio import (
     PCM16_MONO_WAV_FORMAT,
     Pcm16MonoWavError,
@@ -30,6 +31,7 @@ from vntts_artifacts.voice_manifest import (
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.document_identity import canonical_document_sha256
 from vntts.json_types import decode_json
+from vntts.path_safety import open_regular_binary
 from vntts.voices import pocket_tts_preset_voices
 
 
@@ -165,7 +167,7 @@ def snapshot_recorded_voices(
 
 
 def inspect_generated_wav(
-    path: Path | str, *, allow_short_audio_event: bool = False
+    path: Path | str | BinaryIO, *, allow_short_audio_event: bool = False
 ) -> AudioQuality:
     """Validate the normalized generated-audio WAV contract."""
     quality, _samples = inspect_generated_wav_with_samples(
@@ -175,7 +177,7 @@ def inspect_generated_wav(
 
 
 def inspect_generated_wav_with_samples(
-    path: Path | str, *, allow_short_audio_event: bool = False
+    path: Path | str | BinaryIO, *, allow_short_audio_event: bool = False
 ) -> tuple[AudioQuality, Sequence[int]]:
     """Validate one generated WAV and retain its decoded PCM16 samples."""
     try:
@@ -448,12 +450,22 @@ def validate_success_file_with_samples(
     """Validate one WAV and retain its already-read samples for deeper checks."""
     if not audio.is_file():
         raise BulkGenerationError(f"Generated WAV is missing for {queue_id!r}: {audio}")
-    if sha256_file(audio) != result.get("file_sha256"):
+    try:
+        with open_regular_binary(audio) as source:
+            payload = source.read()
+    except OSError as error:
+        raise BulkGenerationError(
+            f"Generated output is not a readable PCM16 mono WAV: {error}"
+        ) from error
+    if hashlib.sha256(payload).hexdigest() != result.get("file_sha256"):
         raise BulkGenerationError(f"Generated WAV checksum mismatch for {queue_id!r}")
-    quality, samples = inspect_generated_wav_with_samples(
-        audio,
-        allow_short_audio_event=(result.get("provider") == "original-game-audio-event"),
-    )
+    with io.BytesIO(payload) as source:
+        quality, samples = inspect_generated_wav_with_samples(
+            source,
+            allow_short_audio_event=(
+                result.get("provider") == "original-game-audio-event"
+            ),
+        )
     stored = result.get("quality")
     if not isinstance(stored, dict):
         raise BulkGenerationError(f"Generated WAV quality is missing for {queue_id!r}")

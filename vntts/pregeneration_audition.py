@@ -10,6 +10,7 @@ import tempfile
 import threading
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
+from io import BytesIO
 from pathlib import Path
 from time import monotonic
 from typing import NamedTuple, Protocol, TypeAlias
@@ -573,9 +574,11 @@ class VoiceAuditionPreviewService:
             if voice is None or not voice.references:
                 return None
             reference = voice.references[0]
-            if sha256_file(reference) != candidate.reference_sha256s[0]:
+            with open_regular_binary(reference) as source:
+                payload = source.read()
+            if hashlib.sha256(payload).hexdigest() != candidate.reference_sha256s[0]:
                 raise VoiceAuditionError("Original voice anchor changed after planning")
-            probe_pcm16_mono_wav(reference)
+            probe_pcm16_mono_wav(BytesIO(payload))
             return Path(reference)
         except (OSError, ValueError, VoiceManifestError) as error:
             raise VoiceAuditionError(

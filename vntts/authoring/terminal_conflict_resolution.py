@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path, PurePosixPath
 from typing import TypeAlias, TypedDict, TypeGuard
 
@@ -44,6 +45,7 @@ from vntts.authoring.terminal_conflict_review import (
     validate_terminal_conflict_review_progress_document,
 )
 from vntts.json_types import has_schema_version, is_json_object
+from vntts.path_safety import open_regular_binary
 
 TERMINAL_CONFLICT_RESOLUTION_SCHEMA = "vntts.authoring-terminal-conflict-resolution"
 TERMINAL_CONFLICT_RESOLUTION_VERSION = 1
@@ -329,7 +331,7 @@ def _build_resolution_records(
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(snapshot.payload)
         try:
-            info = probe_pcm16_mono_wav(destination)
+            info = probe_pcm16_mono_wav(BytesIO(snapshot.payload))
         except Pcm16MonoWavError as error:
             raise TerminalConflictResolutionError(str(error)) from error
         selected_count += 1
@@ -806,10 +808,12 @@ def _validate_resolution_record_selection(
         )
     selected_audio = _text(record["selected_audio"], "Selected resolution WAV")
     audio = _contained_file(root, selected_audio, "selected WAV")
-    if hashlib.sha256(audio.read_bytes()).hexdigest() != digest:
+    with open_regular_binary(audio) as stream:
+        payload = stream.read()
+    if hashlib.sha256(payload).hexdigest() != digest:
         raise TerminalConflictResolutionError("Selected terminal conflict WAV changed")
     try:
-        info = probe_pcm16_mono_wav(audio)
+        info = probe_pcm16_mono_wav(BytesIO(payload))
     except Pcm16MonoWavError as error:
         raise TerminalConflictResolutionError(str(error)) from error
     if (

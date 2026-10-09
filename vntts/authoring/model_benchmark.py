@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import platform
 import re
@@ -43,6 +44,7 @@ from vntts.cli import cli_error, cli_messages
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
+from vntts.path_safety import open_regular_binary
 from vntts.settings import get_local_data_directory
 from vntts.speech_backend_contract import RenderableBackend, is_renderable_backend
 from vntts.speech_backend_runtime import shutdown_speech_backend
@@ -851,7 +853,9 @@ def _render_benchmark_sample(
         _mono_pcm(result.pcm),
         result.sample_rate,
     )
-    samples, info = read_pcm16_mono_wav(staged_audio_path)
+    with open_regular_binary(staged_audio_path) as source:
+        payload = source.read()
+    samples, info = read_pcm16_mono_wav(io.BytesIO(payload))
     speech_quality = measure_generated_speech_samples(
         samples,
         sample_rate=info.sample_rate,
@@ -863,7 +867,7 @@ def _render_benchmark_sample(
         **base_record,
         "outcome": "complete",
         "audio": str(reported_audio_path),
-        "audio_sha256": sha256_file(staged_audio_path),
+        "audio_sha256": hashlib.sha256(payload).hexdigest(),
         "sample_rate": info.sample_rate,
         "sample_count": info.sample_count,
         "duration_seconds": round(info.duration_seconds, 6),

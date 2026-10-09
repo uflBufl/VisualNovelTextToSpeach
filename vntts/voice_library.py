@@ -18,7 +18,7 @@ from pathlib import Path
 from threading import Lock, RLock
 from typing import Literal, TypedDict, TypeGuard, TypeVar
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts.atomic_io import atomic_output_path
 from vntts_artifacts.voice_manifest import normalize_character_name
 
@@ -26,7 +26,7 @@ from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.cleanup import cleanup_on_exit
 from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import decode_json
-from vntts.path_safety import open_regular_candidate
+from vntts.path_safety import open_regular_binary, open_regular_candidate
 
 VOICE_LIBRARY_VERSION = 3
 _VOICE_LIBRARY_VERSIONS = frozenset({1, 2, VOICE_LIBRARY_VERSION})
@@ -635,10 +635,12 @@ class VoiceLibrary:
         path = self._blob_path(checksum)
         if path.is_symlink() or not path.is_file():
             raise VoiceLibraryError(f"Voice blob is missing or unsafe: {checksum}")
-        if sha256_file(path) != checksum:
+        with open_regular_binary(path) as source:
+            payload = source.read()
+        if hashlib.sha256(payload).hexdigest() != checksum:
             raise VoiceLibraryError(f"Voice blob checksum failed: {checksum}")
         try:
-            with wave.open(str(path), "rb"):
+            with wave.open(io.BytesIO(payload), "rb"):
                 pass
         except (OSError, EOFError, wave.Error) as error:
             raise VoiceLibraryError(

@@ -1,8 +1,9 @@
 # TODO
 
-## Qualify stream-owned artifact readers
+## Finish checksum-bound preview validation
 
-- [ ] Qualify path-only imported WAV/hash readers used by `generation_manifest.validate_success_file_with_samples` before a separate dependency stage. Existing imported PCM API coerces `Path` and cannot consume an admitted stream; shared descriptor ownership needs a compatible stream/bytes API in the producer with historical WAV/error tests, then version/pin/integration qualification. Do not copy its PCM parser into VNTTS or claim pre-open `is_file` prevents a swap.
+- [ ] Bind cached/final preview metadata and speech checks to one captured WAV payload in `_cached_preview`, retaining the post-inspection path SHA check. Pre/post hashes alone admit transient A -> B -> A; legacy sidecar-less previews can mix old metadata with a replacement SHA. Preserve staging preflight, metadata API/bounds/FIFO, seed/retry/recovery/publication behavior; add both regressions and retarget exact per-phase decode and permanent-replacement hooks.
+- [ ] Run local-first preview checks and fresh-main branch selector on the final frozen image; independently review the final phase, remove completed work and commit/push separately.
 
 ## Coordinate source-audio producer numeric admission
 

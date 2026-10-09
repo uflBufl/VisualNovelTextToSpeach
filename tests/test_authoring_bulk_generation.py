@@ -312,14 +312,21 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             item = queue_item()
             queue = write_queue(root / "queue.jsonl", [item])
             output = root / "output"
-            with patch("wave.open", wraps=wave.open) as wav_open:
+            with (
+                patch("wave.open", wraps=wave.open) as wav_open,
+                patch.object(
+                    bulk_module,
+                    "inspect_generated_wav_with_samples",
+                    wraps=bulk_module.inspect_generated_wav_with_samples,
+                ) as inspect_staged,
+            ):
                 result = self.run_generation(queue, output, SyntheticRenderer())
+            self.assertEqual(inspect_staged.call_count, 1)
+            staged_input = inspect_staged.call_args.args[0]
             staged_reads = [
                 call
                 for call in wav_open.call_args_list
-                if call.args[1] == "rb"
-                and isinstance(call.args[0], str)
-                and call.args[0].endswith(".partial.wav")
+                if call.args[1] == "rb" and call.args[0] is staged_input
             ]
             self.assertEqual(result.generated, 1)
             self.assertEqual(len(staged_reads), 1)

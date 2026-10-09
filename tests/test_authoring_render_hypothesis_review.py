@@ -17,7 +17,7 @@ from tests.source_reference_fixtures import (
     write_reference_render_comparison_fixture as write_comparison,
 )
 from tests.symlink_support import symlink_or_skip
-from vntts.authoring import render_hypothesis_review
+from vntts.authoring import render_hypothesis_records, render_hypothesis_review
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_reference_audit import (
     load_failure_reference_decisions,
@@ -350,6 +350,31 @@ class RenderHypothesisReviewTest(unittest.TestCase):
                     )
         finally:
             review_path.write_bytes(original_review)
+
+    def test_result_metadata_decodes_the_captured_audio(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            comparison = root / "comparison"
+            queue_id = write_comparison(comparison)
+            result = publish_render_hypothesis_review(
+                comparison, queue_id, "reference-02", root / "review"
+            )
+            payload = result.result.read_bytes()
+            probe = render_hypothesis_records.probe_pcm16_mono_wav
+
+            def replace_before_decode(source):
+                result.result.write_bytes(b"RIFF")
+                try:
+                    return probe(source)
+                finally:
+                    result.result.write_bytes(payload)
+
+            with patch.object(
+                render_hypothesis_records, "probe_pcm16_mono_wav", replace_before_decode
+            ):
+                loaded = load_render_hypothesis_record(result.directory)
+            self.assertEqual(loaded.result_snapshot.payload, payload)
+            self.assertEqual(loaded.review["review_id"], result.review_id)
 
     def test_publish_load_and_decide_are_self_contained(self):
         with TemporaryDirectory() as directory:

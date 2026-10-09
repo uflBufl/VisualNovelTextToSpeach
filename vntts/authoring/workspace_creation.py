@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import io
 import json
 import re
 import shutil
@@ -174,6 +175,7 @@ from vntts.authoring.workspace_voice_runtime import (
 from vntts.document_identity import canonical_document_sha256
 from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
+from vntts.path_safety import open_regular_binary
 from vntts.voices import (
     CharacterVoice,
     CharacterVoiceRegistry,
@@ -1171,7 +1173,9 @@ def _install_audio_event_composition(
     audio = _within(output, relative, "Composed audio-event WAV")
     audio.parent.mkdir(parents=True, exist_ok=True)
     audio.write_bytes(composition.audio.read_bytes())
-    if sha256_file(audio) != composition.audio_sha256:
+    with open_regular_binary(audio) as source:
+        payload = source.read()
+    if hashlib.sha256(payload).hexdigest() != composition.audio_sha256:
         raise AuthoringWorkbenchError(
             "Audio-event composition changed while copied into its successor"
         )
@@ -1188,7 +1192,7 @@ def _install_audio_event_composition(
         )
     try:
         audio_quality, samples = inspect_generated_wav_with_samples(
-            audio, allow_short_audio_event=True
+            io.BytesIO(payload), allow_short_audio_event=True
         )
         quality = asdict(audio_quality)
         speech_quality = asdict(

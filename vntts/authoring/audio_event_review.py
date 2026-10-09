@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -153,7 +154,7 @@ def publish_source_audio_event_review(
         audio_target.parent.mkdir(parents=True)
         audio_target.write_bytes(audio_snapshot.payload)
         try:
-            audio_info = probe_pcm16_mono_wav(audio_target)
+            audio_info = probe_pcm16_mono_wav(io.BytesIO(audio_snapshot.payload))
         except (OSError, Pcm16MonoWavError) as error:
             raise AudioEventReviewError(
                 f"Source event audio is not PCM16 mono WAV: {error}"
@@ -419,7 +420,7 @@ def _validate_review_candidate_audio(
     if candidate.get("audio_sha256") != audio_snapshot.sha256:
         raise AudioEventReviewError("Audio-event review audio changed")
     try:
-        info = probe_pcm16_mono_wav(audio_snapshot.path)
+        info = probe_pcm16_mono_wav(io.BytesIO(audio_snapshot.payload))
     except (OSError, Pcm16MonoWavError) as error:
         raise AudioEventReviewError(
             f"Invalid audio-event review WAV: {error}"

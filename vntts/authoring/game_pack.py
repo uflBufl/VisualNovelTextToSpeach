@@ -11,6 +11,7 @@ import socket
 from collections.abc import Callable, Mapping, Sequence, Set
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path, PurePosixPath
 from types import TracebackType
 from typing import Literal, Protocol, TypeAlias
@@ -77,7 +78,7 @@ from vntts.authoring.source_reference_bindings import (
     queue_voice_overrides_sha256,
 )
 from vntts.json_types import decode_json, has_schema_version
-from vntts.path_safety import safe_relative_path
+from vntts.path_safety import open_regular_binary, safe_relative_path
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidence,
     SourceAudioSemanticEvidenceError,
@@ -1316,7 +1317,13 @@ def _project_voice_reference(
 ) -> DecisionRecord:
     destination.parent.mkdir(parents=True, exist_ok=True)
     try:
-        samples, sample_rate = sf.read(source, dtype="float32", always_2d=True)
+        with open_regular_binary(source) as stream:
+            source_payload = stream.read()
+        if hashlib.sha256(source_payload).hexdigest() != source_sha256:
+            raise ValueError("voice reference changed before projection")
+        samples, sample_rate = sf.read(
+            BytesIO(source_payload), dtype="float32", always_2d=True
+        )
         if samples.size == 0 or sample_rate < 1:
             raise ValueError("decoded reference is empty")
         sf.write(
@@ -1326,7 +1333,9 @@ def _project_voice_reference(
             format="WAV",
             subtype="PCM_16",
         )
-        info = probe_pcm16_mono_wav(destination)
+        with open_regular_binary(destination) as stream:
+            output_payload = stream.read()
+        info = probe_pcm16_mono_wav(BytesIO(output_payload))
     except Exception as error:
         raise FinalGamePackError(
             f"Unable to project voice reference {source} to PCM16 WAV: {error}"
@@ -1336,7 +1345,7 @@ def _project_voice_reference(
         "source_reference": relative.as_posix(),
         "source_sha256": source_sha256,
         "output_reference": portable.as_posix(),
-        "output_sha256": sha256_file(destination),
+        "output_sha256": hashlib.sha256(output_payload).hexdigest(),
         "sample_rate": info.sample_rate,
         "sample_count": info.sample_count,
         "channels": 1,

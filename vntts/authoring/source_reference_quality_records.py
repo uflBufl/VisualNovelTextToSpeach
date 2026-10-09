@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 from PIL import Image
 from vntts_artifacts.audio import Pcm16MonoWavError, probe_pcm16_mono_wav
 
@@ -23,7 +23,7 @@ from vntts.authoring.advisory_lock import (
 )
 from vntts.document_identity import file_sha256, is_lowercase_sha256
 from vntts.json_types import decode_json
-from vntts.path_safety import contained_regular_file
+from vntts.path_safety import contained_regular_file, open_regular_binary
 
 QUALITY_REVIEW_SCHEMA = "vntts.authoring-source-reference-quality-review"
 QUALITY_REVIEW_VERSION = 1
@@ -427,16 +427,19 @@ def _copy_audio(
     error_type: type[Exception] = SourceReferenceQualityError,
 ) -> JsonObject:
     try:
-        info = probe_pcm16_mono_wav(source)
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, destination)
-        copied_sha256 = sha256_file(destination)
-    except Pcm16MonoWavError as error:
-        raise error_type(f"Invalid review WAV {source}: {error}") from error
+        with open_regular_binary(destination) as stream:
+            payload = stream.read()
+        copied_sha256 = hashlib.sha256(payload).hexdigest()
     except OSError as error:
         raise error_type(f"Unable to copy review WAV {source}: {error}") from error
     if copied_sha256 != digest:
         raise error_type(f"Review WAV changed while copied: {source}")
+    try:
+        info = probe_pcm16_mono_wav(BytesIO(payload))
+    except Pcm16MonoWavError as error:
+        raise error_type(f"Invalid review WAV {source}: {error}") from error
     return {
         "audio_sha256": digest,
         "sample_rate": info.sample_rate,
@@ -506,10 +509,15 @@ def _validate_audio_record(root: Path, value: object, label: str) -> Path:
         raise SourceReferenceQualityError(f"Quality audio {label} must be an object")
     path = _contained_file(root, value.get("audio"), f"quality audio {label}")
     digest = _required_sha256(value.get("audio_sha256"), f"quality audio {label} hash")
-    if file_sha256(path, error_type=SourceReferenceQualityError) != digest:
+    try:
+        with open_regular_binary(path) as stream:
+            payload = stream.read()
+    except OSError as error:
+        raise SourceReferenceQualityError(str(error)) from error
+    if hashlib.sha256(payload).hexdigest() != digest:
         raise SourceReferenceQualityError(f"Quality audio changed: {label}")
     try:
-        info = probe_pcm16_mono_wav(path)
+        info = probe_pcm16_mono_wav(BytesIO(payload))
     except Pcm16MonoWavError as error:
         raise SourceReferenceQualityError(
             f"Invalid quality WAV {label}: {error}"

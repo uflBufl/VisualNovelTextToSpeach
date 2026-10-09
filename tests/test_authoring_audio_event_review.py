@@ -30,6 +30,26 @@ from vntts.authoring.cli import main as authoring_main
 
 
 class AudioEventReviewTest(unittest.TestCase):
+    def test_candidate_metadata_decodes_the_captured_audio(self):
+        with TemporaryDirectory() as directory:
+            result, _queue, _source = publish(Path(directory))
+            payload = result.audio.read_bytes()
+            probe = review_module.probe_pcm16_mono_wav
+
+            def replace_before_decode(source):
+                result.audio.write_bytes(b"RIFF")
+                try:
+                    return probe(source)
+                finally:
+                    result.audio.write_bytes(payload)
+
+            with patch.object(
+                review_module, "probe_pcm16_mono_wav", replace_before_decode
+            ):
+                loaded = load_audio_event_review(result.directory)
+            self.assertEqual(loaded.audio_sha256, result.audio_sha256)
+            self.assertEqual(loaded.review_id, result.review_id)
+
     def test_loader_and_publisher_races_raise_review_errors(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

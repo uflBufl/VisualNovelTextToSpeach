@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib
+import io
 import json
 import os
 import re
@@ -2463,14 +2464,16 @@ def _render_and_publish_generation_attempt(
             "trailing_trimmed_samples": trimmed.trailing_trimmed_samples,
         }
     write_pcm16_wav(attempt.partial, output_pcm, attempt.rendered.sample_rate)
-    quality, samples = inspect_generated_wav_with_samples(attempt.partial)
+    with open_regular_binary(attempt.partial) as source:
+        payload = source.read()
+    quality, samples = inspect_generated_wav_with_samples(io.BytesIO(payload))
     speech_quality = inspect_generated_speech_samples(
         samples,
         sample_rate=quality.sample_rate,
         duration_seconds=quality.sample_count / quality.sample_rate,
         text=plan.synthesis_text,
     )
-    file_sha256 = sha256_file(attempt.partial)
+    file_sha256 = hashlib.sha256(payload).hexdigest()
     _write_active_phase(run.state_path, run.state, "publishing")
     _notify_progress(run)
     if run.workspace_output_identity is not None:

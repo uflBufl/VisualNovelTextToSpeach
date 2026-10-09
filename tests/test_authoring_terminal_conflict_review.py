@@ -548,6 +548,31 @@ class TerminalConflictReviewTest(unittest.TestCase):
         }
         self.assertFalse(terminal_module._is_stored_progress_lease(value))
 
+    def test_candidate_metadata_uses_checksum_bound_payload(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _primary, _secondary, _queue_id, report = self.create_fixture(root)
+            output = root / "conflict-review"
+            created = publish_terminal_conflict_review(report, output)
+            review = json.loads(created.review.read_text(encoding="utf-8"))
+            candidate = review["cases"][0]["candidates"][0]
+            audio = output / candidate["audio"]
+            probe = terminal_module.probe_pcm16_mono_wav
+
+            def replace_before_decode(source):
+                audio.write_bytes(b"replaced after checksum")
+                return probe(source)
+
+            with patch.object(
+                terminal_module,
+                "probe_pcm16_mono_wav",
+                side_effect=replace_before_decode,
+            ):
+                terminal_module._validate_candidate_audio(
+                    candidate, output, candidate["audio_sha256"]
+                )
+            self.assertEqual(audio.read_bytes(), b"replaced after checksum")
+
 
 if __name__ == "__main__":
     unittest.main()

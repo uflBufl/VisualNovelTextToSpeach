@@ -959,6 +959,30 @@ class LegacyAuthoringImportTest(unittest.TestCase):
         self.assertTrue(json.loads(first_output.getvalue())["created"])
         self.assertFalse(json.loads(second_output.getvalue())["created"])
 
+    def test_generated_wav_metadata_uses_checksum_bound_payload(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = write_legacy_fixture(root)
+            audio = fixture["wav"]
+            digest = sha256_file(audio)
+            probe = legacy_module.probe_pcm16_mono_wav
+            expected = probe(audio)
+
+            def replace_before_decode(source):
+                audio.write_bytes(b"replaced after checksum")
+                return probe(source)
+
+            with patch.object(
+                legacy_module,
+                "probe_pcm16_mono_wav",
+                side_effect=replace_before_decode,
+            ):
+                info = legacy_module._validate_generated_wav(
+                    audio, digest, fixture["queue_id"]
+                )
+            self.assertEqual(info, expected)
+            self.assertEqual(audio.read_bytes(), b"replaced after checksum")
+
 
 if __name__ == "__main__":
     unittest.main()

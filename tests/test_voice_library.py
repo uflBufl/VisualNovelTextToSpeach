@@ -1,4 +1,5 @@
 import hashlib
+import io
 import json
 import os
 import unittest
@@ -346,9 +347,15 @@ class VoiceLibraryTest(unittest.TestCase):
             library.discover("Bob", shared, bind_if_missing=True)
             other = library.discover("Unbound", unused)
             index = library.path.read_bytes()
+            payloads = [first.path.read_bytes(), other.path.read_bytes()]
             with (
                 patch.object(
-                    voice_library, "sha256_file", wraps=voice_library.sha256_file
+                    voice_library,
+                    "open_regular_binary",
+                    wraps=voice_library.open_regular_binary,
+                ) as capture,
+                patch.object(
+                    voice_library.hashlib, "sha256", wraps=voice_library.hashlib.sha256
                 ) as hashing,
                 patch.object(
                     voice_library.wave, "open", wraps=voice_library.wave.open
@@ -356,8 +363,11 @@ class VoiceLibraryTest(unittest.TestCase):
             ):
                 library.validate()
             self.assertEqual(
-                [call.args[0] for call in hashing.call_args_list],
+                [call.args[0] for call in capture.call_args_list],
                 [first.path, other.path],
+            )
+            self.assertEqual(
+                [call.args[0] for call in hashing.call_args_list], payloads
             )
             self.assertEqual(headers.call_count, 2)
             for alternative in (first, other):
@@ -388,10 +398,12 @@ class VoiceLibraryTest(unittest.TestCase):
             library.path.write_text(json.dumps(document))
             index = library.path.read_bytes()
             with (
-                patch.object(voice_library, "sha256_file") as hashing,
+                patch.object(voice_library, "open_regular_binary") as capture,
+                patch.object(voice_library.hashlib, "sha256") as hashing,
                 self.assertRaisesRegex(VoiceLibraryError, "not an alternative"),
             ):
                 library.validate()
+            capture.assert_not_called()
             hashing.assert_not_called()
             self.assertEqual(library.path.read_bytes(), index)
 
@@ -911,6 +923,54 @@ class VoiceLibraryTest(unittest.TestCase):
                 VoiceLibraryError, "cannot have a voice source"
             ):
                 library.select("Role", route="narrator", source_id="preset:alba")
+
+    def test_blob_header_uses_checksum_bound_payload(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "voice.wav"
+            write_wav(reference, b"\x00\x00")
+            library = VoiceLibrary(root / "library")
+            alternative = library.discover("Role", reference)
+            index = library.path.read_bytes()
+            open_wav = wave.open
+
+            def replace_before_header(source, mode):
+                alternative.path.write_bytes(b"replaced after checksum")
+                return open_wav(source, mode)
+
+            with patch.object(wave, "open", side_effect=replace_before_header):
+                self.assertEqual(
+                    library._validate_blob(alternative.sha256), alternative.path
+                )
+            self.assertEqual(library.path.read_bytes(), index)
+            with self.assertRaisesRegex(VoiceLibraryError, "checksum failed"):
+                library.validate()
+            self.assertEqual(library.path.read_bytes(), index)
+
+    def test_blob_header_accepts_stereo_and_non_pcm16_wav(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            library = VoiceLibrary(root / "library")
+            for channels, width in ((2, 1), (1, 3)):
+                with self.subTest(channels=channels, width=width):
+                    reference = root / f"voice-{channels}-{width}.wav"
+                    with wave.open(str(reference), "wb") as output:
+                        output.setnchannels(channels)
+                        output.setsampwidth(width)
+                        output.setframerate(24_000)
+                        output.writeframes(b"\0" * channels * width * 4)
+                    alternative = library.discover(
+                        f"Role {channels}-{width}", reference
+                    )
+                    self.assertEqual(
+                        library._validate_blob(alternative.sha256), alternative.path
+                    )
+                    with wave.open(
+                        io.BytesIO(alternative.path.read_bytes()), "rb"
+                    ) as audio:
+                        self.assertEqual(audio.getnchannels(), channels)
+                        self.assertEqual(audio.getsampwidth(), width)
+            library.validate()
 
 
 if __name__ == "__main__":

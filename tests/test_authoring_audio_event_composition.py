@@ -20,6 +20,31 @@ from vntts.authoring.cli import main as authoring_main
 
 
 class AudioEventCompositionTest(unittest.TestCase):
+    def test_final_audio_metadata_decodes_the_captured_bytes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            review, _queue, _source = publish(root)
+            record_audio_event_review_decision(review.directory, "accept")
+            result = publish_audio_event_composition(
+                review.directory, root / "composition"
+            )
+            payload = result.audio.read_bytes()
+            probe = composition_module.probe_pcm16_mono_wav
+
+            def replace_before_decode(source):
+                result.audio.write_bytes(b"RIFF")
+                try:
+                    return probe(source)
+                finally:
+                    result.audio.write_bytes(payload)
+
+            with patch.object(
+                composition_module, "probe_pcm16_mono_wav", replace_before_decode
+            ):
+                loaded = load_audio_event_composition(result.directory)
+            self.assertEqual(loaded.audio_sha256, result.audio_sha256)
+            self.assertEqual(loaded.composition_id, result.composition_id)
+
     def test_publishes_exact_speaker_neutral_event_and_is_idempotent(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

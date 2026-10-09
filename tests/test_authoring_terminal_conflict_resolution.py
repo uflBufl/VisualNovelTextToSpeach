@@ -9,6 +9,7 @@ from unittest.mock import patch
 from tests.authoring_fixtures import tree_hashes
 from tests.symlink_support import symlink_or_skip
 from tests.terminal_conflict_fixtures import create_terminal_conflict_fixture
+from vntts.authoring import terminal_conflict_resolution as resolution_module
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.publication import AtomicPublicationError
 from vntts.authoring.terminal_conflict_resolution import (
@@ -220,6 +221,67 @@ class TerminalConflictResolutionTest(unittest.TestCase):
                 TerminalConflictResolutionError, "inventory changed"
             ):
                 load_terminal_conflict_resolution(root / "resolution")
+
+    def test_selected_metadata_uses_checksum_bound_payload(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _primary, _secondary, queue_id, review, document = self.create_review(root)
+            case = document["cases"][0]
+            record_terminal_conflict_decision(
+                review, case["case_id"], case["candidates"][0]["candidate_id"]
+            )
+            output = root / "resolution"
+            created = publish_terminal_conflict_resolution(review, output)
+            resolution = json.loads(created.resolution.read_text(encoding="utf-8"))
+            record = resolution["resolutions"][0]
+            audio = output / record["selected_audio"]
+            probe = resolution_module.probe_pcm16_mono_wav
+
+            def replace_before_decode(source):
+                audio.write_bytes(b"replaced after checksum")
+                return probe(source)
+
+            with patch.object(
+                resolution_module,
+                "probe_pcm16_mono_wav",
+                side_effect=replace_before_decode,
+            ):
+                selected = resolution_module._validate_resolution_record_selection(
+                    record, record["candidate_ids"], queue_id, output
+                )
+            self.assertEqual(selected, record["selected_audio"])
+            self.assertEqual(audio.read_bytes(), b"replaced after checksum")
+
+    def test_corrupted_selected_copy_aborts_publication_and_cleans_staging(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _primary, _secondary, _queue_id, review, document = self.create_review(root)
+            case = document["cases"][0]
+            record_terminal_conflict_decision(
+                review, case["case_id"], case["candidates"][0]["candidate_id"]
+            )
+            write_bytes = Path.write_bytes
+            corrupted = False
+
+            def corrupt_selected_copy(path, payload):
+                nonlocal corrupted
+                written = write_bytes(path, payload)
+                if path.suffix == ".wav" and any(
+                    parent.name.startswith(".resolution.staging-")
+                    for parent in path.parents
+                ):
+                    write_bytes(path, b"corrupted selected copy")
+                    corrupted = True
+                return written
+
+            with (
+                patch.object(Path, "write_bytes", corrupt_selected_copy),
+                self.assertRaisesRegex(TerminalConflictResolutionError, "WAV changed"),
+            ):
+                publish_terminal_conflict_resolution(review, root / "resolution")
+            self.assertTrue(corrupted)
+            self.assertFalse((root / "resolution").exists())
+            self.assertEqual(list(root.glob(".resolution.staging-*")), [])
 
 
 if __name__ == "__main__":

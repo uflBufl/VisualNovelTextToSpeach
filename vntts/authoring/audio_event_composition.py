@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -419,7 +420,7 @@ def _validate_composition_document(
     ):
         raise AudioEventCompositionError("Audio-event composition ledger changed")
     try:
-        info = probe_pcm16_mono_wav(audio_snapshot.path)
+        info = probe_pcm16_mono_wav(io.BytesIO(audio_snapshot.payload))
     except (OSError, Pcm16MonoWavError) as error:
         raise AudioEventCompositionError(str(error)) from error
     if (
