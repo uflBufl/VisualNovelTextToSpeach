@@ -1734,6 +1734,7 @@ def _contained_source_path(root: PathLike, relative: object, label: str) -> Path
     if (
         not isinstance(relative, str)
         or not relative
+        or "\x00" in relative
         or Path(relative).is_absolute()
         or "\\" in relative
         or any(part in {"", ".", ".."} for part in Path(relative).parts)

@@ -467,7 +467,7 @@ def validate_success_file_with_samples(
 
 
 def safe_generation_relative_path(value: object, label: str) -> Path:
-    if not isinstance(value, str) or not value:
+    if not isinstance(value, str) or not value or "\x00" in value:
         raise BulkGenerationError(f"{label} must be a relative POSIX path")
     if "\\" in value:
         raise BulkGenerationError(f"{label} must use POSIX separators")

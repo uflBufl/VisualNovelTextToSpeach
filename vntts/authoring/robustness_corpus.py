@@ -205,7 +205,12 @@ def _required_text(value: object, label: str) -> str:
 
 
 def _relative(value: object, label: str) -> Path:
-    if not isinstance(value, str) or not value.strip() or "\\" in value:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or "\\" in value
+        or "\x00" in value
+    ):
         raise SpeechRobustnessCorpusError(f"{label} must be a POSIX-relative path")
     pure = PurePosixPath(value)
     if pure.is_absolute() or any(part in {"", ".", ".."} for part in value.split("/")):

@@ -625,7 +625,7 @@ def _copy_optional_portrait(
     if root is None or portrait is None:
         return None
     portrait_text = _required_text(portrait, f"variant {variant_id} portrait")
-    if "\\" in portrait_text:
+    if "\\" in portrait_text or "\x00" in portrait_text:
         raise SourceReferenceQualityError("Portrait identity must be a filename")
     identity = PurePosixPath(portrait_text)
     if len(identity.parts) != 1 or identity.name in {"", ".", ".."}:

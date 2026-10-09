@@ -1500,7 +1500,12 @@ def _atomic_write_private_json(path: PathInput, value: object) -> Path:
 
 
 def _within(root: PathInput, value: object, label: str) -> Path:
-    if not isinstance(value, str) or not value.strip() or "\\" in value:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or "\\" in value
+        or "\x00" in value
+    ):
         raise ModelListeningError(f"{label} must be a POSIX-relative path")
     pure = PurePosixPath(value)
     if pure.is_absolute() or any(part in {"", ".", ".."} for part in value.split("/")):

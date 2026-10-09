@@ -759,8 +759,10 @@ def _validate_resolution_projection_selection(
     selected_audio = PurePosixPath(
         _text(value["selected_audio"], "Selected audio path")
     )
-    if selected_audio.is_absolute() or any(
-        part in {"", ".", ".."} for part in selected_audio.parts
+    if (
+        "\x00" in selected_audio.as_posix()
+        or selected_audio.is_absolute()
+        or any(part in {"", ".", ".."} for part in selected_audio.parts)
     ):
         raise TerminalConflictSuccessorError("Selected successor audio path is invalid")
     for field, amount in (

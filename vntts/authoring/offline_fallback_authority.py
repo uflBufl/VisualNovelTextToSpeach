@@ -240,7 +240,7 @@ def _snapshot_authority_at_path(
     relative: Path,
     directory: str | Path,
 ) -> OfflineFallbackAuthority:
-    if relative.is_absolute() or ".." in relative.parts:
+    if "\x00" in str(relative) or relative.is_absolute() or ".." in relative.parts:
         raise OfflineFallbackAuthorityError(
             "Workspace offline fallback authority path is unsafe"
         )

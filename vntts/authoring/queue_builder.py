@@ -494,7 +494,12 @@ def _local_reference_paths(
     candidates = []
     root = Path(manifest_directory).resolve()
     for reference in entry.references:
-        if not isinstance(reference, str) or not reference or "\\" in reference:
+        if (
+            not isinstance(reference, str)
+            or not reference
+            or "\\" in reference
+            or "\x00" in reference
+        ):
             raise GenerationQueueBuildError(
                 "Voice reference must be a non-empty POSIX-relative path"
             )

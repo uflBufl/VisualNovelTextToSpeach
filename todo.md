@@ -2,6 +2,10 @@
 
 ## Qualify remaining model dependency risks
 
+- [ ] Rerun `scripts/dependency_audit.py` after explicit permission to send
+      dependency versions and locked Git revisions to OSV (`api.osv.dev`).
+      The October 9 rerun was rejected before execution by automatic approval
+      review; local lock consistency checks do not replace this external audit.
 - [ ] Qualify the upstream Transformers custom-generation consent fix in each
       affected model stack before changing locks. Commit
       `cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55` is included in released 5.17.0,

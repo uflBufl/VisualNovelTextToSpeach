@@ -1459,6 +1459,7 @@ def _validate_variants(variants: Sequence[JsonObject]) -> None:
             value = _required_text(reference.get("path"), "Comparison reference path")
             if (
                 "\\" in value
+                or "\x00" in value
                 or Path(value).is_absolute()
                 or any(part in {"", ".", ".."} for part in value.split("/"))
             ):

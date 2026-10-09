@@ -1642,7 +1642,7 @@ def _contained_file(root: str | Path, value: object) -> Path:
     root = Path(root).resolve()
     text = _required_text(value, "artifact path")
     relative = Path(text)
-    if relative.is_absolute() or ".." in relative.parts:
+    if "\x00" in text or relative.is_absolute() or ".." in relative.parts:
         raise ReferenceRenderComparisonError(
             "Reference render artifact leaves its root"
         )

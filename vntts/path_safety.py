@@ -16,7 +16,12 @@ def safe_relative_path(
     error_type: type[Exception] = ValueError,
 ) -> Path:
     """Validate one canonical POSIX-relative path without touching the filesystem."""
-    if not isinstance(value, str) or not value.strip() or "\\" in value:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or "\\" in value
+        or "\x00" in value
+    ):
         raise error_type(f"{label} must be a POSIX-relative path")
     pure = PurePosixPath(value)
     if (

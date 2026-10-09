@@ -1424,7 +1424,7 @@ def _resolve_path(root: Path, value: str) -> Path:
 
 
 def _safe_relative(value: object, label: str) -> Path:
-    if not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str) or not value.strip() or "\x00" in value:
         raise LegacyAuthoringImportError(f"{label} must be a non-empty relative path")
     if "\\" in value:
         raise LegacyAuthoringImportError(f"{label} must use POSIX separators")

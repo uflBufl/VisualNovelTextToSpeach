@@ -522,7 +522,12 @@ def voice_manifest_entries_at_path(
 def _contained_manifest_reference(
     manifest_path: str | os.PathLike[str], reference: object
 ) -> Path:
-    if not isinstance(reference, str) or not reference.strip() or "\\" in reference:
+    if (
+        not isinstance(reference, str)
+        or not reference.strip()
+        or "\\" in reference
+        or "\x00" in reference
+    ):
         raise VoiceManifestError("Voice reference must be a safe POSIX-relative path")
     relative = PurePosixPath(reference.strip())
     if relative.is_absolute() or any(

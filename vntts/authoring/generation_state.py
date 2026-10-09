@@ -2250,7 +2250,7 @@ def _parse_synthesis_control_file(file_record: object, role: str) -> dict[str, s
     if not isinstance(file_record, dict) or set(file_record) != {"path", "sha256"}:
         raise BulkGenerationError(f"Synthesis control {role!r} file record is invalid")
     relative = file_record.get("path")
-    if not isinstance(relative, str) or "\\" in relative:
+    if not isinstance(relative, str) or "\\" in relative or "\x00" in relative:
         raise BulkGenerationError(f"Synthesis control {role!r} file path is invalid")
     pure = PurePosixPath(relative)
     if pure.is_absolute() or any(part in {"", ".", ".."} for part in pure.parts):

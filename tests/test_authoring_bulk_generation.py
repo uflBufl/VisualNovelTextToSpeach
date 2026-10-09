@@ -46,6 +46,10 @@ from vntts.authoring.bulk_generation import (
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_repair import FailureRepairPolicy
 from vntts.authoring.generation_manifest import RUNTIME_PROGRESS_MANIFEST_NAME
+from vntts.authoring.generation_state import (
+    control_directory_digest,
+    validate_synthesis_controls,
+)
 from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
 from vntts.authoring.silence_evidence import (
     SilenceFailureEvidenceError,
@@ -2470,6 +2474,31 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             self.assertEqual(state["items"], {})
             self.assertIsNotNone(state["active"])
             self.assertFalse((root / "output/manifest.json").exists())
+
+    def test_synthesis_control_registry_rejects_embedded_nul_paths(self):
+        for path in ("nested/weights.bin", "\x00", "nested/weights\x00.bin"):
+            files = [{"path": path, "sha256": "a" * 64}]
+            state = {
+                "synthesis_controls": {
+                    "b" * 64: [
+                        {
+                            "role": "model_artifact",
+                            "kind": "directory",
+                            "path": "model",
+                            "sha256": control_directory_digest(files),
+                            "files": files,
+                        }
+                    ]
+                }
+            }
+            with self.subTest(path=path):
+                if "\x00" in path:
+                    with self.assertRaisesRegex(
+                        BulkGenerationError, "file path is invalid"
+                    ):
+                        validate_synthesis_controls(state)
+                else:
+                    validate_synthesis_controls(state)
 
     def test_directory_control_inventory_binds_every_tree_entry(self):
         with TemporaryDirectory() as directory:

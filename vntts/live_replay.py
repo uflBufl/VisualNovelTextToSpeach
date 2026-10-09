@@ -1808,7 +1808,7 @@ def _contained_regular_file(
 ) -> tuple[Path, str]:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{label} path must be non-empty")
-    if "\\" in value:
+    if "\\" in value or "\x00" in value:
         raise ValueError(f"{label} path must use a contained relative path")
     relative = PurePosixPath(value)
     if (

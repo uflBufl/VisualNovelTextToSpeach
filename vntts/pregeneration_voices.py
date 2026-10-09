@@ -2148,6 +2148,7 @@ def _manifest_candidate_variants(
         not isinstance(report_relative, str)
         or not report_relative.strip()
         or "\\" in report_relative
+        or "\x00" in report_relative
     ):
         raise PregenerationVoiceError("Player voice candidate report path is invalid")
     relative = PurePosixPath(report_relative)
