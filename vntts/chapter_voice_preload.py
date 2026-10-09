@@ -100,7 +100,9 @@ class ChapterVoicePreloader:
             self.by_exact_dialogue[
                 (speaker_key, _normalize_exact_text(row.text))
             ].append(row)
-            self.by_normalized_dialogue[(speaker_key, _normalize(row.text))].append(row)
+            self.by_normalized_dialogue[
+                (speaker_key, self.normalized_text[row])
+            ].append(row)
         for rows in self.by_chapter.values():
             rows.sort(key=lambda row: row.sequence)
         self.current_match: ChapterMatch | None = None
@@ -349,7 +351,7 @@ class ChapterVoicePreloader:
                 for line_id in allowed
                 if (row := self.by_line_id.get(line_id)) is not None
                 and row.text_sha256
-                and _normalize(row.text) == normalized_text
+                and self.normalized_text[row] == normalized_text
                 and _normalize(row.speaker) == speaker_key
             ]
             match_result = "expected-normalized-exact"
@@ -689,7 +691,7 @@ class ChapterVoicePreloader:
         best_row = None
         best_score = 0.0
         for row in candidates:
-            candidate_text = _normalize(row.text)
+            candidate_text = self.normalized_text[row]
             if not candidate_text:
                 continue
             if normalized_text in candidate_text or candidate_text in normalized_text:

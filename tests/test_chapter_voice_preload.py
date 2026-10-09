@@ -104,6 +104,25 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
 
         self.assertEqual(preloader.recommend("Fatutu", "Hi"), ())
 
+    def test_matching_reuses_indexed_text_normalization(self):
+        first = ChapterDialogue("first", "1", 1, "Ada", "It's time to go.", "a" * 64)
+        second = ChapterDialogue("second", "1", 2, "Bea", "We should hurry.", "b" * 64)
+        with patch(
+            "vntts.chapter_voice_preload._normalize", wraps=_normalize
+        ) as normalize:
+            preloader = ChapterVoicePreloader((first, second))
+            line, result = preloader.resolve_exact_among(
+                "Ada", "It’s time to go", ("first", "second")
+            )
+            recommendations = preloader.recommend("Ada", "It's time to")
+
+        self.assertEqual((line, result), (first, "expected-normalized-exact"))
+        self.assertEqual(recommendations, ("Bea",))
+        for row in preloader.dialogue:
+            self.assertEqual(
+                [call.args for call in normalize.call_args_list].count((row.text,)), 1
+            )
+
     def test_optional_loader_tolerates_missing_and_invalid_index(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "dialogue.json"
