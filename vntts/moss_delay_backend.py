@@ -239,14 +239,15 @@ class MossTTSDelayVoiceRouterBackend:
             if auto_model is None or auto_processor is None:
                 auto_model, auto_processor = _load_transformers()
             try:
+                revision_options = (
+                    {"revision": self.model_revision}
+                    if self.model_revision is not None
+                    else {}
+                )
                 processor = auto_processor.from_pretrained(
                     self.model_name,
                     trust_remote_code=True,
-                    **(
-                        {"revision": self.model_revision}
-                        if self.model_revision is not None
-                        else {}
-                    ),
+                    **revision_options,
                 )
                 processor.audio_tokenizer = processor.audio_tokenizer.to(self.device)
                 model = auto_model.from_pretrained(
@@ -254,11 +255,7 @@ class MossTTSDelayVoiceRouterBackend:
                     trust_remote_code=True,
                     attn_implementation=self._attention_implementation(),
                     torch_dtype=self.dtype,
-                    **(
-                        {"revision": self.model_revision}
-                        if self.model_revision is not None
-                        else {}
-                    ),
+                    **revision_options,
                 ).to(self.device)
                 model.eval()
             except Exception as error:
