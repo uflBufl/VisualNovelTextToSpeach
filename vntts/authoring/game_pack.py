@@ -76,7 +76,7 @@ from vntts.authoring.source_reference_bindings import (
     queue_voice_overrides_from_manifest,
     queue_voice_overrides_sha256,
 )
-from vntts.json_types import has_schema_version
+from vntts.json_types import decode_json, has_schema_version
 from vntts.path_safety import safe_relative_path
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidence,
@@ -885,7 +885,7 @@ class _PublicationLease:
                 if self.path.exists():
                     try:
                         existing_payload = self.path.read_bytes()
-                        existing = json.loads(existing_payload.decode("utf-8"))
+                        existing = decode_json(existing_payload.decode("utf-8"))
                     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
                         raise FinalGamePackError(
                             f"Unable to inspect publication lease: {error}"
@@ -928,7 +928,7 @@ class _PublicationLease:
         try:
             with exclusive_advisory_lock(self.guard_path, blocking=True):
                 try:
-                    document = json.loads(self.path.read_text(encoding="utf-8"))
+                    document = decode_json(self.path.read_text(encoding="utf-8"))
                 except OSError, UnicodeDecodeError, json.JSONDecodeError:
                     ownership_lost = True
                 else:
@@ -949,7 +949,7 @@ class _PublicationLease:
 
     def assert_owned(self) -> None:
         try:
-            document = json.loads(self.path.read_text(encoding="utf-8"))
+            document = decode_json(self.path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise FinalGamePackError(
                 "Final game-pack publication lease became unreadable"
@@ -1497,7 +1497,7 @@ def _load_stable_state(
 ) -> tuple[JsonDocument, str]:
     try:
         payload = state_path.read_bytes()
-        state = json.loads(payload)
+        state = decode_json(payload)
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise FinalGamePackError(
             f"Unable to read generation state {state_path}: {error}"

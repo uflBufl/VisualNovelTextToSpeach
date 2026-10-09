@@ -92,6 +92,7 @@ from vntts.authoring.workspace_state import (
     shared_workspace_state_reads,
 )
 from vntts.cleanup import temporary_directory
+from vntts.json_types import decode_json
 from vntts.json_types import (
     has_schema_version as _has_exact_schema_version,
 )
@@ -356,7 +357,7 @@ def _load_workspace_validation_state(
         state_sha256 = hashlib.sha256(payload).hexdigest()
         try:
             queue = _load_bound_workspace_queue(directory, workspace)
-            state_document = json.loads(payload.decode("utf-8"))
+            state_document = decode_json(payload.decode("utf-8"))
             if not isinstance(state_document, dict):
                 raise BulkGenerationError("Generation state must be a JSON object")
             state = load_generation_state_from_snapshot(

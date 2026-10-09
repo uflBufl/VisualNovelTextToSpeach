@@ -46,6 +46,7 @@ from vntts.authoring.speech_quality import (
 )
 from vntts.cleanup import attempt_cleanup, cleanup_on_exit
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
+from vntts.json_types import decode_json
 from vntts.pregeneration_voices import VoiceCandidate, VoiceGroup, VoicePlan
 from vntts.reference_quality import analyze_reference
 from vntts.speech_backend_runtime import shutdown_speech_backend
@@ -829,7 +830,7 @@ def _cached_preview_metadata(
             payload = source.read(1025)
         if len(payload) > 1024:
             raise ValueError("preview manifest is too large")
-        document = json.loads(payload)
+        document = decode_json(payload)
         if not isinstance(document, dict):
             raise ValueError("preview manifest must be an object")
         seed = document["seed"]

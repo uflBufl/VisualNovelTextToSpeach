@@ -94,6 +94,18 @@ class _CopySnapshotProbe:
 
 
 class VoiceLibraryTest(unittest.TestCase):
+    def test_deep_library_json_reports_read_error_without_rewriting(self):
+        with TemporaryDirectory() as directory:
+            library = VoiceLibrary(directory)
+            payload = b"[" * 100000 + b"0" + b"]" * 100000
+            library.path.write_bytes(payload)
+            with self.assertRaisesRegex(
+                VoiceLibraryError, "Unable to read voice library"
+            ) as caught:
+                library.bindings()
+            self.assertIsInstance(caught.exception.__cause__, json.JSONDecodeError)
+            self.assertEqual(library.path.read_bytes(), payload)
+
     def test_invalid_index_encoding_preserves_domain_error(self) -> None:
         with TemporaryDirectory() as directory:
             library = VoiceLibrary(directory)

@@ -172,6 +172,7 @@ from vntts.authoring.workspace_voice_runtime import (
     load_workspace_voice_registry,
 )
 from vntts.document_identity import canonical_document_sha256
+from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
 from vntts.voices import (
     CharacterVoice,
@@ -1680,7 +1681,7 @@ def _load_carry_forward_source(
     source_state_sha256 = hashlib.sha256(source_state_payload).hexdigest()
     try:
         state = _json_document(
-            json.loads(source_state_payload.decode("utf-8")),
+            decode_json(source_state_payload.decode("utf-8")),
             "Carry-forward source state",
         )
         validated_state = load_generation_state(source_state_path, source_queue_path)

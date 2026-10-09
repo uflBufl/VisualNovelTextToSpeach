@@ -18,6 +18,7 @@ from vntts_artifacts.story_index import (
 )
 
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
+from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
 
 SEMANTIC_EVIDENCE_SCHEMA = "r1999.source-audio-semantic-evidence"
@@ -80,7 +81,7 @@ def load_source_audio_semantic_evidence(
     evidence_path = Path(path).expanduser().resolve()
     try:
         payload = evidence_path.read_bytes()
-        document = json.loads(payload.decode("utf-8"))
+        document = decode_json(payload.decode("utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise SourceAudioSemanticEvidenceError(
             f"Unable to read source-audio semantic evidence {evidence_path}: {error}"

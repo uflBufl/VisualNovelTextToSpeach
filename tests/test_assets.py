@@ -72,6 +72,15 @@ class MemoryOpener:
 
 
 class ModelAssetManagerTest(unittest.TestCase):
+    def test_deep_optional_json_returns_default_without_rewriting(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "cache.json"
+            payload = b"[" * 100000 + b"0" + b"]" * 100000
+            path.write_bytes(payload)
+            default = object()
+            self.assertIs(assets.read_json(path, default), default)
+            self.assertEqual(path.read_bytes(), payload)
+
     def test_checksum_manifest_rejects_model_url_without_filename(self):
         asset = ModelAsset("empty", ("https://example.invalid/",))
         with self.assertRaisesRegex(ModelIntegrityError, "no filename"):

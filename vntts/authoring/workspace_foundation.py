@@ -8,6 +8,7 @@ from collections.abc import Mapping, MutableSequence
 from pathlib import Path
 
 from vntts.document_identity import is_sha256
+from vntts.json_types import decode_json
 from vntts.path_safety import contained_path, contained_regular_file, safe_relative_path
 
 
@@ -36,7 +37,7 @@ def load_json_object(
 ) -> dict[str, object]:
     """Load one JSON object from a filesystem path."""
     try:
-        value = json.loads(Path(path).read_text(encoding="utf-8"))
+        value = decode_json(Path(path).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise error_type(f"Unable to read {description} {path}: {error}") from error
     if not isinstance(value, dict):
@@ -57,7 +58,7 @@ def load_json_object_snapshot(
         raise error_type(f"Unable to read {description} {path}: {error}") from error
     digest = hashlib.sha256(payload).hexdigest()
     try:
-        value = json.loads(payload.decode("utf-8"))
+        value = decode_json(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise error_type(f"Unable to read {description} {path}: {error}") from error
     if not isinstance(value, dict):

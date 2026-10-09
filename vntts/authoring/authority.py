@@ -13,6 +13,7 @@ from pathlib import Path
 
 from vntts.cleanup import cleanup_on_exit
 from vntts.document_identity import canonical_document_sha256
+from vntts.json_types import decode_json
 from vntts.path_safety import contained_regular_file, no_replace_destination
 
 
@@ -31,7 +32,7 @@ class AuthoritySnapshot:
     def json_document(self, label: str) -> dict[str, object]:
         """Decode one captured JSON object without reopening the source path."""
         try:
-            document = json.loads(self.payload.decode("utf-8"))
+            document = decode_json(self.payload.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise AuthoringAuthorityError(f"Unable to read {label}: {error}") from error
         if not isinstance(document, dict):

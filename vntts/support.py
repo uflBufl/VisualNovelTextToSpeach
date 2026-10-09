@@ -25,6 +25,7 @@ from vntts_artifacts.atomic_io import atomic_output_path
 from vntts.audio_lifecycle import audio_lifecycle_context
 from vntts.diagnostics import macos_permission_warnings
 from vntts.document_identity import is_lowercase_sha256
+from vntts.json_types import decode_json
 from vntts.ocr_review import OCR_REVIEW_SCHEMA_VERSION, OCRReviewMetadata
 from vntts.onboarding import probe_audio_output, probe_tesseract
 from vntts.settings import AppSettings
@@ -530,7 +531,7 @@ def _read_bounded_json_lines(
     entries: SupportEntries = []
     for line in payload.splitlines():
         try:
-            entry = json.loads(line)
+            entry = decode_json(line)
         except TypeError, ValueError:
             continue
         if isinstance(entry, dict):
@@ -978,7 +979,7 @@ def _read_previous_generation_timelines(path: Path) -> dict[str, object] | None:
     if len(payload) > limit:
         return None
     try:
-        document = json.loads(payload)
+        document = decode_json(payload)
     except UnicodeError, json.JSONDecodeError:
         return None
     if not isinstance(document, dict) or not isinstance(
@@ -1188,7 +1189,7 @@ class PregenerationSupportState:
         if len(payload) > _PERSISTED_SUPPORT_READ_LIMIT:
             return None
         try:
-            document = json.loads(payload)
+            document = decode_json(payload)
         except UnicodeError, json.JSONDecodeError:
             return None
         return _loaded_pregeneration_support(document)
@@ -1316,10 +1317,12 @@ def _pregeneration_state_summary(path: str | Path | None) -> SupportDocument:
     if len(payload) > limit:
         return {"available": False, "reason": "state exceeds support read limit"}
     try:
-        document = json.loads(payload)
+        document = decode_json(payload)
     except UnicodeError, json.JSONDecodeError:
         return {"available": False, "reason": "state could not be read"}
-    items = document.get("items") if isinstance(document, dict) else None
+    if not isinstance(document, dict):
+        return {"available": False, "reason": "state items are invalid"}
+    items = document.get("items")
     if not isinstance(items, dict):
         return {"available": False, "reason": "state items are invalid"}
     statuses = Counter(
@@ -1649,7 +1652,7 @@ def _active_pack_identity(path: str, _modified_ns: int, size: int) -> SupportDoc
             "reason": "pack manifest exceeds support read limit",
         }
     try:
-        document = json.loads(payload)
+        document = decode_json(payload)
     except UnicodeError, json.JSONDecodeError:
         return {"available": False, "reason": "pack manifest could not be read"}
     if not isinstance(document, dict):
@@ -1700,7 +1703,7 @@ def _active_story_ids(root: Path, component: SupportDocument) -> SupportDocument
             raise ValueError("story index exceeds support read limit")
         story_ids: set[str] = set()
         for line in payload.splitlines():
-            record: object = json.loads(line)
+            record: object = decode_json(line)
             if not isinstance(record, dict):
                 continue
             collection_id = record.get("collection_id")

@@ -31,6 +31,7 @@ from vntts.authoring.workbench import (
 from vntts.authoring.workspace_config import workspace_successor_config_fingerprint
 from vntts.authoring.workspace_inspection import load_review_items_snapshot
 from vntts.document_identity import is_lowercase_sha256
+from vntts.json_types import decode_json
 
 COHORT_REVIEW_PLAN_SCHEMA = "vntts.authoring-cohort-review-plan"
 COHORT_REVIEW_PLAN_VERSION = 1
@@ -709,7 +710,7 @@ def _bound_workspace_document(directory: Path) -> JsonObject:
         raise CohortReviewError("Workspace document is missing or unsafe")
     try:
         workspace_payload = workspace_path.read_bytes()
-        workspace = json.loads(workspace_payload.decode("utf-8"))
+        workspace = decode_json(workspace_payload.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise CohortReviewError(
             f"Unable to read authoring workspace {workspace_path}: {error}"
@@ -801,7 +802,7 @@ def _bound_workspace_controls(
     try:
         queue_payload = queue_path.read_bytes()
         state_payload = state_path.read_bytes()
-        state = json.loads(state_payload.decode("utf-8"))
+        state = decode_json(state_payload.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise CohortReviewError(
             f"Unable to read cohort review controls: {error}"
@@ -1612,7 +1613,7 @@ def _validate_document_next_samples(
 def _load_document(path: str | Path, label: str) -> JsonObject:
     path = Path(path).expanduser().resolve()
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = decode_json(path.read_text(encoding="utf-8"))
         if not isinstance(document, dict):
             raise CohortReviewError(f"{label.title()} must be an object")
         return document

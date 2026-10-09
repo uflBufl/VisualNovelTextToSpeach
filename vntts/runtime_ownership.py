@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import shutil
@@ -18,6 +17,7 @@ from vntts import application_directories
 from vntts.authoring.advisory_lock import AdvisoryLockBusyError, exclusive_advisory_lock
 from vntts.authoring.generation_lease import inspect_process_status
 from vntts.document_identity import is_lowercase_sha256
+from vntts.json_types import decode_json
 from vntts.runtime_paths import RUNTIME_ENVIRONMENT_VARIABLES
 from vntts.services.tts_engine import TTSConfigurationError
 
@@ -61,7 +61,7 @@ def read_record(path: PathInput) -> dict[str, object]:
             payload = source.read(_RUNTIME_RECORD_READ_LIMIT + 1)
         if len(payload) > _RUNTIME_RECORD_READ_LIMIT:
             return {}
-        value: object = json.loads(payload)
+        value: object = decode_json(payload)
         if not isinstance(value, dict):
             return {}
         return value

@@ -20,6 +20,7 @@ from vntts.authoring.generation_state import (
 from vntts.authoring.publication import publication_errors
 from vntts.authoring.workspace_config import workspace_queue_sha256
 from vntts.authoring.workspace_foundation import read_regular_file
+from vntts.json_types import decode_json
 
 WorkspaceState = tuple[VoiceGenerationQueue, dict[str, object], bytes, str]
 WorkspaceStateCache = dict[tuple[str, object], WorkspaceState]
@@ -108,7 +109,9 @@ def _load_stable_workspace_generation_state(
     )
     digest = hashlib.sha256(payload).hexdigest()
     try:
-        parsed: object = json.loads(payload.decode("utf-8"))
+        parsed = decode_json(payload.decode("utf-8"))
+        if not isinstance(parsed, dict):
+            raise BulkGenerationError("Generation state must be a JSON object")
         validated = validate_generation_state_document(
             parsed,
             output,

@@ -87,6 +87,7 @@ from vntts.authoring.workbench import (
     review_technical_summary,
     workspace_voice_snapshot,
 )
+from vntts.json_types import decode_json
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.qt_dialogs import CloseGuardedDialog
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
@@ -1641,7 +1642,7 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
                     stored = [stored]
                 for encoded in cast(Iterable[object], stored):
                     try:
-                        value = json.loads(str(encoded))
+                        value = decode_json(str(encoded))
                     except TypeError, ValueError:
                         continue
                     if not isinstance(value, dict) or set(value) != {

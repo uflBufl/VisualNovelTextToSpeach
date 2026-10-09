@@ -22,6 +22,7 @@ from vntts.authoring.advisory_lock import (
     exclusive_advisory_lock,
 )
 from vntts.document_identity import file_sha256, is_lowercase_sha256
+from vntts.json_types import decode_json
 from vntts.path_safety import contained_regular_file
 
 QUALITY_REVIEW_SCHEMA = "vntts.authoring-source-reference-quality-review"
@@ -548,7 +549,7 @@ def _read_json(path: str | Path, label: str) -> tuple[bytes, JsonObject]:
     path = Path(path).expanduser().resolve()
     try:
         payload = path.read_bytes()
-        value = json.loads(payload)
+        value = decode_json(payload)
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise SourceReferenceQualityError(
             f"Unable to read {label} {path}: {error}"

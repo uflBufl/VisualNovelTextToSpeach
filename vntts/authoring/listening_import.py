@@ -25,6 +25,7 @@ from vntts.authoring.publication import (
 )
 from vntts.authoring.workspace_foundation import load_json_object, require_sha256
 from vntts.document_identity import canonical_document_sha256
+from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_object
 from vntts.path_safety import safe_relative_path
 
@@ -727,7 +728,7 @@ def _load_schema_snapshot(
         ) from error
     digest = hashlib.sha256(payload).hexdigest()
     try:
-        value = json.loads(payload.decode("utf-8"))
+        value = decode_json(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ListeningImportError(
             f"Unable to read {description} {path}: {error}"

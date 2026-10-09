@@ -25,6 +25,7 @@ from vntts_artifacts.voice_manifest import normalize_character_name
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.cleanup import cleanup_on_exit
 from vntts.document_identity import is_lowercase_sha256
+from vntts.json_types import decode_json
 
 VOICE_LIBRARY_VERSION = 3
 _VOICE_LIBRARY_VERSIONS = frozenset({1, 2, VOICE_LIBRARY_VERSION})
@@ -562,7 +563,7 @@ class VoiceLibrary:
         if self.path.is_symlink():
             raise VoiceLibraryError("Voice library index must not be a symlink")
         try:
-            document = json.loads(self.path.read_text(encoding="utf-8"))
+            document = decode_json(self.path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as error:
             raise VoiceLibraryError(f"Unable to read voice library: {error}") from error
         if _validate_document(document):

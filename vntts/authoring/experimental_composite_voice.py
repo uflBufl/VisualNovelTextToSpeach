@@ -51,6 +51,7 @@ from vntts.authoring.workspace_foundation import (
     load_json_object_snapshot,
 )
 from vntts.document_identity import is_lowercase_sha256
+from vntts.json_types import decode_json
 
 EXPERIMENTAL_COMPOSITE_VOICE_FIELD = "vntts.authoring.experimental_composite_voices"
 EXPERIMENTAL_COMPOSITE_VOICE_SCHEMA = "vntts.authoring-experimental-composite-voices"
@@ -136,7 +137,7 @@ def publish_experimental_composite_voice_input(
 
     try:
         source_payload = source_manifest.read_bytes()
-        source_document = json.loads(source_payload.decode("utf-8"))
+        source_document = decode_json(source_payload.decode("utf-8"))
         _metadata, source_voices = load_voice_manifest(
             source_manifest, allow_legacy=False
         )
@@ -147,7 +148,7 @@ def publish_experimental_composite_voice_input(
         VoiceManifestError,
     ) as error:
         raise ExperimentalCompositeVoiceError(str(error)) from error
-    if _metadata != source_document:
+    if not isinstance(source_document, dict) or _metadata != source_document:
         raise ExperimentalCompositeVoiceError("Source manifest changed while loading")
     if EXPERIMENTAL_COMPOSITE_VOICE_FIELD in source_document:
         raise ExperimentalCompositeVoiceError(
@@ -522,8 +523,10 @@ def _validate_bundle_manifest(
 ) -> None:
     manifest_path = directory / "manifest.json"
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = decode_json(manifest_path.read_text(encoding="utf-8"))
         _metadata, voices = load_voice_manifest(manifest_path, allow_legacy=False)
+        if not isinstance(manifest, dict):
+            raise VoiceManifestError("Voice manifest must be a JSON object")
         overrides = queue_voice_overrides_from_manifest(manifest, voices=voices)
     except (
         OSError,

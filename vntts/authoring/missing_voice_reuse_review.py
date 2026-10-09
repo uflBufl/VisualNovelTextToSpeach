@@ -41,7 +41,7 @@ from vntts.authoring.workbench import (
 )
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
-from vntts.json_types import is_json_object
+from vntts.json_types import decode_json, is_json_object
 
 REVIEW_BUNDLE_SCHEMA = "vntts.authoring-missing-voice-reuse-review-bundle"
 REVIEW_SESSION_SCHEMA = "vntts.authoring-missing-voice-reuse-review-session"
@@ -939,10 +939,14 @@ def _load_candidate_workspace(
     state = _object(state, "Candidate generation state")
     manifest_path = directory / "inputs/voice/manifest.json"
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = decode_json(manifest_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise MissingVoiceReuseReviewError(str(error)) from error
-    binding = manifest.get(MISSING_VOICE_REUSE_BINDING_FIELD)
+    binding = (
+        manifest.get(MISSING_VOICE_REUSE_BINDING_FIELD)
+        if isinstance(manifest, dict)
+        else None
+    )
     if (
         not isinstance(binding, dict)
         or binding.get("mode") != "comparison_sample_only"

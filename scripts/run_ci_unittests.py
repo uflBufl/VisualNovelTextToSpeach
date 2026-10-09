@@ -12,6 +12,7 @@ from pathlib import Path
 
 from vntts.cleanup import cleanup_on_exit, temporary_directory
 from vntts.cli import cli_message
+from vntts.json_types import decode_json
 
 SHARD_TIMEOUTS = {
     "Darwin": {
@@ -111,7 +112,7 @@ def _isolate_pregeneration_tests(test_ids: Sequence[str]) -> tuple[_TestIds, _Te
 
 def _run_exact_test_file(path: str | Path) -> int:
     try:
-        test_ids = json.loads(Path(path).read_text(encoding="utf-8"))
+        test_ids = decode_json(Path(path).read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         print(f"Unable to load exact test inventory: {error}", file=sys.stderr)
         return 2

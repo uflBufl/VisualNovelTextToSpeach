@@ -236,6 +236,7 @@ from vntts.authoring.workspace_foundation import (
     load_json_object_snapshot,
 )
 from vntts.document_identity import is_lowercase_sha256
+from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
 from vntts.speech_presentation import speech_runtime_label
 from vntts.synthesis import (
@@ -714,7 +715,7 @@ def _review_state_document(
     payload: bytes, state_path: Path, queue_sha256: str
 ) -> JsonDocument:
     try:
-        state = json.loads(payload.decode("utf-8"))
+        state = decode_json(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise BulkGenerationError(
             f"Unable to read generation state {state_path}: {error}"
@@ -1166,7 +1167,7 @@ def _fallback_manifest_entries(
             "Voice manifest changed while fallback roles were validated"
         )
     try:
-        document = json.loads(payload.decode("utf-8"))
+        document = decode_json(payload.decode("utf-8"))
         return voice_manifest_entries_at_path(document, path)
     except (
         OSError,
@@ -4037,7 +4038,7 @@ def _live_fallback_backend(
 def _live_fallback_state(path: Path) -> tuple[JsonDocument, str]:
     try:
         payload = path.read_bytes()
-        state = json.loads(payload.decode("utf-8"))
+        state = decode_json(payload.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise BulkGenerationError(
             f"Unable to read generation state {path}: {error}"
@@ -4374,7 +4375,7 @@ def _capture_live_fallback_evidence(
     base_workspace_path = base_root / "workspace.json"
     try:
         base_workspace_payload = base_workspace_path.read_bytes()
-        base_workspace = json.loads(base_workspace_payload.decode("utf-8"))
+        base_workspace = decode_json(base_workspace_payload.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise BulkGenerationError(
             f"Unable to read live fallback base workspace: {error}"
@@ -4442,8 +4443,8 @@ def _live_fallback_workspace_hypothesis(
         workspace_payload = workspace_path.read_bytes()
         source_queue_payload = source_queue_path.read_bytes()
         source_state_payload = source_state_path.read_bytes()
-        workspace = json.loads(workspace_payload.decode("utf-8"))
-        source_state = json.loads(source_state_payload.decode("utf-8"))
+        workspace = decode_json(workspace_payload.decode("utf-8"))
+        source_state = decode_json(source_state_payload.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise BulkGenerationError(
             f"Unable to read live fallback evidence workspace {directory}: {error}"

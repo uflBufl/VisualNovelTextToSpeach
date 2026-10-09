@@ -19,6 +19,7 @@ from vntts.authoring.workbench import (
     list_review_items,
 )
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
+from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
 
 PENDING_RESOLUTION_PLAN_SCHEMA = "vntts.authoring-pending-resolution-plan"
@@ -256,7 +257,7 @@ def load_pending_resolution_plan(path: str | Path) -> PendingResolutionPlan:
     """Load and fully validate one immutable pending-resolution plan."""
     path = Path(path).expanduser().resolve()
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = decode_json(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise PendingResolutionError(
             f"Unable to read pending resolution plan {path}: {error}"

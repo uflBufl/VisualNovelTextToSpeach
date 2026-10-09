@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import json
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -30,6 +29,7 @@ from vntts_artifacts.voice_manifest import (
 
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.document_identity import canonical_document_sha256
+from vntts.json_types import decode_json
 from vntts.voices import pocket_tts_preset_voices
 
 
@@ -98,8 +98,9 @@ def snapshot_recorded_voices(
         payload = manifest["path"].read_bytes()
         if hashlib.sha256(payload).hexdigest() != manifest["sha256"]:
             raise BulkGenerationError("Recorded voice manifest changed during capture")
-        document = json.loads(payload)
+        document = decode_json(payload)
         voices = validate_voice_manifest(document)
+        assert isinstance(document, dict)
         references = {
             control["path"]: control["sha256"]
             for control in controls

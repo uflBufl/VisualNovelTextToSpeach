@@ -47,7 +47,7 @@ from vntts.authoring.workbench import (
 )
 from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.document_identity import is_lowercase_sha256
-from vntts.json_types import is_json_object
+from vntts.json_types import decode_json, is_json_object
 from vntts.reference_quality import ReferenceQualityReport, analyze_reference_bytes
 
 JsonDocument: TypeAlias = dict[str, object]
@@ -374,7 +374,7 @@ def _group_audit_cases(
 ) -> dict[str, _GeneratedGroup]:
     queue_by_id = {item.queue_id: item for item in source.queue.items}
     state = _document(
-        json.loads(source.snapshots["state"].decode("utf-8")),
+        decode_json(source.snapshots["state"].decode("utf-8")),
         "Generation state is invalid",
     )
     state_items = _document(state.get("items"), "Generation state items are invalid")
@@ -694,8 +694,8 @@ def _read_failure_reference_audit(
     if not private_file_is_restricted(key_path):
         raise FailureReferenceAuditError("Reference audit blind key mode must be 0600")
     try:
-        document: object = json.loads(audit_path.read_text(encoding="utf-8"))
-        key: object = json.loads(key_path.read_text(encoding="utf-8"))
+        document: object = decode_json(audit_path.read_text(encoding="utf-8"))
+        key: object = decode_json(key_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise FailureReferenceAuditError(str(error)) from error
     return (
@@ -874,7 +874,7 @@ def _validate_audit_source_authority(
                 f"Reference audit source authority changed: {field}"
             )
     try:
-        raw_state: object = json.loads(
+        raw_state: object = decode_json(
             (workspace / "generated-audio/generation-state.json").read_text()
         )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -921,7 +921,7 @@ def load_failure_reference_decisions(directory: str | Path) -> JsonDocument:
             "updated_at": None,
         }
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = decode_json(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise FailureReferenceAuditError(str(error)) from error
     if not isinstance(document, dict):
@@ -1124,7 +1124,7 @@ def _validate_decision_inventory(
     directory: str | Path, decisions: Sequence[JsonDocument], *, schema_version: int
 ) -> None:
     audit = _document(
-        json.loads((Path(directory) / "audit.json").read_text()),
+        decode_json((Path(directory) / "audit.json").read_text()),
         "Reference audit group is malformed",
     )
     groups = {value["group_id"]: value for value in _audit_groups(audit.get("groups"))}

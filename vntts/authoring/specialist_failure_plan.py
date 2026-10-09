@@ -24,6 +24,7 @@ from vntts.authoring.failure_repair import (
     SENTENCE_BOUNDARY_SEGMENTATION,
 )
 from vntts.document_identity import is_lowercase_sha256
+from vntts.json_types import decode_json
 
 SPECIALIST_FAILURE_PLAN_SCHEMA = "vntts.authoring-specialist-failure-plan"
 SPECIALIST_FAILURE_PLAN_VERSION = 1
@@ -445,7 +446,7 @@ def _read(path: str | Path, label: str) -> bytes:
 
 def _decode(payload: bytes, label: str) -> JsonObject:
     try:
-        document = json.loads(payload.decode("utf-8"))
+        document = decode_json(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise CohortReviewError(
             f"Unable to decode specialist {label}: {error}"
@@ -457,7 +458,7 @@ def _decode(payload: bytes, label: str) -> JsonObject:
 
 def _queue_records(payload: bytes) -> dict[str, JsonObject]:
     try:
-        rows = [json.loads(value) for value in payload.decode("utf-8").splitlines()]
+        rows = [decode_json(value) for value in payload.decode("utf-8").splitlines()]
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise CohortReviewError(
             f"Unable to decode specialist queue: {error}"

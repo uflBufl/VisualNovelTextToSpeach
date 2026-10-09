@@ -22,6 +22,7 @@ from vntts.authoring.advisory_lock import (
 )
 from vntts.authoring.authority import write_json_document_no_replace
 from vntts.authoring.workspace_foundation import load_json_object
+from vntts.json_types import decode_json
 
 LEASE_SCHEMA = "vntts.authoring-generation-lease"
 LEASE_VERSION = 1
@@ -199,7 +200,7 @@ class GenerationLease:
                 if self.path.exists():
                     try:
                         lease_payload = self.path.read_bytes()
-                        parsed: object = json.loads(lease_payload.decode("utf-8"))
+                        parsed: object = decode_json(lease_payload.decode("utf-8"))
                     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
                         raise BulkGenerationError(
                             f"Unable to read generation lease {self.path}: {error}"

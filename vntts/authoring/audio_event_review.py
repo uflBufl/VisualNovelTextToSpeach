@@ -39,6 +39,7 @@ from vntts.authoring.publication import (
 from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.cleanup import temporary_directory
 from vntts.document_identity import is_lowercase_sha256
+from vntts.json_types import decode_json
 
 AUDIO_EVENT_REVIEW_SCHEMA = "vntts.authoring-audio-event-review"
 AUDIO_EVENT_REVIEW_VERSION = 1
@@ -523,7 +524,7 @@ def _source_story_record(payload: bytes, line_id: str) -> dict[str, object]:
         for raw_line in payload.splitlines():
             if not raw_line.strip():
                 continue
-            value = json.loads(raw_line.decode("utf-8"))
+            value = decode_json(raw_line.decode("utf-8"))
             if isinstance(value, dict) and value.get("line_id") == expected:
                 matches.append(value)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:

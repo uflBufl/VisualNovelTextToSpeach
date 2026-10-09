@@ -11,6 +11,7 @@ from pathlib import Path
 from durable_file import sha256_file
 
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
+from vntts.json_types import decode_json
 
 FAILED_VOICE_DECISION_SCHEMA = "vntts.authoring-missing-voice-reuse-decision"
 FAILED_PROMPT_SELECTION_SCHEMA = "vntts.authoring-failed-prompt-selection"
@@ -310,7 +311,7 @@ def _authority_source(path: str | Path) -> Path:
 def _authority_document(source: Path) -> tuple[bytes, dict[str, object]]:
     try:
         payload = source.read_bytes()
-        document = json.loads(payload.decode("utf-8"))
+        document = decode_json(payload.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise OfflineFallbackAuthorityError(str(error)) from error
     if not isinstance(document, dict):

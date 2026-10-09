@@ -35,6 +35,7 @@ from vntts.authoring.workspace_voice_runtime import (
     load_workspace_queue_voice_overrides,
     load_workspace_voice_registry,
 )
+from vntts.json_types import decode_json
 
 FAILED_CONTROL_CARRY_SCHEMA = "vntts.authoring-failed-control-carry"
 FAILED_CONTROL_CARRY_VERSION = 1
@@ -349,9 +350,9 @@ def _validate_existing_report(
     expected_state: Mapping[str, object],
 ) -> None:
     try:
-        observed = json.loads(report_path.read_text(encoding="utf-8"))
+        observed = decode_json(report_path.read_text(encoding="utf-8"))
         state_path = report_path.parent / "generation-state.json"
-        observed_state = json.loads(state_path.read_text(encoding="utf-8"))
+        observed_state = decode_json(state_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise FailedControlCarryError(str(error)) from error
     if observed != expected:

@@ -130,6 +130,24 @@ class AuthoringWorkspaceFoundationTest(unittest.TestCase):
                             object_label="Document",
                         )
 
+    def test_deep_json_uses_domain_errors_without_changing_snapshots(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "document.json"
+            payload = b'{"value":' + b"[" * 100000 + b"0" + b"]" * 100000 + b"}"
+            path.write_bytes(payload)
+            for reader in (load_json_object, load_json_object_snapshot):
+                with (
+                    self.subTest(reader=reader.__name__),
+                    self.assertRaisesRegex(
+                        FoundationError, "^Unable to read document .*nesting"
+                    ) as caught,
+                ):
+                    reader(path, "document", error_type=FoundationError)
+                cause = caught.exception.__cause__
+                self.assertIsInstance(cause, json.JSONDecodeError)
+                self.assertIsInstance(cause.__cause__, RecursionError)
+                self.assertEqual(path.read_bytes(), payload)
+
     def test_generation_wav_copy_is_checksum_and_collision_bound(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

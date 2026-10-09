@@ -42,7 +42,7 @@ from vntts.authoring.publication import (
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.cleanup import temporary_directory
 from vntts.document_identity import canonical_document_sha256
-from vntts.json_types import is_json_object
+from vntts.json_types import decode_json, is_json_object
 
 LEGACY_JOB_SCHEMA = "r1999.pregeneration-job"
 LEGACY_JOB_SCHEMA_VERSION = 1
@@ -1469,7 +1469,7 @@ def _load_json(path: str | Path, description: str) -> JsonDocument:
 def _load_json_snapshot(path: str | Path, description: str) -> tuple[JsonDocument, str]:
     payload, digest = _read_snapshot(path, description)
     try:
-        value = json.loads(payload.decode("utf-8"))
+        value = decode_json(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise LegacyAuthoringImportError(
             f"Unable to read {description} {path}: {error}"
@@ -1501,7 +1501,7 @@ def _load_generated_index_snapshot(
     path = Path(path).expanduser().resolve()
     payload, digest = _read_snapshot(path, "generated-audio manifest")
     try:
-        raw = json.loads(payload.decode("utf-8"))
+        raw = decode_json(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise LegacyAuthoringImportError(
             f"Unable to read generated-audio manifest {path}: {error}"
@@ -1515,7 +1515,11 @@ def _load_generated_index_snapshot(
             raise LegacyAuthoringImportError(
                 f"Incompatible generated-audio manifest {path}: {error}"
             ) from error
-    raw_entries = raw.get("entries", []) if isinstance(raw, dict) else []
+    if not isinstance(raw, dict):
+        raise LegacyAuthoringImportError(
+            "Generated-audio manifest must be a JSON object"
+        )
+    raw_entries = raw.get("entries", [])
     entries = []
     for entry, record in zip(parsed.entries, raw_entries, strict=True):
         relative = _safe_relative(record.get("audio"), "generated WAV path")
@@ -1546,7 +1550,7 @@ def _read_snapshot(path: str | Path, description: str) -> tuple[bytes, str]:
 
 def _load_json_optional(path: str | Path) -> JsonDocument:
     try:
-        value = json.loads(Path(path).read_text(encoding="utf-8"))
+        value = decode_json(Path(path).read_text(encoding="utf-8"))
     except OSError, UnicodeError, json.JSONDecodeError:
         return {}
     return value if isinstance(value, dict) else {}
@@ -1555,7 +1559,7 @@ def _load_json_optional(path: str | Path) -> JsonDocument:
 def _load_jsonl_metadata_optional(path: str | Path) -> JsonDocument:
     try:
         with Path(path).open(encoding="utf-8") as stream:
-            value = json.loads(next(stream))
+            value = decode_json(next(stream))
     except OSError, UnicodeError, StopIteration, json.JSONDecodeError:
         return {}
     return value if isinstance(value, dict) else {}

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 import wave
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -47,7 +46,7 @@ from vntts.chapter_voice_preload import (
 )
 from vntts.cleanup import attempt_cleanup
 from vntts.document_identity import canonical_document_sha256, is_sha256
-from vntts.json_types import has_schema_version
+from vntts.json_types import decode_json, has_schema_version
 from vntts.person_link_suggestions import (
     PersonLinkSuggestion,
     suggest_person_links,
@@ -2205,7 +2204,7 @@ def _manifest_candidate_variants(
 def player_voice_catalog_is_current(manifest_path: Path | str) -> bool:
     """Return whether a cached game candidate catalog has source provenance."""
     try:
-        document = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        document = decode_json(Path(manifest_path).read_text(encoding="utf-8"))
     except OSError, ValueError, TypeError:
         return False
     if not isinstance(document, dict):

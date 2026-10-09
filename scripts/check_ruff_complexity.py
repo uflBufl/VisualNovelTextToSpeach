@@ -12,6 +12,8 @@ from collections import Counter
 from pathlib import Path
 from typing import NamedTuple
 
+from vntts.json_types import decode_json
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASELINE = REPOSITORY_ROOT / "tests" / "fixtures" / "ruff-complexity-v2.json"
 RULES = ("C901", "PLR0912", "PLR0915")
@@ -210,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, default=REPOSITORY_ROOT)
     arguments = parser.parse_args(argv)
     try:
-        baseline = json.loads(arguments.baseline.read_text(encoding="utf-8"))
+        baseline = decode_json(arguments.baseline.read_text(encoding="utf-8"))
         failures = check_findings(
             arguments.root, baseline, ruff_findings(arguments.root)
         )

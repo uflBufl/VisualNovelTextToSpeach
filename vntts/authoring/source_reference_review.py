@@ -70,6 +70,7 @@ from vntts.document_identity import (
     file_sha256,
     is_lowercase_sha256,
 )
+from vntts.json_types import decode_json
 from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.voices import voice_manifest_entries_at_path
 
@@ -2413,7 +2414,7 @@ def _read_json(path: str | Path, label: str) -> tuple[Path, bytes, JsonObject]:
     path = Path(path).expanduser().resolve()
     try:
         payload = path.read_bytes()
-        document = json.loads(payload.decode("utf-8"))
+        document = decode_json(payload.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SourceReferenceReviewError(
             f"Unable to read {label} {path}: {error}"

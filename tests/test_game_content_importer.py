@@ -71,6 +71,27 @@ class Reverse1999GameImporterTest(unittest.TestCase):
         override.start()
         self.addCleanup(override.stop)
 
+    def test_narrator_banks_keep_mapping_and_list_contracts(self):
+        for document in ({"Rhiannon": "hero.bnk"}, ["Rhiannon"], "Rhiannon", [42]):
+            with self.subTest(document=document), TemporaryDirectory() as directory:
+                story = write_story_index(Path(directory) / "story")
+                banks = story.parent / "narrator-banks.json"
+                banks.write_text(json.dumps(document), encoding="utf-8")
+                arguments = (story, banks, sha256_file(story), sha256_file(banks))
+                if isinstance(document, (dict, list)) and document != [42]:
+                    self.assertIn(
+                        "Rhiannon",
+                        Reverse1999GameImporter._cached_narrator_characters(*arguments),
+                    )
+                else:
+                    with self.assertRaisesRegex(
+                        GameContentImportError, "Narrator banks"
+                    ):
+                        Reverse1999GameImporter._cached_narrator_characters(*arguments)
+                    self.assertFalse(
+                        (story.parent / "narrator-characters.json").exists()
+                    )
+
     def test_story_catalog_rollback_failure_keeps_extractor_error(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -804,7 +825,13 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 bundle.unlink()
                 (configs / "datacfg_1.dat").unlink()
                 self.assertIsNone(restarted._previous_installation())
-                for malformed in ("null", "[]", "{}", "not json"):
+                for malformed in (
+                    "null",
+                    "[]",
+                    "{}",
+                    "not json",
+                    "[" * 100000 + "0" + "]" * 100000,
+                ):
                     saved.write_text(malformed)
                     self.assertIsNone(restarted._previous_installation())
 

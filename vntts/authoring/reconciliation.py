@@ -70,6 +70,7 @@ from vntts.authoring.workspace_config import (
 )
 from vntts.cleanup import temporary_directory
 from vntts.document_identity import is_lowercase_sha256
+from vntts.json_types import decode_json
 
 
 class AuthoringReconciliationError(RuntimeError):
@@ -1179,7 +1180,7 @@ def _load_queue_snapshot(payload: bytes) -> VoiceGenerationQueue:
 def _read_json_snapshot(path: str | Path, label: str) -> tuple[bytes, JsonObject]:
     payload = _read_bytes(path, label)
     try:
-        document = json.loads(payload.decode("utf-8"))
+        document = decode_json(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise AuthoringReconciliationError(
             f"Unable to read {label}: {error}"

@@ -45,6 +45,7 @@ from vntts.chapter_voice_preload import (
     _validated_source_audio_line_ids,
 )
 from vntts.document_identity import canonical_document_sha256, file_sha256
+from vntts.json_types import decode_json
 from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.voices import synthesis_character_for_line, voice_manifest_entries_at_path
 
@@ -412,7 +413,7 @@ def inspect_generation_queue(
     try:
         try:
             manifest_payload = voice_manifest_path.read_bytes()
-            manifest = json.loads(manifest_payload.decode("utf-8"))
+            manifest = decode_json(manifest_payload.decode("utf-8"))
         except (OSError, json.JSONDecodeError) as error:
             raise VoiceManifestError(
                 f"Unable to read voice manifest {voice_manifest_path}: {error}"

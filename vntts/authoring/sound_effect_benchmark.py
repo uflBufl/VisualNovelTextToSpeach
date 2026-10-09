@@ -23,6 +23,7 @@ from vntts.authoring.publication import (
     staged_directory,
 )
 from vntts.cuda_probe import CudaProbeError, inspect_cuda
+from vntts.json_types import decode_json
 
 CORPUS_SCHEMA = "vntts.sound-effect-benchmark-corpus"
 REPORT_SCHEMA = "vntts.sound-effect-benchmark"
@@ -69,7 +70,7 @@ def load_sound_effect_corpus(path: str | Path) -> SoundEffectCorpus:
     path = Path(path).expanduser().resolve()
     try:
         payload = path.read_bytes()
-        document = json.loads(payload)
+        document = decode_json(payload)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SoundEffectBenchmarkError(f"Unable to read corpus: {error}") from error
     if (

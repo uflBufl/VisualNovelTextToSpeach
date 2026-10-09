@@ -1,7 +1,6 @@
 """Compare two existing native MOSS builds without changing app settings."""
 
 import argparse
-import json
 import math
 import shutil
 import subprocess
@@ -12,6 +11,7 @@ from statistics import median
 from typing import NotRequired, Protocol, TypedDict
 
 from scripts import moss_native_pause_probe as probe
+from vntts.json_types import decode_json
 from vntts.moss_cpp_backend import MossCppVoiceRouterBackend, moss_cpp_paths
 from vntts.moss_cpp_installation import _extract_runtime
 from vntts.runtime_config import initialize_voice_registry
@@ -175,7 +175,7 @@ def _mapping(value: object) -> dict[str, object]:
 
 
 def _read_evidence(path: Path) -> dict[str, object]:
-    payload: object = json.loads(path.read_text(encoding="utf-8-sig"))
+    payload: object = decode_json(path.read_text(encoding="utf-8-sig"))
     return _mapping(payload)
 
 

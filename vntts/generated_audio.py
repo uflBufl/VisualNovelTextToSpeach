@@ -34,6 +34,7 @@ from vntts.audio_output import (
 )
 from vntts.chapter_voice_preload import ChapterDialogue
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
+from vntts.json_types import decode_json
 from vntts.playback import (
     PlaybackOutcome as PlaybackOutcome,
 )
@@ -520,7 +521,7 @@ class GeneratedAudioLibrary:
         signature = _manifest_signature(state_path)
         if signature != self.progress_state_signature:
             try:
-                state = json.loads(state_path.read_text(encoding="utf-8"))
+                state = decode_json(state_path.read_text(encoding="utf-8"))
             except OSError, UnicodeError, json.JSONDecodeError:
                 return None
             self.progress_state_signature = signature

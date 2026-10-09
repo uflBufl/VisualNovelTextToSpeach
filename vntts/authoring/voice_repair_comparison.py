@@ -49,6 +49,7 @@ from vntts.authoring.workbench_contracts import ReviewItem
 from vntts.authoring.workspace_inspection import generation_failure_category
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 from vntts.document_identity import is_lowercase_sha256
+from vntts.json_types import decode_json
 from vntts.speech_backend import get_moss_tts_generation_profile
 from vntts.voices import voice_manifest_entries_at_path
 
@@ -284,10 +285,11 @@ def _comparison_plan_inputs(workspace_directory: str | Path) -> _ComparisonPlanI
     manifest_path = directory / "inputs/voice/manifest.json"
     manifest_payload = _read(manifest_path, "voice manifest")
     try:
-        manifest_document = json.loads(manifest_payload.decode("utf-8"))
+        manifest_document = decode_json(manifest_payload.decode("utf-8"))
         voices = voice_manifest_entries_at_path(
             manifest_document, manifest_path, allow_legacy=False
         )
+        assert isinstance(manifest_document, dict)
         overrides = queue_voice_overrides_from_manifest(
             manifest_document,
             queue_ids=(item.queue_id for item in queue.items),
@@ -514,10 +516,14 @@ def build_voice_repair_candidate_command(
     manifest_path = directory / "inputs/voice/manifest.json"
     manifest_payload = _read(manifest_path, "candidate voice manifest")
     try:
-        manifest = json.loads(manifest_payload.decode("utf-8"))
+        manifest = decode_json(manifest_payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise VoiceRepairComparisonError(str(error)) from error
-    binding = manifest.get(VOICE_REPAIR_CANDIDATE_MANIFEST_FIELD)
+    binding = (
+        manifest.get(VOICE_REPAIR_CANDIDATE_MANIFEST_FIELD)
+        if isinstance(manifest, dict)
+        else None
+    )
     if binding != _candidate_manifest_binding(document, candidate):
         raise VoiceRepairComparisonError(
             "Candidate workspace manifest is not bound to the requested plan"
@@ -712,7 +718,7 @@ def _candidate_source_manifest(
     if hashlib.sha256(source_payload).hexdigest() != _source_manifest_sha256(document):
         raise VoiceRepairComparisonError("Source voice manifest changed after planning")
     try:
-        manifest = json.loads(source_payload.decode("utf-8"))
+        manifest = decode_json(source_payload.decode("utf-8"))
         voices = voice_manifest_entries_at_path(
             manifest, source_manifest, allow_legacy=False
         )
@@ -807,7 +813,7 @@ def _candidate_bundle(directory: Path) -> JsonObject:
     if bundle_path.is_symlink():
         raise VoiceRepairComparisonError("Candidate bundle document is unsafe")
     try:
-        bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+        bundle = decode_json(bundle_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise VoiceRepairComparisonError(
             f"Unable to load voice repair candidate input: {error}"
@@ -894,7 +900,9 @@ def _validate_candidate_manifest(
     directory: Path, document: JsonObject, candidate: JsonObject
 ) -> None:
     try:
-        manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+        manifest = decode_json(
+            (directory / "manifest.json").read_text(encoding="utf-8")
+        )
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise VoiceRepairComparisonError(
             f"Unable to load candidate voice manifest: {error}"

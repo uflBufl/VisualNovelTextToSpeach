@@ -1,4 +1,3 @@
-import json
 import math
 import re
 import unicodedata
@@ -21,6 +20,7 @@ from vntts_artifacts.story_index import (
 
 from vntts.cleanup import temporary_directory
 from vntts.document_identity import is_lowercase_sha256
+from vntts.json_types import decode_json
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
     load_source_audio_semantic_evidence,
@@ -984,7 +984,7 @@ def _load_source_audio_extensions(
         with open(path, encoding="utf-8") as stream:
             next(stream, None)
             for row in stream:
-                record = _string_mapping(json.loads(row))
+                record = _string_mapping(decode_json(row))
                 line_id = str(record.get("line_id") or "").strip()
                 if not line_id:
                     continue

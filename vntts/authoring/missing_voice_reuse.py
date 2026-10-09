@@ -77,7 +77,7 @@ from vntts.authoring.workbench import (
 )
 from vntts.authoring.workspace_inspection import generation_failure_category
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
-from vntts.json_types import has_schema_version, is_json_object
+from vntts.json_types import decode_json, has_schema_version, is_json_object
 from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.voices import voice_manifest_entries_at_path
 
@@ -693,12 +693,12 @@ def build_missing_voice_reuse_candidate_command(
             )
     manifest_path = directory / "inputs/voice/manifest.json"
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = decode_json(manifest_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise MissingVoiceReuseError(str(error)) from error
-    if manifest.get(MISSING_VOICE_REUSE_BINDING_FIELD) != _candidate_binding(
-        document, candidate
-    ):
+    if not isinstance(manifest, dict) or manifest.get(
+        MISSING_VOICE_REUSE_BINDING_FIELD
+    ) != _candidate_binding(document, candidate):
         raise MissingVoiceReuseError(
             "Missing-voice candidate manifest is not bound to the requested plan"
         )
@@ -1002,7 +1002,7 @@ def _validate_candidate_input(
 def _load_candidate_bundle(bundle_path: Path) -> JsonObject:
     try:
         return _object(
-            json.loads(bundle_path.read_text(encoding="utf-8")),
+            decode_json(bundle_path.read_text(encoding="utf-8")),
             "Missing-voice candidate bundle",
         )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -1073,10 +1073,12 @@ def _validate_candidate_manifest(
     candidate: JsonObject,
 ) -> None:
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = decode_json(manifest_path.read_text(encoding="utf-8"))
         voices = voice_manifest_entries_at_path(
             manifest, manifest_path, allow_legacy=False
         )
+        if not isinstance(manifest, dict):
+            raise VoiceManifestError("Voice manifest must be a JSON object")
         overrides = queue_voice_overrides_from_manifest(manifest, voices=voices)
     except (
         OSError,

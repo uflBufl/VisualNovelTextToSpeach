@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import shutil
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -17,6 +16,7 @@ from vntts.authoring.publication import (
     rename_directory_no_replace,
     staged_directory,
 )
+from vntts.json_types import decode_json
 
 PathInput: TypeAlias = str | Path
 JsonDocument: TypeAlias = dict[str, object]
@@ -111,7 +111,7 @@ def managed_model_status(
                 status = "invalid"
             else:
                 try:
-                    actual_metadata = json.loads(
+                    actual_metadata = decode_json(
                         (installation / "managed-model.json").read_text(
                             encoding="utf-8"
                         )

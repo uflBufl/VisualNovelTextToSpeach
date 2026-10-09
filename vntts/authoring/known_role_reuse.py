@@ -62,6 +62,7 @@ from vntts.authoring.workbench import (
 )
 from vntts.authoring.workspace_config import selected_voice_manifest_path
 from vntts.authoring.workspace_foundation import load_json_object
+from vntts.json_types import decode_json
 from vntts.voices import synthesis_character_for_line
 
 KNOWN_ROLE_REUSE_DECISION_SCHEMA = "vntts.authoring-known-role-reuse-decision"
@@ -840,7 +841,7 @@ def _copy_tree(source: Path, destination: Path) -> None:
 
 def _decode_state(payload: bytes) -> dict[str, object]:
     try:
-        value = json.loads(payload.decode("utf-8"))
+        value = decode_json(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise KnownRoleReuseError(str(error)) from error
     if not isinstance(value, dict):

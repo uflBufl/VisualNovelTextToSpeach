@@ -41,7 +41,7 @@ from vntts.authoring.cohort_review import (
     _validated_plan_document as _validate_plan_document,
 )
 from vntts.authoring.workbench import ReviewItem
-from vntts.json_types import is_json_object
+from vntts.json_types import decode_json, is_json_object
 
 _canonical_sha256 = canonical_document_sha256
 
@@ -1758,7 +1758,7 @@ def _read_bytes(path: PathLike, label: str) -> bytes:
 
 def _decode_json(payload: bytes, label: str) -> object:
     try:
-        return json.loads(payload.decode("utf-8"))
+        return decode_json(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise CohortReviewError(f"Unable to decode {label}: {error}") from error
 
@@ -1766,7 +1766,7 @@ def _decode_json(payload: bytes, label: str) -> object:
 def _decode_queue_records(payload: bytes) -> dict[str, dict[str, object]]:
     try:
         rows = payload.decode("utf-8").splitlines()
-        records = [json.loads(row) for row in rows]
+        records = [decode_json(row) for row in rows]
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise CohortReviewError(f"Unable to decode bundle queue: {error}") from error
     if not records or not isinstance(records[0], dict):

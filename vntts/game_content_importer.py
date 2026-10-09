@@ -42,6 +42,7 @@ from vntts.chapter_voice_preload import (
 from vntts.cleanup import attempt_cleanup
 from vntts.document_identity import file_sha256, is_lowercase_sha256
 from vntts.game_audio_decoder import Cancellation, ProgressCallback, ensure_game_decoder
+from vntts.json_types import decode_json
 from vntts.path_safety import contained_regular_file
 from vntts.pregeneration_setup import (
     GameContent,
@@ -296,7 +297,7 @@ class Reverse1999GameImporter:
             return False
         state_path = story_index.parent / "source-inputs.json"
         try:
-            saved = json.loads(state_path.read_text(encoding="utf-8"))
+            saved = decode_json(state_path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             roots = self._previous_installation()
             if roots is None:
@@ -420,14 +421,16 @@ class Reverse1999GameImporter:
     def _previous_installation(self) -> InstallationRoots | None:
         """Prefer durable selection; an existing index can recover older imports."""
         try:
-            saved = json.loads(self.installation_file.read_text(encoding="utf-8"))
-            values = [
-                saved[key]
-                for key in ("resource_root", "config_directory", "audio_directory")
-            ]
-            if not all(isinstance(value, str) and value for value in values):
+            saved = decode_json(self.installation_file.read_text(encoding="utf-8"))
+            if not isinstance(saved, dict):
                 raise ValueError("Invalid saved installation paths")
-            resources, configs, audio = (Path(value) for value in values)
+            values: list[Path] = []
+            for key in ("resource_root", "config_directory", "audio_directory"):
+                value = saved[key]
+                if not isinstance(value, str) or not value:
+                    raise ValueError("Invalid saved installation paths")
+                values.append(Path(value))
+            resources, configs, audio = values
             roots = resources, configs, audio
             if not (
                 all(path.is_absolute() for path in roots)
@@ -858,7 +861,9 @@ class Reverse1999GameImporter:
     ) -> tuple[str, ...]:
         cache = story_index.parent / "narrator-characters.json"
         try:
-            saved = json.loads(cache.read_text(encoding="utf-8"))
+            saved = decode_json(cache.read_text(encoding="utf-8"))
+            if not isinstance(saved, dict):
+                raise ValueError("Narrator character cache must be an object")
             names = saved["characters"]
             if (
                 type(saved["version"]) is int
@@ -874,9 +879,16 @@ class Reverse1999GameImporter:
         banks_payload = narrator_banks.read_bytes()
         if hashlib.sha256(banks_payload).hexdigest() != banks_sha256:
             raise GameContentImportError("Narrator banks changed while being read")
+        banks = decode_json(banks_payload.decode("utf-8"))
+        if not isinstance(banks, (dict, list)) or not all(
+            isinstance(name, str) for name in banks
+        ):
+            raise GameContentImportError(
+                "Narrator banks must be an object or list of names"
+            )
         characters = {
             normalize_character_name(name): name
-            for name in json.loads(banks_payload.decode("utf-8"))
+            for name in banks
             if not is_narrator(name)
         }
         if sha256_file(narrator_banks) != banks_sha256:
@@ -909,7 +921,7 @@ class Reverse1999GameImporter:
         from vntts.support import record_game_import
 
         try:
-            document = json.loads(path.read_text(encoding="utf-8"))
+            document = decode_json(path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as error:
             record_game_import(
                 "bank-index", index=path, reason=str(error), cache_state="unreadable"
@@ -1146,7 +1158,7 @@ class Reverse1999GameImporter:
 
 def _read_story_metadata(story_index: Path) -> dict[str, object]:
     with story_index.open(encoding="utf-8") as stream:
-        metadata = json.loads(stream.readline())
+        metadata = decode_json(stream.readline())
     if not isinstance(metadata, dict):
         raise ValueError("Imported story metadata must be a JSON object")
     return metadata
@@ -1218,7 +1230,7 @@ def _cached_playable_voice_roles(index: Path) -> set[str]:
     checksum = sha256_file(index)
     cache = index.parent / "playable-voice-roles.json"
     try:
-        saved = json.loads(cache.read_text(encoding="utf-8"))
+        saved = decode_json(cache.read_text(encoding="utf-8"))
         if isinstance(saved, dict):
             roles = saved.get("roles")
             if (

@@ -18,6 +18,7 @@ from vntts.authoring.authority import write_json_document_no_replace
 from vntts.authoring.publication import no_replace_destination
 from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.document_identity import is_lowercase_sha256
+from vntts.json_types import decode_json
 from vntts.reference_quality import (
     ReferenceQualityReport,
     analyze_reference_bytes,
@@ -269,8 +270,9 @@ def _capture_manifest(manifest_path: PathInput, character: str) -> _ManifestSnap
     manifest_path = Path(manifest_path).expanduser().resolve()
     try:
         payload = manifest_path.read_bytes()
-        document = json.loads(payload.decode("utf-8"))
+        document = decode_json(payload.decode("utf-8"))
         entries = validate_voice_manifest(document)
+        assert isinstance(document, dict)
     except (
         OSError,
         UnicodeDecodeError,

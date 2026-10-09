@@ -24,6 +24,7 @@ from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.cli import cli_error, cli_messages
 from vntts.dialog_capture import is_standalone_ellipsis_text
 from vntts.document_identity import is_lowercase_sha256
+from vntts.json_types import decode_json
 from vntts.live_replay import (
     LiveReplayRunner,
     ReplayRecognizer,
@@ -1011,7 +1012,7 @@ def _normalized_exact(value: object) -> str:
 
 def _decode_json(payload: bytes, label: str) -> JSONDocument:
     try:
-        document = json.loads(payload.decode("utf-8"))
+        document = decode_json(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SequenceReplaySealError(f"{label} is not valid JSON: {error}") from error
     if not isinstance(document, dict):

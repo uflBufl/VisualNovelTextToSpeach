@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Self
+
+from vntts.json_types import decode_json
 
 LIVE_SPEAKER_CORPUS_VERSION = 1
 
@@ -48,7 +49,7 @@ class LiveSpeakerCorpus:
             current.st_ino,
         ):
             raise ValueError("live speaker corpus changed while it was being read")
-        document = json.loads(payload.decode("utf-8"))
+        document = decode_json(payload.decode("utf-8"))
         if not isinstance(document, dict):
             raise ValueError("live speaker corpus root must be an object")
         version = document.get("schema_version")

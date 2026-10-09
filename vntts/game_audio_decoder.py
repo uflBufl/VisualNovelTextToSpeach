@@ -1,7 +1,6 @@
 """Provision vgmstream for game imports, not for ordinary speech playback."""
 
 import hashlib
-import json
 import os
 import platform
 import shutil
@@ -22,6 +21,7 @@ from durable_file import atomic_write_json, sha256_file
 from vntts.application_directories import get_local_data_directory
 from vntts.authoring.advisory_lock import AdvisoryLockBusyError, exclusive_advisory_lock
 from vntts.cleanup import cleanup_on_exit, temporary_directory
+from vntts.json_types import decode_json
 from vntts.runtime_paths import get_bundle_root
 from vntts.subprocess_utils import terminate_process
 
@@ -328,7 +328,7 @@ def _probe_cached_decoder(executable: Path, cancellation: Cancellation | None) -
                 payload = source.read(_VERIFICATION_RECORD_READ_LIMIT + 1)
             if len(payload) > _VERIFICATION_RECORD_READ_LIMIT:
                 raise ValueError("verification record is too large")
-            verified_files: object = json.loads(payload)
+            verified_files: object = decode_json(payload)
             if (
                 isinstance(verified_files, dict)
                 and executable.name in verified_files

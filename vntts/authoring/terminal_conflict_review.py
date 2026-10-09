@@ -57,7 +57,7 @@ from vntts.authoring.workbench import (
     prepare_review_audio,
 )
 from vntts.authoring.workbench_contracts import ReviewItem
-from vntts.json_types import has_schema_version, is_json_object
+from vntts.json_types import decode_json, has_schema_version, is_json_object
 
 TERMINAL_CONFLICT_REVIEW_SCHEMA = "vntts.authoring-terminal-conflict-review"
 TERMINAL_CONFLICT_REVIEW_VERSION = 1
@@ -1643,7 +1643,7 @@ def _is_stored_progress_lease(value: object) -> TypeGuard[_StoredProgressLease]:
 def _stored_progress_lease(path: Path) -> tuple[bytes, _StoredProgressLease]:
     try:
         payload = path.read_bytes()
-        existing = json.loads(payload.decode("utf-8"))
+        existing = decode_json(payload.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise TerminalConflictReviewError(
             "Unrecognized terminal conflict progress lock blocks review"
@@ -1693,7 +1693,7 @@ def _recover_stale_progress_lock(directory: Path, path: Path) -> None:
 def _remove_progress_lock(path: Path, guard_path: Path, lease: _ProgressLease) -> None:
     try:
         with exclusive_advisory_lock(guard_path, blocking=True):
-            if json.loads(path.read_text(encoding="utf-8")) == lease:
+            if decode_json(path.read_text(encoding="utf-8")) == lease:
                 path.unlink()
     except OSError, UnicodeError, json.JSONDecodeError, AdvisoryLockBusyError:
         return

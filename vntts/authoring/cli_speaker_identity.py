@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -28,6 +27,7 @@ from vntts.authoring.speaker_identity_model import (
     resolve_managed_speaker_identity_model,
 )
 from vntts.cli import print_json
+from vntts.json_types import decode_json
 
 COMMANDS = frozenset(
     {
@@ -133,7 +133,7 @@ def handle(arguments: argparse.Namespace) -> int:
 
 def _read_pair_draft(path: str | Path) -> list[object]:
     try:
-        document = json.loads(Path(path).expanduser().resolve().read_text("utf-8"))
+        document = decode_json(Path(path).expanduser().resolve().read_text("utf-8"))
     except (OSError, ValueError) as error:
         raise SpeakerIdentityError(
             f"Unable to read labelled-pair draft: {error}"

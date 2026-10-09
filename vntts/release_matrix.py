@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TypeAlias
 
 from vntts.document_identity import is_lowercase_sha256
+from vntts.json_types import decode_json
 
 PathInput: TypeAlias = str | os.PathLike[str]
 ReleaseDocument: TypeAlias = dict[str, object]
@@ -24,7 +25,7 @@ def _report_integer(value: object) -> int:
 
 
 def load_release_matrix(path: PathInput) -> list[ReleaseDocument]:
-    values = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    values = decode_json(Path(path).read_text(encoding="utf-8-sig"))
     if not isinstance(values, dict):
         raise ValueError("Release matrix root must be an object")
     if type(values.get("version")) is not int or values.get("version") != 1:
@@ -44,7 +45,7 @@ def load_evidence(directory: PathInput) -> list[ReleaseEvidence]:
         if path.is_symlink():
             continue
         try:
-            report = json.loads(path.read_text(encoding="utf-8-sig"))
+            report = decode_json(path.read_text(encoding="utf-8-sig"))
         except OSError, UnicodeError, json.JSONDecodeError:
             continue
         if isinstance(report, dict) and "profile" in report:

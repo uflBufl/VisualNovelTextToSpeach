@@ -50,7 +50,7 @@ from vntts.authoring.publication import (
 )
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
-from vntts.json_types import is_json_object
+from vntts.json_types import decode_json, is_json_object
 
 REFERENCE_RENDER_INPUT_SCHEMA = "vntts.authoring-reference-render-input"
 REFERENCE_RENDER_INPUT_VERSION = 1
@@ -198,7 +198,7 @@ def _read_reference_render_plan(
     source = source.resolve()
     try:
         payload = source.read_bytes()
-        document = json.loads(payload)
+        document = decode_json(payload)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ReferenceRenderComparisonError(
             f"Unable to read reference render plan: {error}"

@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import io
-import json
 import math
 from collections.abc import Callable, Iterable, Mapping
 from importlib.metadata import version
@@ -28,7 +27,7 @@ from vntts.authoring.speaker_identity_model import (
     RUNTIME_VERSION,
     managed_speaker_identity_status,
 )
-from vntts.json_types import has_schema_version
+from vntts.json_types import decode_json, has_schema_version
 from vntts.voices import CharacterVoiceRegistry, read_voice_reference_bytes
 
 INVENTORY_SCHEMA = "vntts.speaker-reference-inventory"
@@ -575,7 +574,7 @@ def _validate_labels_shape(document: Mapping[str, object]) -> None:
 
 def _load_json(path: str | Path, label: str) -> JsonDocument:
     try:
-        document = json.loads(Path(path).expanduser().resolve().read_text("utf-8"))
+        document = decode_json(Path(path).expanduser().resolve().read_text("utf-8"))
     except (OSError, ValueError) as error:
         raise SpeakerIdentityError(f"Unable to read {label}: {error}") from error
     if not isinstance(document, dict):

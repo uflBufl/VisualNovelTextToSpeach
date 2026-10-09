@@ -26,6 +26,7 @@ from vntts.authoring.workbench import (
     load_workspace_authority,
 )
 from vntts.document_identity import is_lowercase_sha256
+from vntts.json_types import decode_json
 
 FAILURE_REGENERATION_PLAN_SCHEMA = "vntts.authoring-failure-regeneration-plan"
 FAILURE_REGENERATION_PLAN_VERSION = 1
@@ -253,7 +254,7 @@ def write_failure_regeneration_plan(
 def load_failure_regeneration_plan(path: str | Path) -> FailureRegenerationPlan:
     path = Path(path).expanduser().resolve()
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = decode_json(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise FailureRegenerationError(
             f"Unable to read failure regeneration plan {path}: {error}"

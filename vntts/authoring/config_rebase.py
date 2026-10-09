@@ -68,7 +68,7 @@ from vntts.authoring.workspace_voice_runtime import (
     load_workspace_queue_voice_overrides,
     load_workspace_voice_registry,
 )
-from vntts.json_types import has_schema_version, is_json_object
+from vntts.json_types import decode_json, has_schema_version, is_json_object
 from vntts.voices import CharacterVoiceRegistry
 
 CONFIG_REBASE_SCHEMA = "vntts.authoring-workspace-config-rebase"
@@ -343,7 +343,7 @@ def _load_captured_rebase_state(
     if queue_sha256 != expected_queue_sha256:
         raise AuthoringWorkbenchError("Config rebase queue changed during capture")
     try:
-        document = json.loads(payload.decode("utf-8"))
+        document = decode_json(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise BulkGenerationError(
             f"Unable to read generation state {path}: {error}"

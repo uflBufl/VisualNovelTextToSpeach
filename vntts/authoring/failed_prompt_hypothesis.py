@@ -27,6 +27,7 @@ from vntts.authoring.missing_voice_reuse_review import (
 )
 from vntts.authoring.publication import no_replace_destination
 from vntts.document_identity import file_sha256
+from vntts.json_types import decode_json
 
 FAILED_PROMPT_SELECTION_SCHEMA = "vntts.authoring-failed-prompt-selection"
 FAILED_PROMPT_SELECTION_VERSION = 1
@@ -194,7 +195,7 @@ def _record_text(record: Mapping[str, object], field: str, label: str) -> str:
 
 def _load_private_candidates(path: Path) -> dict[object, object]:
     try:
-        key = json.loads(path.read_text(encoding="utf-8"))
+        key = decode_json(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise FailedPromptHypothesisError(str(error)) from error
     if not isinstance(key, dict):

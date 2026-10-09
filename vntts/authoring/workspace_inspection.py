@@ -118,7 +118,7 @@ from vntts.authoring.workspace_state import (
     shared_workspace_state_reads,
 )
 from vntts.document_identity import canonical_document_sha256
-from vntts.json_types import has_schema_version
+from vntts.json_types import decode_json, has_schema_version
 from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.voices import (
     CharacterVoice,
@@ -1055,7 +1055,7 @@ def _workspace_voice_projection_from_read(
         "Voice manifest snapshot",
     )
     try:
-        document = json.loads(payload.decode("utf-8"))
+        document = decode_json(payload.decode("utf-8"))
         entries = validate_voice_manifest(document)
     except (UnicodeDecodeError, json.JSONDecodeError, VoiceManifestError) as error:
         raise AuthoringWorkbenchError(

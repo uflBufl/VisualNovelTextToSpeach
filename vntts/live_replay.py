@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import io
-import json
 import math
 import os
 import shutil
@@ -50,6 +49,7 @@ from vntts.generated_audio import (
     RouteDecision,
     SourceAudioRoute,
 )
+from vntts.json_types import decode_json
 from vntts.live import (
     CanonicalDialogRoute,
     LiveDialogReader,
@@ -1791,7 +1791,7 @@ def _read_replay_document(value: str | Path) -> tuple[Path, bytes, JsonObject]:
 
 
 def _decode_json_object(payload: bytes, document_name: str) -> JsonObject:
-    document = json.loads(payload.decode("utf-8"))
+    document = decode_json(payload.decode("utf-8"))
     if not isinstance(document, dict):
         raise ValueError(f"{document_name} root must be an object")
     return {str(key): _json_safe(value) for key, value in document.items()}

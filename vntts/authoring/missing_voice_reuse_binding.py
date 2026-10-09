@@ -57,6 +57,7 @@ from vntts.authoring.workbench import (
 )
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.document_identity import file_sha256
+from vntts.json_types import decode_json
 from vntts.voices import voice_manifest_entries_at_path
 
 MISSING_VOICE_REUSE_DECISION_SCHEMA = "vntts.authoring-missing-voice-reuse-decision"
@@ -518,10 +519,11 @@ def _validate_binding_bundle(
         )
     manifest_path = directory / "manifest.json"
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = decode_json(manifest_path.read_text(encoding="utf-8"))
         voices = voice_manifest_entries_at_path(
             manifest, manifest_path, allow_legacy=False
         )
+        assert isinstance(manifest, dict)
         combined_overrides = queue_voice_overrides_from_manifest(
             manifest,
             voices=voices,

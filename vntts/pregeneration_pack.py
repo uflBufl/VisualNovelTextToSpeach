@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import json
 import os
 import shutil
 from collections.abc import Iterable
@@ -70,6 +69,7 @@ from vntts.cleanup import temporary_directory
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 from vntts.game_pack import GamePackImport, import_game_pack
 from vntts.generated_audio import GeneratedAudioLibrary
+from vntts.json_types import decode_json
 from vntts.path_safety import safe_relative_path
 from vntts.pregeneration_contract import (
     OfflineGenerationCancelled,
@@ -1025,7 +1025,7 @@ def _safe_sequence_document(
 ) -> tuple[JsonObject, LiveSequencePlan]:
     if payload is None:
         payload = path.read_bytes()
-    document = json.loads(payload)
+    document = decode_json(payload)
     if not isinstance(document, dict) or not isinstance(document.get("chapters"), list):
         raise LiveSequencePlanError("Live sequence plan document is malformed")
     with temporary_directory(prefix="vntts-sequence-") as directory:

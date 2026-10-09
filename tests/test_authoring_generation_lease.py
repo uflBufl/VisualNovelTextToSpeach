@@ -4,7 +4,7 @@ import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import psutil
 
@@ -59,6 +59,25 @@ class ProcessInspectionTests(unittest.TestCase):
 
         self.assertEqual(inspect_process_status(child.pid), "dead")
         self.assertFalse(process_is_alive(child.pid))
+
+    def test_deep_generation_lease_blocks_output_without_reclaiming_it(self):
+        with TemporaryDirectory() as directory:
+            output = Path(directory)
+            lease_path = output / ".generation-lease.json"
+            payload = b'{"value":' + b"[" * 100000 + b"0" + b"]" * 100000 + b"}"
+            lease_path.write_bytes(payload)
+            process_checker = Mock(return_value=False)
+            lease = GenerationLease(output, "1" * 64, process_checker=process_checker)
+            with self.assertRaisesRegex(
+                BulkGenerationError, "Unable to read generation lease .*nesting"
+            ) as caught:
+                lease.__enter__()
+            cause = caught.exception.__cause__
+            self.assertIsInstance(cause, json.JSONDecodeError)
+            self.assertIsInstance(cause.__cause__, RecursionError)
+            process_checker.assert_not_called()
+            self.assertIsNone(lease.document)
+            self.assertEqual(lease_path.read_bytes(), payload)
 
     def test_generation_lease_schema_version_requires_exact_integer(self):
         with TemporaryDirectory() as directory:

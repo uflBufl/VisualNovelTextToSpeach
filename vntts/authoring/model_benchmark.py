@@ -41,6 +41,7 @@ from vntts.authoring.workspace_foundation import load_json_object_snapshot
 from vntts.cleanup import temporary_directory
 from vntts.cli import cli_error, cli_messages
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
+from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
 from vntts.settings import get_local_data_directory
 from vntts.speech_backend_contract import RenderableBackend, is_renderable_backend
@@ -267,7 +268,7 @@ def _capture_failure_corpus_inputs(
         # Custom loaders retain their path-based and byte-decoder contracts.
         try:
             state_payload = state_path.read_bytes()
-            state_snapshot = json.loads(state_payload)
+            state_snapshot = decode_json(state_payload)
         except (OSError, UnicodeError, json.JSONDecodeError) as error:
             raise ModelBenchmarkError(
                 f"Unable to capture comparison inputs: {error}"
@@ -473,7 +474,7 @@ def _comparison_voice_context(
     manifest_path = Path(manifest_path).expanduser().resolve()
     try:
         payload = manifest_path.read_bytes()
-        document = json.loads(payload.decode("utf-8"))
+        document = decode_json(payload.decode("utf-8"))
         registry = CharacterVoiceRegistry.from_document(document, manifest_path)
     except (
         OSError,
@@ -620,7 +621,7 @@ def load_benchmark_corpus(path: str | Path) -> JsonDocument:
     """Load the authoring corpus without normalizing exact identity or text."""
     path = Path(path).expanduser().resolve()
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = decode_json(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise ModelBenchmarkError(
             f"Unable to read benchmark corpus {path}: {error}"
@@ -1246,7 +1247,7 @@ def _snapshot_voice_registry(
 
 def load_model_variants(path: str | Path) -> list[ModelVariant]:
     try:
-        document = json.loads(Path(path).read_text(encoding="utf-8"))
+        document = decode_json(Path(path).read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise ModelBenchmarkError(
             f"Unable to read model variants {path}: {error}"

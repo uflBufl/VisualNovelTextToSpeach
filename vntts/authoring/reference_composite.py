@@ -53,6 +53,7 @@ from vntts.authoring.workspace_foundation import (
 )
 from vntts.cli import cli_error, cli_success
 from vntts.document_identity import file_sha256, is_lowercase_sha256
+from vntts.json_types import decode_json
 from vntts.reference_quality import ReferenceQualityReport, analyze_reference_bytes
 
 COMPOSITE_SCHEMA = "vntts.authoring-exact-bank-reference-composite"
@@ -374,7 +375,7 @@ def _composite_quality_session(
 
 def _read_json(path: Path) -> tuple[bytes, object]:
     payload = path.read_bytes()
-    value = json.loads(payload.decode("utf-8"))
+    value = decode_json(payload.decode("utf-8"))
     return payload, value
 
 

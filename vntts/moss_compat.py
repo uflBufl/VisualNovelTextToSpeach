@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import inspect
-import json
 from collections.abc import Callable
 from types import ModuleType
 from typing import Protocol
+
+from vntts.json_types import decode_json
 
 
 class _Tokenizer(Protocol):
@@ -71,7 +72,9 @@ def install_moss_quantized_codec_compat(
             if key.endswith(".input_proj.weight") or key.endswith(".output_proj.weight")
         }
         model = cls(config, projection_keys=projection_keys)
-        raw_config = json.loads((model_dir / "config.json").read_text())
+        raw_config = decode_json((model_dir / "config.json").read_text())
+        if not isinstance(raw_config, dict):
+            raise ValueError("Audio tokenizer config must be an object")
         if raw_config.get("quantization") or raw_config.get("quantization_config"):
             quantization_applier(model, raw_config, weights)
         model.load_weights(list(weights.items()), strict=True)

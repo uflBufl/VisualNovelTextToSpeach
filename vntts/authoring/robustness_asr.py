@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import json
 import re
 from collections import Counter, defaultdict
 from collections.abc import Callable, Sequence
@@ -30,6 +29,7 @@ from vntts.authoring.robustness_corpus import (
     _read_pcm16,
     load_speech_robustness_corpus,
 )
+from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
 
 SPEECH_ROBUSTNESS_ASR_SCHEMA = "vntts.speech-robustness-asr-report"
@@ -448,7 +448,7 @@ def _load_progress(
     if path is None or not path.exists():
         return []
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = decode_json(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise SpeechRobustnessAsrError(
             f"Unable to load ASR progress: {error}"

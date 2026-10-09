@@ -23,6 +23,7 @@ from vntts_artifacts.voice_manifest import validate_voice_manifest
 
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.cleanup import attempt_cleanup, cleanup_on_exit
+from vntts.json_types import decode_json
 from vntts.settings import get_local_data_directory
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
 
@@ -186,7 +187,7 @@ class ModelAssetManager:
                 payload = source.read(_ASSET_MANIFEST_READ_LIMIT + 1)
             if len(payload) > _ASSET_MANIFEST_READ_LIMIT:
                 raise ValueError("checksum manifest is too large")
-            manifest: object = json.loads(payload)
+            manifest: object = decode_json(payload)
         except (OSError, ValueError) as error:
             raise ModelIntegrityError(
                 f"Unable to read model checksum manifest: {error}"
@@ -887,6 +888,6 @@ def read_json(path: str | os.PathLike[str], default: object) -> object:
             payload = source.read(_VOICE_MANIFEST_READ_LIMIT + 1)
         if len(payload) > _VOICE_MANIFEST_READ_LIMIT:
             return default
-        return json.loads(payload)
+        return decode_json(payload)
     except OSError, UnicodeError, json.JSONDecodeError:
         return default
