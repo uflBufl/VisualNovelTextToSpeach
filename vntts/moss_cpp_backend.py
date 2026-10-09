@@ -268,16 +268,17 @@ def _launch_owned_process(
     )
     try:
         return process, _WindowsKillOnCloseJob(process)
-    except BaseException:
-        try:
-            process.kill()
-        except OSError:
-            pass
-        try:
-            process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            # ponytail: the process already received the strongest local signal.
-            pass
+    except BaseException as error:
+        attempt_cleanup(
+            process.kill,
+            description="Native speech process kill",
+            primary_error=error,
+        )
+        attempt_cleanup(
+            lambda: process.wait(timeout=2),
+            description="Native speech process wait",
+            primary_error=error,
+        )
         raise
 
 

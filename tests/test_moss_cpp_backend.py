@@ -252,28 +252,76 @@ class WindowsOwnedServerTest(unittest.TestCase):
         self.assertIsNone(backend.server)
 
     def test_failed_job_attachment_keeps_process_cleanup_bounded(self):
-        process = Mock()
-        process.wait.side_effect = subprocess.TimeoutExpired("server", 2)
-        with (
-            patch("vntts.moss_cpp_backend.sys.platform", "win32"),
-            patch("vntts.moss_cpp_backend.subprocess.Popen", return_value=process),
-            patch(
-                "vntts.moss_cpp_backend._WindowsKillOnCloseJob",
-                side_effect=RuntimeError("job attachment failed"),
-            ),
-            self.assertRaisesRegex(RuntimeError, "job attachment failed"),
-        ):
-            _launch_owned_process(
-                ["server"],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                cwd=None,
-                creationflags=0,
-            )
+        command = ["server", "--model", "local.gguf"]
+        creationflags = 0x08000000
+        for acquisition_type in (RuntimeError, KeyboardInterrupt):
+            for kill_type, wait_type in (
+                (None, subprocess.TimeoutExpired),
+                (OSError, OSError),
+                (RuntimeError, subprocess.TimeoutExpired),
+                (KeyboardInterrupt, KeyboardInterrupt),
+            ):
+                with self.subTest(
+                    acquisition=acquisition_type, kill=kill_type, wait=wait_type
+                ):
+                    primary = acquisition_type("job attachment failed")
+                    primary.add_note("original acquisition note")
+                    kill_error = kill_type("kill failed") if kill_type else None
+                    wait_error = (
+                        subprocess.TimeoutExpired("server", 2)
+                        if wait_type is subprocess.TimeoutExpired
+                        else wait_type("wait failed")
+                    )
+                    expected_notes = ["original acquisition note"]
+                    for operation, error in (
+                        ("kill", kill_error),
+                        ("wait", wait_error),
+                    ):
+                        if error is not None:
+                            error.add_note(f"nested {operation} note")
+                            expected_notes.extend(
+                                (
+                                    f"Native speech process {operation} failed: {error}",
+                                    f"nested {operation} note",
+                                )
+                            )
+                    process = Mock()
+                    process.kill.side_effect = kill_error
+                    process.wait.side_effect = wait_error
+                    with (
+                        patch("vntts.moss_cpp_backend.sys.platform", "win32"),
+                        patch(
+                            "vntts.moss_cpp_backend.subprocess.Popen",
+                            return_value=process,
+                        ) as popen,
+                        patch(
+                            "vntts.moss_cpp_backend._WindowsKillOnCloseJob",
+                            side_effect=primary,
+                        ) as acquire_job,
+                        self.assertRaises(acquisition_type) as raised,
+                    ):
+                        _launch_owned_process(
+                            command,
+                            stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            cwd=None,
+                            creationflags=creationflags,
+                        )
 
-        process.kill.assert_called_once_with()
-        process.wait.assert_called_once_with(timeout=2)
+                    self.assertIs(raised.exception, primary)
+                    self.assertEqual(primary.__notes__, expected_notes)
+                    popen.assert_called_once_with(
+                        command,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        cwd=None,
+                        creationflags=creationflags | 0x00000004,
+                    )
+                    acquire_job.assert_called_once_with(process)
+                    process.kill.assert_called_once_with()
+                    process.wait.assert_called_once_with(timeout=2)
 
     @unittest.skipUnless(sys.platform == "win32", "Windows Job Object semantics")
     def test_host_crash_kills_owned_process(self):
