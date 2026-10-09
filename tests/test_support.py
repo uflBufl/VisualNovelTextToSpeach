@@ -1,3 +1,4 @@
+import hashlib
 import json
 import unittest
 import zipfile
@@ -1436,6 +1437,30 @@ class SupportBundleBuilderTest(unittest.TestCase):
 
         self.assertFalse(report["generation_state"]["available"])
         self.assertIn("unsafe", report["generation_state"]["reason"])
+
+    def test_active_story_index_identity_is_fresh_and_handles_unavailable_files(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "story-index.jsonl"
+            settings = AppSettings(story_index=str(path))
+            for payload in (b"A" * (1024 * 1024 + 17), b"B" * (1024 * 1024 + 17)):
+                path.write_bytes(payload)
+                self.assertEqual(
+                    collect_active_content_identity(settings),
+                    {
+                        "available": True,
+                        "active_story_index_sha256": hashlib.sha256(
+                            payload
+                        ).hexdigest(),
+                    },
+                )
+            with patch.object(Path, "open", side_effect=PermissionError("denied")):
+                self.assertEqual(
+                    collect_active_content_identity(settings), {"available": False}
+                )
+            path.unlink()
+            self.assertEqual(
+                collect_active_content_identity(settings), {"available": False}
+            )
 
     def test_active_pack_ignores_non_object_story_index_records(self):
         with TemporaryDirectory() as temporary_directory:

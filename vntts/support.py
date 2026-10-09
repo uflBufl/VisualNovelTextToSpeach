@@ -19,6 +19,7 @@ from threading import RLock
 from typing import Callable, Mapping, TypedDict
 from uuid import UUID
 
+from durable_file import sha256_file
 from vntts_artifacts.atomic_io import atomic_output_path
 
 from vntts.audio_lifecycle import audio_lifecycle_context
@@ -1553,7 +1554,7 @@ def collect_active_content_identity(settings: AppSettings) -> SupportDocument:
             path = Path(story_path).expanduser()
             return {
                 "available": True,
-                "active_story_index_sha256": _file_sha256(path),
+                "active_story_index_sha256": sha256_file(path),
             }
         except OSError:
             pass
@@ -1716,14 +1717,6 @@ def _active_story_ids(root: Path, component: SupportDocument) -> SupportDocument
         "active_story_ids": values[:256],
         "active_story_ids_truncated": max(0, len(values) - 256),
     }
-
-
-def _file_sha256(path: str | Path) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 class SupportBundleBuilder:
