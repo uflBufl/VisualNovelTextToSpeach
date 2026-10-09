@@ -298,16 +298,24 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 player.reset_mock()
                 panel.a_play.click()
                 self.assertFalse(panel.a_use.isEnabled())
+                self.assertEqual(panel.preview_phrase.count(), 2)
+                panel.preview_phrase.setCurrentIndex(1)
+                panel.preview_phrase.setCurrentIndex(0)
+                self.assertFalse(panel.a_use.isEnabled())
                 panel.a_use.click()
                 decisions.remember_many.assert_not_called()
+                self.assertEqual(pool.tasks, [])
                 if failure != "unplayable":
                     player.play_bytes.assert_not_called()
                     self.assertEqual(panel.a_play.text(), "Generate preview")
                 else:
                     player.play_bytes.return_value = object()
                     panel.a_play.click()
+                    self.assertFalse(panel.a_use.isEnabled())
+                    pool.run_next()
+                    self.application.processEvents()
                     self.assertTrue(panel.a_use.isEnabled())
-                    self.assertEqual(service.generate.call_count, 1)
+                    self.assertEqual(service.generate.call_count, 2)
 
     def test_original_playback_verifies_the_bytes_after_reference_resolution(self):
         with TemporaryDirectory() as directory:

@@ -342,7 +342,6 @@ class VoiceAuditionPanel(QGroupBox):
         candidate, _choice, _narrator = self._current_entry()
         preview = self._previews.get(self._preview_key(candidate))
         if preview is not None:
-            self._accepted_choice = self._current_entry()[1]
             self._set_decision_actions(True)
             self._play_preview(preview)
             return
@@ -658,7 +657,7 @@ class VoiceAuditionPanel(QGroupBox):
             self._ignore_preview_result = False
             self._maybe_complete()
             return
-        candidate, choice, _narrator = self._current_entry()
+        candidate, _choice, _narrator = self._current_entry()
         if error is not None:
             from vntts.support import record_game_import
 
@@ -690,7 +689,6 @@ class VoiceAuditionPanel(QGroupBox):
         assert preview is not None
         self._failed_candidate_source_ids.discard(candidate.source_id)
         self._previews[self._preview_key(candidate)] = preview
-        self._accepted_choice = choice
         self._set_decision_actions(True)
         self.a_play.setText("Play generated preview")
         self.status.setText(
@@ -698,7 +696,7 @@ class VoiceAuditionPanel(QGroupBox):
         )
         self._play_preview(preview)
 
-    def _play_preview(self, preview: _PreviewAudio) -> bool:
+    def _play_preview(self, preview: _PreviewAudio) -> None:
         self._accepted_choice = None
         self.a_use.setEnabled(False)
         try:
@@ -707,19 +705,20 @@ class VoiceAuditionPanel(QGroupBox):
             self._previews.pop(self._preview_key(self._current_entry()[0]), None)
             self._set_playing_source(None)
             self.status.setText(f"Unable to play generated preview: {error}")
-            return False
+            return
         player = self._ensure_player()
         player.stop()
-        playing = player.play_bytes(payload, source=str(preview.path)) is not None
-        if playing:
-            self._accepted_choice = self._current_entry()[1]
-            self.a_use.setEnabled(True)
-            self._set_playing_source("preview")
-            self.status.setText(
-                "Playing the generated preview. Use this voice only if the sample "
-                "is suitable."
-            )
-        return playing
+        if player.play_bytes(payload, source=str(preview.path)) is None:
+            self._previews.pop(self._preview_key(self._current_entry()[0]), None)
+            self._set_playing_source(None)
+            return
+        self._accepted_choice = self._current_entry()[1]
+        self.a_use.setEnabled(True)
+        self._set_playing_source("preview")
+        self.status.setText(
+            "Playing the generated preview. Use this voice only if the sample "
+            "is suitable."
+        )
 
     def _preview_key(self, candidate: VoiceCandidate) -> PreviewKey:
         return candidate.source_id, self._sample_text
