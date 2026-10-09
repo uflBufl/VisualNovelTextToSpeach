@@ -26,7 +26,7 @@ class VersionedJsonTest(unittest.TestCase):
                 path.write_bytes(replacement)
                 return real_loads(raw)
 
-            with patch("vntts.versioned_json.json.loads", replace_before_decode):
+            with patch("vntts.versioned_json.decode_json", replace_before_decode):
                 payload, revision = read_versioned_json_snapshot(
                     path,
                     schema_version=1,
@@ -35,6 +35,42 @@ class VersionedJsonTest(unittest.TestCase):
 
             self.assertEqual(payload["value"], "original")
             self.assertEqual(revision, sha256(original).digest())
+
+    def test_nested_json_uses_parse_errors_and_fresh_fallbacks(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "document.json"
+            payload = (
+                '{"schema_version":1,"value":' + "[" * 100000 + "0" + "]" * 100000 + "}"
+            )
+            path.write_text(payload, encoding="utf-8")
+            before = path.read_bytes()
+            with self.assertRaisesRegex(json.JSONDecodeError, "nesting") as caught:
+                read_versioned_json(
+                    path, schema_version=1, document_name="test document"
+                )
+            self.assertIsInstance(caught.exception.__cause__, RecursionError)
+            warnings = []
+            revisions = []
+            decoded = []
+            results = [
+                load_versioned_json(
+                    path,
+                    schema_version=1,
+                    document_name="test document",
+                    decode=decoded.append,
+                    fallback=dict,
+                    warn=warnings.append,
+                    on_revision=revisions.append,
+                )
+                for _ in range(2)
+            ]
+            self.assertEqual(results, [{}, {}])
+            self.assertIsNot(results[0], results[1])
+            self.assertEqual(decoded, [])
+            self.assertEqual(revisions, [])
+            self.assertEqual(len(warnings), 2)
+            self.assertTrue(all("nesting" in warning for warning in warnings))
+            self.assertEqual(path.read_bytes(), before)
 
     def test_legacy_reader_delegates_to_snapshot_payload(self):
         with TemporaryDirectory() as temporary_directory:

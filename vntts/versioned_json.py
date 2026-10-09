@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable, Mapping
 from hashlib import sha256
 from pathlib import Path
@@ -11,6 +10,7 @@ from typing import TypeVar
 from durable_file import atomic_write_json
 
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
+from vntts.json_types import decode_json
 
 Document = TypeVar("Document")
 _DOCUMENT_READ_LIMIT = 64 * 1024 * 1024
@@ -35,7 +35,7 @@ def read_versioned_json_snapshot(
     if len(raw) > _DOCUMENT_READ_LIMIT:
         raise ValueError(f"{document_name} exceeds the size limit")
     revision = sha256(raw).digest()
-    payload = json.loads(raw)
+    payload = decode_json(raw)
     if not isinstance(payload, dict):
         raise ValueError(f"{document_name} root must be an object")
     if "schema_version" not in payload and allow_unversioned:
