@@ -1,6 +1,12 @@
 """Shared filesystem containment checks."""
 
+import os
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
+
+
+def open_regular_candidate(path: str | os.PathLike[str], flags: int) -> int:
+    # Reject FIFOs with fstat without waiting for a writer, even after a path swap.
+    return os.open(path, flags | getattr(os, "O_NONBLOCK", 0))
 
 
 def no_replace_destination(value: str | Path) -> Path:
@@ -82,5 +88,6 @@ __all__ = [
     "contained_path",
     "contained_regular_file",
     "no_replace_destination",
+    "open_regular_candidate",
     "safe_relative_path",
 ]

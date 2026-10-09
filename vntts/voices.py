@@ -22,6 +22,7 @@ from vntts_artifacts.voice_manifest import (
 
 from vntts.application_directories import get_local_data_directory
 from vntts.cleanup import cleanup_on_exit, temporary_directory
+from vntts.path_safety import open_regular_candidate
 from vntts.voice_library import VoiceBinding, VoiceBindingRollback, VoiceLibrary
 
 default_voice_choice_id = "default"
@@ -773,7 +774,7 @@ def _read_owned_voice_reference(
     # Windows text descriptors treat Ctrl-Z as EOF and translate CRLF in PCM.
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
     try:
-        descriptor = os.open(reference, flags)
+        descriptor = open_regular_candidate(reference, flags)
     except FileNotFoundError as error:
         raise VoiceManifestError(
             f"Voice reference does not exist: {reference}"

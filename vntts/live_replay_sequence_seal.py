@@ -32,6 +32,7 @@ from vntts.live_replay import (
     load_live_replay_corpus,
 )
 from vntts.live_sequence import LiveSequenceEvent, LiveSequencePlan
+from vntts.path_safety import open_regular_candidate
 from vntts.settings import AppSettings, audio_source_policies, load_app_settings
 
 SEQUENCE_REPLAY_SEAL_VERSION = 1
@@ -1038,7 +1039,7 @@ def _read_regular_file(value: PathInput, label: str) -> tuple[Path, bytes]:
         raise SequenceReplaySealError(f"{label} must not be a symlink: {selected}")
     path = selected.resolve()
     try:
-        with path.open("rb") as source:
+        with open(path, "rb", opener=open_regular_candidate) as source:
             opened = os.fstat(source.fileno())
             if not stat.S_ISREG(opened.st_mode):
                 raise SequenceReplaySealError(f"{label} must be a regular file: {path}")

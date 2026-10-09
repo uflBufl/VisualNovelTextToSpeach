@@ -26,6 +26,7 @@ from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.cleanup import cleanup_on_exit
 from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import decode_json
+from vntts.path_safety import open_regular_candidate
 
 VOICE_LIBRARY_VERSION = 3
 _VOICE_LIBRARY_VERSIONS = frozenset({1, 2, VOICE_LIBRARY_VERSION})
@@ -772,7 +773,7 @@ def _read_wav(reference: str | Path) -> bytes:
         raise VoiceLibraryError("Voice reference must not be a symlink")
     try:
         before = path.stat(follow_symlinks=False)
-        descriptor = os.open(
+        descriptor = open_regular_candidate(
             path,
             os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
         )

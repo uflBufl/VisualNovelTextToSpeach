@@ -1688,7 +1688,7 @@ class LiveReplayTest(unittest.TestCase):
             frame = root / "frame.png"
             Image.new("RGB", (20, 20), "black").save(frame)
             expected_sha256 = sha256_file(frame)
-            original_open = Path.open
+            original_open = open
             swapped = False
 
             class SwapAfterRead:
@@ -1713,11 +1713,11 @@ class LiveReplayTest(unittest.TestCase):
 
             def open_with_swap(path, *args, **kwargs):
                 source = original_open(path, *args, **kwargs)
-                if path.resolve() == frame.resolve() and "r" in args[0]:
+                if Path(path).resolve() == frame.resolve() and "r" in args[0]:
                     return SwapAfterRead(source)
                 return source
 
-            with patch.object(Path, "open", open_with_swap):
+            with patch("vntts.live_replay.open", open_with_swap, create=True):
                 captured, relative_path, digest, source = _load_frame(
                     root,
                     {

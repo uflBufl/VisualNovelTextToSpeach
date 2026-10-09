@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Self
 
 from vntts.json_types import decode_json
+from vntts.path_safety import open_regular_candidate
 
 LIVE_SPEAKER_CORPUS_VERSION = 1
 
@@ -31,7 +32,7 @@ class LiveSpeakerCorpus:
         path = selected_path.resolve()
         if not path.is_file():
             raise ValueError(f"live speaker corpus is not a regular file: {path}")
-        with selected_path.open("rb") as source:
+        with open(selected_path, "rb", opener=open_regular_candidate) as source:
             opened = os.fstat(source.fileno())
             if not stat.S_ISREG(opened.st_mode):
                 raise ValueError(

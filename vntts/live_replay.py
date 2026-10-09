@@ -59,6 +59,7 @@ from vntts.live import (
 )
 from vntts.live_sequence import LiveSequenceEvent, LiveSequencePlan, StoryCursor
 from vntts.ocr import DialogRegion
+from vntts.path_safety import open_regular_candidate
 from vntts.playback import PlaybackOutcome, PreparedPlayback, outcome_for_prepared
 from vntts.settings import AppSettings
 from vntts.speech_backend import SpeechBackendCapabilities
@@ -1838,7 +1839,7 @@ def _read_contained_file(
     root: str | Path, value: object, label: str
 ) -> tuple[Path, str, bytes]:
     path, relative = _contained_regular_file(root, value, label)
-    with path.open("rb") as source:
+    with open(path, "rb", opener=open_regular_candidate) as source:
         opened = os.fstat(source.fileno())
         if not stat.S_ISREG(opened.st_mode):
             raise ValueError(f"{label} is not a regular file: {path}")
