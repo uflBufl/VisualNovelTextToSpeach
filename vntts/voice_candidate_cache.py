@@ -293,11 +293,7 @@ def _references_in_document(root: Path, path: Path) -> set[str] | None:
         if len(raw) > _MAX_REFERENCE_DOCUMENT_BYTES:
             return None
         payload = raw.decode("utf-8")
-        document = (
-            [json.loads(line) for line in payload.splitlines() if line.strip()]
-            if path.suffix == ".jsonl"
-            else json.loads(payload)
-        )
+        document = json.loads(payload)
     except OSError, UnicodeError, json.JSONDecodeError:
         return None
     references: set[str] = set()
