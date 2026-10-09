@@ -349,6 +349,51 @@ class VoiceLibraryTest(unittest.TestCase):
             self.assertTrue(library.rollback_bindings(rollback))
             self.assertIsNone(library.binding("Alice"))
 
+    def test_reference_descriptor_cleanup_preserves_read_error(self) -> None:
+        native_close, native_fstat = os.close, os.fstat
+        for primary_type in (OSError, KeyboardInterrupt, None):
+            with self.subTest(primary=primary_type), TemporaryDirectory() as directory:
+                root = Path(directory)
+                reference = root / "voice.wav"
+                write_wav(reference, b"\x00\x00")
+                primary = (
+                    primary_type("reference read failed") if primary_type else None
+                )
+                if primary is not None:
+                    primary.add_note("original read note")
+                cleanup_error = OSError("descriptor close failed")
+                cleanup_error.add_note("nested close note")
+
+                def fail_close(descriptor):
+                    native_close(descriptor)
+                    raise cleanup_error
+
+                with (
+                    patch(
+                        "vntts.voice_library.os.close", side_effect=fail_close
+                    ) as close,
+                    patch(
+                        "vntts.voice_library.os.fstat",
+                        wraps=native_fstat,
+                        side_effect=primary,
+                    ),
+                    self.assertRaises(primary_type or OSError) as raised,
+                ):
+                    VoiceLibrary(root / "library").discover("Role", reference)
+
+                self.assertIs(raised.exception, primary or cleanup_error)
+                close.assert_called_once()
+                if primary is not None:
+                    self.assertEqual(
+                        primary.__notes__,
+                        [
+                            "original read note",
+                            "Voice reference descriptor cleanup failed: "
+                            "descriptor close failed",
+                            "nested close note",
+                        ],
+                    )
+
     def test_windows_reference_is_opened_in_binary_mode(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -23,6 +23,7 @@ from vntts_artifacts.atomic_io import atomic_output_path
 from vntts_artifacts.voice_manifest import normalize_character_name
 
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
+from vntts.cleanup import cleanup_on_exit
 
 VOICE_LIBRARY_VERSION = 3
 _VOICE_LIBRARY_VERSIONS = frozenset({1, 2, VOICE_LIBRARY_VERSION})
@@ -773,7 +774,9 @@ def _read_wav(reference: str | Path) -> bytes:
         )
     except OSError as error:
         raise VoiceLibraryError(f"Unable to open voice reference: {path}") from error
-    try:
+    with cleanup_on_exit(
+        lambda: os.close(descriptor), description="Voice reference descriptor cleanup"
+    ):
         opened = os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode):
             raise VoiceLibraryError("Voice reference must be a regular file")
@@ -790,8 +793,6 @@ def _read_wav(reference: str | Path) -> bytes:
             raise VoiceLibraryError("Voice reference path and descriptor disagree")
         if len(payload) != opened.st_size:
             raise VoiceLibraryError("Voice reference read was incomplete")
-    finally:
-        os.close(descriptor)
     try:
         with wave.open(io.BytesIO(payload), "rb"):
             pass

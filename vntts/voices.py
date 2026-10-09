@@ -21,7 +21,7 @@ from vntts_artifacts.voice_manifest import (
 )
 
 from vntts.application_directories import get_local_data_directory
-from vntts.cleanup import temporary_directory
+from vntts.cleanup import cleanup_on_exit, temporary_directory
 from vntts.voice_library import VoiceBinding, VoiceBindingRollback, VoiceLibrary
 
 default_voice_choice_id = "default"
@@ -777,7 +777,9 @@ def _read_owned_voice_reference(
         raise VoiceManifestError(
             f"Voice reference could not be opened without following links: {reference}"
         ) from error
-    try:
+    with cleanup_on_exit(
+        lambda: os.close(descriptor), description="Voice reference descriptor cleanup"
+    ):
         opened = os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode):
             raise VoiceManifestError("Voice reference must be a regular file")
@@ -825,8 +827,6 @@ def _read_owned_voice_reference(
         if len(payload) != opened.st_size:
             raise VoiceManifestError("Voice reference read returned incomplete bytes")
         return payload
-    finally:
-        os.close(descriptor)
 
 
 def read_voice_reference_bytes(
