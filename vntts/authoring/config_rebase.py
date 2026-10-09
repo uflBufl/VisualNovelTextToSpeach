@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -22,6 +23,10 @@ from vntts.authoring.bulk_generation import (
 )
 from vntts.authoring.generation_lease import GenerationLease
 from vntts.authoring.generation_manifest import write_generated_manifest_from_state
+from vntts.authoring.generation_state import (
+    load_stable_generation_queue,
+    validate_generation_state_document,
+)
 from vntts.authoring.missing_voice_policy import MissingVoicePolicy
 from vntts.authoring.publication import (
     AtomicPublicationError,
@@ -299,8 +304,18 @@ def _load_rebase_state(selection: _RebaseSelection) -> _RebaseState:
     target_payload = read_workspace_file_bytes(
         target_path, "config rebase target state"
     )
-    source = load_generation_state(source_path, selection.source_queue)
-    target = load_generation_state(target_path, selection.target_queue)
+    source = _load_captured_rebase_state(
+        source_path,
+        source_payload,
+        selection.source_queue,
+        selection.source_queue_sha256,
+    )
+    target = _load_captured_rebase_state(
+        target_path,
+        target_payload,
+        selection.target_queue,
+        selection.target_queue_sha256,
+    )
     if source.get("active") is not None or target.get("active") is not None:
         raise AuthoringWorkbenchError("Config rebase authority has an active attempt")
     if any(selection.source_output.rglob("*.partial.wav")) or any(
@@ -316,6 +331,23 @@ def _load_rebase_state(selection: _RebaseSelection) -> _RebaseState:
         target_payload,
         hashlib.sha256(target_payload).hexdigest(),
         target,
+    )
+
+
+def _load_captured_rebase_state(
+    path: Path, payload: bytes, queue_path: Path, expected_queue_sha256: str
+) -> JsonObject:
+    queue, queue_sha256 = load_stable_generation_queue(queue_path)
+    if queue_sha256 != expected_queue_sha256:
+        raise AuthoringWorkbenchError("Config rebase queue changed during capture")
+    try:
+        document = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BulkGenerationError(
+            f"Unable to read generation state {path}: {error}"
+        ) from error
+    return validate_generation_state_document(
+        document, path.parent, queue, queue_sha256
     )
 
 

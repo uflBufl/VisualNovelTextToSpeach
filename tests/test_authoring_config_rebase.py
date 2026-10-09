@@ -118,6 +118,78 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
                 self.assertEqual(_tree_hashes(root), before)
                 self.assertEqual(list((root / "rebased").iterdir()), [])
 
+    def test_rebase_projects_the_captured_target_state(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, source = create_carry_source_workspace(
+                root, item_count=2
+            )
+            review_generation_item(
+                source.directory / "generated-audio/generation-state.json",
+                fixture["queue_id"],
+                "approved",
+            )
+            target = create_resume_workspace(
+                imported,
+                root / "workspaces",
+                story_index=fixture["job"]["story_index"],
+                voice_manifest=write_carry_target_manifest(root),
+                backend="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                narrator_character="Rhiannon",
+            ).directory
+            state_path = target / "generated-audio/generation-state.json"
+            original = state_path.read_bytes()
+            original_state = json.loads(original)
+            retained_id = next(
+                queue_id
+                for queue_id in original_state["items"]
+                if queue_id != fixture["queue_id"]
+            )
+            replacement = copy.deepcopy(original_state)
+            replacement["items"][retained_id]["model"] = "foreign-target-model"
+            replacement_payload = json.dumps(replacement).encode("utf-8")
+            state_path.write_bytes(replacement_payload)
+            try:
+                load_generation_state(state_path, target / "queue.jsonl")
+            finally:
+                state_path.write_bytes(original)
+            read_text = Path.read_text
+
+            def read_replacement(path, *arguments, **keywords):
+                if path.resolve() != state_path.resolve():
+                    return read_text(path, *arguments, **keywords)
+                path.write_bytes(replacement_payload)
+                try:
+                    return read_text(path, *arguments, **keywords)
+                finally:
+                    path.write_bytes(original)
+
+            with patch.object(
+                Path, "read_text", autospec=True, side_effect=read_replacement
+            ):
+                output = rebase_workspace_config(
+                    source.directory, target, root / "rebased"
+                ).directory
+            published = load_generation_state(
+                output / "generated-audio/generation-state.json", output / "queue.jsonl"
+            )
+            workspace = load_workspace_authority(output)[1]
+            provenance = (
+                output / "provenance/config-rebase/target-root/generation-state.json"
+            )
+            self.assertEqual(
+                published["items"][retained_id], original_state["items"][retained_id]
+            )
+            self.assertEqual(provenance.read_bytes(), original)
+            self.assertEqual(
+                workspace["config_rebase"]["target_state_sha256"],
+                hashlib.sha256(original).hexdigest(),
+            )
+            self.assertEqual(state_path.read_bytes(), original)
+            self.assertFalse(list((root / "rebased").glob(".config-rebase-staging-*")))
+
     def test_ledger_requires_integer_version_and_retains_legacy_versions(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
