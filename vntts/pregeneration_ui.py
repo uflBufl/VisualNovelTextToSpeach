@@ -4362,6 +4362,7 @@ class OfflineAudioPreparationDialog(QDialog):
             f"Automatic recovery is working on {result.failed} failed "
             f"item{'s' if result.failed != 1 else ''}."
         )
+        self.progress_timer.start()
         self.recovery_runner.start(
             self.recovery.recover,
             self._generation_input,
@@ -4369,7 +4370,6 @@ class OfflineAudioPreparationDialog(QDialog):
             result,
             self.voice_cancel_event,
         )
-        self.progress_timer.start()
 
     def _recovery_finished(self, result: object, error: Exception | None) -> None:
         self._stop_generation_progress()

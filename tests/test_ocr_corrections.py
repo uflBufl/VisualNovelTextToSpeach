@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (  # noqa: E402
     QMessageBox,
 )
 
+from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from vntts.main import recognize_screenshot_result  # noqa: E402
 from vntts.ocr import OCRResult  # noqa: E402
 from vntts.ocr_corrections import (  # noqa: E402
@@ -382,6 +383,55 @@ class OCRCorrectionsDialogTest(unittest.TestCase):
         self.wait_for(lambda: not dialog._save_active)
         self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
         self.assertEqual(store.replace_entries.call_count, 2)
+
+    def test_submission_failure_preserves_rules_and_restores_save_for_retry(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "ocr-corrections.json"
+            store = OCRCorrectionStore(path, global_entries={"Mareus": "Marcus"})
+            store.save()
+            original = path.read_bytes()
+            pool = ManualThreadPool()
+            dialog = OCRCorrectionsDialog("game", "Game", store, thread_pool=pool)
+            self.addCleanup(dialog.deleteLater)
+            dialog._append_row(dialog.profile_table, "Vertln", "Vertin")
+
+            with patch.object(
+                store, "replace_entries", wraps=store.replace_entries
+            ) as save:
+                with patch.object(
+                    pool, "start", side_effect=RuntimeError("pool unavailable")
+                ):
+                    dialog.save()
+                self.application.processEvents()
+
+                save.assert_not_called()
+                self.assertFalse(dialog.save_runner.active)
+                self.assertFalse(dialog._save_active)
+                self.assertTrue(dialog.tabs.isEnabled())
+                self.assertTrue(dialog.buttons.isEnabled())
+                self.assertTrue(dialog.save_button.isEnabled())
+                self.assertIn("pool unavailable", dialog.status.text())
+                self.assertIn("select Save again", dialog.status.text())
+                self.assertEqual(dialog.profile_table.item(0, 1).text(), "Vertin")
+                self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
+                self.assertEqual(store.global_entries, {"Mareus": "Marcus"})
+                self.assertEqual(store.profile_entries, {})
+                self.assertEqual(path.read_bytes(), original)
+
+                dialog.save()
+                self.assertTrue(dialog._save_active)
+                self.assertFalse(dialog.buttons.isEnabled())
+                pool.run_next()
+                self.application.processEvents()
+                save.assert_called_once_with(
+                    {"Mareus": "Marcus"}, "game", {"Vertln": "Vertin"}
+                )
+
+            self.assertFalse(dialog._save_active)
+            self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+            loaded = OCRCorrectionStore.load(path)
+            self.assertEqual(loaded.global_entries, {"Mareus": "Marcus"})
+            self.assertEqual(loaded.profile_entries, {"game": {"Vertln": "Vertin"}})
 
     def test_stale_rules_request_reopen_instead_of_retry(self):
         with TemporaryDirectory() as temporary_directory:

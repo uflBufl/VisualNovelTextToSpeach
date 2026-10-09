@@ -10,7 +10,7 @@ import soundfile as sf
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QCoreApplication, QEvent, Qt  # noqa: E402
+from PySide6.QtCore import QCoreApplication, QEvent, Qt, QThreadPool  # noqa: E402
 from PySide6.QtGui import QPixmap  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog, QSizePolicy  # noqa: E402
@@ -18,6 +18,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QSizePolicy  # noqa: E402
 from tests.pregeneration_fixtures import (  # noqa: E402
     InProcessPocketGenerator,
     InterruptingPocketGenerator,
+    fixture,
 )
 from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from tests.story_fixtures import (
@@ -184,6 +185,54 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             )
             dialog.deleteLater()
 
+    def test_recovery_submission_failure_stops_progress_and_preserves_saved_audio(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, generation_input, generated, _items = fixture(root)
+            failed = replace(generated, failed=1, other_terminal=0)
+            saved = {
+                path: path.read_bytes()
+                for path in failed.output.rglob("*")
+                if path.is_file()
+            }
+            self.assertTrue(any(path.suffix == ".wav" for path in saved))
+            pool = ManualThreadPool()
+            recovery = Mock()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery(()),
+                job_store=PregenerationJobStore(root / "jobs"),
+                recovery=recovery,
+                thread_pool=pool,
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog._job = job
+            dialog._generation_input = generation_input
+            dialog.generating = True
+            dialog.progress_timer.start()
+            failure = RuntimeError("recovery pool unavailable")
+
+            with patch.object(pool, "start", side_effect=failure):
+                dialog._generation_finished(failed, None)
+            self.application.processEvents()
+
+            recovery.recover.assert_not_called()
+            self.assertFalse(dialog.generating)
+            self.assertFalse(dialog.recovering)
+            self.assertFalse(dialog.recovery_runner.active)
+            self.assertFalse(dialog.progress_timer.isActive())
+            self.assertEqual(
+                dialog.resume_status.text(),
+                f"Unable to recover offline audio: {failure}",
+            )
+            self.assertEqual(dialog.progress_phase.text(), "Automatic recovery paused")
+            self.assertIs(dialog.generation_result(), failed)
+            self.assertEqual(pool.tasks, [])
+            self.assertEqual(
+                {path: path.read_bytes() for path in saved},
+                saved,
+            )
+
     def test_quit_button_finishes_idle_embedded_preparation(self):
         for action in ("button", "window", "tray"):
             with self.subTest(action=action), TemporaryDirectory() as directory:
@@ -295,6 +344,98 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
         self.assertEqual(received, [])
         self.assertEqual(timing.call_args.args[0], "<lambda>")
         self.assertEqual(timing.call_args.args[2], "complete")
+
+    def test_submission_failure_publishes_once_and_allows_retry(self):
+        pool = ManualThreadPool()
+        runner = LatestTaskRunner(thread_pool=pool)
+        self.addCleanup(runner.deleteLater)
+        received = []
+        activity = []
+        runner.finished.connect(lambda result, error: received.append((result, error)))
+        runner.activeChanged.connect(activity.append)
+        operation = Mock(return_value="retried")
+        failure = RuntimeError("pool unavailable")
+
+        with patch.object(pool, "start", side_effect=failure):
+            failed_serial = runner.start(operation)
+        self.application.processEvents()
+
+        self.assertFalse(runner.active)
+        self.assertEqual(activity, [True, False])
+        self.assertEqual(len(received), 1)
+        self.assertIsNone(received[0][0])
+        self.assertIs(received[0][1], failure)
+        operation.assert_not_called()
+        self.assertEqual(pool.tasks, [])
+
+        retry_serial = runner.start(operation)
+        self.assertGreater(retry_serial, failed_serial)
+        self.assertTrue(runner.active)
+        pool.run_next()
+        self.application.processEvents()
+
+        operation.assert_called_once_with()
+        self.assertEqual(received, [(None, failure), ("retried", None)])
+        self.assertEqual(activity, [True, False, True, False])
+        self.assertFalse(runner.active)
+
+    def test_deleted_thread_pool_reports_submission_failure_without_running_work(self):
+        pool = QThreadPool()
+        runner = LatestTaskRunner(thread_pool=pool)
+        self.addCleanup(runner.deleteLater)
+        received = []
+        runner.finished.connect(lambda result, error: received.append((result, error)))
+        pool.deleteLater()
+        QCoreApplication.sendPostedEvents(pool, QEvent.Type.DeferredDelete)
+        operation = Mock()
+
+        runner.start(operation)
+        self.application.processEvents()
+
+        operation.assert_not_called()
+        self.assertFalse(runner.active)
+        self.assertEqual(len(received), 1)
+        self.assertIsNone(received[0][0])
+        self.assertIsInstance(received[0][1], RuntimeError)
+
+    def test_older_submission_failure_preserves_reentrant_newer_launch(self):
+        pool = ManualThreadPool()
+        runner = LatestTaskRunner(thread_pool=pool)
+        self.addCleanup(runner.deleteLater)
+        received = []
+        runner.finished.connect(lambda result, error: received.append((result, error)))
+        old_operation = Mock()
+        new_operation = Mock(return_value="new")
+        replacement_started = False
+
+        def start_replacement(active):
+            nonlocal replacement_started
+            if active and not replacement_started:
+                replacement_started = True
+                runner.start(new_operation)
+
+        def submit(task):
+            if task.serial == 1:
+                raise RuntimeError("old submission refused")
+            pool.tasks.append(task)
+
+        runner.activeChanged.connect(start_replacement)
+        with patch.object(pool, "start", side_effect=submit):
+            runner.start(old_operation)
+        self.application.processEvents()
+
+        self.assertTrue(runner.active)
+        self.assertEqual(received, [])
+        old_operation.assert_not_called()
+        new_operation.assert_not_called()
+        self.assertEqual(len(pool.tasks), 1)
+        pool.run_next()
+        self.application.processEvents()
+
+        old_operation.assert_not_called()
+        new_operation.assert_called_once_with()
+        self.assertEqual(received, [("new", None)])
+        self.assertFalse(runner.active)
 
     def test_reentrant_restart_drops_completed_task_result(self):
         pool = ManualThreadPool()

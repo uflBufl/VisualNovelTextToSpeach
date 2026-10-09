@@ -2572,16 +2572,16 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             reader.stop()
         self._live_stop_generation = self._lifecycle_generation
         self._live_stop_continuation = None
+        self.signals.live_changed.emit(False)
+        self.signals.speech_paused_changed.emit(False)
+        self.set_status("Stopping reading and speech...")
         self.live_stop_runner.start(
             self.session_owner.run,
             self._lifecycle_generation,
             lambda _cancellation: self._stop_reader_and_wait(reader),
             False,
         )
-        self.signals.live_changed.emit(False)
-        self.signals.speech_paused_changed.emit(False)
         self._apply_controller_action_state()
-        self.set_status("Stopping reading and speech...")
 
     def _stop_reader_and_wait(self, reader: LiveDialogReader | None) -> bool:
         started = perf_counter()
@@ -2618,13 +2618,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.set_status("Live capture is already stopping; please wait")
             return
         if self.controller.is_live_running is True:
+            if self.diagnostics_dialog is not None:
+                self.diagnostics_dialog.set_calibration_pending(True)
             started = self._stop_live_then(
                 self.calibrate,
                 "Stopping reading before capture calibration...",
                 wait_for_speech=False,
             )
-            if started and self.diagnostics_dialog is not None:
-                self.diagnostics_dialog.set_calibration_pending(True)
+            if not started and self.diagnostics_dialog is not None:
+                self.diagnostics_dialog.set_calibration_pending(False)
             return
         self._calibration_capture_pending = True
         self.restore_compact_after_calibration = self.compact_controller.isVisible()

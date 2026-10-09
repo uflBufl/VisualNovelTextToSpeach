@@ -1916,6 +1916,43 @@ class TrayApplicationTest(unittest.TestCase):
         controller.toggle_live.assert_not_called()
         tray_application.shutdown()
 
+    def test_stop_submission_failure_keeps_completion_status_and_allows_retry(self):
+        controller = Mock(is_ready=True, is_live_running=True)
+        controller.live_reader.runtime_control_snapshot.return_value = {}
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        self.addCleanup(tray.shutdown)
+        tray.set_ready(True)
+        pool = ManualThreadPool()
+        tray.live_stop_runner.thread_pool = pool
+        controller.reset_mock()
+        with patch.object(pool, "start", side_effect=RuntimeError("pool unavailable")):
+            tray._request_stop_reading()
+        self.application.processEvents()
+
+        controller.live_reader.stop.assert_called_once_with()
+        controller.emergency_stop.assert_not_called()
+        self.assertFalse(tray.live_stop_runner.active)
+        self.assertIsNone(tray._live_stop_generation)
+        self.assertIsNone(tray._live_stop_continuation)
+        self.assertIn(
+            "Unable to stop live capture: pool unavailable",
+            tray.dashboard.status.text(),
+        )
+        self.assertTrue(tray.dashboard.live_button.isEnabled())
+
+        tray._request_stop_reading()
+        self.assertTrue(tray.live_stop_runner.active)
+        self.assertEqual(tray.dashboard.status.text(), "Stopping reading and speech...")
+        pool.run_next()
+        self.application.processEvents()
+        controller.emergency_stop.assert_called_once_with()
+        self.assertFalse(tray.live_stop_runner.active)
+        self.assertEqual(tray.dashboard.status.text(), "Reading and speech stopped")
+
     def test_stop_disables_all_start_stop_controls_until_reader_quiesces(self):
         release = Event()
         controller = Mock(is_ready=True, is_live_running=True)
@@ -4858,6 +4895,36 @@ class TrayApplicationTest(unittest.TestCase):
 
         self.assertFalse(dialog.isVisible())
         tray.shutdown()
+
+    def test_diagnostics_region_submission_failure_restores_calibration_button(self):
+        controller = Mock(is_ready=True, is_live_running=True)
+        controller.get_latest_diagnostic.return_value = None
+        controller.toggle_live.side_effect = lambda: False
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        self.addCleanup(tray.shutdown)
+        tray.set_ready(True)
+        tray.open_diagnostics()
+        dialog = tray.diagnostics_dialog
+        pool = ManualThreadPool()
+        tray.live_stop_runner.thread_pool = pool
+        with (
+            patch.object(pool, "start", side_effect=RuntimeError("pool unavailable")),
+            patch.object(tray, "_capture_calibration_background") as capture,
+        ):
+            dialog.calibrate_button.click()
+            self.application.processEvents()
+        capture.assert_not_called()
+        controller.live_reader.wait.assert_not_called()
+        self.assertFalse(tray.live_stop_runner.active)
+        self.assertIsNone(tray._live_stop_generation)
+        self.assertTrue(dialog.calibrate_button.isEnabled())
+        self.assertEqual(dialog.calibrate_button.text(), "Change capture region...")
+        self.assertIn("pool unavailable", dialog.warning.text())
+        self.assertIn("pool unavailable", tray.dashboard.status.text())
 
     def test_diagnostics_region_stop_timeout_allows_retry(self):
         controller = Mock(is_live_running=True)
