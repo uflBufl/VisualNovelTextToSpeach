@@ -16,7 +16,7 @@ from vntts.authoring.source_reference_quality import (
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import QPoint, Qt, QTimer
+    from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
     from PySide6.QtGui import QCloseEvent
     from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtTest import QTest
@@ -419,6 +419,27 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
                 )
             finally:
                 _close_catalog_widget(dialog)
+
+    def test_completed_review_scroll_does_not_outlive_dialog(self):
+        with TemporaryDirectory() as directory:
+            session = write_quality_session(Path(directory))
+            document = json.loads(session.read_bytes())
+            from vntts.authoring.source_reference_quality_records import (
+                record_source_reference_quality_decision,
+            )
+
+            record_source_reference_quality_decision(
+                session, document["variants"][0]["variant_id"], "accept"
+            )
+            self.application.processEvents()
+            with patch("sys.excepthook") as exception_hook:
+                dialog = SourceReferenceQualityDialog(session)
+                self.assertIsNone(dialog.current)
+                dialog.close()
+                dialog.deleteLater()
+                self.application.sendPostedEvents(dialog, QEvent.Type.DeferredDelete)
+                self.application.processEvents()
+            exception_hook.assert_not_called()
 
     def test_complete_message_remains_visible_with_large_text(self):
         with TemporaryDirectory() as directory:

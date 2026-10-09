@@ -173,7 +173,7 @@ class DiagnosticsDialog(QDialog):
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
-        QTimer.singleShot(0, self._scale_preview)
+        QTimer.singleShot(0, self, self._scale_preview)
 
     def request_refresh(self) -> None:
         if self.refresh_in_flight:

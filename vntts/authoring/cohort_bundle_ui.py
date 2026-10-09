@@ -1476,6 +1476,7 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
         # Cocoa/FFmpeg backend, so return to the event loop before cleanup.
         QTimer.singleShot(
             0,
+            self,
             lambda: self._finish_completed_playback(
                 playback_serial,
                 selected_queue_id,
@@ -1639,7 +1640,7 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
             return
         if self._close_after_observation:
             self._close_after_observation = False
-            QTimer.singleShot(0, self.close)
+            QTimer.singleShot(0, self, self.close)
             return
         self._update_actions()
 

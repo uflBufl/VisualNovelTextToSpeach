@@ -3934,7 +3934,8 @@ class TrayApplicationTest(unittest.TestCase):
                 return_value={"screen_capture": True, "accessibility": True},
             ),
             patch(
-                "vntts.app.QTimer.singleShot", side_effect=lambda _delay, call: call()
+                "vntts.app.QTimer.singleShot",
+                side_effect=lambda _delay, *args: args[-1](),
             ),
         ):
             tray_application.refresh_diagnostics()
@@ -3971,7 +3972,8 @@ class TrayApplicationTest(unittest.TestCase):
                 return_value={"screen_capture": True, "accessibility": True},
             ),
             patch(
-                "vntts.app.QTimer.singleShot", side_effect=lambda _delay, call: call()
+                "vntts.app.QTimer.singleShot",
+                side_effect=lambda _delay, *args: args[-1](),
             ),
         ):
             tray_application.refresh_diagnostics()
@@ -4059,7 +4061,8 @@ class TrayApplicationTest(unittest.TestCase):
                 return_value={"screen_capture": True, "accessibility": True},
             ),
             patch(
-                "vntts.app.QTimer.singleShot", side_effect=lambda _delay, call: call()
+                "vntts.app.QTimer.singleShot",
+                side_effect=lambda _delay, *args: args[-1](),
             ),
             patch.object(dialog, "set_snapshot") as set_snapshot,
         ):
@@ -4110,7 +4113,7 @@ class TrayApplicationTest(unittest.TestCase):
                 ),
                 patch(
                     "vntts.app.QTimer.singleShot",
-                    side_effect=lambda _delay, callback: pending.append(callback),
+                    side_effect=lambda _delay, *args: pending.append(args[-1]),
                 ),
             ):
                 dialog.request_refresh()
@@ -4158,7 +4161,7 @@ class TrayApplicationTest(unittest.TestCase):
             ),
             patch(
                 "vntts.app.QTimer.singleShot",
-                side_effect=lambda _delay, callback: callbacks.append(callback),
+                side_effect=lambda _delay, *args: callbacks.append(args[-1]),
             ),
         ):
             tray_application.refresh_diagnostics()
@@ -4187,7 +4190,7 @@ class TrayApplicationTest(unittest.TestCase):
             ),
             patch(
                 "vntts.app.QTimer.singleShot",
-                side_effect=lambda _delay, callback: pending.append(callback),
+                side_effect=lambda _delay, *args: pending.append(args[-1]),
             ),
         ):
             dialog.request_refresh()
@@ -4285,7 +4288,8 @@ class TrayApplicationTest(unittest.TestCase):
                     return_value={"screen_capture": True, "accessibility": True},
                 ),
                 patch(
-                    "vntts.app.QTimer.singleShot", side_effect=lambda _ms, call: call()
+                    "vntts.app.QTimer.singleShot",
+                    side_effect=lambda _ms, *args: args[-1](),
                 ),
             ):
                 dialog.request_refresh()
@@ -4551,6 +4555,7 @@ class TrayApplicationTest(unittest.TestCase):
 
         single_shot.assert_called_once_with(
             250,
+            tray_application,
             tray_application._start_hotkeys_safely,
         )
         tray_application.shutdown()
@@ -4694,7 +4699,7 @@ class TrayApplicationTest(unittest.TestCase):
             ),
             patch(
                 "vntts.app.QTimer.singleShot",
-                side_effect=lambda _delay, callback: callback(),
+                side_effect=lambda _delay, *args: args[-1](),
             ),
         ):
             tray_application.calibrate()
@@ -4733,7 +4738,7 @@ class TrayApplicationTest(unittest.TestCase):
 
                 tray.calibrate()
                 schedule_capture.assert_called_once_with(
-                    200, tray._start_calibration_capture
+                    200, tray, tray._start_calibration_capture
                 )
         finally:
             tray.shutdown()
@@ -4879,7 +4884,7 @@ class TrayApplicationTest(unittest.TestCase):
             ),
             patch(
                 "vntts.app.QTimer.singleShot",
-                side_effect=lambda _delay, callback: callback(),
+                side_effect=lambda _delay, *args: args[-1](),
             ),
             patch.object(dialog, "request_refresh") as refresh,
         ):
@@ -5752,8 +5757,9 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertTrue(tray_application.dashboard.isVisible())
         self.assertFalse(tray_application.compact_controller.isVisible())
         self.assertEqual(single_shot.call_args.args[0], 0)
+        self.assertIs(single_shot.call_args.args[1], tray_application)
         self.assertEqual(
-            single_shot.call_args.args[1], tray_application._load_initial_library
+            single_shot.call_args.args[2], tray_application._load_initial_library
         )
         tray_application.shutdown()
 

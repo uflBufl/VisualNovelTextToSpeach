@@ -1253,7 +1253,7 @@ class CompactController(QWidget):
 
     def show_for_game(self, geometry: WindowGeometry | None = None) -> None:
         self.show()
-        QTimer.singleShot(0, lambda: self._finish_show(geometry))
+        QTimer.singleShot(0, self, lambda: self._finish_show(geometry))
 
     def _finish_show(self, geometry: WindowGeometry | None) -> None:
         configure_floating_window(self)

@@ -2154,7 +2154,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.set_status(
             "Choose stories to prepare, or open Reading to set up playback."
         )
-        QTimer.singleShot(0, self._load_initial_library)
+        QTimer.singleShot(0, self, self._load_initial_library)
 
     def _load_initial_library(self) -> None:
         section = self.dashboard.sections.currentIndex()
@@ -2264,7 +2264,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._start_live_after_initial_start = False
 
     def schedule_hotkeys(self) -> None:
-        QTimer.singleShot(250, self._start_hotkeys_safely)
+        QTimer.singleShot(250, self, self._start_hotkeys_safely)
 
     def _start_hotkeys_safely(self) -> None:
         if self._shutting_down:
@@ -2636,7 +2636,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self.readiness_dialog is not None:
             self.readiness_dialog.hide()
         self.set_status("Capturing game window for calibration...")
-        QTimer.singleShot(200, self._start_calibration_capture)
+        QTimer.singleShot(200, self, self._start_calibration_capture)
 
     def _start_calibration_capture(self) -> None:
         if self._shutting_down or not self._calibration_capture_pending:
@@ -2763,6 +2763,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         generation = self.diagnostics_refresh_generation
         QTimer.singleShot(
             200,
+            self,
             lambda: self._capture_diagnostic_snapshot(generation),
         )
 
@@ -3442,7 +3443,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._set_modal_launchers_enabled(False)
         self.set_status(status)
         if reader is None:
-            QTimer.singleShot(0, lambda: self._live_stop_finished(True, None))
+            QTimer.singleShot(0, self, lambda: self._live_stop_finished(True, None))
         else:
             self.live_stop_runner.start(
                 self._wait_for_live_reader, reader, wait_for_speech
@@ -3478,7 +3479,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 self.diagnostics_dialog.set_warning(message)
             return
         if continuation is not None:
-            QTimer.singleShot(0, continuation)
+            QTimer.singleShot(0, self, continuation)
         else:
             self.signals.live_changed.emit(False)
             self.set_status("Reading and speech stopped")
@@ -3827,7 +3828,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if not resolved:
             self.pending_unknown_speaker = speaker
             QTimer.singleShot(
-                0, lambda current=speaker: self._show_unknown_speaker_prompt(current)
+                0,
+                self,
+                lambda current=speaker: self._show_unknown_speaker_prompt(current),
             )
             return False
         if self._queued_unknown_speakers:
@@ -3836,6 +3839,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.speaker_mapping_action.setText(f"Manage voice for {next_speaker}...")
             QTimer.singleShot(
                 0,
+                self,
                 lambda current=next_speaker: self._show_unknown_speaker_prompt(current),
             )
             return False
@@ -3900,7 +3904,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         prompt.open()
         # Keep the prompt visible above a fullscreen game and exclude it from
         # screen-region OCR so the warning cannot become dialogue itself.
-        QTimer.singleShot(0, lambda: configure_floating_window(prompt))
+        QTimer.singleShot(0, prompt, lambda: configure_floating_window(prompt))
 
     def _unknown_speaker_prompt_clicked(self, button: QAbstractButton) -> None:
         prompt = self.sender()
@@ -3913,7 +3917,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if button is self.unknown_speaker_choose_button:
             prompt.setProperty("vntts_unknown_resolved", True)
             self.unknown_speaker_mapping_in_progress = speaker
-            QTimer.singleShot(0, lambda: self._open_pending_speaker_mapping(speaker))
+            QTimer.singleShot(
+                0, self, lambda: self._open_pending_speaker_mapping(speaker)
+            )
         elif button is self.unknown_speaker_continue_button:
             prompt.setProperty("vntts_unknown_resolved", True)
             self._continue_unknown_with_narrator(speaker)
@@ -4454,7 +4460,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             and dialog is not None
             and isinstance(dialog.pack_result(), OfflinePackResult)
         ):
-            QTimer.singleShot(0, self._activate_ready_preparation)
+            QTimer.singleShot(0, self, self._activate_ready_preparation)
 
     def set_speech_paused(self, paused: bool) -> None:
         self._reported_speech_paused = bool(paused)
@@ -4557,13 +4563,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self.narrator_dialog is not None:
             # Reopen after the native close event finishes, so cancellation
             # progress stays visible while the worker winds down.
-            QTimer.singleShot(0, self.dashboard.show)
+            QTimer.singleShot(0, self.dashboard, self.dashboard.show)
             self.dashboard.show_voices()
             self.set_status("Cancelling voice preview before quitting...")
             self.narrator_dialog.reject()
             return
         if self.pregeneration_dialog is not None:
-            QTimer.singleShot(0, self.dashboard.show)
+            QTimer.singleShot(0, self.dashboard, self.dashboard.show)
             self.dashboard.show_stories()
             self.set_status(
                 "Closing story preparation safely; completed audio stays saved."

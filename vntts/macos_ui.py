@@ -244,7 +244,7 @@ class MacOSPermissionsDialog(QDialog):
     def changeEvent(self, event: QEvent) -> None:
         if event.type() == QEvent.Type.WindowActivate and self._refresh_on_activate:
             self._refresh_on_activate = False
-            QTimer.singleShot(0, self.refresh)
+            QTimer.singleShot(0, self, self.refresh)
         super().changeEvent(event)
 
     @staticmethod

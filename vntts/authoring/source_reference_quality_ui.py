@@ -429,7 +429,7 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         ):
             button.setVisible(False)
         QTimer.singleShot(
-            0, lambda: self.review_scroll.ensureWidgetVisible(self.status)
+            0, self, lambda: self.review_scroll.ensureWidgetVisible(self.status)
         )
 
     def _show_current_review(self, total: int) -> None:

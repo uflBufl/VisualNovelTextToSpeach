@@ -1240,7 +1240,11 @@ class DiagnosticsPage(QWizardPage):
                 return
             self.flow.configuration_page._set_advanced_expanded(True)
             if result.remediation == "voices":
-                QTimer.singleShot(0, self.flow.configuration_page.manage_assets)
+                QTimer.singleShot(
+                    0,
+                    self.flow.configuration_page,
+                    self.flow.configuration_page.manage_assets,
+                )
             return
         self.remediation_reason.setText(
             f"{result.message} Install the missing component using the "

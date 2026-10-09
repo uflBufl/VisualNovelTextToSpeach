@@ -576,7 +576,7 @@ class GameNarratorDialog(QDialog):
         for label in labels:
             label.setMinimumWidth(label_width)
         self._update()
-        QTimer.singleShot(0, self._source_changed)
+        QTimer.singleShot(0, self, self._source_changed)
 
     def select_role(self, role: str) -> bool:
         """Select a trusted application-provided role without enabling free-form UI."""

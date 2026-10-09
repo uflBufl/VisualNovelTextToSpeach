@@ -33,7 +33,15 @@ from vntts.authoring.workbench import (
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import QByteArray, QPoint, QProcess, QSettings, Qt, QTimer
+    from PySide6.QtCore import (
+        QByteArray,
+        QEvent,
+        QPoint,
+        QProcess,
+        QSettings,
+        Qt,
+        QTimer,
+    )
     from PySide6.QtGui import QCloseEvent
     from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtTest import QTest
@@ -57,6 +65,7 @@ except ModuleNotFoundError as error:
         raise
     QApplication = None
     QProcess = None
+    QEvent = None
     QPoint = None
     QSettings = None
     Qt = None
@@ -589,6 +598,23 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             )
             self.assertIsNone(settings.value("review-exclude-narrator"))
             settings.endGroup()
+
+    def test_inspector_scroll_callback_does_not_outlive_dialog(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            dialog = AuthoringWorkbenchDialog(
+                self.create_workspace(root), settings=self.settings(root)
+            )
+            dialog.show()
+            self.application.processEvents()
+            dialog.generation_section.setChecked(False)
+            with patch("sys.excepthook") as exception_hook:
+                dialog.generation_section.setChecked(True)
+                dialog.close()
+                dialog.deleteLater()
+                self.application.sendPostedEvents(dialog, QEvent.Type.DeferredDelete)
+                self.application.processEvents()
+            exception_hook.assert_not_called()
 
     def test_scrollable_inspector_keeps_every_expanded_section_reachable(self):
         with TemporaryDirectory() as directory:

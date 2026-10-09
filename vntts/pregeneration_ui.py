@@ -1014,7 +1014,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.discovery_game_folder_button.setToolTip(availability.message)
         if self._background_discovery:
             self._set_discovery_loading(True)
-            QTimer.singleShot(0, self.refresh)
+            QTimer.singleShot(0, self, self.refresh)
         else:
             self.refresh()
 
@@ -2391,7 +2391,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self.cancel_button.setText("Close")
         self._refresh_story_statuses()
         self._selection_changed()
-        QTimer.singleShot(0, self._emit_task_progress)
+        QTimer.singleShot(0, self, self._emit_task_progress)
 
     def _set_resume_error(self, prefix: str, error: Exception | str) -> None:
         self._resume_error_details = f"{prefix}: {error}"

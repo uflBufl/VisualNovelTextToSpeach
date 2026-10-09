@@ -609,7 +609,7 @@ class ModelListeningDialog(CloseGuardedDialog):
             "the active sample."
         )
         if self.auto_play:
-            QTimer.singleShot(0, self.start_auto_playback)
+            QTimer.singleShot(0, self, self.start_auto_playback)
 
     def _open_report(self) -> None:
         if self.report_path is not None and not QDesktopServices.openUrl(
@@ -701,7 +701,7 @@ class ModelListeningDialog(CloseGuardedDialog):
         self.set_playback_indicator("finished", side)
         if side == "a" and self.auto_play_pending_b and side in self.completed_sides:
             self.auto_play_pending_b = False
-            QTimer.singleShot(0, lambda: self.play("b", automatic=True))
+            QTimer.singleShot(0, self, lambda: self.play("b", automatic=True))
         elif self.completed_sides == {"a", "b"}:
             self.status.setText("Both samples completed. Choose a preference.")
         elif side not in self.completed_sides:
