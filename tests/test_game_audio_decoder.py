@@ -226,6 +226,60 @@ class GameAudioDecoderTest(unittest.TestCase):
             self.assertTrue(decoder._probe_cached_decoder(executable, None))
         probe.assert_called_once_with(executable, None)
 
+    @unittest.skipIf(os.name == "nt", "POSIX process groups require POSIX")
+    def test_failed_parent_still_stops_its_real_child_group(self):
+        child_pid_path = self.root / "child.pid"
+        code = (
+            "import subprocess, sys; from pathlib import Path; "
+            "child=subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
+            f"Path({str(child_pid_path)!r}).write_text(str(child.pid)); sys.exit(1)"
+        )
+        started = []
+        native_start = decoder._start_decoder_process
+
+        def start(command, output):
+            process = native_start(command, output)
+            started.append(process)
+            return process
+
+        try:
+            with (
+                patch.object(decoder, "_start_decoder_process", side_effect=start),
+                patch.object(decoder.os, "killpg", wraps=os.killpg) as killpg,
+                self.assertRaises(decoder.DecoderSetupError),
+            ):
+                decoder._run([sys.executable, "-c", code], timeout=5)
+            self.assertEqual(len(started), 1)
+            self.assertEqual(started[0].returncode, 1)
+            self.assertEqual(
+                killpg.call_args_list,
+                [
+                    call(started[0].pid, decoder.signal.SIGTERM),
+                    call(started[0].pid, decoder.signal.SIGKILL),
+                ],
+            )
+        finally:
+            if child_pid_path.exists():
+                try:
+                    os.kill(int(child_pid_path.read_text()), decoder.signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+    def test_reaped_success_or_windows_process_does_not_signal_a_group(self):
+        for system, returncode in (("posix", 0), ("nt", 0), ("nt", 1)):
+            with self.subTest(system=system, returncode=returncode):
+                process = Mock()
+                process.poll.return_value = returncode
+                with (
+                    patch.object(decoder.os, "name", system),
+                    patch.object(decoder.os, "killpg", create=True) as killpg,
+                    patch.object(decoder, "terminate_process") as terminate,
+                ):
+                    decoder._stop_decoder_process(process)
+                killpg.assert_not_called()
+                terminate.assert_not_called()
+                process.wait.assert_not_called()
+
     def test_staging_readonly_system_files_is_repeatable(self):
         source = self.root / "system-tool"
         source.write_bytes(b"tool")

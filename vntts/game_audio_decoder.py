@@ -159,7 +159,9 @@ def _raise_decoder_failure(process: subprocess.Popen[bytes], output: BinaryIO) -
 
 
 def _stop_decoder_process(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is not None:
+    returncode = process.poll()
+    # A failed parent can leave installer children in its owned process group.
+    if returncode is not None and (os.name == "nt" or returncode == 0):
         return
     if os.name == "nt":
         terminate_process(process)
