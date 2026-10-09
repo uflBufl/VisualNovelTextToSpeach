@@ -10,6 +10,8 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from vntts.cleanup import cleanup_on_exit
+
 
 class AdvisoryLockBusyError(RuntimeError):
     """Another process owns an authoring transition guard."""
@@ -65,7 +67,9 @@ def exclusive_advisory_lock(
     descriptor = os.open(
         path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600
     )
-    try:
+    with cleanup_on_exit(
+        lambda: os.close(descriptor), description="Advisory lock descriptor close"
+    ):
         if blocking and check_cancelled is not None:
             while True:
                 check_cancelled()
@@ -76,14 +80,12 @@ def exclusive_advisory_lock(
                     time.sleep(0.1)
         else:
             _acquire(descriptor, blocking, path)
-        try:
+        with cleanup_on_exit(
+            lambda: _release(descriptor), description="Advisory lock release"
+        ):
             if check_cancelled is not None:
                 check_cancelled()
             yield
-        finally:
-            _release(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 __all__ = ["AdvisoryLockBusyError", "exclusive_advisory_lock"]
