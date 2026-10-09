@@ -85,6 +85,58 @@ class FakeWorkerBackend:
 
 
 class BackendFactoryTests(unittest.TestCase):
+    def test_invalid_retained_options_preserve_worker_and_configuration(self):
+        registry = CharacterVoiceRegistry()
+        cancellation = Event()
+        progress = MagicMock()
+        worker = MagicMock(
+            registry=registry,
+            narrator_reference="alba",
+            startup_cancellation=cancellation,
+            startup_progress=progress,
+        )
+        worker.process.poll.return_value = None
+        factory = MagicMock(return_value=worker)
+        runtime = RetainedWorkerRuntime("pocket-tts", backend_factory=factory)
+        runtime(
+            registry,
+            narrator_reference="alba",
+            startup_cancellation=cancellation,
+            startup_progress=progress,
+        )
+        identity = runtime._identity
+        for options in (
+            {"narrator_reference": "bella", "volume": False},
+            {"narrator_reference": 42},
+            {"narrator_reference": "bella", "startup_cancellation": 42},
+            {"startup_cancellation": Event(), "startup_progress": 42},
+        ):
+            with self.subTest(options=options):
+                with self.assertRaises(TTSConfigurationError):
+                    runtime(CharacterVoiceRegistry(), **options)
+                self.assertIs(runtime._instance, worker)
+                self.assertEqual(runtime._identity, identity)
+                self.assertIs(worker.registry, registry)
+                self.assertEqual(worker.narrator_reference, "alba")
+                self.assertIs(worker.startup_cancellation, cancellation)
+                self.assertIs(worker.startup_progress, progress)
+                worker.shutdown.assert_not_called()
+                worker.set_volume.assert_not_called()
+                factory.assert_called_once()
+
+    def test_retained_reuse_preserves_omitted_narrator_and_raw_volume_setter(self):
+        registry = CharacterVoiceRegistry()
+        worker = MagicMock(narrator_reference="alba")
+        worker.process.poll.return_value = None
+        runtime = RetainedWorkerRuntime(
+            "pocket-tts", backend_factory=MagicMock(return_value=worker)
+        )
+        runtime(registry)
+        runtime(registry, volume=1)
+        self.assertEqual(worker.narrator_reference, "alba")
+        worker.set_volume.assert_called_once_with(1)
+        self.assertIs(type(worker.set_volume.call_args.args[0]), int)
+
     def test_retained_worker_reuses_only_unchanged_live_process(self):
         registry = CharacterVoiceRegistry()
         first = MagicMock(narrator_reference="alba")
@@ -125,6 +177,32 @@ class BackendFactoryTests(unittest.TestCase):
 
 
 class SpeechWorkerTest(unittest.TestCase):
+    def test_invalid_volume_never_installs_runtime_or_launches_process(self):
+        for backend in (
+            "pocket-tts",
+            "chatterbox-nano",
+            "moss-tts",
+            "qwen-tts",
+            "moss-tts-delay",
+        ):
+            for volume in (True, "0.5", None, -0.1, 1.1, float("nan"), float("inf")):
+                with self.subTest(backend=backend, volume=volume):
+                    factory = MagicMock()
+                    with (
+                        patch(
+                            "vntts.runtime_installation.ensure_speech_runtime"
+                        ) as prepare,
+                        self.assertRaises(TTSConfigurationError),
+                    ):
+                        IsolatedSpeechBackend(
+                            backend,
+                            CharacterVoiceRegistry(),
+                            volume=volume,
+                            process_factory=factory,
+                        )
+                    prepare.assert_not_called()
+                    factory.assert_not_called()
+
     def test_worker_integer_boundaries_reject_booleans(self):
         backend = FakeWorkerBackend(CharacterVoiceRegistry())
         self.assertTrue(_is_worker_backend(backend))

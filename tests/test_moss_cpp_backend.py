@@ -5,6 +5,7 @@ import hashlib
 import http.client
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -344,6 +345,86 @@ class WindowsOwnedServerTest(unittest.TestCase):
             while psutil.pid_exists(child_pid) and time.monotonic() < deadline:
                 time.sleep(0.05)
             self.assertFalse(psutil.pid_exists(child_pid))
+
+
+class MossCppStartupAdmissionTest(unittest.TestCase):
+    def test_invalid_options_never_install_or_start_native_runtime(self):
+        cases = (
+            [
+                (
+                    {"volume": value},
+                    TTSConfigurationError,
+                    "MOSS C++ volume must be numeric",
+                )
+                for value in (True, "0.5", None)
+            ]
+            + [
+                (
+                    {"volume": value},
+                    TTSConfigurationError,
+                    "Volume must be between 0 and 1",
+                )
+                for value in (-0.1, 1.1, float("nan"), float("inf"))
+            ]
+            + [
+                ({"clock": 42}, TTSConfigurationError, "clock must be callable"),
+                (
+                    {"audio_cache_size": True},
+                    TTSConfigurationError,
+                    "audio_cache_size must be an integer",
+                ),
+                (
+                    {"prompt_code_loader": 42},
+                    TTSConfigurationError,
+                    "prompt_code_loader must be callable",
+                ),
+                (
+                    {"generation_profile": "chaotic"},
+                    TTSConfigurationError,
+                    "Unknown MOSS-TTS voice profile",
+                ),
+                (
+                    {"startup_timeout": 0},
+                    TTSConfigurationError,
+                    "timeouts must be positive and finite",
+                ),
+                (
+                    {"request_timeout": float("nan")},
+                    TTSConfigurationError,
+                    "timeouts must be positive and finite",
+                ),
+                ({"unknown": 42}, TypeError, "Unexpected MOSS C++ option"),
+            ]
+        )
+        for options, error_type, message in cases:
+            with self.subTest(options=options):
+                with (
+                    patch("vntts.moss_cpp_installation.ensure_moss_cpp") as ensure,
+                    patch("vntts.moss_cpp_backend.moss_cpp_paths") as paths,
+                    patch("vntts.runtime_preparation.run_runtime_command") as probe,
+                    patch.object(MossCppVoiceRouterBackend, "_start_server") as start,
+                    self.assertRaisesRegex(error_type, re.escape(message)),
+                ):
+                    MossCppVoiceRouterBackend(CharacterVoiceRegistry(), **options)
+                ensure.assert_not_called()
+                paths.assert_not_called()
+                probe.assert_not_called()
+                start.assert_not_called()
+
+    def test_invalid_environment_never_installs_native_runtime(self):
+        for setting in (
+            "VNTTS_MOSS_GPU_LAYERS",
+            "VNTTS_MOSS_AUX_CPU",
+            "VNTTS_MOSS_CONTEXT",
+        ):
+            with self.subTest(setting=setting):
+                with (
+                    patch.dict(os.environ, {setting: "invalid"}),
+                    patch("vntts.moss_cpp_installation.ensure_moss_cpp") as ensure,
+                    self.assertRaisesRegex(TTSConfigurationError, setting),
+                ):
+                    MossCppVoiceRouterBackend(CharacterVoiceRegistry())
+                ensure.assert_not_called()
 
 
 class MossCppBackendTest(unittest.TestCase):

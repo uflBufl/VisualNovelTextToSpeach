@@ -563,6 +563,7 @@ class ChatterboxNanoVoiceRouterBackend(SynchronousPcmPlaybackMixin):
         persistent_audio_cache_directory: str | Path | None = None,
         persistent_audio_cache_max_entries: int | None = None,
     ) -> None:
+        validate_volume(volume)
         if model_factory is None:
             runtime_site_packages = activate_chatterbox_runtime(runtime_directory)
             try:
@@ -1064,6 +1065,7 @@ class PocketTTSVoiceRouterBackend:
         cached_stream_chunk_seconds: float = 0.2,
         stream_prefill_seconds: float = 0.25,
     ) -> None:
+        validate_volume(volume)
         if model_factory is None:
             runtime_site_packages = activate_pocket_tts_runtime(runtime_directory)
             try:
@@ -1739,49 +1741,24 @@ class MossTTSVoiceRouterBackend:
         generation_profile: object = "stable",
         playback_consumer_join_timeout: float = 5.0,
     ) -> None:
-        self.model_name = str(
-            model_name
-            or os.environ.get("VNTTS_MOSS_MODEL", "")
-            or default_moss_tts_model
-        )
-        self._mlx: object | None = None
-        if model_factory is None:
-            runtime_site_packages = activate_moss_tts_runtime(runtime_directory)
-            try:
-                import mlx.core as mx
-                from mlx_audio.tts import load
-            except ImportError as error:
-                raise TTSConfigurationError(
-                    "MOSS-TTS could not be imported from "
-                    f"{runtime_site_packages}: {error}"
-                ) from error
-            from vntts.moss_compat import install_moss_quantized_codec_compat
-
-            install_moss_quantized_codec_compat()
-            self._mlx = mx
-            model_factory = load
-        try:
-            # VNTTS constructs the backend on its startup worker and performs
-            # live generation on a playback worker. MLX lazy parameters retain
-            # the thread-local stream that created their graph, then fail on
-            # first use in the other worker with "There is no Stream(...) in
-            # current thread". Materialize the model before it crosses that
-            # boundary; streamed audio generation remains lazy and incremental.
-            self.model = model_factory(self.model_name, lazy=False)
-        except Exception as error:
-            raise TTSConfigurationError(
-                f"MOSS-TTS could not load {self.model_name!r}: {error}"
-            ) from error
-        self.registry = registry
-        self.narrator_speaker = "MOSS reference voice"
-        self.narrator_reference = narrator_reference
-        self.language = normalize_moss_language(language)
+        validate_volume(volume)
         (
             self.generation_profile,
             self.generation_options,
         ) = get_moss_tts_generation_profile(
             generation_profile, profiles=self._generation_profiles
         )
+        self.model_name = str(
+            model_name
+            or os.environ.get("VNTTS_MOSS_MODEL", "")
+            or default_moss_tts_model
+        )
+        self._mlx: object | None = None
+        self.model = self._load_moss_model(model_factory, runtime_directory)
+        self.registry = registry
+        self.narrator_speaker = "MOSS reference voice"
+        self.narrator_reference = narrator_reference
+        self.language = normalize_moss_language(language)
         self.audio_output = audio_output
         self.clock = clock
         self.playback_latency = playback_latency
@@ -1839,6 +1816,39 @@ class MossTTSVoiceRouterBackend:
         )
         self.set_volume(volume)
         self.set_speed(1.0)
+
+    def _load_moss_model(
+        self,
+        model_factory: _MossTTSModelFactory | None,
+        runtime_directory: str | Path | None,
+    ) -> _MossTTSModel:
+        if model_factory is None:
+            runtime_site_packages = activate_moss_tts_runtime(runtime_directory)
+            try:
+                import mlx.core as mx
+                from mlx_audio.tts import load
+            except ImportError as error:
+                raise TTSConfigurationError(
+                    "MOSS-TTS could not be imported from "
+                    f"{runtime_site_packages}: {error}"
+                ) from error
+            from vntts.moss_compat import install_moss_quantized_codec_compat
+
+            install_moss_quantized_codec_compat()
+            self._mlx = mx
+            model_factory = load
+        try:
+            # VNTTS constructs the backend on its startup worker and performs
+            # live generation on a playback worker. MLX lazy parameters retain
+            # the thread-local stream that created their graph, then fail on
+            # first use in the other worker with "There is no Stream(...) in
+            # current thread". Materialize the model before it crosses that
+            # boundary; streamed audio generation remains lazy and incremental.
+            return model_factory(self.model_name, lazy=False)
+        except Exception as error:
+            raise TTSConfigurationError(
+                f"MOSS-TTS could not load {self.model_name!r}: {error}"
+            ) from error
 
     def prepare(self, character: str, text: str) -> object:
         prepared = self.prepare_playback(character, text)

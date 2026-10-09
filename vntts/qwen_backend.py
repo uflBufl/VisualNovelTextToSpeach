@@ -11,7 +11,7 @@ from time import monotonic
 from typing import Any, ClassVar, Protocol, cast
 
 from vntts.audio_output import AudioOutput
-from vntts.services.tts_engine import TTSConfigurationError
+from vntts.services.tts_engine import TTSConfigurationError, validate_volume
 from vntts.speech_backend import (
     MossTTSPreparedSpeech,
     MossTTSVoiceRouterBackend,
@@ -172,6 +172,7 @@ class QwenTTSVoiceRouterBackend(MossTTSVoiceRouterBackend):
             raise TTSConfigurationError(
                 "Qwen3-TTS requires Apple Silicon or Windows CUDA"
             )
+        validate_volume(volume)
         del model_name, generation_profile  # This backend pins one tested model.
         metal_available = False
         resolved_model_factory: _QwenTTSModelFactory

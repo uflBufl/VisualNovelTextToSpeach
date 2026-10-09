@@ -168,6 +168,7 @@ class TTSEngine(SynchronousPcmPlaybackMixin):
         playback_latency: object = "high",
         persisted_voice_cache: bool = True,
     ) -> None:
+        validate_volume(volume)
         if tts_factory is None:
             from TTS.api import TTS
 

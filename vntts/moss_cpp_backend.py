@@ -34,11 +34,16 @@ from vntts.audio_output import AudioOutput
 from vntts.cleanup import attempt_cleanup, cleanup_on_exit
 from vntts.native_resources import NativeResourceSampler, NativeResourceSnapshot
 from vntts.playback import PreparedPlayback
-from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
+from vntts.services.tts_engine import (
+    TTSConfigurationError,
+    TTSSynthesisError,
+    validate_volume,
+)
 from vntts.speech_backend import (
     MossTTSPreparedSpeech,
     MossTTSVoiceRouterBackend,
     SpeechBackendCapabilities,
+    get_moss_tts_generation_profile,
     moss_tts_generation_profiles,
 )
 from vntts.speech_backend_runtime import _source_identity
@@ -489,7 +494,7 @@ def _base_options(options: dict[str, object]) -> MossCppBaseOptions:
             options.pop("narrator_reference", None), "narrator_reference"
         ),
         "language": options.pop("language", "English"),
-        "volume": _option_number(options.pop("volume", 1.0), "volume"),
+        "volume": validate_volume(_option_number(options.pop("volume", 1.0), "volume")),
         "audio_output": _option_audio_output(options.pop("audio_output", None)),
         "clock": clock,
         "audio_cache_size": _required_option_integer(
@@ -854,6 +859,16 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             request_timeout,
             allow_download,
         )
+        base_options = _base_options(options)
+        get_moss_tts_generation_profile(
+            base_options["generation_profile"], profiles=self._generation_profiles
+        )
+        self.gpu_layers = _integer_setting("VNTTS_MOSS_GPU_LAYERS", -1, -1, 1000)
+        self.aux_cpu = _integer_setting("VNTTS_MOSS_AUX_CPU", 1, 0, 1)
+        self.context_size = _integer_setting("VNTTS_MOSS_CONTEXT", 4096, 512, 131072)
+        self.startup_timeout, self.request_timeout = _positive_timeouts(
+            startup_timeout, request_timeout
+        )
         ensure_moss_cpp(
             model_name,
             cancellation=startup_cancellation,
@@ -861,17 +876,12 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             allow_download=allow_download,
         )
         (
-            base_options,
             (self.executable, self.gguf, self.sidecar),
             self._managed_runtime,
         ) = (
-            _base_options(options),
             moss_cpp_paths(model_name),
             _managed_runtime(model_name),
         )
-        self.gpu_layers = _integer_setting("VNTTS_MOSS_GPU_LAYERS", -1, -1, 1000)
-        self.aux_cpu = _integer_setting("VNTTS_MOSS_AUX_CPU", 1, 0, 1)
-        self.context_size = _integer_setting("VNTTS_MOSS_CONTEXT", 4096, 512, 131072)
         self.local_gpu = False
         self.aux_cpu_threads: int | None = None
         self._managed_local_gpu = False
@@ -880,9 +890,6 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         self._fallback_category: str | None = None
         self._fallback_used = False
         self._effective_controls: NativeControls | None = None
-        self.startup_timeout, self.request_timeout = _positive_timeouts(
-            startup_timeout, request_timeout
-        )
         self.server_lock = Lock()
         self.server: subprocess.Popen[bytes] | None = None
         self.server_job: _WindowsKillOnCloseJob | None = None

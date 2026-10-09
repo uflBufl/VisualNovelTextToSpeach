@@ -4,6 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -171,6 +172,51 @@ class FailingAudioOutput(FakeAudioOutput):
 
 
 class MossTTSBackendTest(unittest.TestCase):
+    def test_constructor_keeps_subclass_profiles_and_late_volume_setter(self):
+        class CheckedBackend(MossTTSVoiceRouterBackend):
+            _generation_profiles: ClassVar = {"custom": {"audio_temperature": 1.2}}
+
+            def set_volume(self, volume):
+                self.setter_model = self.model
+                self.setter_volume = volume
+                super().set_volume(volume)
+
+        model = FakeMossModel()
+        backend = CheckedBackend(
+            CharacterVoiceRegistry(),
+            volume=1,
+            generation_profile="custom",
+            model_factory=Mock(return_value=model),
+            persistent_audio_cache_directory=self.root / "cache",
+        )
+        self.assertEqual(backend.generation_profile, "custom")
+        self.assertEqual(backend.generation_options, {"audio_temperature": 1.2})
+        self.assertIs(backend.setter_model, model)
+        self.assertIs(type(backend.setter_volume), int)
+
+    def test_invalid_configuration_never_activates_runtime_or_loads_model(self):
+        invalid_options = [
+            {"volume": value}
+            for value in (True, "0.5", None, -0.1, 1.1, float("nan"), float("inf"))
+        ] + [{"generation_profile": "chaotic"}]
+        for options in invalid_options:
+            for injected in (False, True):
+                with self.subTest(options=options, injected=injected):
+                    factory = Mock()
+                    with (
+                        patch(
+                            "vntts.speech_backend.activate_moss_tts_runtime"
+                        ) as activate,
+                        self.assertRaises(TTSConfigurationError),
+                    ):
+                        MossTTSVoiceRouterBackend(
+                            CharacterVoiceRegistry(),
+                            model_factory=factory if injected else None,
+                            **options,
+                        )
+                    activate.assert_not_called()
+                    factory.assert_not_called()
+
     def setUp(self):
         self.temporary_directory = TemporaryDirectory()
         self.root = Path(self.temporary_directory.name)

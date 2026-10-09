@@ -980,6 +980,7 @@ class IsolatedSpeechBackend:
         )
         self.allow_gated_model_access = bool(allow_gated_model_access)
         self.worker_options: WorkerOptions = worker_options
+        validate_volume(volume)
         from vntts.runtime_installation import ensure_speech_runtime
 
         self.runtime_root, self.interpreter, self.runtime_site = ensure_speech_runtime(
@@ -1701,6 +1702,22 @@ class RetainedWorkerRuntime:
     def __call__(
         self, registry: CharacterVoiceRegistry, **options: object
     ) -> _RetainedWorkerLease:
+        validate_volume(options.get("volume", 1.0))
+        narrator_reference = options.get("narrator_reference")
+        if narrator_reference is not None and not isinstance(
+            narrator_reference, (str, Path)
+        ):
+            raise TTSConfigurationError(
+                "Speech worker narrator_reference must be text or a path"
+            )
+        startup_cancellation = options.get("startup_cancellation")
+        if not _is_cancellation(startup_cancellation):
+            raise TTSConfigurationError(
+                "Speech worker startup cancellation must be callable or Event-like"
+            )
+        startup_progress = options.get("startup_progress")
+        if not _is_startup_progress(startup_progress):
+            raise TTSConfigurationError("Speech worker startup progress is invalid")
         identity = self._configuration_identity(registry, options)
         with self._lock:
             instance = self._instance
@@ -1717,27 +1734,12 @@ class RetainedWorkerRuntime:
                 self._identity = identity
             else:
                 instance.registry = registry
-                narrator_reference = options.get(
-                    "narrator_reference", instance.narrator_reference
+                instance.narrator_reference = (
+                    narrator_reference
+                    if "narrator_reference" in options
+                    else instance.narrator_reference
                 )
-                if narrator_reference is not None and not isinstance(
-                    narrator_reference, (str, Path)
-                ):
-                    raise TTSConfigurationError(
-                        "Speech worker narrator_reference must be text or a path"
-                    )
-                instance.narrator_reference = narrator_reference
-                startup_cancellation = options.get("startup_cancellation")
-                if not _is_cancellation(startup_cancellation):
-                    raise TTSConfigurationError(
-                        "Speech worker startup cancellation must be callable or Event-like"
-                    )
                 instance.startup_cancellation = startup_cancellation
-                startup_progress = options.get("startup_progress")
-                if not _is_startup_progress(startup_progress):
-                    raise TTSConfigurationError(
-                        "Speech worker startup progress is invalid"
-                    )
                 instance.startup_progress = startup_progress
                 if "volume" in options:
                     instance.set_volume(options["volume"])
@@ -1809,6 +1811,7 @@ def create_qwen_worker_backend(
     progress = options.get("startup_progress")
     if not _is_startup_progress(progress):
         raise TTSConfigurationError("Speech worker startup progress is invalid")
+    validate_volume(options.get("volume", 1.0))
     if "runtime_directory" not in options:
         from vntts.runtime_installation import ensure_speech_runtime
 
