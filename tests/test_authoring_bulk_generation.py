@@ -3433,6 +3433,64 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             )
         )
 
+    def test_persisted_optional_silence_metrics_cannot_authorize_invalid_repairs(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item(text="The first sentence is complete. So is the second.")
+            queue = write_queue(root / "queue.jsonl", [item])
+            generated = self.run_generation(
+                queue,
+                root / "output",
+                SyntheticRenderer([SynthesisCompletion.LIMITED]),
+                retries=0,
+            )
+            state = json.loads(generated.state.read_text(encoding="utf-8"))
+            failure = {
+                "schema_version": 1,
+                "kind": "speech_silence",
+                "error_type": "SpeechSilenceValidationError",
+                "text_features": bulk_module._text_failure_features(item["text"]),
+            }
+            state["items"][item["queue_id"]]["failure"] = failure
+            for longest_internal, expected in (
+                (2.0, "sentence_boundary_segmentation"),
+                (0.0, "edge_silence_trim"),
+            ):
+                quality = {
+                    "leading_silence_seconds": 0.0 if longest_internal else 1.0,
+                    "trailing_silence_seconds": 0.0,
+                    "longest_internal_silence_seconds": longest_internal,
+                }
+                failure["speech_quality"] = quality
+                generated.state.write_text(json.dumps(state), encoding="utf-8")
+                self.assertEqual(
+                    generation_failure_repair_plan(generated.state, queue)["records"][
+                        0
+                    ]["action"],
+                    expected,
+                )
+                for field in quality:
+                    for invalid in (10**400, True, -1, None):
+                        with self.subTest(
+                            field=field, invalid=invalid, repair=expected
+                        ):
+                            failure["speech_quality"] = quality | {field: invalid}
+                            generated.state.write_text(
+                                json.dumps(state), encoding="utf-8"
+                            )
+                            before = generated.state.read_bytes()
+                            self.assertIn(
+                                item["queue_id"],
+                                load_generation_state(generated.state, queue)["items"],
+                            )
+                            self.assertEqual(
+                                generation_failure_repair_plan(generated.state, queue)[
+                                    "records"
+                                ][0]["action"],
+                                "reference_comparison",
+                            )
+                            self.assertEqual(generated.state.read_bytes(), before)
+
     def test_internal_silence_failure_repairs_only_at_safe_sentence_boundaries(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -40,6 +40,7 @@ from vntts.authoring.cohort_review import (
 from vntts.authoring.cohort_review import (
     _validated_plan_document as _validate_plan_document,
 )
+from vntts.authoring.speech_quality import optional_finite_number
 from vntts.authoring.workbench import ReviewItem
 from vntts.json_types import decode_json, is_json_object
 
@@ -1649,17 +1650,21 @@ def _bound_sample_review_item(
     text: str,
     audio: Path,
 ) -> ReviewItem:
+    try:
+        item_sha256 = canonical_document_sha256(result)
+    except ValueError as error:
+        raise CohortReviewError(
+            f"Bundle sample authority is invalid: {queue_id}"
+        ) from error
     quality = result.get("quality")
     quality = quality if isinstance(quality, dict) else {}
-    duration = quality.get("duration_seconds")
-    duration = (
-        float(duration) if isinstance(duration, (int, float)) and duration > 0 else None
-    )
-    peak = quality.get("peak")
-    peak = float(peak) if isinstance(peak, (int, float)) else None
+    duration = optional_finite_number(quality.get("duration_seconds"))
+    if duration is not None and duration <= 0:
+        duration = None
+    peak = optional_finite_number(quality.get("peak"))
     words = len(re.findall(r"[\w’'-]+", text, flags=re.UNICODE))
-    baseline_wpm = sample.get("pace_baseline_wpm")
-    pace_ratio = sample.get("pace_ratio")
+    baseline_wpm = optional_finite_number(sample.get("pace_baseline_wpm"))
+    pace_ratio = optional_finite_number(sample.get("pace_ratio"))
     seed = result.get("seed")
     if seed is not None and type(seed) is not int:
         raise CohortReviewError(f"Bundle sample seed is invalid: {queue_id}")
@@ -1681,25 +1686,23 @@ def _bound_sample_review_item(
         authority=ReviewAuthority(
             queue_sha256=loaded.queue_sha256,
             state_sha256=loaded.state_sha256,
-            item_sha256=canonical_document_sha256(result),
+            item_sha256=item_sha256,
             audio_sha256=sample["audio_sha256"],
         ),
         state=loaded.paths.state_path,
         queue=loaded.paths.queue_path,
         duration_seconds=duration,
         words_per_minute=(
-            sample.get("words_per_minute")
+            optional_finite_number(sample.get("words_per_minute"))
             if isinstance(sample.get("words_per_minute"), (int, float))
             else None
             if duration is None
-            else float(words * 60 / duration)
+            else optional_finite_number(words * 60 / duration)
         ),
         peak=peak,
         technical_flags=tuple(sample["technical_flags"]),
-        pace_baseline_wpm=(
-            float(baseline_wpm) if isinstance(baseline_wpm, (int, float)) else None
-        ),
-        pace_ratio=float(pace_ratio) if isinstance(pace_ratio, (int, float)) else None,
+        pace_baseline_wpm=baseline_wpm,
+        pace_ratio=pace_ratio,
         pace_baseline_scope=(
             sample.get("pace_baseline_scope")
             if isinstance(sample.get("pace_baseline_scope"), str)

@@ -29,6 +29,16 @@ LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION = 1
 SPEECH_QUALITY_ANALYSIS_VERSION = 2
 
 
+def optional_finite_number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) else None
+
+
 class SpeechSilenceValidationError(BulkGenerationError):
     """Generated speech contains unsafe silence spans."""
 
@@ -441,6 +451,7 @@ __all__ = [
     "measure_generated_speech",
     "measure_generated_speech_bytes",
     "measure_generated_speech_samples",
+    "optional_finite_number",
     "speech_pause_diagnosis",
     "text_failure_features",
 ]

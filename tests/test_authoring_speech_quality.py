@@ -18,6 +18,7 @@ from vntts.authoring.speech_quality import (
     measure_generated_speech,
     measure_generated_speech_bytes,
     measure_generated_speech_samples,
+    optional_finite_number,
 )
 
 
@@ -32,6 +33,22 @@ def wav_bytes(samples, sample_rate=125):
 
 
 class AuthoringSpeechQualityTest(unittest.TestCase):
+    def test_optional_numbers_keep_finite_values_and_ignore_invalid_metadata(self):
+        for value in (
+            None,
+            True,
+            "1.25",
+            10**400,
+            -(10**400),
+            float("inf"),
+            float("nan"),
+        ):
+            with self.subTest(value=value):
+                self.assertIsNone(optional_finite_number(value))
+        for value in (-2.5, 0, 1.25, 10**300):
+            with self.subTest(value=value):
+                self.assertEqual(optional_finite_number(value), float(value))
+
     def test_sample_inspection_preserves_path_gate_and_diagnosis(self):
         for samples in (np.full(13, 1000), np.zeros(153)):
             with TemporaryDirectory() as directory:

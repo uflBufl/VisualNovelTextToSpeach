@@ -32,6 +32,7 @@ import vntts.authoring.workspace_outcome_merge as workspace_outcome_merge_module
 import vntts.authoring.workspace_state as workspace_state_module
 from tests.authoring_fixtures import (
     create_carry_source_workspace,
+    create_failed_reference_workspace,
     create_test_workspace,
     current_carry_fields,
     tree_hashes,
@@ -3472,6 +3473,48 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertIsInstance(items[0].technical_flags, tuple)
         self.assertEqual(source_hash_after, source_hash)
 
+    def test_failed_review_ignores_invalid_optional_metrics_without_rewriting_state(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            workspace, queue_id = create_failed_reference_workspace(Path(directory))
+            state_path = workspace / "generated-audio/generation-state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            result = state["items"][queue_id]
+            for value in (10**400, True, -1, None):
+                with self.subTest(value=value):
+                    result["quality"] = {"duration_seconds": value, "peak": value}
+                    result["speech_quality"] = {
+                        "leading_silence_seconds": value,
+                        "trailing_silence_seconds": value,
+                        "longest_internal_silence_seconds": value,
+                    }
+                    result["failure"]["speech_quality"] = result["speech_quality"]
+                    state_path.write_text(json.dumps(state), encoding="utf-8")
+                    before = state_path.read_bytes()
+                    reviewed = list_review_items(workspace)[0]
+                    self.assertEqual(reviewed.queue_id, queue_id)
+                    self.assertIsNone(reviewed.duration_seconds)
+                    self.assertIsNone(reviewed.words_per_minute)
+                    self.assertIsNone(reviewed.internal_pause_seconds)
+                    self.assertEqual(reviewed.technical_flags, ())
+                    self.assertEqual(reviewed.peak, -1.0 if value == -1 else None)
+                    self.assertEqual(state_path.read_bytes(), before)
+
+            result["quality"] = {"duration_seconds": 5e-324, "peak": -0.2}
+            result["speech_quality"] = {
+                "leading_silence_seconds": 0,
+                "trailing_silence_seconds": 0,
+                "longest_internal_silence_seconds": 0,
+            }
+            result["failure"]["speech_quality"] = result["speech_quality"]
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            reviewed = list_review_items(workspace)[0]
+            self.assertEqual(reviewed.duration_seconds, 5e-324)
+            self.assertIsNone(reviewed.words_per_minute)
+            self.assertEqual(reviewed.peak, -0.2)
+            self.assertEqual(reviewed.internal_pause_seconds, 0)
+
     def test_review_technical_metrics_are_conservative_attention_aids(self):
         result = {
             "quality": {"duration_seconds": 6.0, "peak": 0.99},
@@ -3587,6 +3630,22 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertEqual(annotated["medium-a"].pace_advisories, ())
         self.assertIsNone(annotated["too-short"].pace_baseline_wpm)
         self.assertEqual(annotated["too-short"].pace_advisories, ())
+        for rates, expected_baseline in (
+            ((1e308,) * 4, None),
+            ((3e-306, 3e-306, 1e308), 3e-306),
+        ):
+            with self.subTest(rates=rates):
+                measured = tuple(
+                    review(str(index), "Rhiannon", "one two three four five", rate)
+                    for index, rate in enumerate(rates)
+                )
+                projected = workspace_inspection_module._annotate_pace_advisories(
+                    measured
+                )
+                self.assertEqual(projected[-1].words_per_minute, 1e308)
+                self.assertEqual(projected[-1].pace_baseline_wpm, expected_baseline)
+                self.assertIsNone(projected[-1].pace_ratio)
+                self.assertEqual(projected[-1].pace_advisories, ())
         long_pause_failure = {
             "failure": {
                 "schema_version": 1,

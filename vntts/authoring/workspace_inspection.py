@@ -68,6 +68,7 @@ from vntts.authoring.source_reference_bindings import (
 from vntts.authoring.speech_quality import (
     SPEECH_QUALITY_ANALYSIS_VERSION,
     measure_generated_speech_bytes,
+    optional_finite_number,
 )
 from vntts.authoring.workbench_contracts import (
     ActiveAttempt,
@@ -174,10 +175,8 @@ def _review_internal_pause_seconds(
     )
     if not isinstance(source, dict):
         return None
-    value = source.get("longest_internal_silence_seconds")
-    if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
-        return None
-    return float(value)
+    value = optional_finite_number(source.get("longest_internal_silence_seconds"))
+    return value if value is not None and value >= 0 else None
 
 
 def _inspection_state_items(state: Mapping[str, object]) -> StateItems:
@@ -460,13 +459,10 @@ def _review_technical_metrics(
     quality = result.get("quality")
     if not isinstance(quality, dict):
         return None, None, None, ()
-    duration = quality.get("duration_seconds")
-    peak = quality.get("peak")
-    if not isinstance(duration, (int, float)) or duration <= 0:
+    duration = optional_finite_number(quality.get("duration_seconds"))
+    peak = optional_finite_number(quality.get("peak"))
+    if duration is not None and duration <= 0:
         duration = None
-    else:
-        duration = float(duration)
-    peak = float(peak) if isinstance(peak, (int, float)) else None
     is_audio_event = result.get("provider") == AUDIO_EVENT_PROVIDER
     speech_quality = (
         projected_speech_quality
@@ -484,11 +480,9 @@ def _review_technical_metrics(
     leading_silence = speech_quality.get("leading_silence_seconds")
     trailing_silence = speech_quality.get("trailing_silence_seconds")
     trimmed_seconds = sum(
-        float(value)
+        number
         for value in (leading_silence, trailing_silence)
-        if isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and value >= 0
+        if (number := optional_finite_number(value)) is not None and number >= 0
     )
     audible_duration = (
         None if duration is None else max(0.0, duration - trimmed_seconds)
@@ -496,14 +490,16 @@ def _review_technical_metrics(
     words_per_minute = (
         None
         if is_audio_event or not audible_duration
-        else float(word_count * 60 / audible_duration)
+        else optional_finite_number(word_count * 60 / audible_duration)
     )
-    internal_silence = speech_quality.get("longest_internal_silence_seconds")
+    internal_silence = optional_finite_number(
+        speech_quality.get("longest_internal_silence_seconds")
+    )
     flags = []
     if peak is not None and peak >= 0.98:
         flags.append("near clipping")
     if (
-        isinstance(internal_silence, (int, float))
+        internal_silence is not None
         and internal_silence >= REVIEW_NOTABLE_INTERNAL_PAUSE_SECONDS
     ):
         flags.append("notable pause")
@@ -559,18 +555,19 @@ def _annotate_pace_advisories(
         scope = None
         if word_count >= PACE_MINIMUM_WORDS and item.words_per_minute is not None:
             if len(same_length) >= PACE_MINIMUM_LENGTH_BUCKET_SAMPLES:
-                baseline = float(median(same_length))
+                baseline = optional_finite_number(median(same_length))
                 scope = f"same voice/{length} lines"
             elif len(same_voice) >= PACE_MINIMUM_VOICE_SAMPLES:
-                baseline = float(median(same_voice))
+                baseline = optional_finite_number(median(same_voice))
                 scope = "same voice/all eligible lengths"
         advisories: tuple[str, ...] = ()
         ratio = None
         words_per_minute = item.words_per_minute
         if baseline is not None and baseline > 0 and words_per_minute is not None:
-            ratio = float(words_per_minute / baseline)
+            ratio = optional_finite_number(words_per_minute / baseline)
             if (
-                ratio <= PACE_SLOW_RELATIVE_RATIO
+                ratio is not None
+                and ratio <= PACE_SLOW_RELATIVE_RATIO
                 and baseline - words_per_minute >= PACE_SLOW_MINIMUM_DELTA_WPM
             ):
                 advisories = (

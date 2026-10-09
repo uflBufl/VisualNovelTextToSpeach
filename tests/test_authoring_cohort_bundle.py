@@ -10,6 +10,7 @@ from unittest.mock import patch
 import vntts.authoring.cohort_bundle as cohort_bundle_module
 from tests.authoring_fixtures import create_pending_cohort_workspace
 from tests.symlink_support import symlink_or_skip
+from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.cohort_bundle import (
     CohortReviewError,
@@ -985,6 +986,74 @@ class AuthoringCohortBundleTest(unittest.TestCase):
             _current, samples = load_cohort_review_bundle_samples(bundle)
 
         self.assertEqual(len(samples), 2)
+
+    def test_live_samples_tolerate_bound_optional_numeric_metadata(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, state_path, queue_id = create_pending_cohort_workspace(root)
+            original = build_cohort_review_bundle([workspace]).document
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            publication = root / "bundle.json"
+            for value, expected_duration, expected_number, invalid_authority in (
+                (10**400, None, None, False),
+                (-2.5, None, -2.5, False),
+                (5e-324, 5e-324, 5e-324, False),
+                (float("nan"), None, None, True),
+            ):
+                with self.subTest(value=value):
+                    document = json.loads(json.dumps(original))
+                    result = state["items"][queue_id]
+                    result["quality"].update(duration_seconds=value, peak=value)
+                    state_path.write_text(json.dumps(state), encoding="utf-8")
+                    plan = document["sources"][0]["plan"]
+                    plan["state_sha256"] = hashlib.sha256(
+                        state_path.read_bytes()
+                    ).hexdigest()
+                    metrics = {
+                        "words_per_minute": None
+                        if value == 5e-324 or invalid_authority
+                        else value,
+                        "pace_baseline_wpm": None if invalid_authority else value,
+                        "pace_ratio": None if invalid_authority else value,
+                    }
+                    plan["cohorts"][0]["items"][0].update(metrics)
+                    plan["plan_id"] = canonical_document_sha256(
+                        {key: entry for key, entry in plan.items() if key != "plan_id"}
+                    )
+                    cohort = document["cohorts"][0]
+                    cohort["plan_id"] = plan["plan_id"]
+                    cohort["samples"][0].update(metrics)
+                    document["bundle_id"] = canonical_document_sha256(
+                        {
+                            key: entry
+                            for key, entry in document.items()
+                            if key != "bundle_id"
+                        }
+                    )
+                    publication.write_text(json.dumps(document), encoding="utf-8")
+                    before = state_path.read_bytes()
+                    if invalid_authority:
+                        with self.assertRaisesRegex(
+                            CohortReviewError, "authority is invalid"
+                        ):
+                            load_cohort_review_bundle_samples(
+                                load_cohort_review_bundle(publication)
+                            )
+                        self.assertEqual(state_path.read_bytes(), before)
+                        continue
+                    _, samples = load_cohort_review_bundle_samples(
+                        load_cohort_review_bundle(publication)
+                    )
+                    item = samples[0].item
+                    self.assertEqual(item.duration_seconds, expected_duration)
+                    self.assertEqual(item.peak, expected_number)
+                    self.assertEqual(
+                        item.words_per_minute,
+                        None if value == 5e-324 else expected_number,
+                    )
+                    self.assertEqual(item.pace_baseline_wpm, expected_number)
+                    self.assertEqual(item.pace_ratio, expected_number)
+                    self.assertEqual(state_path.read_bytes(), before)
 
     def test_live_and_resumed_samples_reject_changed_workspace_configuration(self):
         with TemporaryDirectory() as directory:

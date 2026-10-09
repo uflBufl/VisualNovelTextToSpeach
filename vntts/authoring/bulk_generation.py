@@ -196,6 +196,7 @@ from vntts.authoring.speech_quality import (
     NOTABLE_SILENCE_SPAN_SECONDS,
     SpeechSilenceValidationError,
     inspect_generated_speech_samples,
+    optional_finite_number,
 )
 from vntts.authoring.speech_quality import (
     MAX_SILENCE_RATIO as MAX_SILENCE_RATIO,
@@ -1482,20 +1483,20 @@ def _silence_failure_repair_action(record: _FailureReportRecord) -> tuple[str, s
 
 def _edge_silence_only(failure: JsonDocument) -> bool:
     quality = failure.get("speech_quality")
+    durations = _silence_durations(failure)
+    if not isinstance(quality, dict) or durations is None:
+        return False
+    leading, trailing, longest_internal = durations
+    silence_ratio = optional_finite_number(quality.get("silence_ratio"))
     return bool(
-        isinstance(quality, dict)
-        and (
-            quality.get("leading_silence_seconds", 0) > MAX_LEADING_SILENCE_SECONDS
-            or quality.get("trailing_silence_seconds", 0) > MAX_TRAILING_SILENCE_SECONDS
-            or quality.get("silence_ratio", 0) > MAX_SILENCE_RATIO
-            and max(
-                quality.get("leading_silence_seconds", 0),
-                quality.get("trailing_silence_seconds", 0),
-            )
-            >= NOTABLE_SILENCE_SPAN_SECONDS
+        (
+            leading > MAX_LEADING_SILENCE_SECONDS
+            or trailing > MAX_TRAILING_SILENCE_SECONDS
+            or silence_ratio is not None
+            and silence_ratio > MAX_SILENCE_RATIO
+            and max(leading, trailing) >= NOTABLE_SILENCE_SPAN_SECONDS
         )
-        and quality.get("longest_internal_silence_seconds", 0)
-        <= MAX_INTERNAL_SILENCE_SECONDS
+        and longest_internal <= MAX_INTERNAL_SILENCE_SECONDS
     )
 
 
@@ -1624,20 +1625,7 @@ def _validate_edge_silence_repair(
         raise BulkGenerationError(
             f"Edge-silence repair requires typed speech metrics for {queue_id!r}"
         )
-    if any(
-        not isinstance(value, (int, float))
-        or isinstance(value, bool)
-        or not np.isfinite(value)
-        or value < 0
-        for value in (
-            quality.get(field)
-            for field in (
-                "leading_silence_seconds",
-                "trailing_silence_seconds",
-                "longest_internal_silence_seconds",
-            )
-        )
-    ):
+    if _silence_durations(failure) is None:
         raise BulkGenerationError(
             f"Edge-silence repair metrics are invalid for {queue_id!r}"
         )
@@ -1735,11 +1723,8 @@ def _silence_durations(
         return None
 
     def duration(name: str) -> float | None:
-        value = quality.get(name)
-        if not isinstance(value, (int, float)) or isinstance(value, bool):
-            return None
-        result = float(value)
-        return result if np.isfinite(result) and result >= 0 else None
+        value = optional_finite_number(quality.get(name))
+        return value if value is not None and value >= 0 else None
 
     leading = duration("leading_silence_seconds")
     trailing = duration("trailing_silence_seconds")
