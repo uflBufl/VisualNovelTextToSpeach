@@ -140,10 +140,12 @@ extend-select = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# These tests check compatibility against the artifact dependency's own loader.
+# These tests exercise dependency compatibility and raw-copy fixture/counterexamples.
 "tests/test_*.py" = ["TID251"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
+"shutil.copyfile" = { msg = "Use vntts.path_safety.copy_regular_file for regular-file source admission." }
+"shutil.copy2" = { msg = "Use vntts.path_safety.copy_regular_file with preserve_metadata=True." }
 "vntts_artifacts.voice_manifest.load_voice_manifest" = { msg = "Use vntts.voices.load_voice_manifest for regular-file admission." }
 
 [tool.mypy]

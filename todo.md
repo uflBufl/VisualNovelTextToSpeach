@@ -2,10 +2,19 @@
 
 ## Continue regular-file admission through remaining integrity owners
 
+### Finish file-copy rollout and prevent recurrence
+
+- [ ] Trace decoder staging, offline/final-pack publication and native benchmark snapshot entry points; migrate the four matching source acquisitions to the existing `copy_regular_file` owner. Preserve decoder mode/atomic replacement, pack dedup/conflict/hardlink/hash/projection, domain error causes and benchmark failure reports/model preflight.
+- [ ] Adapt real byte-copy mutation/cancellation hooks and add focused acquisition-refusal, cleanup/recovery and preserved destination/error controls for these workflows. Review design/ownership and correctness independently. The first static pass found the new offline-pack matrix has 69 statements (PLR0915); split its coherent fixture setup before repeating gates, without allowances or lost scenarios.
+- [ ] Once direct copies are migrated, ban `shutil.copyfile` and `shutil.copy2` using existing Ruff `TID251`; prove qualified/aliased API detection and retain test fixture exceptions. Recount repository-wide matches and qualify other copy operations rather than banning them by syntax.
+- [ ] With source/test/config frozen, run local-first selector, configured lint/type/complexity/lock gates and fresh-main branch selector. Commit each logical fix separately, push normally, remove verified stage and retain unresolved SHA qualification leads.
+
 - [ ] Classify the remaining generic SHA/copy inventory by persisted input vs owned staging/output lifecycle (current scan: 51 production SHA importer modules/232 direct imported-name calls and 3 production `shutil.copyfile` calls, plus the benchmark script copy listed below). Migrate only evidenced consumers with their actual error, alias/root, copied metadata, byte-binding and publication contracts. Keep the concrete staged inventory in `.codex/investigations/`; run local-first affected tests, independent review and fresh-main branch checks for each implementation stage.
 - [ ] Qualify the remaining production copy owners `game_audio_decoder._stage_file` (executable mode/atomic replacement), `pregeneration_pack._copy_file` (prepared hashes/conflict/dedup/hardlink fallback) and `authoring.game_pack._copy_control` (final-pack inventory/projection/publication). Also qualify the repository-wide search match `scripts/moss_native_compare.py` reference snapshot against its report/error/model-preflight phases. Migrate matching source acquisitions through the shared leaf with public refusal/recovery gates; retain distinct tree-copy operations.
 
 - [ ] After qualifying the remaining file-copy owners, use the existing Ruff `TID251` banned-API check to prevent direct `shutil.copyfile`/`copy2` acquisitions in project code. Preserve the current fixture/test-only exceptions and distinct tree-copy operations; verify alias detection and normal local/CI lint gates.
+
+- [ ] Qualify per-file acquisition inside the two recursive copies before choosing an admitted metadata-preserving copy callback; the direct-copy lint rule does not cover their default `copy2` acquisitions. `VoiceLibrary.copy_to` validates under its transaction, follows extra-member symlinks and renames custom indexes; preserve aggregated `shutil.Error` records and caller-owned partial-target cleanup. Gate index/blob/extra-member acquisition refusal and recovery, default-impact temporary cleanup, complete-tree layout, file/directory metadata, symlink/dangling-link behavior and existing-target refusal. `release_runtime._probe_relocated_runtime` preserves symlinks and executable metadata; retain temporary cleanup and actual relocated interpreter/module provenance. Qualify representative large-runtime throughput and Windows native-copy metadata before generalizing compatibility.
 
 ## Coordinate source-audio producer numeric admission
 
