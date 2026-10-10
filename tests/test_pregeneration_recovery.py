@@ -105,7 +105,7 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
                 )
             self.assertEqual(events, ["a", "refresh", "b", "refresh"])
 
-    def test_recovery_order_ignores_queue_replacement_after_hash(self):
+    def test_recovery_order_ignores_queue_replacement_after_capture(self):
         with TemporaryDirectory() as directory:
             _job, generation_input, _result, items = fixture(Path(directory))
             generation_input = replace(
@@ -114,13 +114,15 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
             recovery_root = Path(directory) / "recovery-fixture"
             recovery_root.mkdir()
             _unused, _unused_result, voice_plan = inputs(recovery_root)
-            original_sha256 = sha256_file
+            original_read = Path.read_bytes
+            replaced = []
 
-            def hash_then_replace(path):
-                digest = original_sha256(path)
-                if Path(path) == generation_input.queue:
+            def read_then_replace(path):
+                payload = original_read(path)
+                if path == generation_input.queue:
+                    replaced.append(path)
                     write_voice_generation_queue(
-                        generation_input.queue,
+                        path,
                         {"game": "Synthetic Game", "language": "en"},
                         [
                             {
@@ -131,16 +133,17 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
                             items[1],
                         ],
                     )
-                return digest
+                return payload
 
-            with patch(
-                "vntts.pregeneration_recovery.sha256_file",
-                side_effect=hash_then_replace,
-            ):
+            with patch.object(Path, "read_bytes", read_then_replace):
                 queue_ids, _index = _ordered_generation_queue_ids(
                     generation_input, voice_plan
                 )
 
+            self.assertEqual(replaced, [generation_input.queue])
+            self.assertNotEqual(
+                sha256_file(generation_input.queue), generation_input.queue_sha256
+            )
             self.assertEqual(queue_ids, tuple(item["queue_id"] for item in items))
 
     def test_recovery_rejects_a_changed_voice_manifest_before_loading_the_queue(self):
