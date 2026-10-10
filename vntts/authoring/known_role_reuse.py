@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TypedDict
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts import VoiceGenerationQueueItem
 from vntts_artifacts.voice_manifest import (
     VoiceManifestEntry,
@@ -61,6 +61,7 @@ from vntts.authoring.workbench import (
 )
 from vntts.authoring.workspace_config import selected_voice_manifest_path
 from vntts.authoring.workspace_foundation import load_json_object
+from vntts.document_identity import file_sha256
 from vntts.json_types import decode_json
 from vntts.path_safety import open_regular_binary
 from vntts.voices import load_voice_manifest, synthesis_character_for_line
@@ -247,7 +248,7 @@ def _load_workspace_snapshot(workspace: Path) -> WorkspaceSnapshot:
     inspect_workspace(workspace)
     workspace_path = workspace / "workspace.json"
     document = _read_json(workspace_path, "workspace")
-    document_sha256 = sha256_file(workspace_path)
+    document_sha256 = file_sha256(workspace_path, error_type=OSError)
     queue, queue_sha256 = load_stable_generation_queue(workspace / "queue.jsonl")
     queue_by_id = {item.queue_id: item for item in queue.items}
     state_path = workspace / "generated-audio/generation-state.json"
@@ -321,7 +322,7 @@ def _select_manifest(
     )
     if selected_path is None:
         raise KnownRoleReuseError("Known-role selected voice manifest is unavailable")
-    selected_sha256 = sha256_file(selected_path)
+    selected_sha256 = file_sha256(selected_path, error_type=OSError)
     workspace_manifest = _object_field(
         snapshot.document, "voice_manifest", "Known-role workspace voice manifest"
     )
@@ -655,13 +656,16 @@ def _copy_references(staging: Path, references: list[ReferenceRecord]) -> None:
         target = staging / reference["relative"]
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(reference["source"], target)
-        if sha256_file(target) != reference["sha256"]:
+        if file_sha256(target, error_type=OSError) != reference["sha256"]:
             raise KnownRoleReuseError("Known-role voice reference changed while copied")
 
 
 def _write_bundle(staging: Path, decision_id: str) -> None:
     inventory = [
-        {"path": path.relative_to(staging).as_posix(), "sha256": sha256_file(path)}
+        {
+            "path": path.relative_to(staging).as_posix(),
+            "sha256": file_sha256(path, error_type=OSError),
+        }
         for path in sorted(staging.rglob("*"))
         if path.is_file()
     ]
@@ -724,7 +728,7 @@ def _validate_inventory_files(directory: Path, inventory: list[object]) -> None:
         if (
             artifact.is_symlink()
             or not artifact.is_file()
-            or sha256_file(artifact) != record["sha256"]
+            or file_sha256(artifact, error_type=OSError) != record["sha256"]
         ):
             raise KnownRoleReuseError("Known-role bundle artifact changed")
         declared.add(relative.as_posix())
@@ -816,7 +820,7 @@ def _reference_records(
             {
                 "relative": relative,
                 "source": source,
-                "sha256": sha256_file(source),
+                "sha256": file_sha256(source, error_type=OSError),
             }
         )
     if not records:
@@ -836,7 +840,9 @@ def _copy_tree(source: Path, destination: Path) -> None:
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, target)
-        if sha256_file(target) != sha256_file(path):
+        if file_sha256(target, error_type=OSError) != file_sha256(
+            path, error_type=OSError
+        ):
             raise KnownRoleReuseError("Known-role authority changed while copied")
 
 
