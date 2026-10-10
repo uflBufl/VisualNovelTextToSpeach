@@ -62,6 +62,7 @@ from vntts.authoring.workbench import (
 from vntts.authoring.workspace_config import selected_voice_manifest_path
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.json_types import decode_json
+from vntts.path_safety import open_regular_binary
 from vntts.voices import load_voice_manifest, synthesis_character_for_line
 
 KNOWN_ROLE_REUSE_DECISION_SCHEMA = "vntts.authoring-known-role-reuse-decision"
@@ -250,7 +251,8 @@ def _load_workspace_snapshot(workspace: Path) -> WorkspaceSnapshot:
     queue, queue_sha256 = load_stable_generation_queue(workspace / "queue.jsonl")
     queue_by_id = {item.queue_id: item for item in queue.items}
     state_path = workspace / "generated-audio/generation-state.json"
-    state_payload = state_path.read_bytes()
+    with open_regular_binary(state_path) as source:
+        state_payload = source.read()
     state = _decode_state(state_payload)
     validate_generation_state_document(state, state_path.parent, queue, queue_sha256)
     if state.get("active") is not None or any(state_path.parent.rglob("*.partial.wav")):

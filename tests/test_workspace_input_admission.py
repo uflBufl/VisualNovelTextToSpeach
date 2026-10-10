@@ -11,12 +11,18 @@ from unittest.mock import patch
 
 from tests.authoring_fixtures import (
     create_carry_source_workspace,
+    create_failed_reference_workspace,
     create_specialist_failure_workspace,
     create_test_workspace,
     tree_hashes,
     write_carry_target_manifest,
 )
+from tests.missing_voice_reuse_fixtures import (
+    create_missing_voice_live_fallback_fixture,
+)
 from tests.symlink_support import symlink_or_skip
+from vntts.authoring import failure_reference_audit as audit
+from vntts.authoring import known_role_reuse as known_role
 from vntts.authoring import specialist_failure_plan as specialist
 from vntts.authoring import workspace_creation as creation
 from vntts.authoring import workspace_foundation as foundation
@@ -361,3 +367,114 @@ class WorkspaceInputAdmissionTest(unittest.TestCase):
                         loader(path, "test", error_type=AuthoringWorkbenchError),
                         expected,
                     )
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_audit_initial_final_and_reference_captures_refuse_and_recover(self):
+        for phase, name in (
+            *(
+                (phase, name)
+                for phase in ("capture", "final")
+                for name in (
+                    "workspace.json",
+                    "queue.jsonl",
+                    "generated-audio/generation-state.json",
+                    "inputs/voice/manifest.json",
+                )
+            ),
+            ("reference", ""),
+        ):
+            with (
+                self.subTest(phase=phase, name=name),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory).resolve()
+                workspace, _queue_id = create_failed_reference_workspace(root)
+                expected = audit.publish_failure_reference_audit(
+                    workspace, root / "expected", seed=7
+                )
+                output = root / "audit"
+                gate = {"path": workspace / name, "armed": False}
+                boundary = {
+                    "capture": "load_workspace_authority",
+                    "final": "_assert_audit_publication_sources_unchanged",
+                    "reference": "_reference_candidate",
+                }[phase]
+                original = getattr(audit, boundary)
+
+                def arm(*args, **kwargs):
+                    if phase == "capture":
+                        result = original(*args, **kwargs)
+                        gate["armed"] = True
+                        return result
+                    if phase == "reference":
+                        gate["path"] = (args[0].parent / args[1]).resolve()
+                    gate["armed"] = True
+                    return original(*args, **kwargs)
+
+                before = tree_hashes(root)
+                with (
+                    self.swap_at_acquisition(gate),
+                    patch.object(audit, boundary, side_effect=arm),
+                    self.assertRaisesRegex(
+                        audit.FailureReferenceAuditError, "regular file"
+                    ),
+                ):
+                    audit.publish_failure_reference_audit(workspace, output, seed=7)
+                self.assertEqual(tree_hashes(root), before)
+                self.assertFalse(output.exists())
+                self.assertFalse(list(root.glob(".audit.staging-*")))
+                recovered = audit.publish_failure_reference_audit(
+                    workspace, output, seed=7
+                )
+                self.assertEqual(recovered.audit_id, expected.audit_id)
+                self.assertEqual(audit.load_failure_reference_audit(output), recovered)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_known_role_initial_state_capture_refuses_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            workspace, unresolved, _queue_id = (
+                create_missing_voice_live_fallback_fixture(root)
+            )
+            output = root / "known-role"
+            gate = {
+                "path": workspace / "generated-audio/generation-state.json",
+                "armed": False,
+            }
+            original = known_role.load_stable_generation_queue
+
+            def arm(*args, **kwargs):
+                result = original(*args, **kwargs)
+                gate["armed"] = True
+                return result
+
+            def publish():
+                return known_role.publish_known_role_reuse_binding(
+                    workspace,
+                    unresolved,
+                    "Aderyn",
+                    "Rhiannon",
+                    output,
+                    accept_known_role_reuse=True,
+                )
+
+            before = tree_hashes(root)
+            with (
+                self.swap_at_acquisition(gate),
+                patch.object(
+                    known_role, "load_stable_generation_queue", side_effect=arm
+                ),
+                self.assertRaisesRegex(known_role.KnownRoleReuseError, "regular file"),
+            ):
+                publish()
+            self.assertEqual(tree_hashes(root), before)
+            self.assertFalse(output.exists())
+            recovered = publish()
+            self.assertTrue(recovered.created)
+            repeated = publish()
+            self.assertFalse(repeated.created)
+            self.assertEqual(recovered.decision_id, repeated.decision_id)

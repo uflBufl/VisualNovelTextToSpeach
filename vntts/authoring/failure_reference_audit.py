@@ -305,12 +305,15 @@ def _load_audit_publication_source(workspace: Path) -> _AuditPublicationSource:
     manifest_path = directory / _text(
         voice_manifest.get("path"), "Workspace voice manifest path is invalid"
     )
-    snapshots = {
-        "workspace": (directory / "workspace.json").read_bytes(),
-        "queue": queue_path.read_bytes(),
-        "state": state_path.read_bytes(),
-        "voice_manifest": manifest_path.read_bytes(),
-    }
+    snapshots = {}
+    for label, path in (
+        ("workspace", directory / "workspace.json"),
+        ("queue", queue_path),
+        ("state", state_path),
+        ("voice_manifest", manifest_path),
+    ):
+        with open_regular_binary(path) as source:
+            snapshots[label] = source.read()
     try:
         queue = VoiceGenerationQueue.load(queue_path)
         _manifest, voices = load_voice_manifest(manifest_path, allow_legacy=False)
@@ -523,7 +526,8 @@ def _reference_candidate(manifest_path: Path, reference: Path) -> _ReferenceCand
         ) from error
     if not source.is_file() or source.is_symlink():
         raise FailureReferenceAuditError(f"Reference is missing or unsafe: {reference}")
-    payload = source.read_bytes()
+    with open_regular_binary(source) as stream:
+        payload = stream.read()
     analysis: ReferenceQualityReport | None
     try:
         analysis = analyze_reference_bytes(payload, path=source)
@@ -651,7 +655,9 @@ def _assert_audit_publication_sources_unchanged(
         ("state", source.state_path),
         ("voice_manifest", source.manifest_path),
     ):
-        if path.read_bytes() != source.snapshots[label]:
+        with open_regular_binary(path) as stream:
+            payload = stream.read()
+        if payload != source.snapshots[label]:
             raise FailureReferenceAuditError(
                 f"Reference audit {label} changed during publication"
             )
