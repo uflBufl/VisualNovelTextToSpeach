@@ -2,9 +2,13 @@
 
 ## Continue regular-file admission through remaining integrity owners
 
-- [ ] Classify the remaining generic SHA inventory by persisted input vs owned staging/output lifecycle (current scan: 51 production SHA importer modules/232 direct imported-name calls). Migrate only evidenced consumers with their actual error, alias/root, byte-binding and publication contracts. Keep the concrete staged inventory in `.codex/investigations/`; run local-first affected tests, independent review and fresh-main branch checks for each implementation stage.
+- [ ] Expand the verified SHA owner to the ten inline read-and-hash expressions in six modules (live replay capture/recovery, reference selection/quality/composite, config rebase). Qualify raw/domain errors and source-vs-staging phases; preserve captured-payload hashes, retarget only affected hooks, add native public refusal/recovery coverage and rerun local-first/fresh-main gates.
 
-- [ ] Qualify admitted direct/recursive/runtime copy behavior on Windows, including native metadata/alternate streams, DLL/junction handling and executable behavior. Local Mac output identities, metadata, relocated interpreter provenance and warm-cache throughput passed; cold-disk/network throughput and native model generation remain unmeasured.
+- [ ] Qualify admitted SHA readers and direct/recursive/runtime copy behavior on Windows, including native metadata/alternate streams, DLL/junction handling and executable behavior. Local Mac output identities, metadata, relocated interpreter provenance and warm-cache throughput passed; cold-disk/network throughput and native model generation remain unmeasured.
+
+## Continue captured-input admission
+
+- [ ] Qualify remaining captured-byte readers after the SHA migration. Start with `generation_state.load_stable_generation_queue` and `pregeneration_setup._cached_story_index_document`: their `Path.read_bytes` acquisitions remain separate from admitted hashes and can still block on a regular-to-FIFO replacement. Inventory repetitions (current candidate scan: 39 modules/93 read_bytes calls, not a defect count), preserve exact snapshot-derived parsing/digests, caller errors/cache identity and final path rechecks; reuse the existing admitted stream owner. Retarget post-capture mutation controls at the actual byte visibility boundary, add native refusal/recovery gates, and run local-first tests before expanding.
 
 ## Coordinate source-audio producer numeric admission
 
