@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import random
-import shutil
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -48,7 +47,7 @@ from vntts.authoring.workbench import (
 from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.document_identity import file_sha256, is_lowercase_sha256
 from vntts.json_types import decode_json, is_json_object
-from vntts.path_safety import open_regular_binary
+from vntts.path_safety import copy_regular_file, open_regular_binary
 from vntts.reference_quality import ReferenceQualityReport, analyze_reference_bytes
 from vntts.voices import load_voice_manifest
 
@@ -584,7 +583,7 @@ def _copy_audit_candidate(
     relative = Path("audio") / group_id / f"candidate-{position:02d}{suffix}"
     target = staging / relative
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(candidate["source"], target)
+    copy_regular_file(candidate["source"], target, preserve_metadata=True)
     if file_sha256(target, error_type=OSError) != candidate["sha256"]:
         raise FailureReferenceAuditError("Copied reference checksum changed")
     return relative

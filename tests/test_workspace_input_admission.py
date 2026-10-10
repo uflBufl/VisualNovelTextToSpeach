@@ -582,8 +582,16 @@ class WorkspaceInputAdmissionTest(unittest.TestCase):
     @unittest.skipUnless(
         hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
     )
-    def test_audit_checksum_phases_refuse_acquisition_and_recover(self):
-        for phase in ("staged", "final", "candidate", "workspace", "queue", "manifest"):
+    def test_audit_file_phases_refuse_acquisition_and_recover(self):
+        for phase in (
+            "copy",
+            "staged",
+            "final",
+            "candidate",
+            "workspace",
+            "queue",
+            "manifest",
+        ):
             with self.subTest(phase=phase), TemporaryDirectory() as directory:
                 root = Path(directory).resolve()
                 workspace, _queue_id = create_failed_reference_workspace(root)
@@ -592,21 +600,22 @@ class WorkspaceInputAdmissionTest(unittest.TestCase):
                     workspace, root / "expected", seed=7
                 )
                 gate = {"path": None, "armed": False}
-                if phase in {"staged", "final"}:
-                    if phase == "staged":
-                        original = audit.file_sha256
+                if phase in {"copy", "staged", "final"}:
+                    if phase in {"copy", "staged"}:
+                        boundary = (
+                            "copy_regular_file" if phase == "copy" else "file_sha256"
+                        )
+                        original = getattr(audit, boundary)
 
-                        def arm(path, **kwargs):
+                        def arm(path, *args, **kwargs):
                             gate["path"] = Path(path)
                             gate["armed"] = True
                             with (
                                 self.swap_at_acquisition(gate),
                                 self.assertRaises(OSError) as caught,
                             ):
-                                original(path, **kwargs)
+                                original(path, *args, **kwargs)
                             raise caught.exception
-
-                        boundary = "file_sha256"
                     else:
                         original = audit._assert_audit_publication_sources_unchanged
 
@@ -620,7 +629,7 @@ class WorkspaceInputAdmissionTest(unittest.TestCase):
                         boundary = "_assert_audit_publication_sources_unchanged"
                     before = tree_hashes(root)
                     with patch.object(audit, boundary, side_effect=arm):
-                        if phase == "staged":
+                        if phase in {"copy", "staged"}:
                             with self.assertRaisesRegex(
                                 audit.FailureReferenceAuditError, "regular file"
                             ):
