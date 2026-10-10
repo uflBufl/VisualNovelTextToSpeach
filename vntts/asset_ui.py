@@ -718,7 +718,7 @@ class AssetManagerDialog(QDialog):
             )
         except OSError:
             identity = None
-        if identity != self._validated_manifest_identity:
+        if identity is None or identity != self._validated_manifest_identity:
             self._accept_after_manifest_validation = True
             if not self.manifest_runner.active:
                 self.validate_voice_manifest()

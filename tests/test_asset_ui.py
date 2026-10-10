@@ -498,6 +498,62 @@ class AssetManagerDialogTest(unittest.TestCase):
             self.assertEqual(dialog.voice_manifest.selectedText(), str(manifest))
             self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
 
+    def test_save_rejects_initial_unavailable_manifest_and_recovers(self):
+        scenarios = ("missing",)
+        if hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"):
+            scenarios += ("fifo",)
+        for unavailable in scenarios:
+            with (
+                self.subTest(unavailable=unavailable),
+                TemporaryDirectory() as directory,
+            ):
+                manifest = Path(directory).resolve() / "manifest.json"
+                if unavailable == "fifo":
+                    os.mkfifo(manifest)
+                model_manager = Mock()
+                model_manager.model_path.return_value = Path("managed/model")
+                voice_manager = Mock()
+                voice_manager.validate.return_value = manifest
+                settings = AppSettings(voice_manifest=str(manifest))
+                pool = ManualThreadPool()
+                dialog = AssetManagerDialog(
+                    settings,
+                    model_manager=model_manager,
+                    voice_manager=voice_manager,
+                    thread_pool=pool,
+                )
+                native_path_open = Path.open
+
+                def reject_plain_open(path, *args, **kwargs):
+                    mode = args[0] if args else kwargs.get("mode", "r")
+                    if Path(path) == manifest and "b" in mode:
+                        self.fail("manifest hashing must not use blocking Path.open")
+                    return native_path_open(path, *args, **kwargs)
+
+                with patch.object(Path, "open", reject_plain_open):
+                    dialog.accept_settings()
+                    self.assertTrue(dialog.manifest_runner.active)
+                    self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
+                    self.assertIs(dialog.settings(), settings)
+                    pool.run_next()
+                self.assertIn("invalid", dialog.voice_status.text())
+                self.assertFalse(dialog.manifest_runner.active)
+                self.assertFalse(dialog._accept_after_manifest_validation)
+                self.assertIsNone(dialog._validated_manifest_identity)
+                self.assertIs(dialog.settings(), settings)
+                self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
+                voice_manager.validate.assert_not_called()
+
+                manifest.unlink(missing_ok=True)
+                manifest.write_text("{}", encoding="utf-8")
+                dialog.accept_settings()
+                self.assertTrue(dialog.manifest_runner.active)
+                self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
+                pool.run_next()
+                self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+                self.assertEqual(dialog.settings().voice_manifest, str(manifest))
+                voice_manager.validate.assert_called_once_with(manifest.resolve())
+
     def test_selected_manifest_starts_unchecked_and_controls_scale_together(self):
         model_manager = Mock()
         model_manager.model_path.return_value = Path("managed/model")
