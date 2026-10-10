@@ -7,7 +7,6 @@ import hashlib
 import io
 import json
 import re
-import shutil
 from collections.abc import Iterable, Mapping, MutableSequence, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -172,7 +171,7 @@ from vntts.authoring.workspace_voice_runtime import (
 from vntts.document_identity import canonical_document_sha256, file_sha256
 from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
-from vntts.path_safety import open_regular_binary
+from vntts.path_safety import copy_regular_file, open_regular_binary
 from vntts.voices import (
     CharacterVoice,
     CharacterVoiceRegistry,
@@ -356,7 +355,7 @@ def _copy_resume_seed_inputs(staging: Path, source: _ResumeSource) -> None:
         source_path = _within(source.directory, relative, "Imported artifact")
         target = staging / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source_path, target)
+        copy_regular_file(source_path, target, preserve_metadata=True)
         if sha256_file(target) != item["sha256"]:
             raise AuthoringWorkbenchError(
                 f"Imported artifact changed during workspace copy: {relative}"

@@ -98,6 +98,71 @@ class WorkspaceInputAdmissionTest(unittest.TestCase):
     @unittest.skipUnless(
         hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
     )
+    def test_resume_seed_copies_refuse_acquisition_clean_up_and_preserve_metadata(self):
+        for role in ("queue", "audio"):
+            with self.subTest(role=role), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                fixture, imported, expected = create_test_workspace(root)
+                selected = (
+                    imported / "queue.jsonl"
+                    if role == "queue"
+                    else next((imported / "generated-audio").rglob("*.wav"))
+                )
+                selected.chmod(0o640)
+                mode, mtime = (
+                    stat.S_IMODE(selected.stat().st_mode),
+                    selected.stat().st_mtime_ns,
+                )
+                destination = root / "successors"
+                before = tree_hashes(root)
+                original = creation.copy_regular_file
+                refused = []
+
+                def copy(source, target, **kwargs):
+                    if Path(source) != selected:
+                        return original(source, target, **kwargs)
+                    gate = {"path": selected, "armed": True}
+                    with (
+                        self.swap_at_acquisition(gate),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original(source, target, **kwargs)
+                    self.assertFalse(Path(target).exists())
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                def create():
+                    return creation.create_resume_workspace(
+                        imported,
+                        destination,
+                        story_index=fixture["job"]["story_index"],
+                        voice_manifest=fixture["job"]["voice_manifest"],
+                        backend="moss-tts",
+                        model="model with spaces",
+                        generation_profile="stable",
+                        narrator_character="Rhiannon",
+                    )
+
+                with (
+                    patch.object(creation, "copy_regular_file", copy),
+                    self.assertRaisesRegex(OSError, "regular file") as caught,
+                ):
+                    create()
+                self.assertEqual(len(refused), 1)
+                self.assertIs(caught.exception, refused[0])
+                self.assertEqual(list(destination.iterdir()), [])
+                self.assertEqual(tree_hashes(root), before)
+                os.utime(selected, ns=(mtime, mtime))
+                recovered = create()
+                copied = recovered.directory / selected.relative_to(imported)
+                self.assertEqual(recovered.directory.name, expected.directory.name)
+                self.assertEqual(copied.read_bytes(), selected.read_bytes())
+                self.assertEqual(stat.S_IMODE(copied.stat().st_mode), mode)
+                self.assertEqual(copied.stat().st_mtime_ns, mtime)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
     def test_resume_selected_inputs_refuse_acquisition_clean_up_and_recover(self):
         for phase in ("capture", "final"):
             with self.subTest(phase=phase), TemporaryDirectory() as directory:
