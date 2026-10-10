@@ -1,6 +1,7 @@
 """Shared filesystem containment and regular-file admission."""
 
 import os
+import shutil
 import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -20,6 +21,25 @@ def open_regular_binary(path: str | os.PathLike[str]) -> Iterator[BufferedReader
         if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
             raise OSError(f"{path} is not a regular file")
         yield source
+
+
+def copy_regular_file(
+    source: str | Path,
+    destination: str | Path,
+    *,
+    preserve_metadata: bool = False,
+) -> None:
+    """Copy an admitted regular source into a caller-owned destination."""
+    source, destination = Path(source), Path(destination)
+    if destination.exists() and source.samefile(destination):
+        raise shutil.SameFileError(f"{source!r} and {destination!r} are the same file")
+    with (
+        open_regular_binary(source) as original,
+        destination.open("wb") as output,
+    ):
+        shutil.copyfileobj(original, output)
+    if preserve_metadata:
+        shutil.copystat(source, destination)
 
 
 def no_replace_destination(value: str | Path) -> Path:
@@ -100,6 +120,7 @@ def contained_regular_file(
 __all__ = [
     "contained_path",
     "contained_regular_file",
+    "copy_regular_file",
     "no_replace_destination",
     "open_regular_candidate",
     "open_regular_binary",

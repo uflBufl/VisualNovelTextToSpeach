@@ -26,7 +26,7 @@ from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.cleanup import attempt_cleanup, cleanup_on_exit
 from vntts.document_identity import file_sha256
 from vntts.json_types import decode_json
-from vntts.path_safety import open_regular_binary
+from vntts.path_safety import copy_regular_file, open_regular_binary
 from vntts.settings import get_local_data_directory
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
 
@@ -660,16 +660,7 @@ class VoicePackManager:
 
     @staticmethod
     def _copy_reference(source: Path, destination: Path) -> None:
-        if destination.exists() and source.samefile(destination):
-            raise shutil.SameFileError(
-                f"{source!r} and {destination!r} are the same file"
-            )
-        with (
-            open_regular_binary(source) as original,
-            destination.open("wb") as output,
-        ):
-            shutil.copyfileobj(original, output)
-        shutil.copystat(source, destination)
+        copy_regular_file(source, destination, preserve_metadata=True)
 
     @staticmethod
     def _remove_failed_copies(copied: Sequence[Path], error: BaseException) -> None:

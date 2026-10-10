@@ -1,12 +1,15 @@
 import hashlib
 import io
 import os
+import shutil
+import stat
 import unittest
 import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from tests import test_workspace_input_admission as admission
 from tests.pregeneration_fixtures import ambiguous_fixture
 from vntts import (
     assets,
@@ -32,7 +35,11 @@ from vntts.authoring.generation_manifest import (
 from vntts.live_replay import _read_contained_file
 from vntts.live_replay_sequence_seal import SequenceReplaySealError, _read_regular_file
 from vntts.live_speaker_corpus import LiveSpeakerCorpus
-from vntts.path_safety import contained_regular_file, safe_relative_path
+from vntts.path_safety import (
+    contained_regular_file,
+    copy_regular_file,
+    safe_relative_path,
+)
 from vntts.runtime_ownership import read_record
 from vntts.voice_library import VoiceLibrary
 from vntts.voices import VoiceManifestError, _read_owned_voice_reference
@@ -111,6 +118,73 @@ class RegularFileAdmissionTest(unittest.TestCase):
                     self.assertEqual(len(descriptors), 1)
                     with self.assertRaises(OSError):
                         os.fstat(descriptors[0])
+
+
+class RegularFileCopyTest(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_refused_source_does_not_create_or_truncate_destination(self):
+        for existing in (False, True):
+            with self.subTest(existing=existing), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                source, target = root / "source", root / "target"
+                payload = b"\x00\xff\r\nreference"
+                source.write_bytes(payload)
+                if existing:
+                    target.write_bytes(b"prior destination")
+                gate = {"path": source, "armed": True}
+                with (
+                    admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                        self, gate
+                    ),
+                    self.assertRaisesRegex(OSError, "regular file"),
+                ):
+                    copy_regular_file(source, target)
+                self.assertEqual(source.read_bytes(), payload)
+                self.assertEqual(target.exists(), existing)
+                if existing:
+                    self.assertEqual(target.read_bytes(), b"prior destination")
+                copy_regular_file(source, target)
+                self.assertEqual(target.read_bytes(), payload)
+
+    def test_same_file_and_aliases_are_not_truncated(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            source.write_bytes(b"original reference")
+            alias = root / "hardlink"
+            os.link(source, alias)
+            for target in (source, alias):
+                with (
+                    self.subTest(target=target),
+                    self.assertRaises(shutil.SameFileError),
+                ):
+                    copy_regular_file(source, target)
+                self.assertEqual(source.read_bytes(), b"original reference")
+
+    def test_binary_copy_preserves_metadata_only_when_requested(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, target = root / "source", root / "target"
+            payload = b"\x00\xff\r\nreference"
+            source.write_bytes(payload)
+            source.chmod(0o640)
+            os.utime(source, ns=(1234567890000000000,) * 2)
+            target.write_bytes(b"prior destination")
+            target.chmod(0o600)
+            copy_regular_file(source, target)
+            self.assertEqual(target.read_bytes(), payload)
+            if os.name != "nt":
+                self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+            self.assertNotEqual(target.stat().st_mtime_ns, source.stat().st_mtime_ns)
+            copy_regular_file(source, target, preserve_metadata=True)
+            self.assertEqual(target.read_bytes(), payload)
+            self.assertEqual(
+                stat.S_IMODE(target.stat().st_mode),
+                stat.S_IMODE(source.stat().st_mode),
+            )
+            self.assertEqual(target.stat().st_mtime_ns, source.stat().st_mtime_ns)
 
 
 class BoundedDocumentAdmissionTest(unittest.TestCase):
