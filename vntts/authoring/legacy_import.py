@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -44,7 +43,7 @@ from vntts.authoring.workspace_foundation import load_json_object
 from vntts.cleanup import temporary_directory
 from vntts.document_identity import canonical_document_sha256
 from vntts.json_types import decode_json
-from vntts.path_safety import open_regular_binary
+from vntts.path_safety import copy_regular_file, open_regular_binary
 
 LEGACY_JOB_SCHEMA = "r1999.pregeneration-job"
 LEGACY_JOB_SCHEMA_VERSION = 1
@@ -209,35 +208,7 @@ def import_legacy_job(
 ) -> LegacyImportResult:
     """Validate and copy one legacy job without changing either source or prior imports."""
     plan = _build_import_plan(job_directory)
-    destination_root = (
-        Path(destination_root or default_import_root()).expanduser().resolve()
-    )
-    destination_root.mkdir(parents=True, exist_ok=True)
-    import_id = _import_id(plan)
-    destination = destination_root / import_id
-    if destination.exists():
-        return _validate_existing_import(destination, plan)
-    _validate_import_root_collisions(destination_root, plan)
-
-    with staged_directory(destination_root, prefix=f".{import_id}-") as staging:
-        for artifact in plan.artifacts:
-            target = staging / artifact.destination
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(artifact.source, target)
-            if sha256_file(target) != artifact.sha256:
-                raise LegacyAuthoringImportError(
-                    f"Copied artifact changed during import: {artifact.source}"
-                )
-        manifest = _import_manifest(plan, import_id)
-        atomic_write_json(staging / "import.json", manifest, sort_keys=True)
-        _verify_source_controls_unchanged(plan)
-        try:
-            rename_directory_no_replace(staging, destination)
-        except AtomicPublicationError, OSError:
-            if destination.exists():
-                return _validate_existing_import(destination, plan)
-            raise
-    return LegacyImportResult(destination, manifest, True)
+    return _publish_import_plan(plan, destination_root)
 
 
 def inspect_standalone_generation(
@@ -266,6 +237,12 @@ def import_standalone_generation(
 ) -> LegacyImportResult:
     """Import one explicitly selected standalone queue/output pair."""
     plan = _build_standalone_import_plan(queue_path, output_directory)
+    return _publish_import_plan(plan, destination_root)
+
+
+def _publish_import_plan(
+    plan: _ImportPlan, destination_root: str | Path | None
+) -> LegacyImportResult:
     destination_root = (
         Path(destination_root or default_import_root()).expanduser().resolve()
     )
@@ -280,7 +257,7 @@ def import_standalone_generation(
         for artifact in plan.artifacts:
             target = staging / artifact.destination
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(artifact.source, target)
+            copy_regular_file(artifact.source, target, preserve_metadata=True)
             if sha256_file(target) != artifact.sha256:
                 raise LegacyAuthoringImportError(
                     f"Copied artifact changed during import: {artifact.source}"

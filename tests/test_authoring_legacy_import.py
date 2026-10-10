@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import stat
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -12,6 +13,7 @@ from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
 )
 
+from tests import test_workspace_input_admission as admission
 from tests.authoring_fixtures import tree_hashes, write_legacy_fixture
 from vntts.authoring import legacy_import as legacy_module
 from vntts.authoring.cli import main
@@ -27,6 +29,120 @@ from vntts.authoring.publication import AtomicPublicationError
 
 
 class LegacyAuthoringImportTest(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_public_copy_sources_refuse_swapped_acquisition_and_recover(self):
+        for importer in (import_legacy_job, import_standalone_generation):
+            for source_name in ("queue", "wav"):
+                with (
+                    self.subTest(importer=importer.__name__, source=source_name),
+                    TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory).resolve()
+                    fixture = write_legacy_fixture(root)
+                    arguments = (
+                        (fixture["job_directory"],)
+                        if importer is import_legacy_job
+                        else (fixture["queue"], fixture["state"].parent)
+                    )
+                    source = fixture[source_name]
+                    destination = root / "app-data"
+                    before = tree_hashes(root)
+                    original_copy = legacy_module.copy_regular_file
+                    refused = []
+
+                    def copy(path, target, **kwargs):
+                        if Path(path) != source:
+                            return original_copy(path, target, **kwargs)
+                        gate = {"path": source, "armed": True}
+                        with (
+                            admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                                self, gate
+                            ),
+                            self.assertRaisesRegex(OSError, "regular file") as caught,
+                        ):
+                            original_copy(path, target, **kwargs)
+                        self.assertFalse(Path(target).exists())
+                        refused.append(caught.exception)
+                        raise caught.exception
+
+                    with (
+                        patch.object(legacy_module, "copy_regular_file", copy),
+                        self.assertRaisesRegex(
+                            LegacyAuthoringImportError, "regular file"
+                        ) as caught,
+                    ):
+                        importer(*arguments, destination)
+                    self.assertEqual(len(refused), 1)
+                    self.assertIs(caught.exception.__cause__, refused[0])
+                    self.assertEqual(tree_hashes(root), before)
+                    self.assertEqual(list(destination.iterdir()), [])
+                    recovered = importer(*arguments, destination)
+                    recovered_tree = tree_hashes(root)
+                    repeated = importer(*arguments, destination)
+                    self.assertTrue(recovered.created)
+                    self.assertFalse(repeated.created)
+                    self.assertEqual(repeated.destination, recovered.destination)
+                    self.assertEqual(repeated.manifest, recovered.manifest)
+                    self.assertEqual(tree_hashes(root), recovered_tree)
+                    artifact = next(
+                        item
+                        for item in recovered.manifest["artifacts"]
+                        if Path(item["source_path"]) == source
+                    )
+                    self.assertEqual(
+                        (recovered.destination / artifact["path"]).read_bytes(),
+                        source.read_bytes(),
+                    )
+
+    def test_public_imports_preserve_copied_artifact_mode_and_mtime(self):
+        for importer in (import_legacy_job, import_standalone_generation):
+            with (
+                self.subTest(importer=importer.__name__),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory).resolve()
+                fixture = write_legacy_fixture(root / "source")
+                sources = (
+                    fixture["job_directory"] / "job.json",
+                    fixture["queue"],
+                    fixture["state"],
+                    fixture["manifest"],
+                    fixture["wav"],
+                )
+                for source in sources:
+                    source.chmod(0o600)
+                    os.utime(source, ns=(1_650_000_000_000_000_000,) * 2)
+                metadata = {
+                    source: (
+                        stat.S_IMODE(source.stat().st_mode),
+                        source.stat().st_mtime_ns,
+                    )
+                    for source in sources
+                }
+                before = tree_hashes(root / "source")
+                arguments = (
+                    (fixture["job_directory"],)
+                    if importer is import_legacy_job
+                    else (fixture["queue"], fixture["state"].parent)
+                )
+                result = importer(*arguments, root / "app-data")
+                self.assertTrue(result.created)
+                for artifact in result.manifest["artifacts"]:
+                    original = Path(artifact["source_path"])
+                    target = result.destination / artifact["path"]
+                    for path in (original, target):
+                        self.assertEqual(
+                            (
+                                stat.S_IMODE(path.stat().st_mode),
+                                path.stat().st_mtime_ns,
+                            ),
+                            metadata[original],
+                        )
+                    self.assertEqual(target.read_bytes(), original.read_bytes())
+                self.assertEqual(tree_hashes(root / "source"), before)
+
     def test_final_inspection_read_failure_is_a_domain_error_and_discovery_diagnostic(
         self,
     ):
@@ -359,12 +475,12 @@ class LegacyAuthoringImportTest(unittest.TestCase):
             job["status"] = "complete"
             job["pid"] = None
             job_path.write_text(json.dumps(job, sort_keys=True), encoding="utf-8")
-            original_copy = __import__("shutil").copy2
+            original_copy = legacy_module.copy_regular_file
             mutated = False
 
-            def mutate_after_queue_copy(source, destination):
+            def mutate_after_queue_copy(source, destination, **kwargs):
                 nonlocal mutated
-                result = original_copy(source, destination)
+                result = original_copy(source, destination, **kwargs)
                 if Path(source).resolve() == fixture["queue"].resolve() and not mutated:
                     state = json.loads(fixture["state"].read_text(encoding="utf-8"))
                     state["active"]["updated_at"] = "2026-08-16T17:00:02+00:00"
@@ -376,7 +492,7 @@ class LegacyAuthoringImportTest(unittest.TestCase):
 
             with (
                 patch(
-                    "vntts.authoring.legacy_import.shutil.copy2",
+                    "vntts.authoring.legacy_import.copy_regular_file",
                     side_effect=mutate_after_queue_copy,
                 ),
                 self.assertRaisesRegex(LegacyAuthoringImportError, "retry when idle"),
@@ -447,12 +563,12 @@ class LegacyAuthoringImportTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             fixture = write_legacy_fixture(root)
-            original_copy = __import__("shutil").copy2
+            original_copy = legacy_module.copy_regular_file
             mutated = False
 
-            def mutate_after_wav_copy(source, destination):
+            def mutate_after_wav_copy(source, destination, **kwargs):
                 nonlocal mutated
-                result = original_copy(source, destination)
+                result = original_copy(source, destination, **kwargs)
                 if Path(source).resolve() == fixture["wav"].resolve() and not mutated:
                     fixture["wav"].write_bytes(b"changed after copy")
                     mutated = True
@@ -460,7 +576,7 @@ class LegacyAuthoringImportTest(unittest.TestCase):
 
             with (
                 patch(
-                    "vntts.authoring.legacy_import.shutil.copy2",
+                    "vntts.authoring.legacy_import.copy_regular_file",
                     side_effect=mutate_after_wav_copy,
                 ),
                 self.assertRaisesRegex(LegacyAuthoringImportError, "retry when idle"),
