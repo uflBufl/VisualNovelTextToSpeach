@@ -25,6 +25,7 @@ class ChecksumAdmissionTest(unittest.TestCase):
                 expected = hashlib.sha256(payload).hexdigest()
                 self.assertEqual(document_identity.file_sha256(path), expected)
                 self.assertEqual(document_identity.file_sha256(str(path)), expected)
+                self.assertEqual(document_identity.sha256_file(path), expected)
                 self.assertEqual(path.read_bytes(), payload)
             path.unlink()
             for error_type in (ValueError, RuntimeError, OSError):
@@ -32,6 +33,51 @@ class ChecksumAdmissionTest(unittest.TestCase):
                     with self.assertRaises(error_type) as raised:
                         document_identity.file_sha256(path, error_type=error_type)
                     self.assertIsInstance(raised.exception.__cause__, FileNotFoundError)
+
+    def test_raw_hash_retains_chunk_contract_and_follows_regular_file_aliases(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "input"
+            payload = b"verified chunks" * 100
+            path.write_bytes(payload)
+            expected = hashlib.sha256(payload).hexdigest()
+            for chunk_size in (1, 7, 1024 * 1024):
+                with self.subTest(chunk_size=chunk_size):
+                    self.assertEqual(
+                        document_identity.sha256_file(path, chunk_size=chunk_size),
+                        expected,
+                    )
+            self.assertEqual(document_identity.sha256_file(str(path)), expected)
+            link = path.with_name("alias")
+            symlink_or_skip(link, path)
+            self.assertEqual(document_identity.sha256_file(link), expected)
+            self.assertEqual(path.read_bytes(), payload)
+
+    def test_raw_hash_rejects_invalid_chunk_size_before_acquisition(self):
+        with patch.object(document_identity, "open_regular_binary") as acquire:
+            for chunk_size in (0, -1):
+                with self.subTest(chunk_size=chunk_size):
+                    with self.assertRaisesRegex(
+                        ValueError, "chunk_size must be positive"
+                    ):
+                        document_identity.sha256_file("absent", chunk_size=chunk_size)
+            acquire.assert_not_called()
+
+    def test_raw_hash_preserves_filesystem_exception_and_domain_cause(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "absent"
+            with self.assertRaises(FileNotFoundError) as missing:
+                document_identity.sha256_file(path)
+            self.assertEqual(missing.exception.filename, str(path))
+            self.assertIsNone(missing.exception.__cause__)
+            denied = PermissionError(13, "denied", str(path))
+            with patch("vntts.path_safety.os.open", side_effect=denied):
+                with self.assertRaises(PermissionError) as raw:
+                    document_identity.sha256_file(path)
+                self.assertIs(raw.exception, denied)
+                self.assertIsNone(raw.exception.__cause__)
+                with self.assertRaises(ValueError) as translated:
+                    document_identity.file_sha256(path)
+                self.assertIs(translated.exception.__cause__, denied)
 
     def _assert_fifo_admission(self, path, invoke, error_type):
         payload = path.read_bytes()
@@ -211,6 +257,7 @@ class ChecksumAdmissionTest(unittest.TestCase):
     def test_shared_and_binary_integrity_hashes_reject_swaps_and_recover(self):
         for owner in (
             "shared",
+            "raw shared",
             "model asset",
             "managed file",
             "managed tree",
@@ -229,9 +276,12 @@ class ChecksumAdmissionTest(unittest.TestCase):
                     (path.name,),
                     file_sha256s={path.name: digest},
                 )
-                if owner == "shared":
-                    invoke = partial(document_identity.file_sha256, path)
-                    error_type = ValueError
+                if owner in {"shared", "raw shared"}:
+                    checksum, error_type = {
+                        "shared": (document_identity.file_sha256, ValueError),
+                        "raw shared": (document_identity.sha256_file, OSError),
+                    }[owner]
+                    invoke = partial(checksum, path)
                 elif owner == "model asset":
                     manager = assets.ModelAssetManager(root / "models")
                     invoke = partial(
@@ -256,7 +306,7 @@ class ChecksumAdmissionTest(unittest.TestCase):
                     error_type = None
                 self._assert_fifo_admission(path, invoke, error_type)
                 result = invoke()
-                if owner == "shared":
+                if owner in {"shared", "raw shared"}:
                     self.assertEqual(result, digest)
                 elif owner == "source identity":
                     self.assertEqual(result, f"sha256:{digest}:{len(payload)}")

@@ -9,13 +9,23 @@ from typing import TypeGuard
 from vntts.path_safety import open_regular_binary
 
 
+def sha256_file(path: str | PathLike[str], *, chunk_size: int = 1024 * 1024) -> str:
+    """Stream a regular-file checksum, preserving filesystem exceptions."""
+    if chunk_size < 1:
+        raise ValueError("chunk_size must be positive")
+    digest = hashlib.sha256()
+    with open_regular_binary(path) as source:
+        for chunk in iter(lambda: source.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def file_sha256(
     path: str | PathLike[str], *, error_type: type[Exception] = ValueError
 ) -> str:
     """Stream one regular-file checksum through the caller's error boundary."""
     try:
-        with open_regular_binary(path) as source:
-            return hashlib.file_digest(source, "sha256").hexdigest()
+        return sha256_file(path)
     except OSError as error:
         raise error_type(str(error)) from error
 
@@ -54,4 +64,5 @@ __all__ = [
     "file_sha256",
     "is_lowercase_sha256",
     "is_sha256",
+    "sha256_file",
 ]
