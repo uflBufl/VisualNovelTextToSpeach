@@ -3,6 +3,7 @@ import hashlib
 import io
 import json
 import os
+import stat
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
@@ -38,6 +39,7 @@ class WorkspaceInputAdmissionTest(unittest.TestCase):
         native_builtin_open, native_io_open = builtins.open, io.open
         descriptors = []
         saved = None
+        saved_mode = None
 
         def selected(path):
             return (
@@ -52,12 +54,13 @@ class WorkspaceInputAdmissionTest(unittest.TestCase):
             return owner(path, *args, **kwargs)
 
         def swap_and_open(path, flags, mode=0o777, *, dir_fd=None):
-            nonlocal saved
+            nonlocal saved, saved_mode
             if selected(path):
                 self.assertTrue(flags & os.O_NONBLOCK)
                 self.assertIsNone(saved, "source must stop after refused acquisition")
                 # Save outside the open guard before swapping the admitted candidate.
                 gate["armed"] = False
+                saved_mode = stat.S_IMODE(Path(path).stat().st_mode)
                 saved = Path(path).read_bytes()
                 gate["armed"] = True
                 Path(path).unlink()
@@ -90,6 +93,7 @@ class WorkspaceInputAdmissionTest(unittest.TestCase):
             if saved is not None:
                 gate["path"].unlink()
                 gate["path"].write_bytes(saved)
+                gate["path"].chmod(saved_mode)
 
     @unittest.skipUnless(
         hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
@@ -478,3 +482,198 @@ class WorkspaceInputAdmissionTest(unittest.TestCase):
             repeated = publish()
             self.assertFalse(repeated.created)
             self.assertEqual(recovered.decision_id, repeated.decision_id)
+
+    def test_audit_json_capture_preserves_text_and_raw_error_contracts(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "input.json"
+            path.write_bytes(b'{\r\n"text": "caf\xc3\xa9", "extra": [true]\r\n}\r\n')
+            for encoding in (None, "utf-8"):
+                with self.subTest(encoding=encoding):
+                    self.assertEqual(
+                        audit._read_json(path, encoding=encoding),
+                        json.loads(path.read_text(encoding=encoding)),
+                    )
+            for payload, error_type in (
+                (b"\xff", UnicodeDecodeError),
+                (b"\xef\xbb\xbf{}", json.JSONDecodeError),
+                (b"{\r\ninvalid", json.JSONDecodeError),
+            ):
+                path.write_bytes(payload)
+                with (
+                    self.subTest(payload=payload),
+                    self.assertRaises(error_type) as caught,
+                ):
+                    audit._read_json(path, encoding="utf-8")
+                if payload == b"{\r\ninvalid":
+                    self.assertEqual(caught.exception.doc, "{\ninvalid")
+            path.write_bytes(b"[]")
+            self.assertEqual(audit._read_json(path), [])
+            alias = path.with_name("alias.json")
+            symlink_or_skip(alias, path)
+            self.assertEqual(audit._read_json(alias), [])
+            path.unlink()
+            with self.assertRaises(FileNotFoundError):
+                audit._read_json(path)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_audit_text_phases_refuse_acquisition_and_recover(self):
+        for phase in ("audit", "key", "state", "decisions", "inventory"):
+            with self.subTest(phase=phase), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                workspace, _queue_id = create_failed_reference_workspace(root)
+                output = root / "audit"
+                expected = audit.publish_failure_reference_audit(workspace, output)
+                document = json.loads((output / "audit.json").read_text())
+                decisions = audit.record_failure_reference_decision(
+                    output, document["groups"][0]["group_id"], "neither_acceptable"
+                )
+                gate = {
+                    "path": {
+                        "audit": output / "audit.json",
+                        "key": output / ".blind-key.json",
+                        "state": workspace / "generated-audio/generation-state.json",
+                        "decisions": output / "decisions.json",
+                        "inventory": output / "audit.json",
+                    }[phase],
+                    "armed": False,
+                }
+                boundary = {
+                    "audit": "_read_failure_reference_audit",
+                    "key": "_read_failure_reference_audit",
+                    "state": "_validate_audit_source_authority",
+                    "decisions": "_load_validated_audit",
+                    "inventory": "_validate_decision_inventory",
+                }[phase]
+                original = getattr(audit, boundary)
+
+                def arm(*args, **kwargs):
+                    if phase == "decisions":
+                        result = original(*args, **kwargs)
+                        gate["armed"] = True
+                        return result
+                    gate["armed"] = True
+                    return original(*args, **kwargs)
+
+                loader = (
+                    audit.load_failure_reference_decisions
+                    if phase in {"decisions", "inventory"}
+                    else audit.load_failure_reference_audit
+                )
+                error_type = (
+                    OSError
+                    if phase == "inventory"
+                    else audit.FailureReferenceAuditError
+                )
+                before = tree_hashes(root)
+                with (
+                    self.swap_at_acquisition(gate),
+                    patch.object(audit, boundary, side_effect=arm),
+                    self.assertRaisesRegex(error_type, "regular file"),
+                ):
+                    loader(output)
+                self.assertEqual(tree_hashes(root), before)
+                self.assertEqual(audit.load_failure_reference_audit(output), expected)
+                self.assertEqual(
+                    audit.load_failure_reference_decisions(output), decisions
+                )
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_audit_checksum_phases_refuse_acquisition_and_recover(self):
+        for phase in ("staged", "final", "candidate", "workspace", "queue", "manifest"):
+            with self.subTest(phase=phase), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                workspace, _queue_id = create_failed_reference_workspace(root)
+                output = root / "audit"
+                expected = audit.publish_failure_reference_audit(
+                    workspace, root / "expected", seed=7
+                )
+                gate = {"path": None, "armed": False}
+                if phase in {"staged", "final"}:
+                    if phase == "staged":
+                        original = audit.file_sha256
+
+                        def arm(path, **kwargs):
+                            gate["path"] = Path(path)
+                            gate["armed"] = True
+                            with (
+                                self.swap_at_acquisition(gate),
+                                self.assertRaises(OSError) as caught,
+                            ):
+                                original(path, **kwargs)
+                            raise caught.exception
+
+                        boundary = "file_sha256"
+                    else:
+                        original = audit._assert_audit_publication_sources_unchanged
+
+                        def arm(source, files):
+                            files = list(files)
+                            self.assertTrue(files)
+                            gate["path"] = files[0][0]
+                            gate["armed"] = True
+                            return original(source, files)
+
+                        boundary = "_assert_audit_publication_sources_unchanged"
+                    before = tree_hashes(root)
+                    with patch.object(audit, boundary, side_effect=arm):
+                        if phase == "staged":
+                            with self.assertRaisesRegex(
+                                audit.FailureReferenceAuditError, "regular file"
+                            ):
+                                audit.publish_failure_reference_audit(
+                                    workspace, output, seed=7
+                                )
+                        else:
+                            with (
+                                self.swap_at_acquisition(gate),
+                                self.assertRaisesRegex(
+                                    audit.FailureReferenceAuditError, "regular file"
+                                ),
+                            ):
+                                audit.publish_failure_reference_audit(
+                                    workspace, output, seed=7
+                                )
+                    self.assertEqual(tree_hashes(root), before)
+                    self.assertFalse(output.exists())
+                    self.assertFalse(list(root.glob(".audit.staging-*")))
+                    recovered = audit.publish_failure_reference_audit(
+                        workspace, output, seed=7
+                    )
+                    self.assertEqual(recovered.audit_id, expected.audit_id)
+                else:
+                    audit.publish_failure_reference_audit(workspace, output, seed=7)
+                    document = json.loads((output / "audit.json").read_text())
+                    gate["path"] = {
+                        "candidate": output
+                        / document["groups"][0]["candidates"][0]["audio"],
+                        "workspace": workspace / "workspace.json",
+                        "queue": workspace / "queue.jsonl",
+                        "manifest": workspace / "inputs/voice/manifest.json",
+                    }[phase]
+                    boundary = (
+                        "_validate_audit_candidate_files"
+                        if phase == "candidate"
+                        else "_validate_audit_source_authority"
+                    )
+                    original = getattr(audit, boundary)
+
+                    def arm(*args, **kwargs):
+                        gate["armed"] = True
+                        return original(*args, **kwargs)
+
+                    before = tree_hashes(root)
+                    with (
+                        self.swap_at_acquisition(gate),
+                        patch.object(audit, boundary, side_effect=arm),
+                        self.assertRaisesRegex(OSError, "regular file"),
+                    ):
+                        audit.load_failure_reference_audit(output)
+                    self.assertEqual(tree_hashes(root), before)
+                    self.assertEqual(
+                        audit.load_failure_reference_audit(output).audit_id,
+                        expected.audit_id,
+                    )
