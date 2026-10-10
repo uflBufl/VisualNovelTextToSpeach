@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +11,7 @@ from unittest.mock import Mock, patch
 from PIL import Image, ImageDraw
 
 import vntts.live_replay_capture as live_replay_capture
+from tests import test_workspace_input_admission as admission
 from tests.symlink_support import symlink_or_skip
 from vntts.dialog_capture import (
     CapturedDialogFrame,
@@ -136,6 +138,175 @@ class LiveReplayCaptureTest(unittest.TestCase):
             self.assertEqual(
                 session.story_index_sha256, hashlib.sha256(original).hexdigest()
             )
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_capture_story_hash_refuses_fifo_before_session_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            story = root / "story.jsonl"
+            payload = b"captured original story"
+            story.write_bytes(payload)
+            story.chmod(0o444)
+            mode = story.stat().st_mode
+            output = root / "capture"
+            original_hash = live_replay_capture.sha256_file
+            refused = []
+
+            def checksum(candidate):
+                self.assertEqual(Path(candidate), story)
+                gate = {"path": story, "armed": True}
+                with (
+                    admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                        self, gate
+                    ),
+                    self.assertRaisesRegex(OSError, "regular file") as caught,
+                ):
+                    original_hash(candidate)
+                refused.append(caught.exception)
+                raise caught.exception
+
+            def capture(session, **_kwargs):
+                session.observe(frame("red"), "Rhiannon", "Hello there.")
+                return session.finish()
+
+            with (
+                patch.object(
+                    live_replay_capture, "load_app_settings", return_value=AppSettings()
+                ),
+                patch.object(live_replay_capture.GameProfileStore, "load") as profiles,
+                patch.object(
+                    live_replay_capture, "get_dialog_region", return_value=None
+                ),
+                patch.object(live_replay_capture.OCRCorrectionStore, "load"),
+                patch.object(
+                    live_replay_capture.ChapterVoicePreloader,
+                    "load_optional",
+                    return_value=FakeStoryResolver(),
+                ),
+                patch.object(
+                    live_replay_capture, "capture_replay_session", side_effect=capture
+                ) as run_capture,
+                patch.object(
+                    live_replay_capture, "cli_error", return_value=1
+                ) as cli_failure,
+            ):
+                profiles.return_value.get.return_value = None
+                with patch.object(live_replay_capture, "sha256_file", checksum):
+                    self.assertEqual(
+                        live_replay_capture.main(
+                            [str(output), "--story-index", str(story)]
+                        ),
+                        1,
+                    )
+                self.assertEqual(len(refused), 1)
+                cli_failure.assert_called_once_with(refused[0])
+                run_capture.assert_not_called()
+                self.assertFalse(output.exists())
+                self.assertEqual(story.read_bytes(), payload)
+                self.assertEqual(story.stat().st_mode, mode)
+                self.assertEqual(list(root.iterdir()), [story])
+                self.assertEqual(
+                    live_replay_capture.main(
+                        [str(output), "--story-index", str(story)]
+                    ),
+                    0,
+                )
+                run_capture.assert_called_once()
+            document = json.loads((output / "corpus.json").read_text())
+            self.assertEqual(
+                document["capture"]["story_index_sha256"],
+                hashlib.sha256(payload).hexdigest(),
+            )
+            self.assertEqual(
+                len(load_live_replay_corpus(output / "corpus.json").dialogue), 1
+            )
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_capture_finish_hashes_refuse_fifo_preserve_frames_and_recover(self):
+        for role in ("story", "dialogue-frame", "observation-frame"):
+            with self.subTest(role=role), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                story = root / "story.jsonl"
+                payload = b"bound story"
+                story.write_bytes(payload)
+                session = LiveReplayCaptureSession(
+                    root / "capture",
+                    story_resolver=FakeStoryResolver(),
+                    story_index_path=story,
+                    story_index_sha256=hashlib.sha256(payload).hexdigest(),
+                )
+                session.observe(frame("red"), "Rhiannon", "Hello there.")
+                if role == "observation-frame":
+                    session.note_uncertain_observation(frame("blue"))
+                selected = (
+                    story
+                    if role == "story"
+                    else sorted(session.frames_directory.iterdir())[-1]
+                )
+                selected.chmod(0o444)
+                mode = selected.stat().st_mode
+                before = {
+                    path: path.read_bytes()
+                    for path in root.rglob("*")
+                    if path.is_file()
+                }
+                original_hash = live_replay_capture.sha256_file
+                refused = []
+
+                def checksum(candidate):
+                    if Path(candidate) != selected:
+                        return original_hash(candidate)
+                    gate = {"path": selected, "armed": True}
+                    with (
+                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                            self, gate
+                        ),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original_hash(candidate)
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                with (
+                    patch.object(live_replay_capture, "sha256_file", checksum),
+                    self.assertRaisesRegex(OSError, "regular file") as caught,
+                ):
+                    session.finish()
+                self.assertEqual(len(refused), 1)
+                self.assertIs(caught.exception, refused[0])
+                self.assertFalse(session.finished)
+                self.assertEqual(
+                    {
+                        path: path.read_bytes()
+                        for path in root.rglob("*")
+                        if path.is_file()
+                    },
+                    before,
+                )
+                self.assertEqual(selected.stat().st_mode, mode)
+                self.assertEqual(
+                    list(session.directory.iterdir()), [session.frames_directory]
+                )
+                result = session.finish()
+                self.assertTrue(session.finished)
+                self.assertEqual(
+                    result.frame_count, 2 if role == "observation-frame" else 1
+                )
+                self.assertEqual(
+                    len(load_live_replay_corpus(result.corpus).dialogue), 1
+                )
+                ledger_payload = result.observation_ledger.read_bytes()
+                document = json.loads(result.corpus.read_text())
+                self.assertEqual(
+                    document["capture"]["observation_ledger"]["sha256"],
+                    hashlib.sha256(ledger_payload).hexdigest(),
+                )
+                for path, content in before.items():
+                    self.assertEqual(path.read_bytes(), content)
 
     def test_invalid_capture_limits_fail_before_capturing(self):
         invalid = (

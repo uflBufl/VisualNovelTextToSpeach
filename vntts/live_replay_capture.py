@@ -29,6 +29,7 @@ from vntts.dialog_capture import (
     is_standalone_ellipsis_text,
     recognize_screenshot_result,
 )
+from vntts.document_identity import sha256_file
 from vntts.ocr import get_dialog_region
 from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.profiles import GameProfileStore
@@ -600,7 +601,7 @@ class LiveReplayCaptureSession:
                 or not self.story_index_path.is_file()
             ):
                 raise LiveReplayCaptureError("Story index became unavailable or unsafe")
-            digest = hashlib.sha256(self.story_index_path.read_bytes()).hexdigest()
+            digest = sha256_file(self.story_index_path)
             if digest != self.story_index_sha256:
                 raise LiveReplayCaptureError(
                     "Story index changed during replay capture"
@@ -615,7 +616,7 @@ class LiveReplayCaptureSession:
         path = self.directory.joinpath(*PurePosixPath(frame["path"]).parts)
         if path.is_symlink() or not path.is_file():
             raise LiveReplayCaptureError(f"{label} is unavailable")
-        if hashlib.sha256(path.read_bytes()).hexdigest() != frame["sha256"]:
+        if sha256_file(path) != frame["sha256"]:
             raise LiveReplayCaptureError(f"{label} changed")
 
 
@@ -766,7 +767,7 @@ def _load_capture_story(story_path: Path) -> tuple[StoryResolver, str]:
     resolver = ChapterVoicePreloader.load_snapshot(story_path, payload)
     if not resolver.dialogue:
         raise LiveReplayCaptureError("Story index has no usable dialogue")
-    if hashlib.sha256(story_path.read_bytes()).hexdigest() != digest:
+    if sha256_file(story_path) != digest:
         raise LiveReplayCaptureError("Story index changed while loading")
     return resolver, digest
 
