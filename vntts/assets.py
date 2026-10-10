@@ -724,7 +724,7 @@ class VoicePackManager:
                 for destination in (manifest_path, checksum_path):
                     backup = backup_directory / destination.name
                     if destination.exists():
-                        backup.write_bytes(destination.read_bytes())
+                        copy_regular_file(destination, backup)
                     backups.append((destination, backup))
                 try:
                     replacement_started = True

@@ -9,6 +9,8 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import tests.test_workspace_input_admission as admission
+import vntts.assets as assets_module
+from tests.authoring_fixtures import tree_hashes
 from tests.symlink_support import symlink_or_skip
 from vntts.assets import VoicePackManager
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
@@ -68,6 +70,118 @@ class AssetInputAdmissionTest(unittest.TestCase):
                     CharacterVoiceRegistry.from_file(manifest).resolve("New")
                 )
                 self.assertEqual(manager.validate(manifest), manifest)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_backup_acquisitions_refuse_fifo_keep_prior_pack_and_recover(self):
+        for import_mode in ("voice", "pack"):
+            for name in ("manifest.json", "vntts-asset.json"):
+                with (
+                    self.subTest(import_mode=import_mode, backup=name),
+                    TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory).resolve()
+                    old, new = root / "old.wav", root / "new.wav"
+                    old.write_bytes(b"old voice")
+                    new.write_bytes(b"new voice")
+                    manager = VoicePackManager(root / "managed")
+                    manifest = manager.import_voice("Old", [old])
+                    source_manifest = VoicePackManager(root / "source").import_voice(
+                        "New", [new]
+                    )
+                    if import_mode == "voice":
+                        invoke = partial(manager.import_voice, "New", [new])
+                    else:
+                        invoke = partial(
+                            manager.import_pack, source_manifest, pack_name="custom"
+                        )
+                    selected = manifest.with_name(name)
+                    before = tree_hashes(root)
+                    original_copy = assets_module.copy_regular_file
+                    refused = []
+
+                    def copy(original, target, **kwargs):
+                        if Path(original) != selected:
+                            return original_copy(original, target, **kwargs)
+                        gate = {"path": selected, "armed": True}
+                        with (
+                            admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                                self, gate
+                            ),
+                            self.assertRaisesRegex(OSError, "regular file") as caught,
+                        ):
+                            original_copy(original, target, **kwargs)
+                        self.assertFalse(Path(target).exists())
+                        refused.append(caught.exception)
+                        raise caught.exception
+
+                    with (
+                        patch.object(assets_module, "copy_regular_file", copy),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        invoke()
+                    self.assertEqual(len(refused), 1)
+                    self.assertIs(caught.exception, refused[0])
+                    self.assertEqual(tree_hashes(root), before)
+                    self.assertEqual(
+                        list(manifest.parent.glob(".voice-pack-backup-*")), []
+                    )
+                    self.assertEqual(manager.validate(manifest), manifest)
+                    self.assertEqual(invoke(), manifest)
+                    self.assertIsNotNone(
+                        CharacterVoiceRegistry.from_file(manifest).resolve("New")
+                    )
+                    self.assertEqual(manager.validate(manifest), manifest)
+                    self.assertEqual(
+                        list(manifest.parent.glob(".voice-pack-backup-*")), []
+                    )
+                    self.assertEqual(old.read_bytes(), b"old voice")
+                    self.assertEqual(new.read_bytes(), b"new voice")
+
+    def test_partial_backup_stream_failure_cleans_owned_copies_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            old, new = root / "old.wav", root / "new.wav"
+            old.write_bytes(b"old voice")
+            new.write_bytes(b"new voice")
+            manager = VoicePackManager(root / "managed")
+            manifest = manager.import_voice("Old", [old])
+            checksum = manifest.with_name("vntts-asset.json")
+            before = tree_hashes(root)
+            original_copy = assets_module.copy_regular_file
+            primary = PermissionError("backup stream failed")
+            streams = []
+
+            def fail_stream(original, target):
+                streams.extend((original, target))
+                target.write(original.read(1))
+                raise primary
+
+            def copy(original, target, **kwargs):
+                if Path(original) != checksum:
+                    return original_copy(original, target, **kwargs)
+                with patch("vntts.path_safety.shutil.copyfileobj", fail_stream):
+                    try:
+                        original_copy(original, target, **kwargs)
+                    finally:
+                        self.assertEqual(
+                            Path(target).read_bytes(), checksum.read_bytes()[:1]
+                        )
+
+            with (
+                patch.object(assets_module, "copy_regular_file", copy),
+                self.assertRaises(PermissionError) as caught,
+            ):
+                manager.import_voice("New", [new])
+            self.assertIs(caught.exception, primary)
+            self.assertEqual(len(streams), 2)
+            self.assertTrue(all(stream.closed for stream in streams))
+            self.assertEqual(tree_hashes(root), before)
+            self.assertEqual(list(manifest.parent.glob(".voice-pack-backup-*")), [])
+            self.assertEqual(manager.validate(manifest), manifest)
+            self.assertEqual(manager.import_voice("New", [new]), manifest)
+            self.assertEqual(manager.validate(manifest), manifest)
 
     def test_reference_copy_refuses_same_file_without_truncating(self):
         with TemporaryDirectory() as directory:
