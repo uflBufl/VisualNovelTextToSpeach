@@ -6,7 +6,6 @@ import copy
 import hashlib
 import json
 import os
-import shutil
 import socket
 from collections.abc import Callable, Mapping, Sequence, Set
 from dataclasses import asdict, dataclass
@@ -74,7 +73,7 @@ from vntts.authoring.source_reference_bindings import (
     queue_voice_overrides_sha256,
 )
 from vntts.json_types import decode_json, has_schema_version
-from vntts.path_safety import open_regular_binary, safe_relative_path
+from vntts.path_safety import copy_regular_file, open_regular_binary, safe_relative_path
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidence,
     SourceAudioSemanticEvidenceError,
@@ -1126,7 +1125,7 @@ def _copy_control(
     digest = _capture_control(source, inventory, label)
     destination.parent.mkdir(parents=True, exist_ok=True)
     try:
-        shutil.copyfile(source, destination)
+        copy_regular_file(source, destination)
         copied_digest = sha256_file(destination)
     except OSError as error:
         raise FinalGamePackError(f"Unable to copy {label} {source}: {error}") from error

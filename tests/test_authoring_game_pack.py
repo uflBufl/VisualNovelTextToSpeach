@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import os
 import shutil
 import tempfile
 import unittest
@@ -24,6 +25,8 @@ from vntts_artifacts.voice_manifest import write_voice_manifest
 
 import vntts.authoring.bulk_generation as bulk_generation_module
 import vntts.authoring.game_pack as game_pack_module
+from tests import test_workspace_input_admission as admission
+from tests.authoring_fixtures import tree_hashes
 from tests.bulk_generation_fixtures import audio_samples
 from tests.source_reference_fixtures import (
     write_reference_render_comparison_fixture as write_comparison,
@@ -374,7 +377,163 @@ def write_fixture_live_sequence(fixture, path, *, story_path=None):
     return path
 
 
+def prepare_failure_reference_overlay(fixture, binding):
+    old_item, new_item = fixture["items"]
+    review_generation_item(fixture["state"], old_item["queue_id"], "approved")
+    selected = binding / "references" / ("a" * 64) / "selected.wav"
+    selected.parent.mkdir(parents=True)
+    shutil.copyfile(fixture["reference"], selected)
+    selected_sha256 = sha256_file(selected)
+    overrides = {new_item["queue_id"]: "Selected failure reference aaaaaaaaaaaaaaaa"}
+    identity = {
+        "schema": "vntts.authoring-failure-reference-binding",
+        "schema_version": 1,
+        "audit_id": "1" * 64,
+        "decision_set_id": "2" * 64,
+        "source_authority": {
+            "workspace_id": "resume-" + "3" * 24 + "-" + "4" * 16,
+            "workspace_sha256": "5" * 64,
+            "queue_sha256": sha256_file(fixture["queue"]),
+            "state_sha256": "6" * 64,
+            "voice_manifest_sha256": sha256_file(fixture["voices"]),
+            "audit_sha256": "7" * 64,
+            "blind_key_sha256": "8" * 64,
+            "decisions_sha256": "9" * 64,
+        },
+        "groups": [
+            {
+                "group_id": "a" * 64,
+                "synthesis_voice_character": "Hero",
+                "control_character": "Hero",
+                "speaker": "synthetic-hero",
+                "candidate_id": "candidate-01",
+                "voice_character": overrides[new_item["queue_id"]],
+                "reference": "references/" + "a" * 64 + "/selected.wav",
+                "reference_sha256": selected_sha256,
+                "source_reference": "references/hero.wav",
+                "cases": [
+                    {
+                        "queue_id": new_item["queue_id"],
+                        "failure_sha256": "b" * 64,
+                    }
+                ],
+            }
+        ],
+        "queue_voice_overrides": overrides,
+        "queue_voice_overrides_sha256": queue_voice_overrides_sha256(overrides),
+        "authority": "Exact test overlay",
+    }
+    document = {
+        **identity,
+        "binding_id": _canonical_sha256(identity),
+        "published_at": "2026-08-16T12:04:00+00:00",
+    }
+    binding_path = binding / "binding.json"
+    binding_path.write_text(json.dumps(document, sort_keys=True))
+
+    run_bulk_generation(
+        fixture["queue"],
+        fixture["output"],
+        SyntheticRenderer(),
+        provider="synthetic",
+        model="synthetic-v1",
+        generation_profile="stable",
+        include_queue_ids=(new_item["queue_id"],),
+        regenerate_existing=True,
+        control_files={
+            "voice_manifest": fixture["voices"],
+            "voice_reference:0001": fixture["reference"],
+            "failure_reference_binding": binding_path,
+            "failure_reference_selected:0001": selected,
+        },
+        queue_voice_overrides=overrides,
+    )
+    review_generation_item(fixture["state"], new_item["queue_id"], "approved")
+    return binding_path, selected, document
+
+
 class AuthoringGamePackTest(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_public_control_copies_refuse_acquisition_clean_up_and_recover(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source_root = root / "source"
+            fixture = prepare_authoring_fixture(
+                source_root, names=("old", "new"), source_audio_semantics=True
+            )
+            binding, selected_reference, _document = prepare_failure_reference_overlay(
+                fixture, source_root / "binding"
+            )
+            sequence = write_fixture_live_sequence(
+                fixture, source_root / "inputs/live-sequence.json"
+            )
+            options = {
+                "live_sequence_plan_path": sequence,
+                "source_audio_semantic_evidence_path": fixture[
+                    "source_audio_semantic_evidence"
+                ],
+                "failure_reference_binding_path": binding,
+            }
+            expected = publish(fixture, root / "expected", **options)
+            expected_tree = tree_hashes(expected.directory)
+            before = tree_hashes(source_root)
+            phases = (
+                ("story index", fixture["story"]),
+                ("voice manifest", fixture["voices"]),
+                ("failure-reference binding", binding),
+                ("selected reference", selected_reference),
+                (
+                    "source-audio semantic evidence",
+                    fixture["source_audio_semantic_evidence"],
+                ),
+                ("live sequence plan", sequence),
+                ("voice reference", fixture["reference"]),
+                ("generated WAV", next((fixture["output"] / "audio").rglob("*.wav"))),
+            )
+            for index, (label, selected) in enumerate(phases):
+                with self.subTest(artifact=label):
+                    destination = root / f"pack-{index}"
+                    original_copy = game_pack_module.copy_regular_file
+                    refused = []
+
+                    def copy(source, target):
+                        if Path(source) != selected:
+                            return original_copy(source, target)
+                        gate = {"path": selected, "armed": True}
+                        with (
+                            admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                                self, gate
+                            ),
+                            self.assertRaisesRegex(OSError, "regular file") as caught,
+                        ):
+                            original_copy(source, target)
+                        self.assertFalse(Path(target).exists())
+                        refused.append(caught.exception)
+                        raise caught.exception
+
+                    with (
+                        patch.object(game_pack_module, "copy_regular_file", copy),
+                        self.assertRaisesRegex(
+                            FinalGamePackError,
+                            f"Unable to copy {label} .*regular file",
+                        ) as caught,
+                    ):
+                        publish(fixture, destination, **options)
+                    self.assertEqual(len(refused), 1)
+                    self.assertIs(caught.exception.__cause__, refused[0])
+                    self.assertEqual(tree_hashes(source_root), before)
+                    self.assertFalse(destination.exists())
+                    self.assertFalse(list(root.glob(f".{destination.name}.staging-*")))
+                    self.assertFalse(
+                        (root / f".{destination.name}.publication.json").exists()
+                    )
+                    self.assertFalse(list(source_root.rglob(".generation-lease.json")))
+                    recovered = publish(fixture, destination, **options)
+                    self.assertEqual(tree_hashes(recovered.directory), expected_tree)
+                    self.assertEqual(tree_hashes(source_root), before)
+
     def test_state_reader_preserves_domain_error_for_invalid_encoding(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "state.json"
@@ -775,80 +934,9 @@ class AuthoringGamePackTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             fixture = prepare_authoring_fixture(root / "source", names=("old", "new"))
-            old_item, new_item = fixture["items"]
-            review_generation_item(fixture["state"], old_item["queue_id"], "approved")
-            binding = root / "binding"
-            selected = binding / "references" / ("a" * 64) / "selected.wav"
-            selected.parent.mkdir(parents=True)
-            shutil.copyfile(fixture["reference"], selected)
-            selected_sha256 = sha256_file(selected)
-            overrides = {
-                new_item["queue_id"]: "Selected failure reference aaaaaaaaaaaaaaaa"
-            }
-            identity = {
-                "schema": "vntts.authoring-failure-reference-binding",
-                "schema_version": 1,
-                "audit_id": "1" * 64,
-                "decision_set_id": "2" * 64,
-                "source_authority": {
-                    "workspace_id": "resume-" + "3" * 24 + "-" + "4" * 16,
-                    "workspace_sha256": "5" * 64,
-                    "queue_sha256": sha256_file(fixture["queue"]),
-                    "state_sha256": "6" * 64,
-                    "voice_manifest_sha256": sha256_file(fixture["voices"]),
-                    "audit_sha256": "7" * 64,
-                    "blind_key_sha256": "8" * 64,
-                    "decisions_sha256": "9" * 64,
-                },
-                "groups": [
-                    {
-                        "group_id": "a" * 64,
-                        "synthesis_voice_character": "Hero",
-                        "control_character": "Hero",
-                        "speaker": "synthetic-hero",
-                        "candidate_id": "candidate-01",
-                        "voice_character": overrides[new_item["queue_id"]],
-                        "reference": "references/" + "a" * 64 + "/selected.wav",
-                        "reference_sha256": selected_sha256,
-                        "source_reference": "references/hero.wav",
-                        "cases": [
-                            {
-                                "queue_id": new_item["queue_id"],
-                                "failure_sha256": "b" * 64,
-                            }
-                        ],
-                    }
-                ],
-                "queue_voice_overrides": overrides,
-                "queue_voice_overrides_sha256": queue_voice_overrides_sha256(overrides),
-                "authority": "Exact test overlay",
-            }
-            document = {
-                **identity,
-                "binding_id": _canonical_sha256(identity),
-                "published_at": "2026-08-16T12:04:00+00:00",
-            }
-            binding_path = binding / "binding.json"
-            binding_path.write_text(json.dumps(document, sort_keys=True))
-
-            run_bulk_generation(
-                fixture["queue"],
-                fixture["output"],
-                SyntheticRenderer(),
-                provider="synthetic",
-                model="synthetic-v1",
-                generation_profile="stable",
-                include_queue_ids=(new_item["queue_id"],),
-                regenerate_existing=True,
-                control_files={
-                    "voice_manifest": fixture["voices"],
-                    "voice_reference:0001": fixture["reference"],
-                    "failure_reference_binding": binding_path,
-                    "failure_reference_selected:0001": selected,
-                },
-                queue_voice_overrides=overrides,
+            binding_path, _selected, document = prepare_failure_reference_overlay(
+                fixture, root / "binding"
             )
-            review_generation_item(fixture["state"], new_item["queue_id"], "approved")
 
             result = publish(
                 fixture,
