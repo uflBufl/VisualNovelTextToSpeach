@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from io import TextIOWrapper
@@ -52,7 +51,7 @@ from vntts.authoring.workspace_foundation import (
 )
 from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import decode_json
-from vntts.path_safety import open_regular_binary
+from vntts.path_safety import copy_regular_file, open_regular_binary
 from vntts.voices import load_voice_manifest
 
 EXPERIMENTAL_COMPOSITE_VOICE_FIELD = "vntts.authoring.experimental_composite_voices"
@@ -648,7 +647,7 @@ def _copy_file(
         raise ExperimentalCompositeVoiceError(
             f"Experimental artifact path collides: {destination}"
         )
-    shutil.copyfile(source, destination)
+    copy_regular_file(source, destination)
     if sha256_file(destination) != expected_sha256:
         raise ExperimentalCompositeVoiceError(
             f"Experimental artifact changed while copied: {source}"
