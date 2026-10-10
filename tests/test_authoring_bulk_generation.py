@@ -4,7 +4,7 @@ import os
 import socket
 import unittest
 import wave
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -19,6 +19,7 @@ from vntts_artifacts.generated_audio import GeneratedAudioIndex
 
 import vntts.authoring.bulk_generation as bulk_module
 import vntts.authoring.generation_lease as generation_lease_module
+import vntts.authoring.workspace_foundation as foundation_module
 from tests.authoring_fixtures import tree_hashes
 from tests.bulk_generation_fixtures import (
     SyntheticRenderer,
@@ -746,40 +747,33 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             result.state.write_bytes(foreign)
             load_generation_state(result.state, queue)
             result.state.write_bytes(original)
-            original_read_bytes = Path.read_bytes
-            original_read_text = Path.read_text
+            original_open = foundation_module.open_regular_binary
             for capture, selection in (
                 (generation_review_authority, item["queue_id"]),
                 (generation_review_authorities, [item["queue_id"]]),
             ):
                 captured = False
 
-                def read_bytes(path):
+                @contextmanager
+                def open_replacement(path):
                     nonlocal captured
-                    if path != result.state or captured:
-                        return original_read_bytes(path)
+                    if Path(path) != result.state or captured:
+                        with original_open(path) as source:
+                            yield source
+                        return
                     captured = True
                     result.state.write_bytes(foreign)
                     try:
-                        return original_read_bytes(path)
-                    finally:
-                        result.state.write_bytes(original)
-
-                def read_text(path, *arguments, **options):
-                    nonlocal captured
-                    if path != result.state or captured:
-                        return original_read_text(path, *arguments, **options)
-                    captured = True
-                    result.state.write_bytes(foreign)
-                    try:
-                        return original_read_text(path, *arguments, **options)
+                        with original_open(path) as source:
+                            yield source
                     finally:
                         result.state.write_bytes(original)
 
                 with (
                     self.subTest(capture=capture.__name__),
-                    patch.object(Path, "read_bytes", read_bytes),
-                    patch.object(Path, "read_text", read_text),
+                    patch.object(
+                        foundation_module, "open_regular_binary", open_replacement
+                    ),
                     self.assertRaisesRegex(
                         BulkGenerationError,
                         "Generation state changed while review authorities were captured",
@@ -1778,12 +1772,22 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             }
             reads = []
             real_read_bytes = Path.read_bytes
+            original_open = foundation_module.open_regular_binary
+
+            @contextmanager
+            def tracked_open(path):
+                reads.append(Path(path).resolve())
+                with original_open(path) as source:
+                    yield source
 
             def tracked_read_bytes(path):
                 reads.append(Path(path).resolve())
                 return real_read_bytes(path)
 
-            with patch.object(Path, "read_bytes", tracked_read_bytes):
+            with (
+                patch.object(Path, "read_bytes", tracked_read_bytes),
+                patch.object(foundation_module, "open_regular_binary", tracked_open),
+            ):
                 state, snapshots = bulk_module._assert_review_authorities(
                     state_path, authorities, queue
                 )

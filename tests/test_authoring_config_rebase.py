@@ -191,23 +191,29 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
                 load_generation_state(state_path, target / "queue.jsonl")
             finally:
                 state_path.write_bytes(original)
-            read_text = Path.read_text
+            load_state = config_rebase_module.load_generation_state
+            captures = []
 
             def read_replacement(path, *arguments, **keywords):
-                if path.resolve() != state_path.resolve():
-                    return read_text(path, *arguments, **keywords)
+                captures.append(Path(path).resolve())
+                if Path(path).resolve() != state_path.resolve():
+                    return load_state(path, *arguments, **keywords)
                 path.write_bytes(replacement_payload)
                 try:
-                    return read_text(path, *arguments, **keywords)
+                    return load_state(path, *arguments, **keywords)
                 finally:
                     path.write_bytes(original)
 
             with patch.object(
-                Path, "read_text", autospec=True, side_effect=read_replacement
+                config_rebase_module,
+                "load_generation_state",
+                side_effect=read_replacement,
             ):
                 output = rebase_workspace_config(
                     source.directory, target, root / "rebased"
                 ).directory
+            self.assertTrue(captures)
+            self.assertNotIn(state_path.resolve(), captures)
             published = load_generation_state(
                 output / "generated-audio/generation-state.json", output / "queue.jsonl"
             )

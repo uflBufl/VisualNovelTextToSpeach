@@ -1,6 +1,7 @@
 import builtins
 import hashlib
 import io
+import json
 import os
 import unittest
 from contextlib import contextmanager
@@ -15,8 +16,10 @@ from tests.authoring_fixtures import (
     tree_hashes,
     write_carry_target_manifest,
 )
+from tests.symlink_support import symlink_or_skip
 from vntts.authoring import specialist_failure_plan as specialist
 from vntts.authoring import workspace_creation as creation
+from vntts.authoring import workspace_foundation as foundation
 from vntts.authoring.cohort_review import CohortReviewError
 from vntts.authoring.workbench import review_workspace_item
 from vntts.authoring.workbench_contracts import AuthoringWorkbenchError
@@ -260,3 +263,101 @@ class WorkspaceInputAdmissionTest(unittest.TestCase):
                 ):
                     read(path, label)
                 self.assertIsInstance(caught.exception.__cause__, FileNotFoundError)
+
+    def test_foundation_text_snapshot_and_error_contracts(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            path = root / "document.json"
+            payload = (
+                b'{\r\n"text": "caf\xc3\xa9", "unknown": {"nested": true}\r\n}\r\n'
+            )
+            path.write_bytes(payload)
+            expected = json.loads(payload)
+            self.assertEqual(foundation.load_json_object(path, "test"), expected)
+            self.assertEqual(
+                foundation.load_json_object_snapshot(path, "test"),
+                (expected, hashlib.sha256(payload).hexdigest(), payload),
+            )
+            self.assertEqual(foundation.read_regular_file(path, "test"), payload)
+            alias = root / "alias.json"
+            symlink_or_skip(alias, path)
+            self.assertEqual(foundation.load_json_object(alias, "test"), expected)
+            self.assertEqual(
+                foundation.load_json_object_snapshot(alias, "test")[2], payload
+            )
+            with self.assertRaisesRegex(ValueError, "Test is missing or unsafe"):
+                foundation.read_regular_file(alias, "test")
+            for payload, cause in (
+                (b"\xff", UnicodeDecodeError),
+                (b"\xef\xbb\xbf{}", json.JSONDecodeError),
+                (b"{\r\ninvalid", json.JSONDecodeError),
+            ):
+                path.write_bytes(payload)
+                for loader in (
+                    foundation.load_json_object,
+                    foundation.load_json_object_snapshot,
+                ):
+                    with (
+                        self.subTest(loader=loader.__name__, payload=payload[:12]),
+                        self.assertRaisesRegex(
+                            AuthoringWorkbenchError, "Unable to read test"
+                        ) as caught,
+                    ):
+                        loader(path, "test", error_type=AuthoringWorkbenchError)
+                    self.assertIsInstance(caught.exception.__cause__, cause)
+                    if payload == b"{\r\ninvalid":
+                        self.assertEqual(
+                            caught.exception.__cause__.doc,
+                            "{\ninvalid"
+                            if loader is foundation.load_json_object
+                            else "{\r\ninvalid",
+                        )
+            path.write_bytes(b"[]")
+            with self.assertRaisesRegex(
+                ValueError, "Named object must be a JSON object"
+            ):
+                foundation.load_json_object(path, "test", object_label="Named object")
+            with self.assertRaisesRegex(ValueError, "Test must be a JSON object"):
+                foundation.load_json_object_snapshot(path, "test")
+            path.unlink()
+            for loader in (
+                foundation.load_json_object,
+                foundation.load_json_object_snapshot,
+            ):
+                with self.assertRaises(ValueError) as caught:
+                    loader(path, "test")
+                self.assertIsInstance(caught.exception.__cause__, FileNotFoundError)
+            with self.assertRaisesRegex(
+                ValueError, "Test is missing or unsafe"
+            ) as caught:
+                foundation.read_regular_file(path, "test")
+            self.assertIsNone(caught.exception.__cause__)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_foundation_readers_refuse_swapped_acquisition_and_recover(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory).resolve() / "input.json"
+            payload = b'{\r\n"value": 1\r\n}\r\n'
+            for loader in (
+                foundation.read_regular_file,
+                foundation.load_json_object,
+                foundation.load_json_object_snapshot,
+            ):
+                with self.subTest(loader=loader.__name__):
+                    path.write_bytes(payload)
+                    expected = loader(path, "test", error_type=AuthoringWorkbenchError)
+                    gate = {"path": path, "armed": True}
+                    with (
+                        self.swap_at_acquisition(gate),
+                        self.assertRaisesRegex(
+                            AuthoringWorkbenchError, "regular file"
+                        ) as caught,
+                    ):
+                        loader(path, "test", error_type=AuthoringWorkbenchError)
+                    self.assertIsInstance(caught.exception.__cause__, OSError)
+                    self.assertEqual(
+                        loader(path, "test", error_type=AuthoringWorkbenchError),
+                        expected,
+                    )
