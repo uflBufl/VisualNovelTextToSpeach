@@ -10,6 +10,7 @@ from os.path import commonprefix
 from pathlib import Path
 from typing import TypeAlias
 
+from durable_file import atomic_output_path
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
@@ -21,6 +22,7 @@ from vntts_artifacts.story_index import (
 from vntts.cleanup import temporary_directory
 from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import decode_json
+from vntts.path_safety import copy_regular_file
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
     load_source_audio_semantic_evidence,
@@ -173,7 +175,10 @@ class ChapterVoicePreloader:
             evidence = Path(path).with_name("source-audio-semantic-evidence.json")
             try:
                 if evidence.is_file() and not evidence.is_symlink():
-                    snapshot.with_name(evidence.name).write_bytes(evidence.read_bytes())
+                    with atomic_output_path(
+                        snapshot.with_name(evidence.name)
+                    ) as staged:
+                        copy_regular_file(evidence, staged)
             except OSError:
                 # Unavailable optional evidence cannot authorise source audio.
                 pass
