@@ -17,7 +17,7 @@ from vntts_artifacts.voice_manifest import (
 from vntts.authoring.authority import write_json_document_no_replace
 from vntts.authoring.publication import no_replace_destination
 from vntts.authoring.workspace_foundation import contained_regular_file
-from vntts.document_identity import is_lowercase_sha256
+from vntts.document_identity import is_lowercase_sha256, sha256_file
 from vntts.json_types import decode_json
 from vntts.reference_quality import (
     ReferenceQualityReport,
@@ -247,7 +247,7 @@ def validate_reference_selection_provenance(
                 "Voice reference-selection candidate path is malformed"
             )
         path = _contained_reference(Path(manifest_path).resolve().parent, relative)
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        digest = sha256_file(path)
         if digest != candidate.get("sha256"):
             raise ReferenceSelectionError(
                 f"Voice reference-selection candidate changed: {relative}"
@@ -368,14 +368,13 @@ def _contained_reference(root: Path, relative: object) -> Path:
 def _assert_snapshot_unchanged(snapshot: _ManifestSnapshot) -> None:
     path = snapshot["manifest_path"]
     try:
-        if hashlib.sha256(path.read_bytes()).hexdigest() != snapshot["manifest_sha256"]:
+        if sha256_file(path) != snapshot["manifest_sha256"]:
             raise ReferenceSelectionError("Voice manifest changed during selection")
         for candidate in snapshot["candidates"]:
             current = _contained_reference(path.parent, candidate["relative"])
             if (
                 current != candidate["path"]
-                or hashlib.sha256(current.read_bytes()).hexdigest()
-                != candidate["sha256"]
+                or sha256_file(current) != candidate["sha256"]
             ):
                 raise ReferenceSelectionError(
                     f"Voice reference changed during selection: {candidate['relative']}"

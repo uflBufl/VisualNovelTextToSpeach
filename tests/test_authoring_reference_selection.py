@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
@@ -10,7 +11,9 @@ from unittest.mock import patch
 import numpy as np
 from vntts_artifacts.audio import write_pcm16_wav
 
+import tests.test_workspace_input_admission as admission
 import vntts.authoring.reference_selection as selection_module
+from tests.authoring_fixtures import tree_hashes
 from tests.symlink_support import symlink_or_skip
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.reference_selection import (
@@ -61,6 +64,69 @@ def write_manifest(root):
 
 
 class AuthoringReferenceSelectionTest(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_public_hash_acquisitions_refuse_fifo_preserve_inputs_and_recover(self):
+        for phase in ("manifest recheck", "reference recheck", "provenance"):
+            with self.subTest(phase=phase), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                manifest = write_manifest(root)
+                output = root / "selected.json"
+                selected = (
+                    manifest
+                    if phase == "manifest recheck"
+                    else root / "references/hero-1.wav"
+                )
+                if phase == "provenance":
+                    select_voice_reference(manifest, "Hero", 2, output)
+                    document = json.loads(output.read_text(encoding="utf-8"))
+                before = tree_hashes(root)
+                original = selection_module.sha256_file
+                refused = []
+
+                def checksum(path):
+                    if Path(path) != selected:
+                        return original(path)
+                    gate = {"path": selected, "armed": True}
+                    with (
+                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                            self, gate
+                        ),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original(path)
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                error_type = (
+                    OSError if phase == "provenance" else ReferenceSelectionError
+                )
+                with (
+                    patch.object(selection_module, "sha256_file", checksum),
+                    self.assertRaisesRegex(error_type, "regular file") as caught,
+                ):
+                    if phase == "provenance":
+                        validate_reference_selection_provenance(output, document)
+                    else:
+                        select_voice_reference(manifest, "Hero", 2, output)
+                self.assertEqual(len(refused), 1)
+                if phase == "provenance":
+                    self.assertIs(caught.exception, refused[0])
+                else:
+                    self.assertIs(caught.exception.__cause__, refused[0])
+                self.assertEqual(tree_hashes(root), before)
+                if phase != "provenance":
+                    self.assertFalse(output.exists())
+                    select_voice_reference(manifest, "Hero", 2, output)
+                document = json.loads(output.read_text(encoding="utf-8"))
+                recovered = tree_hashes(root)
+                validate_reference_selection_provenance(output, document)
+                validate_reference_selection_provenance(output, document)
+                with self.assertRaisesRegex(ReferenceSelectionError, "output exists"):
+                    select_voice_reference(manifest, "Hero", 2, output)
+                self.assertEqual(tree_hashes(root), recovered)
+
     def test_dangling_symlink_output_is_not_redirected(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
