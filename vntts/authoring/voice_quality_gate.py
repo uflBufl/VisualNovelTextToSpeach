@@ -9,11 +9,7 @@ from functools import partial
 from pathlib import Path
 from typing import TypeAlias, TypedDict, TypeIs
 
-from vntts_artifacts.voice_manifest import (
-    VoiceManifestError,
-    load_voice_manifest,
-    normalize_character_name,
-)
+from vntts_artifacts.voice_manifest import VoiceManifestError, normalize_character_name
 
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import BulkGenerationError, sha256_control_path
@@ -39,6 +35,7 @@ from vntts.authoring.workbench import (
 )
 from vntts.document_identity import file_sha256, is_lowercase_sha256
 from vntts.json_types import is_json_object
+from vntts.voices import load_voice_manifest
 
 VOICE_QUALITY_GATE_SCHEMA = "vntts.authoring-voice-quality-gate"
 VOICE_QUALITY_GATE_VERSION = 1

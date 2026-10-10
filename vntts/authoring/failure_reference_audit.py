@@ -21,7 +21,6 @@ from vntts_artifacts import (
 from vntts_artifacts.voice_manifest import (
     VoiceManifestEntry,
     VoiceManifestError,
-    load_voice_manifest,
     normalize_character_name,
 )
 
@@ -50,6 +49,7 @@ from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import decode_json, is_json_object
 from vntts.path_safety import open_regular_binary
 from vntts.reference_quality import ReferenceQualityReport, analyze_reference_bytes
+from vntts.voices import load_voice_manifest
 
 JsonDocument: TypeAlias = dict[str, object]
 

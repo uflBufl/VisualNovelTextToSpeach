@@ -24,11 +24,7 @@ from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     VoiceGenerationQueueItem,
 )
-from vntts_artifacts.voice_manifest import (
-    VoiceManifestError,
-    load_voice_manifest,
-    validate_voice_manifest,
-)
+from vntts_artifacts.voice_manifest import VoiceManifestError, validate_voice_manifest
 
 import vntts.authoring.legacy_import as legacy_import
 from vntts.authoring.audio_event_workspace import (
@@ -124,6 +120,7 @@ from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.voices import (
     CharacterVoice,
     CharacterVoiceRegistry,
+    load_voice_manifest,
     synthesis_character_for_line,
 )
 

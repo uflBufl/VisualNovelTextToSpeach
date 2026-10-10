@@ -31,11 +31,7 @@ from vntts_artifacts.live_sequence import (
     load_live_sequence_plan,
 )
 from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
-from vntts_artifacts.voice_manifest import (
-    VoiceManifestError,
-    load_voice_manifest,
-    normalize_character_name,
-)
+from vntts_artifacts.voice_manifest import VoiceManifestError, normalize_character_name
 
 from vntts.authoring.advisory_lock import (
     AdvisoryLockBusyError,
@@ -84,7 +80,7 @@ from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
     load_source_audio_semantic_evidence,
 )
-from vntts.voices import synthesis_character_for_line
+from vntts.voices import load_voice_manifest, synthesis_character_for_line
 
 _canonical_sha256 = canonical_document_sha256
 Inventory: TypeAlias = dict[Path, str]

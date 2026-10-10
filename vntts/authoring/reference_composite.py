@@ -25,7 +25,7 @@ from vntts_artifacts import (
     write_voice_generation_queue,
 )
 from vntts_artifacts.audio import write_pcm16_wav
-from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_manifest
+from vntts_artifacts.voice_manifest import write_voice_manifest
 
 from vntts.authoring.bulk_generation import BulkGenerationError
 from vntts.authoring.generation_state import (
@@ -55,6 +55,7 @@ from vntts.cli import cli_error, cli_success
 from vntts.document_identity import file_sha256, is_lowercase_sha256
 from vntts.json_types import decode_json
 from vntts.reference_quality import ReferenceQualityReport, analyze_reference_bytes
+from vntts.voices import load_voice_manifest
 
 COMPOSITE_SCHEMA = "vntts.authoring-exact-bank-reference-composite"
 COMPOSITE_VERSION = 1

@@ -12,7 +12,7 @@ from pathlib import Path
 
 from durable_file import atomic_write_json, sha256_file
 from vntts_artifacts import VoiceGenerationQueue, VoiceGenerationQueueItem
-from vntts_artifacts.voice_manifest import VoiceManifestError, load_voice_manifest
+from vntts_artifacts.voice_manifest import VoiceManifestError
 
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
@@ -69,7 +69,7 @@ from vntts.authoring.workspace_voice_runtime import (
     load_workspace_voice_registry,
 )
 from vntts.json_types import decode_json, has_schema_version, is_json_object
-from vntts.voices import CharacterVoiceRegistry
+from vntts.voices import CharacterVoiceRegistry, load_voice_manifest
 
 CONFIG_REBASE_SCHEMA = "vntts.authoring-workspace-config-rebase"
 CONFIG_REBASE_VERSION = 4

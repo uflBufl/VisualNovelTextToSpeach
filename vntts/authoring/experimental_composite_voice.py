@@ -7,6 +7,7 @@ import json
 import shutil
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from io import TextIOWrapper
 from pathlib import Path
 from typing import TypedDict
 
@@ -14,7 +15,6 @@ from durable_file import atomic_write_json, sha256_file
 from vntts_artifacts.voice_manifest import (
     VoiceManifestEntry,
     VoiceManifestError,
-    load_voice_manifest,
     normalize_character_name,
     write_voice_manifest,
 )
@@ -52,6 +52,8 @@ from vntts.authoring.workspace_foundation import (
 )
 from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import decode_json
+from vntts.path_safety import open_regular_binary
+from vntts.voices import load_voice_manifest
 
 EXPERIMENTAL_COMPOSITE_VOICE_FIELD = "vntts.authoring.experimental_composite_voices"
 EXPERIMENTAL_COMPOSITE_VOICE_SCHEMA = "vntts.authoring-experimental-composite-voices"
@@ -136,7 +138,8 @@ def publish_experimental_composite_voice_input(
     voice_character = _text(voice_character, "Experimental voice character")
 
     try:
-        source_payload = source_manifest.read_bytes()
+        with open_regular_binary(source_manifest) as source:
+            source_payload = source.read()
         source_document = decode_json(source_payload.decode("utf-8"))
         _metadata, source_voices = load_voice_manifest(
             source_manifest, allow_legacy=False
@@ -175,7 +178,6 @@ def publish_experimental_composite_voice_input(
         )
     except SourceReferenceBindingError as error:
         raise ExperimentalCompositeVoiceError(str(error)) from error
-    source_override_sha256 = queue_voice_overrides_sha256(source_overrides)
 
     voice: _ExperimentalCompositeVoice = {
         "voice_character": voice_character,
@@ -194,7 +196,9 @@ def publish_experimental_composite_voice_input(
         "schema": EXPERIMENTAL_COMPOSITE_VOICE_SCHEMA,
         "schema_version": EXPERIMENTAL_COMPOSITE_VOICE_VERSION,
         "source_voice_manifest_sha256": source_manifest_sha256,
-        "source_queue_voice_overrides_sha256": source_override_sha256,
+        "source_queue_voice_overrides_sha256": queue_voice_overrides_sha256(
+            source_overrides
+        ),
         "voices": [voice],
         "authority": "experimental_only_no_queue_override_or_production_binding",
     }
@@ -523,7 +527,11 @@ def _validate_bundle_manifest(
 ) -> None:
     manifest_path = directory / "manifest.json"
     try:
-        manifest = decode_json(manifest_path.read_text(encoding="utf-8"))
+        with (
+            open_regular_binary(manifest_path) as source,
+            TextIOWrapper(source, encoding="utf-8") as text,
+        ):
+            manifest = decode_json(text.read())
         _metadata, voices = load_voice_manifest(manifest_path, allow_legacy=False)
         if not isinstance(manifest, dict):
             raise VoiceManifestError("Voice manifest must be a JSON object")

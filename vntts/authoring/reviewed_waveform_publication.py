@@ -13,7 +13,7 @@ from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     VoiceGenerationQueueItem,
 )
-from vntts_artifacts.voice_manifest import load_voice_manifest, normalize_character_name
+from vntts_artifacts.voice_manifest import normalize_character_name
 
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
@@ -49,6 +49,7 @@ from vntts.authoring.workspace_config import (
 from vntts.authoring.workspace_foundation import stage_single_base_successor
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 from vntts.document_identity import file_sha256
+from vntts.voices import load_voice_manifest
 
 _file_sha256 = partial(file_sha256, error_type=AuthoringWorkbenchError)
 

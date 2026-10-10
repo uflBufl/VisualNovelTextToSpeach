@@ -21,10 +21,7 @@ from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueueError,
     VoiceGenerationQueueItem,
 )
-from vntts_artifacts.voice_manifest import (
-    VoiceManifestError,
-    load_voice_manifest,
-)
+from vntts_artifacts.voice_manifest import VoiceManifestError
 
 import vntts.authoring.legacy_import as legacy_import
 from vntts.authoring.audio_event_composition import (
@@ -179,6 +176,7 @@ from vntts.path_safety import open_regular_binary
 from vntts.voices import (
     CharacterVoice,
     CharacterVoiceRegistry,
+    load_voice_manifest,
     synthesis_character_for_line,
 )
 

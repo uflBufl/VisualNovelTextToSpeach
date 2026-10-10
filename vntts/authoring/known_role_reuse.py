@@ -6,7 +6,7 @@ import copy
 import hashlib
 import json
 import shutil
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TypedDict
@@ -16,7 +16,6 @@ from vntts_artifacts import VoiceGenerationQueueItem
 from vntts_artifacts.voice_manifest import (
     VoiceManifestEntry,
     VoiceManifestError,
-    load_voice_manifest,
     normalize_character_name,
     write_voice_manifest,
 )
@@ -63,7 +62,7 @@ from vntts.authoring.workbench import (
 from vntts.authoring.workspace_config import selected_voice_manifest_path
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.json_types import decode_json
-from vntts.voices import synthesis_character_for_line
+from vntts.voices import load_voice_manifest, synthesis_character_for_line
 
 KNOWN_ROLE_REUSE_DECISION_SCHEMA = "vntts.authoring-known-role-reuse-decision"
 KNOWN_ROLE_REUSE_DECISION_VERSION = 1
@@ -120,7 +119,7 @@ class ManifestSelection:
     manifest_path: Path
     source_manifest_sha256: str
     authority_document: JsonObject
-    voices: list[VoiceManifestEntry]
+    voices: Sequence[VoiceManifestEntry]
     reuse_voice: VoiceManifestEntry
     all_references: list[ReferenceRecord]
     reuse_references: list[ReferenceRecord]
@@ -383,11 +382,11 @@ def _manifest_successor(
     authority_document: JsonObject,
     selected_path: Path,
     authority_path: Path,
-    selected_voices: list[VoiceManifestEntry],
-    authority_voices: list[VoiceManifestEntry],
+    selected_voices: Sequence[VoiceManifestEntry],
+    authority_voices: Sequence[VoiceManifestEntry],
     binding: JsonObject,
     selected_sha256: str,
-) -> tuple[JsonObject, Path, list[VoiceManifestEntry]]:
+) -> tuple[JsonObject, Path, Sequence[VoiceManifestEntry]]:
     if KNOWN_ROLE_REUSE_BINDING_FIELD in selected_document or (
         KNOWN_ROLE_REUSE_BINDING_FIELD in authority_document
     ):
@@ -781,7 +780,7 @@ def _validate_bundle_manifest(
 
 
 def _resolve_exact_voice(
-    voices: list[VoiceManifestEntry], character: str
+    voices: Sequence[VoiceManifestEntry], character: str
 ) -> VoiceManifestEntry:
     matches = [
         voice

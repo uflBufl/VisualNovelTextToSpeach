@@ -40,7 +40,6 @@ from vntts_artifacts.voice_generation_queue import (
 from vntts_artifacts.voice_manifest import (
     VoiceManifestEntry,
     VoiceManifestError,
-    load_voice_manifest,
     normalize_character_name,
     write_voice_manifest,
 )
@@ -95,6 +94,7 @@ from vntts.source_audio_semantics import (
     project_source_audio_semantics,
 )
 from vntts.support import record_background_operation
+from vntts.voices import load_voice_manifest
 
 JsonObject = dict[str, object]
 JsonRecords = list[JsonObject]

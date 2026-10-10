@@ -14,7 +14,7 @@ from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     VoiceGenerationQueueItem,
 )
-from vntts_artifacts.voice_manifest import load_voice_manifest, normalize_character_name
+from vntts_artifacts.voice_manifest import normalize_character_name
 
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
@@ -67,6 +67,7 @@ from vntts.authoring.workspace_foundation import (
     copy_workspace_tree_snapshot,
 )
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
+from vntts.voices import load_voice_manifest
 
 _copy_base_wavs = partial(
     copy_generation_wavs,

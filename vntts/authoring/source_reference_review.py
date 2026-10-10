@@ -26,7 +26,6 @@ from vntts_artifacts.voice_generation_queue import VoiceGenerationQueueItem
 from vntts_artifacts.voice_manifest import (
     VoiceManifestEntry,
     VoiceManifestError,
-    load_voice_manifest,
     normalize_character_name,
     write_voice_manifest,
 )
@@ -72,7 +71,7 @@ from vntts.document_identity import (
 )
 from vntts.json_types import decode_json
 from vntts.story_index_snapshot import load_story_index_snapshot
-from vntts.voices import voice_manifest_entries_at_path
+from vntts.voices import load_voice_manifest, voice_manifest_entries_at_path
 
 SOURCE_REPORT_SCHEMA = "r1999.story-voice-reference-candidates"
 SOURCE_REPORT_VERSIONS = frozenset({1, 2})

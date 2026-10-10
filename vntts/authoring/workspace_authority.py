@@ -19,7 +19,7 @@ from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
 )
-from vntts_artifacts.voice_manifest import VoiceManifestError, load_voice_manifest
+from vntts_artifacts.voice_manifest import VoiceManifestError
 
 import vntts.authoring.legacy_import as legacy_import
 from vntts.authoring.audio_event_workspace import (
@@ -99,6 +99,7 @@ from vntts.json_types import (
 from vntts.json_types import (
     is_json_object as _is_json_document,
 )
+from vntts.voices import load_voice_manifest
 
 WorkspaceDocument: TypeAlias = JsonDocument
 ImportSnapshot: TypeAlias = JsonDocument

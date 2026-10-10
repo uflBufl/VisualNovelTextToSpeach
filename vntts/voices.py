@@ -23,6 +23,7 @@ from vntts_artifacts.voice_manifest import (
 
 from vntts.application_directories import get_local_data_directory
 from vntts.cleanup import cleanup_on_exit, temporary_directory
+from vntts.json_types import is_json_object
 from vntts.path_safety import open_regular_binary, open_regular_candidate
 from vntts.voice_library import VoiceBinding, VoiceBindingRollback, VoiceLibrary
 
@@ -98,24 +99,7 @@ class CharacterVoiceRegistry:
     @classmethod
     def from_file(cls, manifest_path: str | os.PathLike[str]) -> CharacterVoiceRegistry:
         manifest_path = Path(manifest_path).expanduser().resolve()
-        if manifest_path.is_symlink():
-            raise VoiceManifestError("Voice manifest cannot be a symlink")
-        try:
-            with (
-                open_regular_binary(manifest_path) as source,
-                TextIOWrapper(source, encoding="utf-8") as text,
-            ):
-                manifest = json.loads(text.read())
-        except (OSError, json.JSONDecodeError) as error:
-            raise VoiceManifestError(
-                f"Unable to read voice manifest {manifest_path}: {error}"
-            ) from error
-        entries = validate_voice_manifest(manifest)
-        for index, entry in enumerate(entries):
-            for reference in entry.references:
-                _contained_manifest_reference(
-                    manifest_path, reference, entry_index=index
-                )
+        manifest, entries = load_voice_manifest(manifest_path)
         return cls._from_validated_manifest(manifest, entries, manifest_path)
 
     @classmethod
@@ -522,6 +506,35 @@ def _project_binding(
     projected.set_assignment(role, source_id)
 
 
+def load_voice_manifest(
+    path: str | os.PathLike[str], *, allow_legacy: bool = True
+) -> tuple[dict[str, object], tuple[VoiceManifestEntry, ...]]:
+    """Load a regular manifest while retaining its reference-root validation."""
+    requested = Path(path).expanduser()
+    if requested.is_symlink():
+        raise VoiceManifestError("Voice manifest cannot be a symlink")
+    manifest_path = requested.resolve()
+    try:
+        with (
+            open_regular_binary(manifest_path) as source,
+            TextIOWrapper(source, encoding="utf-8") as text,
+        ):
+            manifest: object = json.loads(text.read())
+    except (OSError, json.JSONDecodeError) as error:
+        raise VoiceManifestError(
+            f"Unable to read voice manifest {manifest_path}: {error}"
+        ) from error
+    if not is_json_object(manifest):
+        raise VoiceManifestError("Voice manifest must be a JSON object")
+    entries: tuple[VoiceManifestEntry, ...] = validate_voice_manifest(
+        manifest, allow_legacy=allow_legacy
+    )
+    for index, entry in enumerate(entries):
+        for reference in entry.references:
+            _contained_manifest_reference(manifest_path, reference, entry_index=index)
+    return manifest, entries
+
+
 def voice_manifest_entries_at_path(
     document: object,
     manifest_path: str | os.PathLike[str],
@@ -549,13 +562,11 @@ def _contained_manifest_reference(
         if entry_index is not None
         else "Voice reference"
     )
-    if entry_index is not None and isinstance(reference, str) and "\x00" in reference:
-        raise VoiceManifestError(f"{label} must stay within the manifest directory")
     if (
         not isinstance(reference, str)
         or not reference.strip()
         or "\\" in reference
-        or "\x00" in reference
+        or ("\x00" in reference and entry_index is None)
     ):
         raise VoiceManifestError(f"{label} must be a safe POSIX-relative path")
     relative = PurePosixPath(reference.strip())
@@ -570,8 +581,8 @@ def _contained_manifest_reference(
         current /= part
         if current.is_symlink():
             raise VoiceManifestError(f"{label} must not use symlinks")
-    resolved = unresolved.resolve()
     try:
+        resolved = unresolved.resolve()
         resolved.relative_to(root)
     except ValueError as error:
         raise VoiceManifestError(

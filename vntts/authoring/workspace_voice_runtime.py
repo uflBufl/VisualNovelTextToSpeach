@@ -7,10 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from vntts_artifacts.voice_manifest import (
-    VoiceManifestError,
-    load_voice_manifest,
-)
+from vntts_artifacts.voice_manifest import VoiceManifestError
 
 from vntts.authoring.failure_reference_binding_records import (
     FailureReferenceBindingError,
@@ -26,7 +23,7 @@ from vntts.authoring.workspace_foundation import (
     read_regular_file,
     safe_relative_path,
 )
-from vntts.voices import CharacterVoice, CharacterVoiceRegistry
+from vntts.voices import CharacterVoice, CharacterVoiceRegistry, load_voice_manifest
 
 
 @dataclass(frozen=True)

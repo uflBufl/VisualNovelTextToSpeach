@@ -136,8 +136,15 @@ extend-exclude = ["exps", "README.md"]
 select = ["E4", "E7", "E9", "F", "I"]
 extend-select = [
     "B004", "B006", "B007", "B008", "B012", "B014", "B015", "B018",
-    "B019", "B020", "B026", "B904", "B905", "RUF012", "RUF046", "RUF059", "W605",
+    "B019", "B020", "B026", "B904", "B905", "RUF012", "RUF046", "RUF059", "TID251", "W605",
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# These tests check compatibility against the artifact dependency's own loader.
+"tests/test_*.py" = ["TID251"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"vntts_artifacts.voice_manifest.load_voice_manifest" = { msg = "Use vntts.voices.load_voice_manifest for regular-file admission." }
 
 [tool.mypy]
 python_version = "3.14"
