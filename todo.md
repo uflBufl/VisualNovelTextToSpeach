@@ -2,16 +2,9 @@
 
 ## Continue regular-file admission through remaining integrity owners
 
-### Expand admitted copying through buffered and move fallbacks
-
-- [ ] After the recursive-copy branch gate/push, migrate assets rollback backups, workspace composition/base-queue and composition review copies to the existing data-only leaf. Preserve staged source/destination hashes, captured payload writes, raw errors, per-owner symlink/partial-target and rollback cleanup. Gate public source admission/closed descriptors/no target, exact causes, cleanup and valid recovery/idempotence with existing fixtures.
-- [ ] Qualify chapter preload optional evidence separately: streaming must not expose a valid copied prefix after a swallowed late read error. Copy through the existing atomic-output owner, publish the expected evidence filename only on success, preserve captured story payload and optional fallback. Gate native refusal plus a deterministic read failure after a complete valid bound prefix and normal recovery.
-- [ ] Add the metadata-preserving callback to Windows promotion `shutil.move` only for its copy fallback; preserve ordinary rename/inode semantics, aggregate copy errors, source/partial-target ownership and managed-root removal only after success. Gate forced cross-device fallback acquisition/refusal/recovery and normal rename. Keep native package `ditto` unchanged: it owns platform bundle/archive/signing metadata, not this Python copy leaf.
-- [ ] Freeze all executors, run local-first affected selector, Ruff/type/exact-complexity/lock checks and independent review; prove old copy phases fail meaningful gates while controls stay green, rescan all copy forms and run fresh-main branch tests. Commit each logical owner separately, push normally, remove verified work and retain Windows/cold-disk/metadata acceptance.
-
 - [ ] Classify the remaining generic SHA inventory by persisted input vs owned staging/output lifecycle (current scan: 51 production SHA importer modules/232 direct imported-name calls). Migrate only evidenced consumers with their actual error, alias/root, byte-binding and publication contracts. Keep the concrete staged inventory in `.codex/investigations/`; run local-first affected tests, independent review and fresh-main branch checks for each implementation stage.
 
-- [ ] Qualify admitted recursive/runtime copy behavior on Windows, including native metadata/alternate streams and executable behavior. Local Mac output identities, metadata, relocated interpreter provenance and warm-cache throughput passed; cold-disk/network throughput and native model generation remain unmeasured.
+- [ ] Qualify admitted direct/recursive/runtime copy behavior on Windows, including native metadata/alternate streams, DLL/junction handling and executable behavior. Local Mac output identities, metadata, relocated interpreter provenance and warm-cache throughput passed; cold-disk/network throughput and native model generation remain unmeasured.
 
 ## Coordinate source-audio producer numeric admission
 
