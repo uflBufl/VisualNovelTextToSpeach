@@ -1,5 +1,6 @@
 import json
 import os
+import stat
 import struct
 import time
 import unittest
@@ -13,6 +14,8 @@ from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 
 import vntts.authoring.listening as listening_module
+from tests import test_workspace_input_admission as input_admission
+from tests.authoring_fixtures import tree_hashes
 from tests.listening_fixtures import (
     FakePlayback,
     write_listening_fixture,
@@ -56,6 +59,94 @@ except ModuleNotFoundError as error:
 
 
 class AuthoringListeningTest(unittest.TestCase):
+    def test_blind_audio_hardlink_and_copy_fallback_preserve_source(self):
+        for fallback in (False, True):
+            with self.subTest(fallback=fallback), TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "sources" / "source.wav"
+                source.parent.mkdir()
+                source.write_bytes(b"blind audio")
+                source.chmod(0o600)
+                os.utime(source, ns=(1_650_000_000_000_000_000,) * 2)
+                source_stat = source.stat()
+                parent_stat = source.parent.stat()
+                destination = root / "output" / "audio" / "alias.wav"
+                if fallback:
+                    with patch.object(
+                        listening_module.os, "link", side_effect=OSError("no links")
+                    ) as link:
+                        listening_module._link_blind_audio(
+                            str(source), str(destination)
+                        )
+                    link.assert_called_once_with(source, destination)
+                else:
+                    listening_module._link_blind_audio(source, destination)
+                self.assertEqual(destination.read_bytes(), b"blind audio")
+                self.assertEqual(source.read_bytes(), b"blind audio")
+                self.assertEqual(source.samefile(destination), not fallback)
+                self.assertEqual(
+                    stat.S_IMODE(destination.stat().st_mode),
+                    stat.S_IMODE(source_stat.st_mode),
+                )
+                self.assertEqual(
+                    destination.stat().st_mtime_ns, source_stat.st_mtime_ns
+                )
+                self.assertEqual(list(source.parent.iterdir()), [source])
+                self.assertEqual(
+                    source.parent.stat().st_mtime_ns, parent_stat.st_mtime_ns
+                )
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_session_copy_fallback_refusal_cleans_staging_and_recovers(self):
+        for existing_empty in (False, True):
+            with (
+                self.subTest(existing_empty=existing_empty),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory).resolve()
+                reports = write_model_reports(root, item_count=1)
+                destination = root / "session"
+                if existing_empty:
+                    destination.mkdir()
+                before = tree_hashes(root)
+                link = listening_module._link_blind_audio
+
+                def refuse(source, target):
+                    gate = {"path": Path(source), "armed": True}
+                    with (
+                        input_admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                            self, gate
+                        ),
+                        patch.object(
+                            listening_module.os, "link", side_effect=OSError("no links")
+                        ),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        link(source, target)
+                    self.assertFalse(Path(target).exists())
+                    raise caught.exception
+
+                with patch.object(listening_module, "_link_blind_audio", refuse):
+                    with self.assertRaisesRegex(OSError, "regular file"):
+                        create_listening_session_from_reports(reports, destination)
+                self.assertEqual(tree_hashes(root), before)
+                self.assertEqual(destination.exists(), existing_empty)
+                if existing_empty:
+                    self.assertEqual(list(destination.iterdir()), [])
+                self.assertEqual(list(root.glob(".session-*")), [])
+                recovered = create_listening_session_from_reports(reports, destination)
+                session = load_listening_session(recovered)
+                self.assertEqual(len(session["trials"]), 1)
+                for relative in session["trials"][0]["audio"].values():
+                    self.assertTrue((destination / relative).is_file())
+                if os.name != "nt":
+                    self.assertEqual(
+                        stat.S_IMODE((destination / ".blind-key.json").stat().st_mode),
+                        0o600,
+                    )
+
     def test_loader_rejects_malformed_trial_identity_and_enum_fields(self):
         mutations = (
             ("trial_id", Ellipsis),

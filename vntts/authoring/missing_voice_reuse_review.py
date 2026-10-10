@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 import random
-import shutil
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,6 +41,7 @@ from vntts.authoring.workbench import (
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 from vntts.json_types import decode_json, is_json_object
+from vntts.path_safety import copy_regular_file
 
 REVIEW_BUNDLE_SCHEMA = "vntts.authoring-missing-voice-reuse-review-bundle"
 REVIEW_SESSION_SCHEMA = "vntts.authoring-missing-voice-reuse-review-session"
@@ -1630,7 +1630,7 @@ def _link_or_copy(source: Path, destination: Path) -> None:
     try:
         os.link(source, destination)
     except OSError:
-        shutil.copy2(source, destination)
+        copy_regular_file(source, destination, preserve_metadata=True)
 
 
 def _opaque_label(index: int) -> str:

@@ -1,4 +1,6 @@
 import json
+import os
+import stat
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -7,6 +9,8 @@ from unittest.mock import patch
 
 from vntts_artifacts.file_integrity import sha256_file
 
+from tests import test_workspace_input_admission as input_admission
+from tests.authoring_fixtures import tree_hashes
 from tests.missing_voice_reuse_fixtures import (
     _write_wav as write_wav,
 )
@@ -38,6 +42,97 @@ from vntts.authoring.missing_voice_reuse_review import (
 class AuthoringMissingVoiceReuseReviewTest(unittest.TestCase):
     def fixture(self, root, statuses=("generated", "failed")):
         return create_missing_voice_reuse_review_fixture(root, statuses=statuses)
+
+    def test_review_audio_hardlink_and_copy_fallback_preserve_source(self):
+        for fallback in (False, True):
+            with self.subTest(fallback=fallback), TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "sources" / "source.wav"
+                source.parent.mkdir()
+                source.write_bytes(b"review audio")
+                source.chmod(0o600)
+                os.utime(source, ns=(1_650_000_000_000_000_000,) * 2)
+                source_stat = source.stat()
+                parent_stat = source.parent.stat()
+                destination = root / "output" / "audio" / "alias.wav"
+                destination.parent.mkdir(parents=True)
+                if fallback:
+                    with patch.object(
+                        review_module.os, "link", side_effect=OSError("no links")
+                    ) as link:
+                        review_module._link_or_copy(source, destination)
+                    link.assert_called_once_with(source, destination)
+                else:
+                    review_module._link_or_copy(source, destination)
+                self.assertEqual(destination.read_bytes(), b"review audio")
+                self.assertEqual(source.read_bytes(), b"review audio")
+                self.assertEqual(source.samefile(destination), not fallback)
+                self.assertEqual(
+                    stat.S_IMODE(destination.stat().st_mode),
+                    stat.S_IMODE(source_stat.st_mode),
+                )
+                self.assertEqual(
+                    destination.stat().st_mtime_ns, source_stat.st_mtime_ns
+                )
+                self.assertEqual(list(source.parent.iterdir()), [source])
+                self.assertEqual(
+                    source.parent.stat().st_mtime_ns, parent_stat.st_mtime_ns
+                )
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_review_copy_fallback_refusal_cleans_staging_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            plan_path, evidence, snapshots, _queue_id = self.fixture(root)
+            destination = root / "review"
+            before = tree_hashes(root)
+            link = review_module._link_or_copy
+
+            def refuse(source, target):
+                gate = {"path": Path(source), "armed": True}
+                with (
+                    input_admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                        self, gate
+                    ),
+                    patch.object(
+                        review_module.os, "link", side_effect=OSError("no links")
+                    ),
+                    self.assertRaisesRegex(OSError, "regular file") as caught,
+                ):
+                    link(source, target)
+                self.assertFalse(Path(target).exists())
+                raise caught.exception
+
+            with patch.object(
+                review_module,
+                "_load_candidate_workspace",
+                side_effect=lambda _plan, _candidate, path: snapshots[
+                    Path(path).resolve()
+                ],
+            ):
+                with patch.object(review_module, "_link_or_copy", refuse):
+                    with self.assertRaisesRegex(OSError, "regular file"):
+                        build_missing_voice_reuse_review(
+                            plan_path, evidence, destination
+                        )
+                self.assertEqual(tree_hashes(root), before)
+                self.assertFalse(destination.exists())
+                self.assertEqual(list(root.glob(".review-*")), [])
+                recovered = build_missing_voice_reuse_review(
+                    plan_path, evidence, destination
+                )
+            bundle, _session = load_missing_voice_reuse_review(recovered)
+            for candidate in bundle["candidates"]:
+                for sample in candidate["samples"]:
+                    if sample["status"] == "generated":
+                        self.assertTrue((destination / sample["audio"]).is_file())
+            if os.name != "nt":
+                self.assertEqual(
+                    stat.S_IMODE((destination / ".blind-key.json").stat().st_mode),
+                    0o600,
+                )
 
     def _race_review_writers(self, session_path, first_call, second_call):
         publishing = Event()

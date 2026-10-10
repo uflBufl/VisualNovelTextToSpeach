@@ -9,7 +9,6 @@ import json
 import os
 import random
 import re
-import shutil
 import struct
 import unicodedata
 from collections import defaultdict
@@ -36,6 +35,7 @@ from vntts.authoring.publication import (
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 from vntts.json_types import is_json_object as _is_json_object
+from vntts.path_safety import copy_regular_file
 from vntts.settings import get_local_data_directory
 
 SESSION_SCHEMA = "vntts.model-listening-session"
@@ -263,7 +263,7 @@ def _link_blind_audio(source: PathInput, destination: PathInput) -> None:
     try:
         os.link(source, destination)
     except OSError:
-        shutil.copy2(source, destination)
+        copy_regular_file(source, destination, preserve_metadata=True)
 
 
 def create_listening_session_from_reports(
