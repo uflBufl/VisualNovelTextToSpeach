@@ -306,7 +306,7 @@ class AuthoringReferenceCompositeTest(unittest.TestCase):
                 if failure == "probe":
                     source.write_bytes(b"invalid WAV")
                 digest = hashlib.sha256(source.read_bytes()).hexdigest()
-                copy_audio = quality_records.shutil.copyfile
+                copy_audio = quality_records.copy_regular_file
 
                 def copy_with_failure(src, dest):
                     if failure == "copy":
@@ -317,7 +317,7 @@ class AuthoringReferenceCompositeTest(unittest.TestCase):
                     return result
 
                 with patch.object(
-                    quality_records.shutil, "copyfile", side_effect=copy_with_failure
+                    quality_records, "copy_regular_file", side_effect=copy_with_failure
                 ):
                     with self.assertRaises(ReferenceCompositeError):
                         capture_quality_outcomes(

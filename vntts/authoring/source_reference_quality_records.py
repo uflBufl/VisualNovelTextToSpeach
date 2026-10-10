@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import shutil
 from collections.abc import Generator, Iterable, Mapping, MutableSequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -23,7 +22,11 @@ from vntts.authoring.advisory_lock import (
 )
 from vntts.document_identity import file_sha256, is_lowercase_sha256
 from vntts.json_types import decode_json
-from vntts.path_safety import contained_regular_file, open_regular_binary
+from vntts.path_safety import (
+    contained_regular_file,
+    copy_regular_file,
+    open_regular_binary,
+)
 
 QUALITY_REVIEW_SCHEMA = "vntts.authoring-source-reference-quality-review"
 QUALITY_REVIEW_VERSION = 1
@@ -428,7 +431,7 @@ def _copy_audio(
 ) -> JsonObject:
     try:
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, destination)
+        copy_regular_file(source, destination)
         with open_regular_binary(destination) as stream:
             payload = stream.read()
         copied_sha256 = hashlib.sha256(payload).hexdigest()

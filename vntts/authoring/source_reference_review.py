@@ -70,6 +70,7 @@ from vntts.document_identity import (
     is_lowercase_sha256,
 )
 from vntts.json_types import decode_json
+from vntts.path_safety import copy_regular_file
 from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.voices import load_voice_manifest, voice_manifest_entries_at_path
 
@@ -784,7 +785,7 @@ def _copy_binding_voice_references(
         target_relative = target_root / f"{index:02d}{suffix}"
         target = staging / target_relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
+        copy_regular_file(source, target)
         if _file_sha256(target) != digest:
             raise SourceReferenceReviewError(error_message)
         copied.append(target_relative.as_posix())
@@ -814,7 +815,7 @@ def _copy_selected_binding_variant(
     target_relative = Path("references") / variant_id / f"source{suffix}"
     target = staging / target_relative
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, target)
+    copy_regular_file(source, target)
     if _file_sha256(target) != digest:
         raise SourceReferenceReviewError(
             f"Source-reference variant changed while copied: {variant_id}"

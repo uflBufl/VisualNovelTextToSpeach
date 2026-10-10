@@ -1,9 +1,11 @@
 import hashlib
 import json
+import os
 import struct
 import unittest
 import zlib
 from contextlib import redirect_stdout
+from functools import partial
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -21,6 +23,8 @@ from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_mani
 
 import vntts.authoring.source_reference_review as source_review_module
 import vntts.story_index_snapshot as story_snapshot_module
+from tests import test_workspace_input_admission as admission
+from tests.authoring_fixtures import tree_hashes
 from tests.source_reference_fixtures import (
     EvaluationRenderer,
     candidate_key,
@@ -47,6 +51,7 @@ from vntts.authoring.portrait_aliases import (
     write_portrait_alias_plan,
 )
 from vntts.authoring.source_reference_bindings import (
+    SOURCE_REFERENCE_BINDINGS_FIELD,
     SourceReferenceBindingError,
     queue_voice_overrides_from_manifest,
     queue_voice_overrides_sha256,
@@ -74,6 +79,105 @@ from vntts.authoring.source_reference_review import (
 
 
 class AuthoringSourceReferenceReviewTest(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_binding_copy_phases_refuse_fifo_clean_up_and_recover(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            for name in ("first", "next"):
+                (root / name).mkdir()
+            plan, _evaluation, _generation, quality = (
+                publish_source_reference_quality_fixture(root / "first")
+            )
+            next_plan, _evaluation, _generation, next_quality = (
+                publish_source_reference_quality_fixture(
+                    root / "next", character="Guide", line_prefix="guide-"
+                )
+            )
+            for review in (quality, next_quality):
+                session = load_source_reference_quality_review(review.session)
+                for card in session["variants"]:
+                    record_source_reference_quality_decision(
+                        review.session, card["variant_id"], "accept"
+                    )
+            manifest = self.write_base_voice_manifest(root, include_rhiannon=True)
+            publish = partial(
+                publish_source_reference_bindings,
+                plan.directory,
+                manifest,
+                "Centurion",
+                None,
+                quality_review=quality.session,
+                base_characters=("Rhiannon",),
+            )
+            expected = publish(root / "expected-binding")
+            successor = partial(
+                publish_source_reference_binding_successor,
+                expected.directory / "voice-manifest.json",
+                next_plan.directory,
+                next_quality.session,
+                "Centurion",
+            )
+            expected_successor = successor(root / "expected-successor")
+            bound, _voices = load_voice_manifest(
+                expected_successor.directory / "voice-manifest.json", allow_legacy=False
+            )
+            retired_id = bound[SOURCE_REFERENCE_BINDINGS_FIELD]["selected_variants"][0][
+                "variant_id"
+            ]
+            retire = partial(
+                publish_source_reference_binding_retirement,
+                expected_successor.directory / "voice-manifest.json",
+                (retired_id,),
+            )
+            expected_retirement = retire(root / "expected-retirement")
+            original = source_review_module.copy_regular_file
+            for phase, operation, baseline, component in (
+                ("narrator", publish, expected, "narrator"),
+                ("base", publish, expected, "base"),
+                ("variant", publish, expected, "source.wav"),
+                ("successor", successor, expected_successor, "source-01"),
+                ("retirement", retire, expected_retirement, "voice-01"),
+            ):
+                with self.subTest(phase=phase):
+                    output = root / f"refused-{phase}"
+                    before = tree_hashes(root)
+                    refused = []
+
+                    def copy(source, target):
+                        if component not in Path(target).parts:
+                            return original(source, target)
+                        gate = {"path": Path(source), "armed": True}
+                        with (
+                            admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                                self, gate
+                            ),
+                            self.assertRaisesRegex(OSError, "regular file") as caught,
+                        ):
+                            original(source, target)
+                        self.assertFalse(Path(target).exists())
+                        refused.append(caught.exception)
+                        raise caught.exception
+
+                    with (
+                        patch.object(source_review_module, "copy_regular_file", copy),
+                        self.assertRaisesRegex(
+                            SourceReferenceReviewError, "regular file"
+                        ) as caught,
+                    ):
+                        operation(output)
+                    self.assertEqual(len(refused), 1)
+                    self.assertIs(caught.exception.__cause__, refused[0])
+                    self.assertEqual(tree_hashes(root), before)
+                    self.assertFalse(output.exists())
+                    self.assertFalse(list(root.glob(f".{output.name}.*")))
+                    recovered = operation(output)
+                    self.assertEqual(
+                        tree_hashes(recovered.directory),
+                        tree_hashes(baseline.directory),
+                    )
+
     def test_v2_unrouted_media_uses_fixed_corpus_without_invented_transcript(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

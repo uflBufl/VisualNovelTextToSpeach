@@ -1,18 +1,31 @@
 import hashlib
 import io
 import json
+import os
 import unittest
 from contextlib import redirect_stderr
+from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from vntts_artifacts.audio import write_pcm16_wav
 
-from tests.source_reference_fixtures import publish_source_reference_quality_fixture
+from tests import test_workspace_input_admission as admission
+from tests.authoring_fixtures import tree_hashes
+from tests.source_reference_fixtures import (
+    CompositeRenderer,
+    publish_source_reference_quality_fixture,
+    write_exact_bank_composite_report,
+)
 from vntts.authoring import source_reference_quality, source_reference_quality_records
+from vntts.authoring.bulk_generation import run_bulk_generation
 from vntts.authoring.publication import AtomicPublicationError
-from vntts.authoring.reference_composite import ReferenceCompositeError
+from vntts.authoring.reference_composite import (
+    ReferenceCompositeError,
+    publish_composite_quality_review,
+    publish_exact_bank_reference_composite,
+)
 from vntts.authoring.source_reference_quality import (
     SourceReferenceQualityError,
     load_source_reference_quality_review,
@@ -21,6 +34,121 @@ from vntts.authoring.source_reference_quality import (
 
 
 class SourceReferenceQualityBoundariesTest(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_quality_copy_phases_refuse_fifo_clean_up_and_recover(self):
+        for publisher in ("source", "composite"):
+            with self.subTest(publisher=publisher), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                if publisher == "source":
+                    plan, evaluation, generation, expected = (
+                        publish_source_reference_quality_fixture(root)
+                    )
+                    publish = partial(
+                        publish_source_reference_quality_review,
+                        plan.directory,
+                        evaluation.directory,
+                        generation.state,
+                    )
+                    error_type = SourceReferenceQualityError
+                else:
+                    report = write_exact_bank_composite_report(root)
+                    composite = publish_exact_bank_reference_composite(
+                        report,
+                        "Hotelier",
+                        "505401.png",
+                        "hotelier.bnk",
+                        root / "composite",
+                    )
+                    generation = run_bulk_generation(
+                        composite.directory / "queue.jsonl",
+                        root / "generation",
+                        CompositeRenderer(),
+                        provider="synthetic",
+                        model="synthetic-v1",
+                        generation_profile="stable",
+                    )
+                    publish = partial(
+                        publish_composite_quality_review,
+                        composite.directory,
+                        generation.state,
+                    )
+                    expected = publish(root / "expected")
+                    error_type = ReferenceCompositeError
+                expected_session = load_source_reference_quality_review(
+                    expected.session
+                )
+                expected_audio = {
+                    path: digest
+                    for path, digest in tree_hashes(expected.directory).items()
+                    if path != "review.json"
+                }
+                original = source_reference_quality_records.copy_regular_file
+                for phase in ("reference", "generated"):
+                    with self.subTest(phase=phase):
+                        output = root / f"refused-{phase}"
+                        before = tree_hashes(root)
+                        refused = []
+
+                        def copy(source, target):
+                            if not Path(target).name.startswith(phase):
+                                return original(source, target)
+                            gate = {"path": Path(source), "armed": True}
+                            with (
+                                admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                                    self, gate
+                                ),
+                                self.assertRaisesRegex(
+                                    OSError, "regular file"
+                                ) as caught,
+                            ):
+                                original(source, target)
+                            self.assertFalse(Path(target).exists())
+                            refused.append(caught.exception)
+                            raise caught.exception
+
+                        with (
+                            patch.object(
+                                source_reference_quality_records,
+                                "copy_regular_file",
+                                copy,
+                            ),
+                            self.assertRaisesRegex(
+                                error_type, "regular file"
+                            ) as caught,
+                        ):
+                            publish(output)
+                        self.assertEqual(len(refused), 1)
+                        self.assertIs(caught.exception.__cause__, refused[0])
+                        self.assertEqual(tree_hashes(root), before)
+                        self.assertFalse(output.exists())
+                        self.assertFalse(list(root.glob(f".{output.name}.staging-*")))
+                        recovered = publish(output)
+                        session = load_source_reference_quality_review(
+                            recovered.session
+                        )
+                        self.assertEqual(
+                            {
+                                key: value
+                                for key, value in session.items()
+                                if key not in {"created_at", "updated_at"}
+                            },
+                            {
+                                key: value
+                                for key, value in expected_session.items()
+                                if key not in {"created_at", "updated_at"}
+                            },
+                        )
+                        self.assertEqual(
+                            {
+                                path: digest
+                                for path, digest in tree_hashes(output).items()
+                                if path != "review.json"
+                            },
+                            expected_audio,
+                        )
+
     def test_composite_quality_cli_reports_its_domain_error(self):
         errors = io.StringIO()
         with (
@@ -127,15 +255,15 @@ class SourceReferenceQualityBoundariesTest(unittest.TestCase):
             digest = hashlib.sha256(original).hexdigest()
             write_pcm16_wav(source, [0.2] * 4, 24_000)
             destination = root / "copied.wav"
-            copyfile = source_reference_quality_records.shutil.copyfile
+            copyfile = source_reference_quality_records.copy_regular_file
 
             def restore_before_copy(source_path, destination_path):
                 source_path.write_bytes(original)
                 return copyfile(source_path, destination_path)
 
             with patch.object(
-                source_reference_quality_records.shutil,
-                "copyfile",
+                source_reference_quality_records,
+                "copy_regular_file",
                 side_effect=restore_before_copy,
             ):
                 audio = source_reference_quality_records._copy_audio(
@@ -157,8 +285,8 @@ class SourceReferenceQualityBoundariesTest(unittest.TestCase):
 
             with (
                 patch.object(
-                    source_reference_quality_records.shutil,
-                    "copyfile",
+                    source_reference_quality_records,
+                    "copy_regular_file",
                     side_effect=corrupt_copy,
                 ),
                 self.assertRaisesRegex(
