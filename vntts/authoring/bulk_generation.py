@@ -237,7 +237,7 @@ from vntts.authoring.workspace_foundation import (
     load_json_object,
     load_json_object_snapshot,
 )
-from vntts.document_identity import is_lowercase_sha256
+from vntts.document_identity import file_sha256, is_lowercase_sha256
 from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
 from vntts.path_safety import open_regular_binary
@@ -869,7 +869,7 @@ def sha256_control_path(path: str | Path) -> str:
     try:
         path = Path(path).expanduser().resolve()
         if path.is_file():
-            return sha256_file(path)
+            return file_sha256(path, error_type=OSError)
         if not path.is_dir():
             raise BulkGenerationError(f"Generation control does not exist: {path}")
         digest = hashlib.sha256()
@@ -879,7 +879,7 @@ def sha256_control_path(path: str | Path) -> str:
             relative = candidate.relative_to(path).as_posix().encode("utf-8")
             digest.update(len(relative).to_bytes(8, "big"))
             digest.update(relative)
-            digest.update(bytes.fromhex(sha256_file(candidate)))
+            digest.update(bytes.fromhex(file_sha256(candidate, error_type=OSError)))
         return digest.hexdigest()
     except BulkGenerationError:
         raise
@@ -5160,7 +5160,7 @@ def _control_directory_files(path: Path) -> list[dict[str, str]]:
             records.append(
                 {
                     "path": candidate.relative_to(path).as_posix(),
-                    "sha256": sha256_file(candidate),
+                    "sha256": file_sha256(candidate, error_type=OSError),
                 }
             )
     except OSError as error:

@@ -8,9 +8,10 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from tests.pregeneration_fixtures import clean_wav_bytes
+from tests.symlink_support import symlink_or_skip
 from vntts import assets, document_identity, speech_backend_runtime
+from vntts.authoring import bulk_generation, publication
 from vntts.authoring import managed_model_installation as managed
-from vntts.authoring import publication
 from vntts.authoring.generation_lease import GenerationLease
 from vntts.voices import CharacterVoiceRegistry
 
@@ -124,6 +125,85 @@ class ChecksumAdmissionTest(unittest.TestCase):
             self.assertEqual((destination / "result").read_bytes(), b"successor")
             self.assertEqual(path.read_bytes(), b"original authority")
             self.assertFalse((output / ".generation-lease.json").exists())
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_generation_control_hash_and_inventory_refuse_swaps_and_recover(self):
+        for owner in ("file", "tree", "inventory"):
+            with self.subTest(owner=owner), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                path = root / "model.bin"
+                path.write_bytes(b"control")
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                if owner == "file":
+                    invoke = partial(bulk_generation.sha256_control_path, path)
+                    expected = digest
+                elif owner == "tree":
+                    invoke = partial(bulk_generation.sha256_control_path, root)
+                    name = path.name.encode("utf-8")
+                    expected = hashlib.sha256(
+                        len(name).to_bytes(8, "big") + name + bytes.fromhex(digest)
+                    ).hexdigest()
+                else:
+                    invoke = partial(bulk_generation._control_directory_files, root)
+                    expected = [{"path": path.name, "sha256": digest}]
+                self._assert_fifo_admission(
+                    path, invoke, bulk_generation.BulkGenerationError
+                )
+                self.assertEqual(invoke(), expected)
+
+    def test_generation_control_tree_retains_empty_unicode_and_inventory_framing(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            self.assertEqual(
+                bulk_generation.sha256_control_path(root), hashlib.sha256().hexdigest()
+            )
+            self.assertEqual(bulk_generation._control_directory_files(root), [])
+            (root / "nested").mkdir()
+            entries = {"config.json": b"{}", "nested/weights-é.bin": b"weights"}
+            expected = hashlib.sha256()
+            records = []
+            for name, payload in entries.items():
+                path = root / name
+                path.write_bytes(payload)
+                digest = hashlib.sha256(payload).hexdigest()
+                encoded = name.encode("utf-8")
+                expected.update(len(encoded).to_bytes(8, "big"))
+                expected.update(encoded)
+                expected.update(bytes.fromhex(digest))
+                records.append({"path": name, "sha256": digest})
+            self.assertEqual(
+                bulk_generation.sha256_control_path(root), expected.hexdigest()
+            )
+            self.assertEqual(managed._tree_sha256(root), expected.hexdigest())
+            control = bulk_generation.snapshot_generation_control_files(
+                {"model": root}
+            )[0]
+            self.assertEqual(control["files"], records)
+            self.assertEqual(control["sha256"], expected.hexdigest())
+            self.assertEqual(control["kind"], "directory")
+
+    def test_generation_control_symlinks_to_regular_files_remain_supported(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            target = root / "weights.bin"
+            target.write_bytes(b"weights")
+            model = root / "model"
+            model.mkdir()
+            link = model / "linked.bin"
+            symlink_or_skip(link, target)
+            digest = hashlib.sha256(target.read_bytes()).hexdigest()
+            name = link.name.encode("utf-8")
+            expected = hashlib.sha256(
+                len(name).to_bytes(8, "big") + name + bytes.fromhex(digest)
+            ).hexdigest()
+            self.assertEqual(bulk_generation.sha256_control_path(link), digest)
+            self.assertEqual(bulk_generation.sha256_control_path(model), expected)
+            self.assertEqual(
+                bulk_generation._control_directory_files(model),
+                [{"path": link.name, "sha256": digest}],
+            )
 
     @unittest.skipUnless(
         hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
