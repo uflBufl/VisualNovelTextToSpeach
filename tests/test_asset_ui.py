@@ -1,6 +1,7 @@
 import os
 import time
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
@@ -644,6 +645,113 @@ class AssetManagerDialogTest(unittest.TestCase):
             self.wait_for(lambda: dialog.result() == QDialog.DialogCode.Accepted)
 
             self.assertEqual(dialog.settings().voice_manifest, str(manifest))
+
+    @contextmanager
+    def _manifest_fifo_swap(self, manifest, swap_at, expected_opens):
+        native_open, native_path_open = os.open, Path.open
+        descriptors = []
+        hash_opens = 0
+
+        def swap_and_open(path, flags, mode=0o777, *, dir_fd=None):
+            nonlocal hash_opens
+            if Path(path) == manifest:
+                hash_opens += 1
+                if hash_opens == swap_at:
+                    self.assertTrue(flags & os.O_NONBLOCK)
+                    manifest.unlink()
+                    os.mkfifo(manifest)
+            descriptor = native_open(path, flags, mode, dir_fd=dir_fd)
+            if Path(path) == manifest:
+                descriptors.append(descriptor)
+            return descriptor
+
+        def reject_plain_open(path, *args, **kwargs):
+            mode = args[0] if args else kwargs.get("mode", "r")
+            if Path(path) == manifest and "b" in mode:
+                self.fail("manifest hashing must not use blocking Path.open")
+            return native_path_open(path, *args, **kwargs)
+
+        with (
+            patch("vntts.path_safety.os.open", side_effect=swap_and_open),
+            patch.object(Path, "open", reject_plain_open),
+        ):
+            yield
+        self.assertEqual(hash_opens, expected_opens)
+        for descriptor in descriptors:
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_manifest_hash_phases_reject_fifo_swap_and_recover(self):
+        for phase in ("before validation", "after validation", "completion", "save"):
+            with self.subTest(phase=phase), TemporaryDirectory() as directory:
+                manifest = Path(directory).resolve() / "manifest.json"
+                manifest.write_text("{}", encoding="utf-8")
+                model_manager = Mock()
+                model_manager.model_path.return_value = Path("managed/model")
+                voice_manager = Mock()
+                voice_manager.validate.return_value = manifest
+                pool = ManualThreadPool()
+                dialog = AssetManagerDialog(
+                    AppSettings(voice_manifest=str(manifest)),
+                    model_manager=model_manager,
+                    voice_manager=voice_manager,
+                    thread_pool=pool,
+                )
+                result = dialog._validate_manifest_snapshot(str(manifest))
+                dialog._validated_manifest_identity = result[:2]
+                voice_manager.validate.reset_mock()
+                swap_at = 2 if phase == "after validation" else 1
+                with self._manifest_fifo_swap(
+                    manifest, swap_at, swap_at + (phase == "save")
+                ):
+                    if phase == "save":
+                        dialog.accept_settings()
+                        self.assertTrue(dialog.manifest_runner.active)
+                        self.assertNotEqual(
+                            dialog.result(), QDialog.DialogCode.Accepted
+                        )
+                        pool.run_next()
+                    else:
+                        dialog._set_manifest_validation_pending(True)
+                        dialog._accept_after_manifest_validation = True
+                        if phase == "completion":
+                            dialog._manifest_validation_finished(result, None)
+                        else:
+                            with self.assertRaisesRegex(
+                                OSError, "regular file"
+                            ) as raised:
+                                dialog._validate_manifest_snapshot(str(manifest))
+                            self.assertIsInstance(raised.exception.__cause__, OSError)
+                            dialog._manifest_validation_finished(None, raised.exception)
+
+                if phase == "after validation":
+                    voice_manager.validate.assert_called_once_with(manifest)
+                else:
+                    voice_manager.validate.assert_not_called()
+                expected_status = "unavailable" if phase == "completion" else "invalid"
+                self.assertIn(expected_status, dialog.voice_status.text())
+                self.assertIsNone(dialog._validated_manifest_identity)
+                self.assertFalse(dialog._accept_after_manifest_validation)
+                self.assertFalse(dialog.manifest_runner.active)
+                self.assertEqual(dialog.validate_manifest_button.text(), "Verify files")
+                self.assertTrue(dialog.validate_manifest_button.isEnabled())
+                self.assertTrue(
+                    dialog.buttons.button(
+                        QDialogButtonBox.StandardButton.Save
+                    ).isEnabled()
+                )
+                self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
+
+                manifest.unlink()
+                manifest.write_text("{}", encoding="utf-8")
+                dialog.accept_settings()
+                pool.run_next()
+                self.assertEqual(dialog._validated_manifest_identity, result[:2])
+                self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+                self.assertEqual(dialog.settings().voice_manifest, str(manifest))
 
     def test_manifest_stale_after_validation_requires_explicit_reverify(self):
         scenarios = (

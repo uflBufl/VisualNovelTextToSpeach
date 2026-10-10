@@ -3,7 +3,6 @@ from pathlib import Path
 from threading import Event
 from typing import Literal, Protocol, TypeAlias
 
-from durable_file import sha256_file
 from PySide6.QtCore import QObject, QThreadPool, Signal
 from PySide6.QtGui import QCloseEvent, QPalette
 from PySide6.QtWidgets import (
@@ -31,6 +30,7 @@ from vntts.assets import (
     VoicePackManager,
 )
 from vntts.async_ui import LatestTaskRunner
+from vntts.document_identity import file_sha256
 from vntts.settings import AppSettings
 
 default_model = "tts_models/multilingual/multi-dataset/xtts_v2"
@@ -411,9 +411,9 @@ class AssetManagerDialog(QDialog):
 
     def _validate_manifest_snapshot(self, manifest: str) -> ManifestValidationResult:
         path = Path(manifest).expanduser().resolve()
-        before = sha256_file(path)
+        before = file_sha256(path, error_type=OSError)
         validated = self.voice_manager.validate(path)
-        after = sha256_file(path)
+        after = file_sha256(path, error_type=OSError)
         if after != before:
             raise ValueError("Voice manifest changed while validation was running")
         return str(path), after, str(validated)
@@ -439,7 +439,7 @@ class AssetManagerDialog(QDialog):
         path, digest, validated = result
         try:
             selected_path = str(Path(selected).expanduser().resolve())
-            selected_digest = sha256_file(selected_path)
+            selected_digest = file_sha256(selected_path, error_type=OSError)
         except OSError:
             self._voice_manifest_edited()
             self.voice_status.setText(
@@ -714,7 +714,7 @@ class AssetManagerDialog(QDialog):
         try:
             identity = (
                 str(Path(manifest).expanduser().resolve()),
-                sha256_file(manifest),
+                file_sha256(manifest, error_type=OSError),
             )
         except OSError:
             identity = None
