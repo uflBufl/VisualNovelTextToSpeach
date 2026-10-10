@@ -598,7 +598,7 @@ class VoicePackManager:
             references_path.mkdir(parents=True, exist_ok=True)
             try:
                 for source, output in zip(references, copied, strict=True):
-                    shutil.copy2(source, output)
+                    self._copy_reference(source, output)
             except BaseException as error:
                 self._remove_failed_copies(copied, error)
                 raise
@@ -635,7 +635,7 @@ class VoicePackManager:
                             f"{reference.suffix.casefold()}"
                         )
                         copied.append(output)
-                        shutil.copy2(reference, output)
+                        self._copy_reference(reference, output)
                         copied_references.append(f"references/{output.name}")
                     entry: dict[str, object] = {
                         "character": voice.character,
@@ -657,6 +657,19 @@ class VoicePackManager:
                 pack_path, output_manifest, {"version": 2, "voices": entries}, copied
             )
             return output_manifest
+
+    @staticmethod
+    def _copy_reference(source: Path, destination: Path) -> None:
+        if destination.exists() and source.samefile(destination):
+            raise shutil.SameFileError(
+                f"{source!r} and {destination!r} are the same file"
+            )
+        with (
+            open_regular_binary(source) as original,
+            destination.open("wb") as output,
+        ):
+            shutil.copyfileobj(original, output)
+        shutil.copystat(source, destination)
 
     @staticmethod
     def _remove_failed_copies(copied: Sequence[Path], error: BaseException) -> None:

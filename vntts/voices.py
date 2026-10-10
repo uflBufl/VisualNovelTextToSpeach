@@ -1,16 +1,17 @@
 import hashlib
+import json
 import os
 import stat
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from io import TextIOWrapper
 from pathlib import Path, PurePosixPath
 from typing import Literal, Protocol
 
 from vntts_artifacts.voice_manifest import (
     VoiceManifestEntry,
-    load_voice_manifest,
     validate_voice_manifest,
 )
 from vntts_artifacts.voice_manifest import (
@@ -22,7 +23,7 @@ from vntts_artifacts.voice_manifest import (
 
 from vntts.application_directories import get_local_data_directory
 from vntts.cleanup import cleanup_on_exit, temporary_directory
-from vntts.path_safety import open_regular_candidate
+from vntts.path_safety import open_regular_binary, open_regular_candidate
 from vntts.voice_library import VoiceBinding, VoiceBindingRollback, VoiceLibrary
 
 default_voice_choice_id = "default"
@@ -97,7 +98,24 @@ class CharacterVoiceRegistry:
     @classmethod
     def from_file(cls, manifest_path: str | os.PathLike[str]) -> CharacterVoiceRegistry:
         manifest_path = Path(manifest_path).expanduser().resolve()
-        manifest, entries = load_voice_manifest(manifest_path)
+        if manifest_path.is_symlink():
+            raise VoiceManifestError("Voice manifest cannot be a symlink")
+        try:
+            with (
+                open_regular_binary(manifest_path) as source,
+                TextIOWrapper(source, encoding="utf-8") as text,
+            ):
+                manifest = json.loads(text.read())
+        except (OSError, json.JSONDecodeError) as error:
+            raise VoiceManifestError(
+                f"Unable to read voice manifest {manifest_path}: {error}"
+            ) from error
+        entries = validate_voice_manifest(manifest)
+        for index, entry in enumerate(entries):
+            for reference in entry.references:
+                _contained_manifest_reference(
+                    manifest_path, reference, entry_index=index
+                )
         return cls._from_validated_manifest(manifest, entries, manifest_path)
 
     @classmethod
@@ -521,33 +539,43 @@ def voice_manifest_entries_at_path(
 
 
 def _contained_manifest_reference(
-    manifest_path: str | os.PathLike[str], reference: object
+    manifest_path: str | os.PathLike[str],
+    reference: object,
+    *,
+    entry_index: int | None = None,
 ) -> Path:
+    label = (
+        f"Voice entry {entry_index} reference"
+        if entry_index is not None
+        else "Voice reference"
+    )
+    if entry_index is not None and isinstance(reference, str) and "\x00" in reference:
+        raise VoiceManifestError(f"{label} must stay within the manifest directory")
     if (
         not isinstance(reference, str)
         or not reference.strip()
         or "\\" in reference
         or "\x00" in reference
     ):
-        raise VoiceManifestError("Voice reference must be a safe POSIX-relative path")
+        raise VoiceManifestError(f"{label} must be a safe POSIX-relative path")
     relative = PurePosixPath(reference.strip())
     if relative.is_absolute() or any(
         part in {"", ".", ".."} for part in relative.parts
     ):
-        raise VoiceManifestError("Voice reference must be a safe POSIX-relative path")
+        raise VoiceManifestError(f"{label} must be a safe POSIX-relative path")
     root = Path(manifest_path).parent.resolve()
     unresolved = root.joinpath(*relative.parts)
     current = root
     for part in relative.parts:
         current /= part
         if current.is_symlink():
-            raise VoiceManifestError("Voice reference must not use symlinks")
+            raise VoiceManifestError(f"{label} must not use symlinks")
     resolved = unresolved.resolve()
     try:
         resolved.relative_to(root)
     except ValueError as error:
         raise VoiceManifestError(
-            "Voice reference must stay within the manifest directory"
+            f"{label} must stay within the manifest directory"
         ) from error
     return resolved
 

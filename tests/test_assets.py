@@ -1012,7 +1012,10 @@ class VoicePackManagerTest(unittest.TestCase):
                 raise OSError("copy failed")
 
             with (
-                patch("vntts.assets.shutil.copy2", side_effect=fail_after_partial_copy),
+                patch(
+                    "vntts.assets.VoicePackManager._copy_reference",
+                    side_effect=fail_after_partial_copy,
+                ),
                 self.assertRaisesRegex(OSError, "copy failed"),
             ):
                 manager.import_voice("Ada", [source])
@@ -1181,7 +1184,7 @@ class VoicePackManagerTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            real_copy = shutil.copy2
+            real_copy = VoicePackManager._copy_reference
             copies = 0
 
             def fail_on_second_copy(source, destination):
@@ -1193,7 +1196,10 @@ class VoicePackManagerTest(unittest.TestCase):
                 return real_copy(source, destination)
 
             with (
-                patch("vntts.assets.shutil.copy2", side_effect=fail_on_second_copy),
+                patch(
+                    "vntts.assets.VoicePackManager._copy_reference",
+                    side_effect=fail_on_second_copy,
+                ),
                 self.assertRaisesRegex(OSError, "copy failed"),
             ):
                 manager.import_pack(source_manifest, pack_name="custom")
@@ -1329,7 +1335,9 @@ class VoicePackManagerTest(unittest.TestCase):
                 return original_unlink(path, *args, **kwargs)
 
             with (
-                patch("vntts.assets.shutil.copy2", side_effect=primary),
+                patch(
+                    "vntts.assets.VoicePackManager._copy_reference", side_effect=primary
+                ),
                 patch.object(
                     type(root),
                     "unlink",
@@ -1535,14 +1543,14 @@ class VoicePackManagerTest(unittest.TestCase):
             voice_import_started = Event()
             voice_manifest_read = Event()
             errors = []
-            original_copy2 = shutil.copy2
+            original_copy_reference = VoicePackManager._copy_reference
             original_read_json = assets.read_json
 
-            def blocking_copy2(source, destination, *args, **kwargs):
+            def blocking_copy_reference(source, destination, *args, **kwargs):
                 if Path(source).resolve() == source_reference.resolve():
                     pack_copy_started.set()
                     self.assertTrue(release_pack_copy.wait(2))
-                return original_copy2(source, destination, *args, **kwargs)
+                return original_copy_reference(source, destination, *args, **kwargs)
 
             def observing_read_json(path, default):
                 if Path(path).resolve() == target_manifest:
@@ -1556,7 +1564,10 @@ class VoicePackManagerTest(unittest.TestCase):
                     errors.append(error)
 
             with (
-                patch("vntts.assets.shutil.copy2", side_effect=blocking_copy2),
+                patch(
+                    "vntts.assets.VoicePackManager._copy_reference",
+                    side_effect=blocking_copy_reference,
+                ),
                 patch("vntts.assets.read_json", side_effect=observing_read_json),
             ):
                 pack_import = Thread(
