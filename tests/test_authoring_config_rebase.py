@@ -1,6 +1,7 @@
 import copy
 import hashlib
 import json
+import os
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
@@ -15,6 +16,7 @@ from vntts_artifacts.voice_generation_queue import (
     write_voice_generation_queue,
 )
 
+import tests.test_workspace_input_admission as admission
 import vntts.authoring.config_rebase as config_rebase_module
 from tests.authoring_fixtures import (
     create_carry_source_workspace,
@@ -87,6 +89,60 @@ def _prepare(
 
 
 class AuthoringConfigRebaseTest(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_existing_composition_input_hash_refuses_fifo_without_writing_and_recovers(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            destination = root / "composition.json"
+            payload = b"captured composition input"
+            destination.write_bytes(payload)
+            destination.chmod(0o444)
+            mode = destination.stat().st_mode
+            digest = hashlib.sha256(payload).hexdigest()
+            original = config_rebase_module.sha256_file
+            refused = []
+
+            def checksum(path):
+                self.assertEqual(path, destination)
+                gate = {"path": destination, "armed": True}
+                with (
+                    admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                        self, gate
+                    ),
+                    self.assertRaisesRegex(OSError, "regular file") as caught,
+                ):
+                    original(path)
+                refused.append(caught.exception)
+                raise caught.exception
+
+            with (
+                patch.object(config_rebase_module, "sha256_file", checksum),
+                self.assertRaisesRegex(OSError, "regular file") as caught,
+            ):
+                config_rebase_module._write_audio_event_composition_input(
+                    destination, payload, digest
+                )
+            self.assertEqual(len(refused), 1)
+            self.assertIs(caught.exception, refused[0])
+            self.assertEqual(destination.read_bytes(), payload)
+            self.assertEqual(destination.stat().st_mode, mode)
+            self.assertEqual(list(root.iterdir()), [destination])
+            with patch.object(Path, "write_bytes") as write:
+                config_rebase_module._write_audio_event_composition_input(
+                    destination, payload, digest
+                )
+                conflict = b"conflicting composition input"
+                with self.assertRaisesRegex(AuthoringWorkbenchError, "input conflicts"):
+                    config_rebase_module._write_audio_event_composition_input(
+                        destination, conflict, hashlib.sha256(conflict).hexdigest()
+                    )
+                write.assert_not_called()
+            self.assertEqual(destination.read_bytes(), payload)
+
     def test_missing_rebase_manifest_fails_before_publishing_workspace(self):
         for missing_side in ("source", "target"):
             with (

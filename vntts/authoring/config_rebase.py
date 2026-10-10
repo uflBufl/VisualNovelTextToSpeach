@@ -2166,7 +2166,7 @@ def _write_audio_event_composition_input(
             raise AuthoringWorkbenchError(
                 "Config rebase audio-event composition target is unsafe"
             )
-        if hashlib.sha256(destination.read_bytes()).hexdigest() != digest:
+        if sha256_file(destination) != digest:
             raise AuthoringWorkbenchError(
                 "Config rebase audio-event composition input conflicts"
             )
