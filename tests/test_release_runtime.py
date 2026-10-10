@@ -1,3 +1,4 @@
+import errno
 import json
 import os
 import shutil
@@ -31,6 +32,107 @@ from vntts.release_runtime import (
 
 
 class ReleaseRuntimeTest(unittest.TestCase):
+    def _promotion_fixture(self, root):
+        managed = root / "_python"
+        distribution = managed / "cpython"
+        for relative, payload, mode in (
+            ("python.exe", b"interpreter", 0o755),
+            ("Lib/example.py", b"module", 0o644),
+        ):
+            path = distribution / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(payload)
+            path.chmod(mode)
+            os.utime(path, ns=(1_600_000_000_000_000_000,) * 2)
+        return managed, distribution / "python.exe", root / "pocket-tts"
+
+    def test_windows_promotion_renames_without_copying(self):
+        with TemporaryDirectory() as directory:
+            managed, interpreter, destination = self._promotion_fixture(Path(directory))
+            inode = interpreter.stat().st_ino
+            with patch.object(runtime_module, "copy_regular_file") as copy:
+                promoted = _promote_windows_runtime(managed, interpreter, destination)
+            copy.assert_not_called()
+            self.assertEqual(promoted, destination / "python.exe")
+            self.assertEqual(promoted.stat().st_ino, inode)
+            self.assertEqual(promoted.read_bytes(), b"interpreter")
+            self.assertFalse(managed.exists())
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_windows_promotion_copy_fallback_refuses_and_recovers(self):
+        for relative in ("python.exe", "Lib/example.py"):
+            with self.subTest(member=relative), TemporaryDirectory() as directory:
+                managed, interpreter, destination = self._promotion_fixture(
+                    Path(directory)
+                )
+                distribution = interpreter.parent
+                source = distribution / relative
+                before = tree_hashes(managed)
+                original_copy = runtime_module.copy_regular_file
+                refused = []
+
+                def copy(original, target, **options):
+                    if Path(original) != source:
+                        return original_copy(original, target, **options)
+                    gate = {"path": source, "armed": True}
+                    with (
+                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                            self, gate
+                        ),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original_copy(original, target, **options)
+                    self.assertFalse(Path(target).exists())
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                with (
+                    patch.object(
+                        runtime_module.os,
+                        "rename",
+                        side_effect=OSError(errno.EXDEV, "cross-device move"),
+                    ),
+                    patch.object(runtime_module, "copy_regular_file", copy),
+                    self.assertRaises(shutil.Error) as caught,
+                ):
+                    _promote_windows_runtime(managed, interpreter, destination)
+                self.assertEqual(len(refused), 1)
+                self.assertEqual(len(caught.exception.args[0]), 1)
+                original, target, message = caught.exception.args[0][0]
+                self.assertEqual(Path(original), source)
+                self.assertEqual(Path(target), destination / relative)
+                self.assertIn("regular file", message)
+                self.assertEqual(tree_hashes(managed), before)
+                self.assertTrue(destination.is_dir())
+                shutil.rmtree(destination)
+                self._assert_promotion_copy_recovery(managed, interpreter, destination)
+
+    def _assert_promotion_copy_recovery(self, managed, interpreter, destination):
+        expected = {
+            path.relative_to(interpreter.parent): (
+                path.read_bytes(),
+                stat.S_IMODE(path.stat().st_mode),
+                path.stat().st_mtime_ns,
+            )
+            for path in interpreter.parent.rglob("*")
+            if path.is_file()
+        }
+        with patch.object(
+            runtime_module.os,
+            "rename",
+            side_effect=OSError(errno.EXDEV, "cross-device move"),
+        ):
+            promoted = _promote_windows_runtime(managed, interpreter, destination)
+        self.assertEqual(promoted, destination / "python.exe")
+        self.assertFalse(managed.exists())
+        for relative, (payload, mode, mtime) in expected.items():
+            target = destination / relative
+            self.assertEqual(target.read_bytes(), payload)
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), mode)
+            self.assertEqual(target.stat().st_mtime_ns, mtime)
+
     def _relocation_fixture(self, root):
         runtimes = root / "speech-runtimes"
         managed = runtimes / "_python/cpython/bin/python3.14"

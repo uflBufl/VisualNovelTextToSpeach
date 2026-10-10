@@ -118,7 +118,11 @@ def _promote_windows_runtime(
     distribution_root = managed_interpreter.parent
     if not distribution_root.resolve().is_relative_to(managed_root.resolve()):
         raise RuntimeError("Managed Python distribution escaped its staging root")
-    shutil.move(distribution_root, runtime_root)
+    shutil.move(
+        distribution_root,
+        runtime_root,
+        copy_function=partial(copy_regular_file, preserve_metadata=True),
+    )
     shutil.rmtree(managed_root)
     return _runtime_interpreter(runtime_root, "win32")
 
