@@ -85,28 +85,31 @@ class PregenerationResourcesTest(unittest.TestCase):
         self.assertEqual(estimate.rough_audio_seconds, (len(text) + 11) // 12)
         self.assertEqual(estimate.estimated_generation_minutes, 0)
 
-    def test_resource_estimate_ignores_queue_replacement_after_hash(self):
+    def test_resource_estimate_ignores_queue_replacement_after_capture(self):
         with TemporaryDirectory() as directory:
             _job, generation_input, result, items = fixture(Path(directory))
             result.state.unlink()
-            original_sha256 = sha256_file
+            original_read = Path.read_bytes
+            replaced = []
 
-            def hash_then_replace(path):
-                digest = original_sha256(path)
-                if Path(path) == generation_input.queue:
+            def read_then_replace(path):
+                payload = original_read(path)
+                if path == generation_input.queue:
+                    replaced.append(path)
                     write_voice_generation_queue(
-                        generation_input.queue,
+                        path,
                         {"game": "Synthetic Game", "language": "en"},
                         [pack_item("changed", items[0]["sequence"]), items[1]],
                     )
-                return digest
+                return payload
 
-            with patch(
-                "vntts.pregeneration_setup.sha256_file",
-                side_effect=hash_then_replace,
-            ):
+            with patch.object(Path, "read_bytes", read_then_replace):
                 estimate = estimate_generation_resources(generation_input)
 
+            self.assertEqual(replaced, [generation_input.queue])
+            self.assertNotEqual(
+                sha256_file(generation_input.queue), generation_input.queue_sha256
+            )
             self.assertEqual(estimate.total_items, 2)
             self.assertEqual(
                 estimate.total_text_characters, sum(len(item["text"]) for item in items)
