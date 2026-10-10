@@ -2,8 +2,7 @@
 
 ## Continue regular-file admission through remaining integrity owners
 
-- [ ] Admit the remaining copy source acquisitions in `failure_reference_audit._copy_audit_candidate` (`copy2`) and `known_role_reuse._copy_references` / `_copy_tree` (`copyfile`). Hash admission after copying cannot protect the earlier source open. Qualify source-before-target, SameFileError, data-only vs copystat metadata, raw errors, distinct/staged targets, source-change gates, publication rollback/cleanup and retry before changing them; reuse an existing shared copy owner where its contracts fit. Gate actual acquisition swap, no source damage or published/staging remnants and positive byte/mode/mtime/hash recovery; no whole-workflow admission claim until this phase is checked.
-- [ ] Classify the remaining generic SHA/copy inventory by persisted input vs owned staging/output lifecycle (current scan: 51 production SHA importer modules/233 direct imported-name calls and 18 `shutil.copyfile`/`copy2` calls). Migrate only evidenced consumers with their actual error, alias/root, copied metadata, byte-binding and publication contracts. Keep the concrete staged inventory in `.codex/investigations/`; run local-first affected tests, independent review and fresh-main branch checks for each implementation stage.
+- [ ] Classify the remaining generic SHA/copy inventory by persisted input vs owned staging/output lifecycle (current scan: 51 production SHA importer modules/233 direct imported-name calls and 15 `shutil.copyfile`/`copy2` calls). Migrate only evidenced consumers with their actual error, alias/root, copied metadata, byte-binding and publication contracts. Keep the concrete staged inventory in `.codex/investigations/`; run local-first affected tests, independent review and fresh-main branch checks for each implementation stage.
 
 ## Coordinate source-audio producer numeric admission
 
