@@ -29,6 +29,7 @@ from vntts.dialog_capture import (
     ellipsis_speaker_hint,
     is_standalone_ellipsis_text,
 )
+from vntts.document_identity import sha256_file
 from vntts.live_replay_sequence_seal import (
     _CAPTURE_OBSERVATION_STATUSES,
     SequenceReplaySealError,
@@ -987,7 +988,7 @@ def _publish_recovered_corpus(
     _write_json(observation_path, observation_document)
     observation_binding: JSONDocument = {
         "path": observation_path.name,
-        "sha256": hashlib.sha256(observation_path.read_bytes()).hexdigest(),
+        "sha256": sha256_file(observation_path),
         "observation_count": len(ledger),
     }
     capture_authority: JSONDocument = {
