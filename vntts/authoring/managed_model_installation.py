@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import shutil
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from io import TextIOWrapper
@@ -19,7 +18,7 @@ from vntts.authoring.publication import (
 )
 from vntts.document_identity import file_sha256
 from vntts.json_types import decode_json
-from vntts.path_safety import open_regular_binary
+from vntts.path_safety import copy_regular_file, open_regular_binary
 
 PathInput: TypeAlias = str | Path
 JsonDocument: TypeAlias = dict[str, object]
@@ -195,11 +194,7 @@ def install_managed_model(
                 raise error_type(
                     f"Pinned {model_label} source file is missing: {candidate}"
                 )
-            with (
-                open_regular_binary(candidate) as source_file,
-                (model_directory / filename).open("wb") as output,
-            ):
-                shutil.copyfileobj(source_file, output)
+            copy_regular_file(candidate, model_directory / filename)
         reason, actual_tree, _actual_files = _verify(model_directory, model)
         if reason == "model tree checksum changed":
             reason = (
