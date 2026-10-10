@@ -3019,20 +3019,25 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 fixture, imported, _created = self.create_workspace(root)
                 before = tree_hashes(root)
                 verifier = getattr(workspace_creation_module, verifier_name)
-                original_hash = workspace_creation_module.sha256_file
+                hash_name = (
+                    "file_sha256"
+                    if verifier_name == "_verify_selected_sources"
+                    else "sha256_file"
+                )
+                original_hash = getattr(workspace_creation_module, hash_name)
                 failure = PermissionError("final input is unreadable")
                 hash_calls = 0
 
-                def fail_hash(path):
+                def fail_hash(path, **kwargs):
                     nonlocal hash_calls
                     hash_calls += 1
                     if hash_calls == failing_hash:
                         raise failure
-                    return original_hash(path)
+                    return original_hash(path, **kwargs)
 
                 def fail_final_hash(*args, **kwargs):
                     with patch.object(
-                        workspace_creation_module, "sha256_file", side_effect=fail_hash
+                        workspace_creation_module, hash_name, side_effect=fail_hash
                     ):
                         return verifier(*args, **kwargs)
 
@@ -3071,7 +3076,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 target_manifest = write_carry_target_manifest(root)
                 before = tree_hashes(root)
                 publisher = workspace_creation_module._publish_carry_forward_staging
-                original_hash = workspace_creation_module.sha256_file
+                original_hash = workspace_creation_module.file_sha256
                 failure = PermissionError("carry-forward authority is unreadable")
 
                 def fail_final_hash(target_state_path, target_state, source, snapshots):
@@ -3080,13 +3085,13 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                         source.state_path if authority == "state" else snapshots[0][0]
                     )
 
-                    def fail_hash(path):
+                    def fail_hash(path, **kwargs):
                         if path == failed_path:
                             raise failure
-                        return original_hash(path)
+                        return original_hash(path, **kwargs)
 
                     with patch.object(
-                        workspace_creation_module, "sha256_file", side_effect=fail_hash
+                        workspace_creation_module, "file_sha256", side_effect=fail_hash
                     ):
                         return publisher(
                             target_state_path, target_state, source, snapshots

@@ -172,7 +172,7 @@ from vntts.authoring.workspace_voice_runtime import (
     load_workspace_queue_voice_overrides,
     load_workspace_voice_registry,
 )
-from vntts.document_identity import canonical_document_sha256
+from vntts.document_identity import canonical_document_sha256, file_sha256
 from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
 from vntts.path_safety import open_regular_binary
@@ -2192,12 +2192,12 @@ def _publish_carry_forward_staging(
         publish_generated_manifest(target_state_path)
     except BulkGenerationError as error:
         raise AuthoringWorkbenchError(str(error)) from error
-    if sha256_file(source.state_path) != source.state_sha256:
+    if file_sha256(source.state_path, error_type=OSError) != source.state_sha256:
         raise AuthoringWorkbenchError(
             "Carry-forward source state changed before workspace publication"
         )
     for path, digest in snapshots:
-        if not path.is_file() or sha256_file(path) != digest:
+        if not path.is_file() or file_sha256(path, error_type=OSError) != digest:
             raise AuthoringWorkbenchError(
                 "Carry-forward source WAV changed before workspace publication"
             )
@@ -2826,7 +2826,8 @@ def _copy_carry_forward_failure_reference_binding(
 
 def _read_source_bytes(path: Path, label: str) -> tuple[bytes, str]:
     try:
-        payload = path.read_bytes()
+        with open_regular_binary(path) as source:
+            payload = source.read()
     except OSError as error:
         raise AuthoringWorkbenchError(
             f"Unable to read {label} {path}: {error}"
@@ -2837,7 +2838,7 @@ def _read_source_bytes(path: Path, label: str) -> tuple[bytes, str]:
 @publication_errors(AuthoringWorkbenchError)
 def _verify_selected_sources(selected_sources: Iterable[SelectedSource]) -> None:
     for path, digest, label in selected_sources:
-        if not path.is_file() or sha256_file(path) != digest:
+        if not path.is_file() or file_sha256(path, error_type=OSError) != digest:
             raise AuthoringWorkbenchError(
                 f"Selected {label} changed while workspace was being created"
             )

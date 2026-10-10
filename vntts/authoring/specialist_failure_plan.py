@@ -9,8 +9,6 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from durable_file import sha256_file
-
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.cohort_review import (
     CohortReviewError,
@@ -23,8 +21,9 @@ from vntts.authoring.failure_repair import (
     OFFLINE_FALLBACK_BACKEND,
     SENTENCE_BOUNDARY_SEGMENTATION,
 )
-from vntts.document_identity import is_lowercase_sha256
+from vntts.document_identity import file_sha256, is_lowercase_sha256
 from vntts.json_types import decode_json
+from vntts.path_safety import open_regular_binary
 
 SPECIALIST_FAILURE_PLAN_SCHEMA = "vntts.authoring-specialist-failure-plan"
 SPECIALIST_FAILURE_PLAN_VERSION = 1
@@ -63,7 +62,7 @@ def build_specialist_failure_plan(
     body = _build_plan_body(sources, items)
     for path, digest in snapshots:
         try:
-            if sha256_file(path) != digest:
+            if file_sha256(path, error_type=OSError) != digest:
                 raise CohortReviewError(
                     f"Specialist source changed during planning: {path}"
                 )
@@ -437,7 +436,8 @@ def _validate_source_membership(sources: list[object], items: list[JsonObject]) 
 
 def _read(path: str | Path, label: str) -> bytes:
     try:
-        return Path(path).read_bytes()
+        with open_regular_binary(path) as source:
+            return source.read()
     except OSError as error:
         raise CohortReviewError(
             f"Unable to read specialist {label}: {error}"
