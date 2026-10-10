@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import unittest
 from functools import partial
@@ -9,6 +10,7 @@ from unittest.mock import patch
 from tests.pregeneration_fixtures import clean_wav_bytes
 from vntts import assets, document_identity, speech_backend_runtime
 from vntts.authoring import managed_model_installation as managed
+from vntts.voices import CharacterVoiceRegistry
 
 
 class ChecksumAdmissionTest(unittest.TestCase):
@@ -142,6 +144,65 @@ class ChecksumAdmissionTest(unittest.TestCase):
                     self.assertEqual(result, expected)
                 else:
                     self.assertIsNone(result)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_model_adoption_rejects_hash_swap_before_manifest_publication(self):
+        with TemporaryDirectory() as directory:
+            manager = assets.ModelAssetManager(Path(directory).resolve() / "models")
+            asset = assets.ModelAsset("test", ("https://models.invalid/model.bin",))
+            model = manager.model_path(asset.name)
+            model.mkdir(parents=True)
+            path = model / "model.bin"
+            payload = b"adopted model"
+            path.write_bytes(payload)
+            invoke = partial(manager.validate, asset.name, asset=asset)
+            self._assert_fifo_admission(path, invoke, assets.ModelIntegrityError)
+            manifest = model / assets.asset_manifest_name
+            self.assertFalse(manifest.exists())
+            self.assertEqual(invoke(), model)
+            self.assertEqual(
+                json.loads(manifest.read_bytes()),
+                {
+                    "version": 1,
+                    "model": asset.name,
+                    "files": {
+                        path.name: {
+                            "size": len(payload),
+                            "sha256": hashlib.sha256(payload).hexdigest(),
+                        }
+                    },
+                },
+            )
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_voice_checksum_writing_preserves_prior_manifest_on_hash_refusal(self):
+        for target in ("manifest", "retained reference"):
+            with self.subTest(target=target), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                source = root / "source.wav"
+                source.write_bytes(clean_wav_bytes())
+                manager = assets.VoicePackManager(root / "packs")
+                manifest = manager.import_voice("Ada", [source])
+                pack = manifest.parent
+                registry = CharacterVoiceRegistry.from_file(manifest)
+                reference = registry.unique_voices()[0].references[0]
+                checksum = pack / assets.asset_manifest_name
+                previous = checksum.read_bytes()
+                path = manifest if target == "manifest" else reference
+                invoke = partial(
+                    manager._write_voice_checksums, pack, manifest, registry
+                )
+                self._assert_fifo_admission(path, invoke, assets.ModelIntegrityError)
+                self.assertEqual(checksum.read_bytes(), previous)
+                invoke()
+                self.assertEqual(
+                    json.loads(checksum.read_bytes()), json.loads(previous)
+                )
+                self.assertEqual(manager.validate(manifest), manifest)
 
     @unittest.skipUnless(
         hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"

@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from functools import partial
+from io import TextIOWrapper
 from ntpath import isreserved
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from tempfile import mkdtemp
@@ -17,7 +18,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts.text_utils import slugify
 from vntts_artifacts.voice_manifest import validate_voice_manifest
 
@@ -493,7 +494,11 @@ class ModelAssetManager:
         hash_file = model_path / "hash.md5"
         if not hash_file.is_file():
             raise ModelIntegrityError("Model publisher checksum is missing")
-        published_hash = hash_file.read_text(encoding="utf-8").strip()
+        with (
+            open_regular_binary(hash_file) as source,
+            TextIOWrapper(source, encoding="utf-8") as text,
+        ):
+            published_hash = text.read().strip()
         if published_hash != asset.expected_hash:
             raise ModelIntegrityError("Model publisher checksum does not match")
 
@@ -509,7 +514,7 @@ class ModelAssetManager:
             ModelAssetManager._check_model_file(path, filename)
             files[filename] = {
                 "size": path.stat().st_size,
-                "sha256": sha256_file(path),
+                "sha256": file_sha256(path, error_type=ModelIntegrityError),
             }
         atomic_write_json(
             model_path / asset_manifest_name,
@@ -850,7 +855,9 @@ class VoicePackManager:
     ) -> None:
         voices = registry.unique_voices()
         files = {
-            str(reference.relative_to(pack_path)): sha256_file(reference)
+            str(reference.relative_to(pack_path)): file_sha256(
+                reference, error_type=ModelIntegrityError
+            )
             for voice in voices
             for reference in voice.references
         }
@@ -858,7 +865,9 @@ class VoicePackManager:
             pack_path / asset_manifest_name,
             {
                 "version": 1,
-                "manifest_sha256": sha256_file(manifest_path),
+                "manifest_sha256": file_sha256(
+                    manifest_path, error_type=ModelIntegrityError
+                ),
                 "files": files,
             },
         )

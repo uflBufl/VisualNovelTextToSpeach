@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 import os
@@ -72,6 +73,47 @@ class MemoryOpener:
 
 
 class ModelAssetManagerTest(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_publisher_checksum_rejects_fifo_swap_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            path = root / "hash.md5"
+            payload = b"publisher\r\n"
+            path.write_bytes(payload)
+            asset = ModelAsset("test", (), expected_hash="publisher")
+            native_open, path_open = os.open, Path.open
+            descriptors = []
+
+            def swap_and_open(candidate, flags, mode=0o777, *, dir_fd=None):
+                self.assertEqual(Path(candidate), path)
+                self.assertTrue(flags & os.O_NONBLOCK)
+                path.unlink()
+                os.mkfifo(path)
+                descriptor = native_open(candidate, flags, mode, dir_fd=dir_fd)
+                descriptors.append(descriptor)
+                return descriptor
+
+            def reject_plain_open(candidate, *args, **kwargs):
+                if Path(candidate) == path:
+                    self.fail("publisher checksum must admit its opened input")
+                return path_open(candidate, *args, **kwargs)
+
+            with (
+                patch("vntts.path_safety.os.open", side_effect=swap_and_open),
+                patch.object(Path, "open", reject_plain_open),
+                self.assertRaisesRegex(OSError, "regular file"),
+            ):
+                ModelAssetManager._validate_upstream_hash(root, asset)
+            self.assertEqual(len(descriptors), 1)
+            with self.assertRaises(OSError):
+                os.fstat(descriptors[0])
+            path.unlink()
+            path.write_bytes(payload)
+            self.assertIsNone(ModelAssetManager._validate_upstream_hash(root, asset))
+            self.assertEqual(path.read_bytes(), payload)
+
     def test_deep_optional_json_returns_default_without_rewriting(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "cache.json"
@@ -163,7 +205,9 @@ class ModelAssetManagerTest(unittest.TestCase):
                                 "files": {
                                     name: {
                                         "size": 8,
-                                        "sha256": assets.sha256_file(model / name),
+                                        "sha256": hashlib.sha256(
+                                            (model / name).read_bytes()
+                                        ).hexdigest(),
                                     }
                                     for name in ("weights.bin", "weights.bin.part")
                                 },
