@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from vntts_artifacts.file_integrity import sha256_file
 
+from tests import test_workspace_input_admission as admission
 from tests.authoring_fixtures import tree_hashes
 from tests.listening_fixtures import write_listening_fixture
 from vntts.authoring import listening_import as listening_import_module
@@ -27,6 +28,77 @@ from vntts.authoring.publication import (
 
 
 class ListeningImportTest(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_copy_sources_refuse_swapped_acquisition_and_recover(self):
+        for relative in (".blind-key.json", "audio/trial-0001-a.wav"):
+            with self.subTest(source=relative), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                source = write_listening_fixture(root)
+                inspection = inspect_listening_session(source)
+                selected = source / relative
+                mode, mtime = (
+                    selected.stat().st_mode & 0o777,
+                    selected.stat().st_mtime_ns,
+                )
+                before = tree_hashes(root)
+                original = listening_import_module.copy_regular_file
+                refused = []
+
+                def copy(path, target, **kwargs):
+                    if Path(path) != selected:
+                        return original(path, target, **kwargs)
+                    self.assertEqual(kwargs, {"preserve_metadata": True})
+                    gate = {"path": selected, "armed": True}
+                    with (
+                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                            self, gate
+                        ),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original(path, target, **kwargs)
+                    self.assertFalse(Path(target).exists())
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                with (
+                    patch.object(listening_import_module, "copy_regular_file", copy),
+                    self.assertRaisesRegex(
+                        ListeningImportError, "regular file"
+                    ) as caught,
+                ):
+                    import_listening_session(source, root / "app-data")
+                self.assertEqual(len(refused), 1)
+                self.assertIs(caught.exception.__cause__, refused[0])
+                self.assertEqual(tree_hashes(root), before)
+                self.assertEqual(list((root / "app-data").iterdir()), [])
+                # The acquisition fixture restores bytes/mode; restore original copy mtime.
+                os.utime(selected, ns=(mtime, mtime))
+                recovered = import_listening_session(source, root / "app-data")
+                repeated = import_listening_session(source, root / "app-data")
+                self.assertTrue(recovered.created)
+                self.assertFalse(repeated.created)
+                self.assertEqual(recovered.destination, repeated.destination)
+                self.assertEqual(
+                    recovered.manifest["source"]["logical_identity"],
+                    inspection.logical_identity,
+                )
+                artifacts = {
+                    path: digest
+                    for _role, _source, path, digest in inspection.artifacts
+                }
+                self.assertEqual(
+                    {
+                        str(path): sha256_file(recovered.destination / path)
+                        for path in artifacts
+                    },
+                    {str(path): digest for path, digest in artifacts.items()},
+                )
+                copied = recovered.destination / relative
+                self.assertEqual(copied.stat().st_mode & 0o777, mode)
+                self.assertEqual(copied.stat().st_mtime_ns, mtime)
+
     def test_final_inspection_read_failure_preserves_cause_and_cli_error(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -210,12 +282,12 @@ class ListeningImportTest(unittest.TestCase):
             root = Path(directory)
             source = write_listening_fixture(root)
             session_path = source / "session.json"
-            original_copy = __import__("shutil").copy2
+            original_copy = listening_import_module.copy_regular_file
             mutated = False
 
-            def mutate_after_report_copy(source_path, destination):
+            def mutate_after_report_copy(source_path, destination, **kwargs):
                 nonlocal mutated
-                result = original_copy(source_path, destination)
+                result = original_copy(source_path, destination, **kwargs)
                 if Path(source_path).name == "report.json" and not mutated:
                     session = json.loads(session_path.read_text(encoding="utf-8"))
                     session["updated_at"] = "2026-08-15T10:00:00+00:00"
@@ -227,7 +299,7 @@ class ListeningImportTest(unittest.TestCase):
 
             with (
                 patch(
-                    "vntts.authoring.listening_import.shutil.copy2",
+                    "vntts.authoring.listening_import.copy_regular_file",
                     side_effect=mutate_after_report_copy,
                 ),
                 self.assertRaisesRegex(ListeningImportError, "retry when idle"),
@@ -240,14 +312,14 @@ class ListeningImportTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             source = write_listening_fixture(root)
-            original_copy = __import__("shutil").copy2
+            original_copy = listening_import_module.copy_regular_file
 
-            def copy_and_interrupt(source_path, destination):
-                original_copy(source_path, destination)
+            def copy_and_interrupt(source_path, destination, **kwargs):
+                original_copy(source_path, destination, **kwargs)
                 raise KeyboardInterrupt
 
             with patch(
-                "vntts.authoring.listening_import.shutil.copy2",
+                "vntts.authoring.listening_import.copy_regular_file",
                 side_effect=copy_and_interrupt,
             ):
                 with self.assertRaises(KeyboardInterrupt):
@@ -260,12 +332,12 @@ class ListeningImportTest(unittest.TestCase):
             root = Path(directory)
             source = write_listening_fixture(root)
             audio_path = source / "audio/trial-0001-a.wav"
-            original_copy = __import__("shutil").copy2
+            original_copy = listening_import_module.copy_regular_file
             mutated = False
 
-            def mutate_after_audio_copy(source_path, destination):
+            def mutate_after_audio_copy(source_path, destination, **kwargs):
                 nonlocal mutated
-                result = original_copy(source_path, destination)
+                result = original_copy(source_path, destination, **kwargs)
                 if Path(source_path).resolve() == audio_path.resolve() and not mutated:
                     audio_path.write_bytes(b"changed after copy")
                     mutated = True
@@ -273,7 +345,7 @@ class ListeningImportTest(unittest.TestCase):
 
             with (
                 patch(
-                    "vntts.authoring.listening_import.shutil.copy2",
+                    "vntts.authoring.listening_import.copy_regular_file",
                     side_effect=mutate_after_audio_copy,
                 ),
                 self.assertRaisesRegex(ListeningImportError, "retry when idle"),

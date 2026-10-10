@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
 import sys
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
@@ -27,7 +26,7 @@ from vntts.authoring.workspace_foundation import load_json_object, require_sha25
 from vntts.document_identity import canonical_document_sha256
 from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_object
-from vntts.path_safety import safe_relative_path
+from vntts.path_safety import copy_regular_file, safe_relative_path
 
 SESSION_SCHEMA = "r1999.model-listening-session"
 KEY_SCHEMA = "r1999.model-listening-key"
@@ -195,7 +194,7 @@ def import_listening_session(
         for role, source, relative, digest in inspection.artifacts:
             target = staging / relative
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target)
+            copy_regular_file(source, target, preserve_metadata=True)
             if sha256_file(target) != digest:
                 raise ListeningImportError(
                     f"Listening artifact changed during import: {source}"
