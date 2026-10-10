@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     VoiceGenerationQueueItem,
@@ -67,6 +67,7 @@ from vntts.authoring.workspace_foundation import (
     copy_workspace_tree_snapshot,
 )
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
+from vntts.document_identity import sha256_file
 from vntts.voices import load_voice_manifest
 
 _copy_base_wavs = partial(

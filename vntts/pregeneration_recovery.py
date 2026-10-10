@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from threading import Event, Lock
 from typing import Protocol
 
-from durable_file import sha256_file
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueueError,
     VoiceGenerationQueueItem,
@@ -28,7 +27,7 @@ from vntts.authoring.generation_state import (
     LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED,
     load_stable_generation_queue,
 )
-from vntts.document_identity import is_lowercase_sha256
+from vntts.document_identity import is_lowercase_sha256, sha256_file
 from vntts.pregeneration_generation import (
     OfflineGenerationCancelled,
     OfflineGenerationError,

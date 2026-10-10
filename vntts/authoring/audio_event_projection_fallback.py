@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     VoiceGenerationQueueItem,
@@ -54,6 +54,7 @@ from vntts.authoring.workspace_config import (
 )
 from vntts.authoring.workspace_foundation import stage_single_base_successor
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
+from vntts.document_identity import sha256_file
 
 SCHEMA = "vntts.authoring-audio-event-projection-fallback-batch"
 SCHEMA_VERSION = 1

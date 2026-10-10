@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypedDict, TypeGuard
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
@@ -71,6 +71,7 @@ from vntts.authoring.workspace_creation import (
     default_workspaces_root,
 )
 from vntts.authoring.workspace_foundation import copy_generation_wavs
+from vntts.document_identity import sha256_file
 
 _terminal_review_outcome = is_terminal_review_outcome
 

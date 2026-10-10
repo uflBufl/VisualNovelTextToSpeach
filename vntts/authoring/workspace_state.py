@@ -9,7 +9,6 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 
-from durable_file import sha256_file
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
 from vntts.authoring.generation_lease import BulkGenerationError
@@ -20,6 +19,7 @@ from vntts.authoring.generation_state import (
 from vntts.authoring.publication import publication_errors
 from vntts.authoring.workspace_config import workspace_queue_sha256
 from vntts.authoring.workspace_foundation import read_regular_file
+from vntts.document_identity import sha256_file
 from vntts.json_types import decode_json
 
 WorkspaceState = tuple[VoiceGenerationQueue, dict[str, object], bytes, str]

@@ -14,7 +14,6 @@ from pathlib import Path
 from re import Match
 from typing import Protocol, TypeAlias
 
-from durable_file import sha256_file
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
@@ -92,6 +91,7 @@ from vntts.authoring.workspace_state import (
     shared_workspace_state_reads,
 )
 from vntts.cleanup import temporary_directory
+from vntts.document_identity import sha256_file
 from vntts.json_types import decode_json
 from vntts.json_types import (
     has_schema_version as _has_exact_schema_version,

@@ -5,7 +5,6 @@ import wave
 from collections.abc import Sequence
 from pathlib import Path
 
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_generation_queue import (
     expected_voice_generation_queue_id,
     text_sha256,
@@ -17,6 +16,7 @@ from vntts.authoring.source_reference_bindings import (
     SOURCE_REFERENCE_BINDINGS_VERSION,
     queue_voice_overrides_sha256,
 )
+from vntts.document_identity import sha256_file
 from vntts.pregeneration_voices import PLAYER_VOICE_CANDIDATES_FIELD
 
 

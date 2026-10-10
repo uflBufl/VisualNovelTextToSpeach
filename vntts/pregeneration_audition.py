@@ -16,7 +16,6 @@ from time import monotonic
 from typing import BinaryIO, NamedTuple, Protocol, TypeAlias
 
 import numpy as np
-from durable_file import sha256_file
 from numpy.typing import NDArray
 from vntts_artifacts.atomic_io import atomic_output_path
 from vntts_artifacts.audio import (
@@ -50,6 +49,7 @@ from vntts.document_identity import (
     canonical_document_sha256,
     file_sha256,
     is_lowercase_sha256,
+    sha256_file,
 )
 from vntts.json_types import decode_json
 from vntts.path_safety import open_regular_binary

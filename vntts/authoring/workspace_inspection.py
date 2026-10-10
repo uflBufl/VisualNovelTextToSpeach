@@ -15,7 +15,6 @@ from pathlib import Path
 from statistics import median
 from typing import SupportsIndex, SupportsInt
 
-from durable_file import sha256_file
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
@@ -114,7 +113,7 @@ from vntts.authoring.workspace_state import (
     cached_workspace_generation_state,
     shared_workspace_state_reads,
 )
-from vntts.document_identity import canonical_document_sha256
+from vntts.document_identity import canonical_document_sha256, sha256_file
 from vntts.json_types import decode_json, has_schema_version
 from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.voices import (

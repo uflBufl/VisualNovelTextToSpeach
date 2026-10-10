@@ -12,7 +12,6 @@ from os import PathLike
 from pathlib import Path
 from typing import Protocol, TypeAlias
 
-from durable_file import sha256_file
 from vntts_artifacts.live_sequence import (
     LiveSequencePlan,
     LiveSequencePlanError,
@@ -21,6 +20,7 @@ from vntts_artifacts.live_sequence import (
 from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
 
 from vntts.authoring.publication import staged_directory
+from vntts.document_identity import sha256_file
 from vntts.subprocess_utils import last_output_line, terminate_process
 
 PathInput: TypeAlias = str | PathLike[str]

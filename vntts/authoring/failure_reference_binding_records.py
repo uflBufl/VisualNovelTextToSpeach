@@ -6,8 +6,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 
-from durable_file import sha256_file
-
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
     AuthoritySnapshot,
@@ -15,7 +13,11 @@ from vntts.authoring.authority import (
     capture_authority_file,
 )
 from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
-from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
+from vntts.document_identity import (
+    canonical_document_sha256,
+    is_lowercase_sha256,
+    sha256_file,
+)
 from vntts.path_safety import contained_regular_file, safe_relative_path
 
 FAILURE_REFERENCE_BINDING_SCHEMA = "vntts.authoring-failure-reference-binding"

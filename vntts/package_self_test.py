@@ -10,10 +10,11 @@ from pathlib import Path
 from types import ModuleType
 from typing import TypeAlias
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 
 from vntts.cleanup import cleanup_on_exit, temporary_directory
 from vntts.cli import CLIReportResult
+from vntts.document_identity import sha256_file
 from vntts.game_audio_decoder import (
     DecoderSetupError,
     find_game_decoder,

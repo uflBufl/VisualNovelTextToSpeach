@@ -12,12 +12,13 @@ from time import perf_counter, process_time
 from typing import NotRequired, Protocol, TypeAlias, TypedDict, TypeGuard, overload
 
 import numpy as np
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts.audio import write_pcm16_wav
 
 from vntts.authoring.publication import staged_directory
 from vntts.cleanup import attempt_cleanup, temporary_directory
 from vntts.cli import cli_error, cli_messages
+from vntts.document_identity import sha256_file
 from vntts.services.tts_engine import TTSEngine
 from vntts.settings import get_local_data_directory
 from vntts.speech_backend import XTTSVoiceRouterBackend

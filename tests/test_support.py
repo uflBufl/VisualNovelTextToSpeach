@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import unittest
 import zipfile
 from dataclasses import fields
@@ -12,6 +13,8 @@ from uuid import uuid4
 
 from PIL import Image
 
+import tests.test_workspace_input_admission as admission
+import vntts.support as support_module
 from tests.symlink_support import symlink_or_skip
 from vntts.diagnostics import DiagnosticSnapshot
 from vntts.settings import AppSettings
@@ -1453,14 +1456,59 @@ class SupportBundleBuilderTest(unittest.TestCase):
                         ).hexdigest(),
                     },
                 )
-            with patch.object(Path, "open", side_effect=PermissionError("denied")):
+            primary = PermissionError("denied")
+            with patch("vntts.path_safety.os.open", side_effect=primary) as acquire:
                 self.assertEqual(
                     collect_active_content_identity(settings), {"available": False}
                 )
+            acquire.assert_called_once()
+            self.assertEqual(Path(acquire.call_args.args[0]), path)
             path.unlink()
             self.assertEqual(
                 collect_active_content_identity(settings), {"available": False}
             )
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_active_story_identity_refuses_fifo_falls_back_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory).resolve() / "story-index.jsonl"
+            payload = b"captured story identity"
+            path.write_bytes(payload)
+            path.chmod(0o444)
+            mode = path.stat().st_mode
+            settings = AppSettings(story_index=str(path))
+            original_hash = support_module.sha256_file
+            refused = []
+
+            def checksum(candidate):
+                self.assertEqual(Path(candidate), path)
+                gate = {"path": path, "armed": True}
+                with (
+                    admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                        self, gate
+                    ),
+                    self.assertRaisesRegex(OSError, "regular file") as caught,
+                ):
+                    original_hash(candidate)
+                refused.append(caught.exception)
+                raise caught.exception
+
+            with patch.object(support_module, "sha256_file", checksum):
+                self.assertEqual(
+                    collect_active_content_identity(settings), {"available": False}
+                )
+            self.assertEqual(len(refused), 1)
+            self.assertEqual(path.read_bytes(), payload)
+            self.assertEqual(path.stat().st_mode, mode)
+            self.assertEqual(list(path.parent.iterdir()), [path])
+            expected = {
+                "available": True,
+                "active_story_index_sha256": hashlib.sha256(payload).hexdigest(),
+            }
+            self.assertEqual(collect_active_content_identity(settings), expected)
+            self.assertEqual(collect_active_content_identity(settings), expected)
 
     def test_active_pack_ignores_non_object_story_index_records(self):
         with TemporaryDirectory() as temporary_directory:

@@ -8,9 +8,11 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from durable_file import sha256_file
-
-from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
+from vntts.document_identity import (
+    canonical_document_sha256,
+    is_lowercase_sha256,
+    sha256_file,
+)
 from vntts.json_types import decode_json
 
 FAILED_VOICE_DECISION_SCHEMA = "vntts.authoring-missing-voice-reuse-decision"

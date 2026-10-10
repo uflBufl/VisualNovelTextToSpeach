@@ -8,7 +8,6 @@ from functools import lru_cache
 from pathlib import Path
 from time import perf_counter, process_time
 
-from durable_file import sha256_file
 from vntts_artifacts.game_pack import GamePack, GamePackError, load_game_pack
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
@@ -16,6 +15,7 @@ from vntts_artifacts.story_index import (
 )
 
 from vntts.cli import print_json
+from vntts.document_identity import sha256_file
 from vntts.path_safety import contained_path, safe_relative_path
 from vntts.settings import AppSettings
 from vntts.source_audio_semantics import (

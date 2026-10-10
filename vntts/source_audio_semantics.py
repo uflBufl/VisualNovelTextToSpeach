@@ -10,14 +10,18 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Literal, TypeAlias, TypedDict, cast
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
     load_story_index_document,
 )
 
-from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
+from vntts.document_identity import (
+    canonical_document_sha256,
+    is_lowercase_sha256,
+    sha256_file,
+)
 from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
 

@@ -13,7 +13,6 @@ from pathlib import Path, PurePosixPath
 from time import perf_counter, process_time
 from typing import Protocol, cast
 
-from durable_file import sha256_file
 from vntts_artifacts.game_pack import GamePackError, write_game_pack
 from vntts_artifacts.generated_audio import (
     GeneratedAudioDocument,
@@ -65,7 +64,11 @@ from vntts.chapter_voice_preload import (
     _validated_source_audio_line_ids,
 )
 from vntts.cleanup import temporary_directory
-from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
+from vntts.document_identity import (
+    canonical_document_sha256,
+    is_lowercase_sha256,
+    sha256_file,
+)
 from vntts.game_pack import GamePackImport, import_game_pack
 from vntts.generated_audio import GeneratedAudioLibrary
 from vntts.json_types import decode_json

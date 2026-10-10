@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, TypedDict
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueueItem
 from vntts_artifacts.voice_manifest import VoiceManifestEntry, normalize_character_name
 
@@ -60,6 +60,7 @@ from vntts.authoring.workspace_foundation import (
     stage_single_base_successor,
 )
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
+from vntts.document_identity import sha256_file
 from vntts.voices import load_voice_manifest, synthesis_character_for_line
 
 SCHEMA = "vntts.authoring-reviewed-rejection-live-fallback-batch"

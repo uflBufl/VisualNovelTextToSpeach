@@ -7,9 +7,9 @@ from pathlib import Path
 
 import numpy as np
 from vntts_artifacts.audio import write_pcm16_wav
-from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.pcm_playback import PcmClip, PlaybackSnapshot
+from vntts.document_identity import sha256_file
 
 
 class FakePlayback:

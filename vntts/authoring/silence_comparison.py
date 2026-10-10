@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts.audio import Pcm16MonoWavError, write_pcm16_wav
 
 from vntts.authoring.authority import (
@@ -39,7 +39,7 @@ from vntts.authoring.publication import (
     staged_directory,
 )
 from vntts.authoring.workspace_foundation import contained_regular_file
-from vntts.document_identity import is_lowercase_sha256
+from vntts.document_identity import is_lowercase_sha256, sha256_file
 from vntts.json_types import decode_json
 from vntts.path_safety import open_regular_binary
 

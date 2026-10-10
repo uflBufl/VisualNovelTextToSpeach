@@ -13,7 +13,7 @@ from io import BytesIO
 from pathlib import Path, PurePosixPath
 from typing import TypeAlias
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 from platformdirs import user_data_path
 from vntts_artifacts.audio import (
     Pcm16MonoWavError,
@@ -41,7 +41,7 @@ from vntts.authoring.publication import (
 )
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.cleanup import temporary_directory
-from vntts.document_identity import canonical_document_sha256
+from vntts.document_identity import canonical_document_sha256, sha256_file
 from vntts.json_types import decode_json
 from vntts.path_safety import copy_regular_file, open_regular_binary
 

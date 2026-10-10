@@ -18,7 +18,7 @@ from uuid import uuid4
 
 import numpy as np
 import soundfile as sf
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts.audio import probe_pcm16_mono_wav
 from vntts_artifacts.game_pack import GamePackError, load_game_pack, write_game_pack
 from vntts_artifacts.generated_audio import (
@@ -72,6 +72,7 @@ from vntts.authoring.source_reference_bindings import (
     queue_voice_overrides_from_manifest,
     queue_voice_overrides_sha256,
 )
+from vntts.document_identity import sha256_file
 from vntts.json_types import decode_json, has_schema_version
 from vntts.path_safety import copy_regular_file, open_regular_binary, safe_relative_path
 from vntts.source_audio_semantics import (

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
@@ -80,6 +80,7 @@ from vntts.authoring.workspace_foundation import (
     copy_workspace_tree_snapshot,
 )
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
+from vntts.document_identity import sha256_file
 
 
 def merge_terminal_conflict_resolution(

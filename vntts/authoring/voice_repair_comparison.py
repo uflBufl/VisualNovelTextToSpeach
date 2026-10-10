@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeAlias
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueueItem
 from vntts_artifacts.voice_manifest import (
     VoiceManifestEntry,
@@ -48,7 +48,7 @@ from vntts.authoring.workbench import (
 from vntts.authoring.workbench_contracts import ReviewItem
 from vntts.authoring.workspace_inspection import generation_failure_category
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
-from vntts.document_identity import is_lowercase_sha256
+from vntts.document_identity import is_lowercase_sha256, sha256_file
 from vntts.json_types import decode_json
 from vntts.speech_backend import get_moss_tts_generation_profile
 from vntts.voices import voice_manifest_entries_at_path

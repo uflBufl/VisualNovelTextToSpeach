@@ -14,7 +14,6 @@ from pathlib import Path
 import numpy as np
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import probe_pcm16_mono_wav, write_pcm16_wav
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.hashing import text_sha256
 from vntts_artifacts.story_index import write_story_index_document
 
@@ -32,6 +31,7 @@ from vntts.authoring.source_reference_review import (
     import_source_reference_review,
     publish_source_reference_evaluation,
 )
+from vntts.document_identity import sha256_file
 from vntts.synthesis import (
     SynthesisChunk,
     SynthesisChunkStream,

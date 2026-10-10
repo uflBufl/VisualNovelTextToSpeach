@@ -10,7 +10,7 @@ from io import TextIOWrapper
 from pathlib import Path
 from typing import TypedDict
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts.voice_manifest import (
     VoiceManifestEntry,
     VoiceManifestError,
@@ -49,7 +49,7 @@ from vntts.authoring.workspace_foundation import (
     load_json_object,
     load_json_object_snapshot,
 )
-from vntts.document_identity import is_lowercase_sha256
+from vntts.document_identity import is_lowercase_sha256, sha256_file
 from vntts.json_types import decode_json
 from vntts.path_safety import copy_regular_file, open_regular_binary
 from vntts.voices import load_voice_manifest

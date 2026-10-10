@@ -7,9 +7,10 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from PIL import Image, ImageDraw
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import text_sha256, write_generated_audio_manifest
 from vntts_artifacts.live_sequence import write_live_sequence_plan
+
+from vntts.document_identity import sha256_file
 
 
 def write_sequence_replay_corpus(

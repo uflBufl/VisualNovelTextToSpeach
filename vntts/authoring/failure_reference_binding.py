@@ -8,8 +8,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import NotRequired, TypeAlias, TypedDict
 
-from durable_file import sha256_file
-
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
     AuthoritySnapshot,
@@ -38,6 +36,7 @@ from vntts.authoring.publication import (
     staged_directory,
 )
 from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
+from vntts.document_identity import sha256_file
 from vntts.json_types import is_json_object
 
 _AUDIT_SCHEMA = "vntts.authoring-failure-reference-audit"

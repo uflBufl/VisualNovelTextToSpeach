@@ -9,7 +9,6 @@ from threading import Event
 from traceback import format_exception
 from typing import TypeGuard
 
-from durable_file import sha256_file
 from PySide6.QtCore import QSignalBlocker, Qt, QThreadPool, QTimer, QUrl, Signal
 from PySide6.QtGui import QCloseEvent, QPixmap, QStandardItemModel
 from PySide6.QtMultimedia import QMediaPlayer
@@ -36,6 +35,7 @@ from vntts_artifacts.voice_manifest import VoiceManifestError
 
 from vntts.async_ui import LatestTaskRunner
 from vntts.cleanup import temporary_directory
+from vntts.document_identity import sha256_file
 from vntts.game_audio_decoder import DecoderSetupRequired, confirm_decoder_setup
 from vntts.game_content_importer import Reverse1999GameImporter
 from vntts.game_narrator import (

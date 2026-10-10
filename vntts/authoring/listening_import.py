@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypedDict
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 
 from vntts.authoring.import_paths import default_import_root
 from vntts.authoring.private_files import private_file_is_restricted
@@ -23,7 +23,7 @@ from vntts.authoring.publication import (
     staged_directory,
 )
 from vntts.authoring.workspace_foundation import load_json_object, require_sha256
-from vntts.document_identity import canonical_document_sha256
+from vntts.document_identity import canonical_document_sha256, sha256_file
 from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_object
 from vntts.path_safety import copy_regular_file, safe_relative_path

@@ -14,7 +14,6 @@ from string import hexdigits
 from time import perf_counter, process_time
 from typing import TYPE_CHECKING
 
-from durable_file import sha256_file
 from platformdirs import user_data_path
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
@@ -35,7 +34,7 @@ from vntts.chapter_voice_preload import (
     _has_authoritative_source_audio,
     _validated_source_audio_line_ids,
 )
-from vntts.document_identity import is_sha256
+from vntts.document_identity import is_sha256, sha256_file
 from vntts.json_types import decode_json
 from vntts.settings import AppSettings
 from vntts.story_index_snapshot import load_story_index_snapshot

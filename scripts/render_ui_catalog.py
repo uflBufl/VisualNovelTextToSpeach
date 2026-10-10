@@ -131,9 +131,9 @@ def _catalog_support_log(state: str) -> RuntimeSupportLog:
 
 
 def _catalog_offline_content(root: Path) -> GameContent:
-    from vntts_artifacts.file_integrity import sha256_file
     from vntts_artifacts.story_index import write_story_index_document
 
+    from vntts.document_identity import sha256_file
     from vntts.pregeneration_setup import GameContent, StorySelection
 
     story_index = root / "story-index.jsonl"
@@ -216,7 +216,6 @@ def _catalog_offline_content(root: Path) -> GameContent:
 
 
 def _catalog_generation_input(job: PregenerationJob) -> PregenerationInput:
-    from vntts_artifacts.file_integrity import sha256_file
     from vntts_artifacts.story_index import write_story_index_document
     from vntts_artifacts.voice_generation_queue import (
         expected_voice_generation_queue_id,
@@ -224,7 +223,7 @@ def _catalog_generation_input(job: PregenerationJob) -> PregenerationInput:
     )
     from vntts_artifacts.voice_manifest import write_voice_manifest
 
-    from vntts.document_identity import canonical_document_sha256
+    from vntts.document_identity import canonical_document_sha256, sha256_file
     from vntts.pregeneration_queue import PregenerationInput
     from vntts.pregeneration_setup import load_verified_story_index_document
 
@@ -365,7 +364,6 @@ def _render_stories(
     from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
     from r1999extractor.story_voice_candidates import REPORT_SCHEMA, REPORT_VERSION
     from r1999extractor.story_voice_review_ui import StoryVoiceReviewDialog
-    from vntts_artifacts.file_integrity import sha256_file
 
     from tests.authoring_fixtures import (
         _legacy_bad_fixture,
@@ -418,6 +416,7 @@ def _render_stories(
     )
     from vntts.diagnostics import DiagnosticSnapshot
     from vntts.diagnostics_ui import DiagnosticsDialog
+    from vntts.document_identity import sha256_file
     from vntts.game_content_importer import ImporterAvailability
     from vntts.game_narrator_ui import GameNarratorDialog
     from vntts.history import DialogueHistory

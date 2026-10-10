@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import TypeAlias, TypedDict, TypeGuard
 
 import numpy as np
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 from numpy.typing import NDArray
 from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.text_utils import slugify
@@ -237,7 +237,7 @@ from vntts.authoring.workspace_foundation import (
     load_json_object,
     load_json_object_snapshot,
 )
-from vntts.document_identity import file_sha256, is_lowercase_sha256
+from vntts.document_identity import file_sha256, is_lowercase_sha256, sha256_file
 from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
 from vntts.path_safety import open_regular_binary

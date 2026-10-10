@@ -5,8 +5,6 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 
-from durable_file import sha256_file as sha256_file
-
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
@@ -98,6 +96,7 @@ from vntts.authoring.workspace_outcome_merge import (
 from vntts.authoring.workspace_voice_runtime import (
     FailureReferenceRuntimeBinding,
 )
+from vntts.document_identity import sha256_file as sha256_file
 
 _canonical_sha256 = canonical_document_sha256
 

@@ -12,7 +12,6 @@ from pathlib import Path, PurePosixPath
 from time import perf_counter, process_time
 from typing import NamedTuple, Protocol, TypeAlias, TypedDict
 
-from durable_file import sha256_file
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
@@ -45,7 +44,7 @@ from vntts.chapter_voice_preload import (
     _validated_source_audio_line_ids,
 )
 from vntts.cleanup import attempt_cleanup
-from vntts.document_identity import canonical_document_sha256, is_sha256
+from vntts.document_identity import canonical_document_sha256, is_sha256, sha256_file
 from vntts.json_types import decode_json, has_schema_version
 from vntts.person_link_suggestions import (
     PersonLinkSuggestion,

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TypeAlias
 
 import numpy as np
-from durable_file import atomic_write_bytes, atomic_write_json, sha256_file
+from durable_file import atomic_write_bytes, atomic_write_json
 from numpy.typing import NDArray
 from vntts_artifacts.audio import read_pcm16_mono_wav, write_pcm16_wav
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
@@ -41,7 +41,11 @@ from vntts.authoring.speech_quality import (
 from vntts.authoring.workspace_foundation import load_json_object_snapshot
 from vntts.cleanup import temporary_directory
 from vntts.cli import cli_error, cli_messages
-from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
+from vntts.document_identity import (
+    canonical_document_sha256,
+    is_lowercase_sha256,
+    sha256_file,
+)
 from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
 from vntts.path_safety import open_regular_binary

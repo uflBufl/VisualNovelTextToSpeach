@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
 from vntts.authoring.authority import canonical_document_sha256
@@ -35,6 +35,7 @@ from vntts.authoring.workspace_voice_runtime import (
     load_workspace_queue_voice_overrides,
     load_workspace_voice_registry,
 )
+from vntts.document_identity import sha256_file
 from vntts.json_types import decode_json
 
 FAILED_CONTROL_CARRY_SCHEMA = "vntts.authoring-failed-control-carry"

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import NotRequired, TypeAlias, TypedDict, TypeIs
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
@@ -76,6 +76,7 @@ from vntts.authoring.workbench import (
 )
 from vntts.authoring.workspace_inspection import generation_failure_category
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
+from vntts.document_identity import sha256_file
 from vntts.json_types import decode_json, has_schema_version, is_json_object
 from vntts.path_safety import copy_regular_file
 from vntts.story_index_snapshot import load_story_index_snapshot

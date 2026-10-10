@@ -5,8 +5,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from pathlib import Path
 
-from durable_file import sha256_file
-
 from vntts.authoring.failure_repair import (
     FailureRepairPolicy,
     FailureRepairPolicyError,
@@ -20,7 +18,7 @@ from vntts.authoring.workspace_foundation import (
     require_sha256,
     safe_relative_path,
 )
-from vntts.document_identity import canonical_document_sha256
+from vntts.document_identity import canonical_document_sha256, sha256_file
 
 
 def normalize_workspace_run_config(

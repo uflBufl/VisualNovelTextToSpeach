@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Literal, NotRequired, Protocol, TypedDict, TypeGuard
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts.atomic_io import atomic_output_path
 
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
@@ -33,7 +33,11 @@ from vntts.authoring.publication import (
     staged_directory,
 )
 from vntts.authoring.workspace_foundation import load_json_object
-from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
+from vntts.document_identity import (
+    canonical_document_sha256,
+    is_lowercase_sha256,
+    sha256_file,
+)
 from vntts.json_types import is_json_object as _is_json_object
 from vntts.path_safety import copy_regular_file
 from vntts.settings import get_local_data_directory

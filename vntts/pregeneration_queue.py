@@ -12,7 +12,6 @@ from typing import Protocol, TypeAlias, TypedDict
 
 import numpy as np
 import soundfile as sf
-from durable_file import sha256_file
 from vntts_artifacts.audio import probe_pcm16_mono_wav, write_pcm16_wav
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
@@ -42,7 +41,7 @@ from vntts.authoring.queue_builder import (
     inspect_generation_queue,
     publish_generation_queue,
 )
-from vntts.document_identity import canonical_document_sha256
+from vntts.document_identity import canonical_document_sha256, sha256_file
 from vntts.pregeneration_setup import (
     PregenerationJob,
     PregenerationJobStore,

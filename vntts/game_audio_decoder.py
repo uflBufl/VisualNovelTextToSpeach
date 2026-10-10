@@ -16,12 +16,12 @@ from typing import TYPE_CHECKING, BinaryIO, Protocol, TypeAlias
 from urllib.request import Request, urlopen
 from zipfile import ZipFile
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 
 from vntts.application_directories import get_local_data_directory
 from vntts.authoring.advisory_lock import AdvisoryLockBusyError, exclusive_advisory_lock
 from vntts.cleanup import cleanup_on_exit, temporary_directory
-from vntts.document_identity import file_sha256
+from vntts.document_identity import file_sha256, sha256_file
 from vntts.json_types import decode_json
 from vntts.path_safety import copy_regular_file, open_regular_binary
 from vntts.runtime_paths import get_bundle_root

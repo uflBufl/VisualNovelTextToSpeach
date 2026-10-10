@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts import VoiceGenerationQueue, VoiceGenerationQueueItem
 from vntts_artifacts.voice_manifest import VoiceManifestError
 
@@ -68,6 +68,7 @@ from vntts.authoring.workspace_voice_runtime import (
     load_workspace_queue_voice_overrides,
     load_workspace_voice_registry,
 )
+from vntts.document_identity import sha256_file
 from vntts.json_types import decode_json, has_schema_version, is_json_object
 from vntts.voices import CharacterVoiceRegistry, load_voice_manifest
 

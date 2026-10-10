@@ -15,7 +15,6 @@ from vntts_artifacts.audio import (
     probe_pcm16_mono_wav,
     write_pcm16_wav,
 )
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import write_generated_audio_manifest
 from vntts_artifacts.hashing import text_sha256
 from vntts_artifacts.story_index import write_story_index_document
@@ -57,6 +56,7 @@ from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha2
 from vntts.authoring.specialist_failure_plan import OFFLINE_FALLBACK_BACKEND
 from vntts.authoring.workbench import WorkspaceCreationResult, create_resume_workspace
 from vntts.authoring.workspace_foundation import load_json_object
+from vntts.document_identity import sha256_file
 
 
 def tree_hashes(root: Path) -> dict[str, str]:

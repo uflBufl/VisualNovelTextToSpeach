@@ -20,7 +20,7 @@ from os import PathLike
 from pathlib import Path
 from typing import Protocol, TypeAlias
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
@@ -40,7 +40,7 @@ from vntts.chapter_voice_preload import (
     _validated_source_audio_line_ids,
 )
 from vntts.cleanup import attempt_cleanup
-from vntts.document_identity import file_sha256, is_lowercase_sha256
+from vntts.document_identity import file_sha256, is_lowercase_sha256, sha256_file
 from vntts.game_audio_decoder import Cancellation, ProgressCallback, ensure_game_decoder
 from vntts.json_types import decode_json
 from vntts.path_safety import contained_regular_file

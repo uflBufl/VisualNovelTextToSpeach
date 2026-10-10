@@ -31,6 +31,68 @@ class ListeningImportTest(unittest.TestCase):
     @unittest.skipUnless(
         hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
     )
+    def test_public_hash_acquisitions_refuse_fifo_clean_up_and_recover(self):
+        for phase in ("initial", "prepublication"):
+            with self.subTest(phase=phase), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                source = write_listening_fixture(root)
+                inspection = inspect_listening_session(source)
+                selected = source / "audio/trial-0001-a.wav"
+                destination = root / "app-data"
+                before = tree_hashes(root)
+                original = listening_import_module.sha256_file
+                refused = []
+
+                def checksum(path):
+                    staged_manifest = any(destination.glob(".*/import.json"))
+                    if Path(path) != selected or (
+                        phase == "prepublication" and not staged_manifest
+                    ):
+                        return original(path)
+                    self.assertEqual(staged_manifest, phase == "prepublication")
+                    gate = {"path": selected, "armed": True}
+                    with (
+                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                            self, gate
+                        ),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original(path)
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                with (
+                    patch.object(listening_import_module, "sha256_file", checksum),
+                    self.assertRaisesRegex(
+                        ListeningImportError, "regular file"
+                    ) as caught,
+                ):
+                    import_listening_session(source, destination)
+                self.assertEqual(len(refused), 1)
+                self.assertIs(caught.exception.__cause__, refused[0])
+                self.assertEqual(tree_hashes(root), before)
+                if destination.exists():
+                    self.assertEqual(list(destination.iterdir()), [])
+                recovered = import_listening_session(source, destination)
+                self.assertTrue(recovered.created)
+                self.assertEqual(
+                    recovered.manifest["source"]["logical_identity"],
+                    inspection.logical_identity,
+                )
+                for _role, original_source, relative, digest in inspection.artifacts:
+                    copied = recovered.destination / relative
+                    self.assertEqual(copied.read_bytes(), original_source.read_bytes())
+                    self.assertEqual(sha256_file(copied), digest)
+                recovered_tree = tree_hashes(root)
+                repeated = import_listening_session(source, destination)
+                self.assertFalse(repeated.created)
+                self.assertEqual(repeated.destination, recovered.destination)
+                self.assertEqual(repeated.manifest, recovered.manifest)
+                self.assertEqual(tree_hashes(root), recovered_tree)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
     def test_copy_sources_refuse_swapped_acquisition_and_recover(self):
         for relative in (".blind-key.json", "audio/trial-0001-a.wav"):
             with self.subTest(source=relative), TemporaryDirectory() as directory:

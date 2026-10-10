@@ -7,7 +7,6 @@ from threading import Event
 from time import monotonic, process_time
 from typing import TypeAlias, TypeGuard, cast
 
-from durable_file import sha256_file
 from PySide6.QtCore import (
     QModelIndex,
     QSignalBlocker,
@@ -47,6 +46,7 @@ from PySide6.QtWidgets import (
 
 from vntts.application_directories import get_local_data_directory
 from vntts.async_ui import LatestTaskRunner
+from vntts.document_identity import sha256_file
 from vntts.game_audio_decoder import DecoderSetupRequired, confirm_decoder_setup
 from vntts.game_content_importer import (
     GameContentImportCancelled,

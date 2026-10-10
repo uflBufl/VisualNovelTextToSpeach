@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypeAlias, TypeGuard
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 from platformdirs import user_data_path
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
@@ -168,7 +168,7 @@ from vntts.authoring.workspace_voice_runtime import (
     load_workspace_queue_voice_overrides,
     load_workspace_voice_registry,
 )
-from vntts.document_identity import canonical_document_sha256, file_sha256
+from vntts.document_identity import canonical_document_sha256, file_sha256, sha256_file
 from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
 from vntts.path_safety import copy_regular_file, open_regular_binary

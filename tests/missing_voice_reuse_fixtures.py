@@ -9,7 +9,6 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from unittest.mock import patch
 
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import write_generated_audio_manifest
 from vntts_artifacts.story_index import write_story_index_document
 from vntts_artifacts.voice_generation_queue import (
@@ -35,6 +34,7 @@ from vntts.authoring.missing_voice_reuse_review import (
     build_missing_voice_reuse_review,
 )
 from vntts.authoring.workbench import create_resume_workspace
+from vntts.document_identity import sha256_file
 
 
 def create_missing_voice_reuse_workspace(

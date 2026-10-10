@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeAlias
 
-from durable_file import sha256_file
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
@@ -69,7 +68,7 @@ from vntts.authoring.workspace_config import (
     workspace_audio_event_spoken_projection_queue_ids,
 )
 from vntts.cleanup import temporary_directory
-from vntts.document_identity import is_lowercase_sha256
+from vntts.document_identity import is_lowercase_sha256, sha256_file
 from vntts.json_types import decode_json
 
 

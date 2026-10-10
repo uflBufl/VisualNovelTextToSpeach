@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, TypeAlias, TypedDict
 
-from durable_file import sha256_file
 from vntts_artifacts.audio import Pcm16MonoWavError, write_pcm16_wav
 
 from vntts.authoring.bulk_generation import (
@@ -30,6 +29,7 @@ from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     load_workspace_authority,
 )
+from vntts.document_identity import sha256_file
 from vntts.json_types import is_json_object
 from vntts.speech_backend_runtime import shutdown_speech_backend
 from vntts.synthesis import (

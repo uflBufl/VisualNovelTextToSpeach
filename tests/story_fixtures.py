@@ -7,7 +7,6 @@ from pathlib import Path
 import numpy as np
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import PCM16_MONO_WAV_FORMAT, write_pcm16_wav
-from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.game_pack import write_game_pack
 from vntts_artifacts.generated_audio import write_generated_audio_manifest
 from vntts_artifacts.hashing import text_sha256
@@ -20,7 +19,7 @@ from vntts_artifacts.story_index import (
 )
 from vntts_artifacts.voice_manifest import write_voice_manifest
 
-from vntts.document_identity import canonical_document_sha256
+from vntts.document_identity import canonical_document_sha256, sha256_file
 from vntts.source_audio_semantics import SEMANTIC_EVIDENCE_METHOD, semantic_text_sha256
 
 

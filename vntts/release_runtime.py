@@ -12,9 +12,8 @@ from collections.abc import Callable, Mapping, Sequence
 from functools import partial
 from pathlib import Path
 
-from durable_file import sha256_file
-
 from vntts.cleanup import temporary_directory
+from vntts.document_identity import sha256_file
 from vntts.path_safety import copy_regular_file
 
 BACKEND = "pocket-tts"

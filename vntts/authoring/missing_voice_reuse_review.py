@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import NotRequired, TypeAlias, TypedDict
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 
 from vntts.authoring.advisory_lock import (
     AdvisoryLockBusyError,
@@ -40,6 +40,7 @@ from vntts.authoring.workbench import (
 )
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
+from vntts.document_identity import sha256_file
 from vntts.json_types import decode_json, is_json_object
 from vntts.path_safety import copy_regular_file
 

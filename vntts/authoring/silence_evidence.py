@@ -8,7 +8,7 @@ import json
 import wave
 from pathlib import Path
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 
 from vntts.authoring.publication import (
     AtomicPublicationError,
@@ -16,7 +16,11 @@ from vntts.authoring.publication import (
     rename_directory_no_replace,
     staged_directory,
 )
-from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
+from vntts.document_identity import (
+    canonical_document_sha256,
+    is_lowercase_sha256,
+    sha256_file,
+)
 from vntts.json_types import decode_json
 from vntts.path_safety import open_regular_binary
 

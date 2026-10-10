@@ -22,11 +22,11 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import read_pcm16_mono_wav, write_pcm16_wav
-from vntts_artifacts.file_integrity import sha256_file
 
 from vntts import support
 from vntts.authoring.speech_quality import analyze_generated_speech_samples
 from vntts.cleanup import attempt_cleanup
+from vntts.document_identity import sha256_file
 from vntts.moss_cpp_backend import (
     MossCppVoiceRouterBackend,
     NativeHeaders,

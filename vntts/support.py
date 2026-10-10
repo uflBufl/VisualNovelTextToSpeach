@@ -19,12 +19,11 @@ from threading import RLock
 from typing import Callable, Mapping, TypedDict
 from uuid import UUID
 
-from durable_file import sha256_file
 from vntts_artifacts.atomic_io import atomic_output_path
 
 from vntts.audio_lifecycle import audio_lifecycle_context
 from vntts.diagnostics import macos_permission_warnings
-from vntts.document_identity import is_lowercase_sha256
+from vntts.document_identity import is_lowercase_sha256, sha256_file
 from vntts.json_types import decode_json
 from vntts.ocr_review import OCR_REVIEW_SCHEMA_VERSION, OCRReviewMetadata
 from vntts.onboarding import probe_audio_output, probe_tesseract

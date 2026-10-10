@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypeAlias, TypedDict
 
-from durable_file import atomic_write_json, sha256_file
+from durable_file import atomic_write_json
 
 from vntts.authoring.authority import AuthoringAuthorityError, capture_authority_file
 from vntts.authoring.failure_reference_audit import (
@@ -49,7 +49,11 @@ from vntts.authoring.publication import (
     staged_directory,
 )
 from vntts.authoring.workspace_foundation import load_json_object
-from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
+from vntts.document_identity import (
+    canonical_document_sha256,
+    is_lowercase_sha256,
+    sha256_file,
+)
 from vntts.json_types import decode_json, is_json_object
 
 REFERENCE_RENDER_INPUT_SCHEMA = "vntts.authoring-reference-render-input"

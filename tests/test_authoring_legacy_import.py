@@ -32,6 +32,77 @@ class LegacyAuthoringImportTest(unittest.TestCase):
     @unittest.skipUnless(
         hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
     )
+    def test_public_hash_acquisitions_refuse_fifo_clean_up_and_recover(self):
+        for importer in (import_legacy_job, import_standalone_generation):
+            for phase in ("initial", "prepublication"):
+                with (
+                    self.subTest(importer=importer.__name__, phase=phase),
+                    TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory).resolve()
+                    fixture = write_legacy_fixture(root)
+                    arguments = (
+                        (fixture["job_directory"],)
+                        if importer is import_legacy_job
+                        else (fixture["queue"], fixture["state"].parent)
+                    )
+                    source = fixture["queue"]
+                    destination = root / "app-data"
+                    before = tree_hashes(root)
+                    original = legacy_module.sha256_file
+                    refused = []
+
+                    def checksum(path):
+                        staged_manifest = any(destination.glob(".*/import.json"))
+                        if Path(path) != source or (
+                            phase == "prepublication" and not staged_manifest
+                        ):
+                            return original(path)
+                        self.assertEqual(staged_manifest, phase == "prepublication")
+                        gate = {"path": source, "armed": True}
+                        with (
+                            admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                                self, gate
+                            ),
+                            self.assertRaisesRegex(OSError, "regular file") as caught,
+                        ):
+                            original(path)
+                        refused.append(caught.exception)
+                        raise caught.exception
+
+                    with (
+                        patch.object(legacy_module, "sha256_file", checksum),
+                        self.assertRaisesRegex(
+                            LegacyAuthoringImportError, "regular file"
+                        ) as caught,
+                    ):
+                        importer(*arguments, destination)
+                    self.assertEqual(len(refused), 1)
+                    self.assertIs(caught.exception.__cause__, refused[0])
+                    self.assertEqual(tree_hashes(root), before)
+                    if destination.exists():
+                        self.assertEqual(list(destination.iterdir()), [])
+                    recovered = importer(*arguments, destination)
+                    artifact = next(
+                        item
+                        for item in recovered.manifest["artifacts"]
+                        if Path(item["source_path"]) == source
+                    )
+                    self.assertEqual(
+                        (recovered.destination / artifact["path"]).read_bytes(),
+                        source.read_bytes(),
+                    )
+                    recovered_tree = tree_hashes(root)
+                    repeated = importer(*arguments, destination)
+                    self.assertTrue(recovered.created)
+                    self.assertFalse(repeated.created)
+                    self.assertEqual(repeated.destination, recovered.destination)
+                    self.assertEqual(repeated.manifest, recovered.manifest)
+                    self.assertEqual(tree_hashes(root), recovered_tree)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
     def test_public_copy_sources_refuse_swapped_acquisition_and_recover(self):
         for importer in (import_legacy_job, import_standalone_generation):
             for source_name in ("queue", "wav"):
