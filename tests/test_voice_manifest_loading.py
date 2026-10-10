@@ -13,7 +13,7 @@ from vntts_artifacts.voice_manifest import load_voice_manifest as dependency_loa
 
 from tests.source_reference_fixtures import write_experimental_composite_voice_fixture
 from tests.symlink_support import symlink_or_skip
-from vntts.authoring import experimental_composite_voice
+from vntts.authoring import experimental_composite_voice, workspace_inspection
 from vntts.authoring.bulk_generation import BulkGenerationError
 from vntts.authoring.cli_generation import _load_stable_voice_registry
 from vntts.authoring.experimental_composite_voice import (
@@ -242,3 +242,26 @@ class VoiceManifestLoadingTest(unittest.TestCase):
                     load_voice_manifest(output / "manifest.json"),
                     dependency_loader(output / "manifest.json"),
                 )
+
+    def test_readiness_projects_one_document_for_registry_and_overrides(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory).resolve() / "manifest.json"
+            document = {
+                "version": 2,
+                "voices": [{"character": "A", "speaker": "before"}],
+            }
+            path.write_text(json.dumps(document), encoding="utf-8")
+            captured = dict(
+                document, voices=[dict(document["voices"][0], speaker="captured")]
+            )
+
+            def capture_current(*args, **kwargs):
+                path.write_text(json.dumps(captured), encoding="utf-8")
+                return load_voice_manifest(*args, **kwargs)
+
+            with patch.object(
+                workspace_inspection, "load_voice_manifest", side_effect=capture_current
+            ):
+                registry, overrides = workspace_inspection._load_voice_routing(path)
+            self.assertEqual(registry.resolve("A").speaker, "captured")
+            self.assertEqual(overrides, {})

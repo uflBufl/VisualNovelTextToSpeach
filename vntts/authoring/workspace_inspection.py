@@ -1910,8 +1910,8 @@ def _load_voice_routing(
     manifest_path: str | Path,
 ) -> tuple[CharacterVoiceRegistry, dict[str, str]]:
     try:
-        registry = CharacterVoiceRegistry.from_file(manifest_path)
         document, entries = load_voice_manifest(manifest_path, allow_legacy=False)
+        registry = CharacterVoiceRegistry.from_document(document, manifest_path)
         overrides = queue_voice_overrides_from_manifest(document, voices=entries)
     except (SourceReferenceBindingError, VoiceManifestError, OSError) as error:
         raise AuthoringWorkbenchError(
