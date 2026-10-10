@@ -22,6 +22,7 @@ from vntts_artifacts.voice_generation_queue import (
     write_voice_generation_queue,
 )
 
+import tests.test_workspace_input_admission as admission
 import vntts.authoring.bulk_generation as bulk_generation_module
 import vntts.authoring.reconciliation_merge as reconciliation_merge_module
 import vntts.authoring.workbench as workbench_module
@@ -644,6 +645,97 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertEqual(workspace["source"]["import_id"], imported.name)
         self.assertEqual(imported_hashes, imported_hashes_after)
         self.assertEqual(workspace_queue_hash, fixture_queue_hash)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_base_queue_snapshot_refuses_fifo_cleans_up_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            fixture = write_legacy_fixture(root / "legacy")
+            state = json.loads(fixture["state"].read_text())
+            state["active"] = None
+            fixture["state"].write_text(json.dumps(state, sort_keys=True))
+            imported = import_legacy_job(
+                fixture["job_directory"], root / "imports"
+            ).destination
+            added = dict(VoiceGenerationQueue.load(fixture["queue"]).items[0].document)
+            line_id = "reverse1999:315401:8"
+            added.update(
+                line_id=line_id,
+                queue_id=expected_voice_generation_queue_id(
+                    line_id, added["text_sha256"]
+                ),
+                sequence=8,
+                story_order=1008,
+            )
+            addition = write_voice_generation_queue(
+                root / "addition.jsonl",
+                {"game": "Reverse: 1999", "language": "en"},
+                [added],
+            )
+            combined = publish_additive_generation_queue(
+                fixture["queue"], addition, root / "combined.jsonl"
+            )
+            before = tree_hashes(root)
+            destination = root / "successors"
+            original = workspace_creation_module.copy_regular_file
+            refused = []
+
+            def copy(source, target, **options):
+                if Path(target).name != "seed-generation-queue.jsonl":
+                    return original(source, target, **options)
+                self.assertEqual(options, {})
+                self.assertEqual(Path(source).parent, Path(target).parents[1])
+                self.assertEqual(
+                    Path(source).read_bytes(), (imported / "queue.jsonl").read_bytes()
+                )
+                gate = {"path": Path(source), "armed": True}
+                with (
+                    admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                        self, gate
+                    ),
+                    self.assertRaisesRegex(OSError, "regular file") as caught,
+                ):
+                    original(source, target, **options)
+                self.assertFalse(Path(target).exists())
+                refused.append(caught.exception)
+                raise caught.exception
+
+            with (
+                patch.object(workspace_creation_module, "copy_regular_file", copy),
+                self.assertRaisesRegex(OSError, "regular file") as caught,
+            ):
+                create_resume_workspace(
+                    imported, destination, generation_queue=combined
+                )
+            self.assertEqual(len(refused), 1)
+            self.assertIs(caught.exception, refused[0])
+            self.assertEqual(list(destination.iterdir()), [])
+            self.assertEqual(tree_hashes(root), before)
+            recovered = create_resume_workspace(
+                imported, destination, generation_queue=combined
+            )
+            self.assertEqual(
+                (
+                    recovered.directory / "provenance/seed-generation-queue.jsonl"
+                ).read_bytes(),
+                (imported / "queue.jsonl").read_bytes(),
+            )
+            self.assertEqual(
+                (recovered.directory / "inputs/generation-queue.jsonl").read_bytes(),
+                combined.read_bytes(),
+            )
+            self.assertEqual(
+                (recovered.directory / "queue.jsonl").read_bytes(),
+                combined.read_bytes(),
+            )
+            self.assertEqual(inspect_workspace(recovered.directory).queue_items, 2)
+            self.assertFalse(
+                create_resume_workspace(
+                    imported, destination, generation_queue=combined
+                ).created
+            )
 
     def test_resume_workspace_accepts_only_a_bound_additive_queue(self):
         with TemporaryDirectory() as directory:

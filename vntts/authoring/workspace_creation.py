@@ -1169,7 +1169,7 @@ def _install_audio_event_composition(
     relative = Path("audio/audio-events") / f"{composition.composition_id[:24]}.wav"
     audio = _within(output, relative, "Composed audio-event WAV")
     audio.parent.mkdir(parents=True, exist_ok=True)
-    audio.write_bytes(composition.audio.read_bytes())
+    copy_regular_file(composition.audio, audio)
     with open_regular_binary(audio) as source:
         payload = source.read()
     if hashlib.sha256(payload).hexdigest() != composition.audio_sha256:
@@ -1488,7 +1488,7 @@ def _install_extended_generation_queue(
         config.get("base_queue_path"), "Base queue snapshot"
     )
     base_snapshot.parent.mkdir(parents=True, exist_ok=True)
-    base_snapshot.write_bytes(base_queue.read_bytes())
+    copy_regular_file(base_queue, base_snapshot)
     base_queue.write_bytes(payload)
 
     state_path = staging / "generated-audio/generation-state.json"

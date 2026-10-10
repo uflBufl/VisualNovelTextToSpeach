@@ -1,5 +1,7 @@
 import io
 import json
+import os
+import stat
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -11,6 +13,7 @@ from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
+import tests.test_workspace_input_admission as admission
 import vntts.authoring.audio_event_workspace as audio_event_workspace_module
 import vntts.authoring.workbench as workbench_module
 import vntts.authoring.workspace_creation as workspace_creation_module
@@ -53,6 +56,65 @@ from vntts.authoring.workbench import (
 
 
 class AudioEventWorkspaceTest(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_successor_audio_copy_refuses_fifo_cleans_up_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            base, queue_item, composition = self._base_and_composition(root)
+            composition.audio.chmod(0o444)
+            before = tree_hashes(root)
+            destination = root / "successors"
+            original = workspace_creation_module.copy_regular_file
+            refused = []
+
+            def copy(source, target, **options):
+                if Path(source) != composition.audio:
+                    return original(source, target, **options)
+                self.assertEqual(options, {})
+                gate = {"path": composition.audio, "armed": True}
+                with (
+                    admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                        self, gate
+                    ),
+                    self.assertRaisesRegex(OSError, "regular file") as caught,
+                ):
+                    original(source, target, **options)
+                self.assertFalse(Path(target).exists())
+                refused.append(caught.exception)
+                raise caught.exception
+
+            with (
+                patch.object(workspace_creation_module, "copy_regular_file", copy),
+                self.assertRaisesRegex(OSError, "regular file") as caught,
+            ):
+                create_audio_event_composition_workspace(
+                    base, composition.directory, destination
+                )
+            self.assertEqual(len(refused), 1)
+            self.assertIs(caught.exception, refused[0])
+            self.assertEqual(list(destination.iterdir()), [])
+            self.assertEqual(tree_hashes(root), before)
+            recovered = create_audio_event_composition_workspace(
+                base, composition.directory, destination
+            )
+            state = load_generation_state(
+                recovered.directory / "generated-audio/generation-state.json",
+                recovered.directory / "queue.jsonl",
+            )
+            rendition = state["items"][queue_item.queue_id]
+            audio = recovered.directory / "generated-audio" / rendition["path"]
+            self.assertEqual(audio.read_bytes(), composition.audio.read_bytes())
+            self.assertEqual(rendition["file_sha256"], composition.audio_sha256)
+            self.assertTrue(stat.S_IMODE(audio.stat().st_mode) & stat.S_IWUSR)
+            self.assertEqual(rendition["review_status"], "pending_review")
+            self.assertFalse(
+                create_audio_event_composition_workspace(
+                    base, composition.directory, destination
+                ).created
+            )
+
     def test_final_source_recheck_translates_io_error_and_cleans_up(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
