@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from threading import Lock, RLock
 from typing import Literal, TypedDict, TypeGuard, TypeVar
@@ -26,7 +27,11 @@ from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.cleanup import cleanup_on_exit
 from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import decode_json
-from vntts.path_safety import open_regular_binary, open_regular_candidate
+from vntts.path_safety import (
+    copy_regular_file,
+    open_regular_binary,
+    open_regular_candidate,
+)
 
 VOICE_LIBRARY_VERSION = 3
 _VOICE_LIBRARY_VERSIONS = frozenset({1, 2, VOICE_LIBRARY_VERSION})
@@ -549,7 +554,11 @@ class VoiceLibrary:
         if self.path.exists():
             with self._write_transaction():
                 self.validate()
-                shutil.copytree(self.root, target.root)
+                shutil.copytree(
+                    self.root,
+                    target.root,
+                    copy_function=partial(copy_regular_file, preserve_metadata=True),
+                )
                 if self.path.name != target.path.name:
                     (target.root / self.path.name).replace(target.path)
         return target

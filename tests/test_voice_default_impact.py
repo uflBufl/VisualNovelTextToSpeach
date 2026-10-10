@@ -1,8 +1,15 @@
+import os
+import shutil
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import tests.test_workspace_input_admission as admission
+import vntts.voice_default_impact as impact_module
+import vntts.voice_library as voice_library
+from tests.authoring_fixtures import tree_hashes
 from tests.pregeneration_fixtures import voice_impact_fixture
 from vntts.pregeneration_setup import (
     load_verified_story_index_document,
@@ -12,6 +19,78 @@ from vntts.voice_default_impact import inspect_voice_default_impact
 
 
 class VoiceDefaultImpactTest(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_second_library_copy_refusal_cleans_preview_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            content, jobs, decisions, settings, _pack, library = voice_impact_fixture(
+                root
+            )
+            proposed = library.copy_to(root / "proposed-library")
+            proposed.select("Rhiannon", route="voice", source_id="preset:marius")
+            inputs = dict(
+                current_voice_library=library,
+                proposed_voice_library=proposed,
+            )
+            expected = inspect_voice_default_impact(
+                content, jobs, decisions, settings, "Rhiannon", **inputs
+            )
+            before = tree_hashes(root)
+            original_copy = voice_library.copy_regular_file
+            original_temporary = impact_module.temporary_directory
+            directories = []
+            refused = []
+
+            @contextmanager
+            def temporary(**kwargs):
+                with original_temporary(dir=root, **kwargs) as name:
+                    directories.append(Path(name))
+                    yield name
+
+            def copy(original, target, **kwargs):
+                if Path(original) != proposed.path:
+                    return original_copy(original, target, **kwargs)
+                self.assertTrue(
+                    (directories[-1] / "current-voices" / library.path.name).is_file()
+                )
+                gate = {"path": proposed.path, "armed": True}
+                with (
+                    admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                        self, gate
+                    ),
+                    self.assertRaisesRegex(OSError, "regular file") as caught,
+                ):
+                    original_copy(original, target, **kwargs)
+                self.assertFalse(Path(target).exists())
+                refused.append((Path(target), caught.exception))
+                raise caught.exception
+
+            with patch.object(impact_module, "temporary_directory", temporary):
+                with (
+                    patch.object(voice_library, "copy_regular_file", copy),
+                    self.assertRaises(shutil.Error) as caught,
+                ):
+                    inspect_voice_default_impact(
+                        content, jobs, decisions, settings, "Rhiannon", **inputs
+                    )
+                self.assertEqual(len(refused), 1)
+                target, error = refused[0]
+                self.assertEqual(
+                    caught.exception.args[0],
+                    [(str(proposed.path), str(target), str(error))],
+                )
+                self.assertFalse(directories[-1].exists())
+                self.assertEqual(tree_hashes(root), before)
+                recovered = inspect_voice_default_impact(
+                    content, jobs, decisions, settings, "Rhiannon", **inputs
+                )
+            self.assertEqual(recovered, expected)
+            self.assertEqual(len(directories), 2)
+            self.assertTrue(all(not temporary.exists() for temporary in directories))
+            self.assertEqual(tree_hashes(root), before)
+
     def test_changed_default_compares_saved_voices_and_keeps_original_and_unrelated_stories(
         self,
     ):
