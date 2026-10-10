@@ -144,6 +144,8 @@ extend-select = [
 "tests/test_*.py" = ["TID251"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
+"durable_file.sha256_file" = { msg = "Use vntts.document_identity.sha256_file for regular-file admission." }
+"vntts_artifacts.file_integrity.sha256_file" = { msg = "Use vntts.document_identity.sha256_file for regular-file admission." }
 "shutil.copyfile" = { msg = "Use vntts.path_safety.copy_regular_file for regular-file source admission." }
 "shutil.copy2" = { msg = "Use vntts.path_safety.copy_regular_file with preserve_metadata=True." }
 "vntts_artifacts.voice_manifest.load_voice_manifest" = { msg = "Use vntts.voices.load_voice_manifest for regular-file admission." }
