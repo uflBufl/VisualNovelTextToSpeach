@@ -304,13 +304,12 @@ class GenerationLease:
 
 
 def _load_json(path: str | Path) -> dict[str, object]:
-    document = load_json_object(
+    return load_json_object(
         path,
         "generation lease",
         error_type=BulkGenerationError,
         object_label="Generation lease",
     )
-    return dict(document)
 
 
 def _process_id(value: object) -> int | None:

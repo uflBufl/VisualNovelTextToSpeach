@@ -1539,10 +1539,7 @@ def _validate_schema(
 
 
 def _load_json(path: PathInput, description: str) -> dict[str, object]:
-    value: object = load_json_object(path, description, error_type=ModelListeningError)
-    if not _is_json_object(value):
-        raise ModelListeningError(f"{description.title()} must be a JSON object")
-    return value
+    return load_json_object(path, description, error_type=ModelListeningError)
 
 
 def _object_list(value: object) -> list[object] | None:

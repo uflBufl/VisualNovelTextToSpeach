@@ -2095,48 +2095,27 @@ def _workspace_failure_repair_policy(
 
 
 def _load_json(path: Path, description: str) -> JsonDocument:
-    value = load_json_object(path, description, error_type=AuthoringWorkbenchError)
-    if not isinstance(value, dict):
-        raise AuthoringWorkbenchError(f"{description} must be a JSON object")
-    return value
+    return load_json_object(path, description, error_type=AuthoringWorkbenchError)
 
 
 def _load_json_snapshot(
     path: Path, description: str
 ) -> tuple[JsonDocument, str, bytes]:
-    value = load_json_object_snapshot(
+    return load_json_object_snapshot(
         path, description, error_type=AuthoringWorkbenchError
     )
-    if (
-        not isinstance(value, tuple)
-        or len(value) != 3
-        or not isinstance(value[0], dict)
-        or not isinstance(value[1], str)
-        or not isinstance(value[2], bytes)
-    ):
-        raise AuthoringWorkbenchError(f"{description} snapshot is malformed")
-    return value
 
 
 def _safe_relative(value: object, label: str) -> Path:
-    path = safe_relative_path(value, label, error_type=AuthoringWorkbenchError)
-    if not isinstance(path, Path):
-        raise AuthoringWorkbenchError(f"{label} path is malformed")
-    return path
+    return safe_relative_path(value, label, error_type=AuthoringWorkbenchError)
 
 
 def _within(root: Path, relative: Path, label: str) -> Path:
-    path = contained_path(root, relative, label, error_type=AuthoringWorkbenchError)
-    if not isinstance(path, Path):
-        raise AuthoringWorkbenchError(f"{label} path is malformed")
-    return path
+    return contained_path(root, relative, label, error_type=AuthoringWorkbenchError)
 
 
 def _require_sha256(value: object, label: str) -> str:
-    digest = require_sha256(value, label, error_type=AuthoringWorkbenchError)
-    if not isinstance(digest, str):
-        raise AuthoringWorkbenchError(f"{label} is malformed")
-    return digest
+    return require_sha256(value, label, error_type=AuthoringWorkbenchError)
 
 
 def _required_text(value: object, label: str) -> str:

@@ -5244,13 +5244,12 @@ def _assert_control_files_unchanged(controls: Sequence[_GenerationControl]) -> N
 
 
 def _load_json(path: str | Path, description: str) -> dict[str, object]:
-    document = load_json_object(
+    return load_json_object(
         path,
         description,
         error_type=BulkGenerationError,
         object_label=description.capitalize(),
     )
-    return dict(document)
 
 
 _canonical_sha256 = canonical_document_sha256

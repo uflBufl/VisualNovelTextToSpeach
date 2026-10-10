@@ -747,10 +747,7 @@ def _load_schema_snapshot(
 
 
 def _load_json(path: PathInput, description: str) -> JsonObject:
-    value: object = load_json_object(path, description, error_type=ListeningImportError)
-    if not _is_json_object(value):
-        raise ListeningImportError(f"{description.title()} must be a JSON object")
-    return value
+    return load_json_object(path, description, error_type=ListeningImportError)
 
 
 def _safe_relative(value: object, label: str) -> Path:
@@ -768,10 +765,7 @@ def _within(root: PathInput, relative: Path, label: str) -> Path:
 
 
 def _require_sha256(value: object, label: str) -> str:
-    result: object = require_sha256(value, label, error_type=ListeningImportError)
-    if not isinstance(result, str):
-        raise ListeningImportError(f"{label} must be a full SHA-256")
-    return result
+    return require_sha256(value, label, error_type=ListeningImportError)
 
 
 def _canonical(value: object) -> bytes:
