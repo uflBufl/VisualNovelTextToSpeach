@@ -2,8 +2,6 @@
 
 ## Continue regular-file admission through remaining integrity owners
 
-- [ ] Expand the verified SHA owner to the ten inline read-and-hash expressions in six modules (live replay capture/recovery, reference selection/quality/composite, config rebase). Qualify raw/domain errors and source-vs-staging phases; preserve captured-payload hashes, retarget only affected hooks, add native public refusal/recovery coverage and rerun local-first/fresh-main gates.
-
 - [ ] Qualify admitted SHA readers and direct/recursive/runtime copy behavior on Windows, including native metadata/alternate streams, DLL/junction handling and executable behavior. Local Mac output identities, metadata, relocated interpreter provenance and warm-cache throughput passed; cold-disk/network throughput and native model generation remain unmeasured.
 
 ## Continue captured-input admission
