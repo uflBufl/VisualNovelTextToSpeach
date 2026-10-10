@@ -2,7 +2,7 @@
 
 ## Continue regular-file admission through remaining integrity owners
 
-- [ ] Classify the remaining generic SHA/copy inventory by persisted input vs owned staging/output lifecycle (current scan: 51 production SHA importer modules/233 direct imported-name calls and 15 `shutil.copyfile`/`copy2` calls). Migrate only evidenced consumers with their actual error, alias/root, copied metadata, byte-binding and publication contracts. Keep the concrete staged inventory in `.codex/investigations/`; run local-first affected tests, independent review and fresh-main branch checks for each implementation stage.
+- [ ] Classify the remaining generic SHA/copy inventory by persisted input vs owned staging/output lifecycle (current scan: 51 production SHA importer modules/233 direct imported-name calls and 10 `shutil.copyfile`/`copy2` calls). Migrate only evidenced consumers with their actual error, alias/root, copied metadata, byte-binding and publication contracts. Keep the concrete staged inventory in `.codex/investigations/`; run local-first affected tests, independent review and fresh-main branch checks for each implementation stage.
 
 ## Coordinate source-audio producer numeric admission
 
