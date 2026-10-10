@@ -6,7 +6,6 @@ import copy
 import hashlib
 import json
 import re
-import shutil
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -78,6 +77,7 @@ from vntts.authoring.workbench import (
 from vntts.authoring.workspace_inspection import generation_failure_category
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 from vntts.json_types import decode_json, has_schema_version, is_json_object
+from vntts.path_safety import copy_regular_file
 from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.voices import voice_manifest_entries_at_path
 
@@ -947,7 +947,7 @@ def _copy_candidate_references(
             seen.add(key)
             target = staging / relative
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, target)
+            copy_regular_file(source, target)
             digest = sha256_file(source)
             if sha256_file(target) != digest:
                 raise MissingVoiceReuseError(

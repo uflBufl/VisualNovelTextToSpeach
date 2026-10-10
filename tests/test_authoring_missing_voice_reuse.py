@@ -1,4 +1,5 @@
 import json
+import os
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
@@ -6,6 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import tests.test_workspace_input_admission as workspace_input_admission
 import vntts.story_index_snapshot as story_snapshot_module
 from tests.authoring_fixtures import tree_hashes
 from tests.missing_voice_reuse_fixtures import (
@@ -66,6 +68,83 @@ class AuthoringMissingVoiceReuseTest(unittest.TestCase):
                     root / "candidate-inputs",
                 )
             self.assertEqual(list((root / "candidate-inputs").iterdir()), [])
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_candidate_copy_refuses_fifo_acquisition_cleans_up_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            _fixture, imported, workspace = self.create_workspace(root)
+            plan = self.build_plan(workspace)
+            candidate = plan.document["candidates"][0]
+            source = (
+                workspace / "inputs/voice" / candidate["ordered_references"][0]["path"]
+            )
+            input_root = root / "candidate-inputs"
+            workspaces_root = root / "candidate-workspaces"
+            gate = {"path": source, "armed": False}
+            failures = []
+            original_copy = reuse_module.copy_regular_file
+
+            def copy_after_swap(original, target):
+                if original != source:
+                    return original_copy(original, target)
+                gate["armed"] = True
+                with workspace_input_admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                    self, gate
+                ):
+                    try:
+                        original_copy(original, target)
+                    except OSError as error:
+                        failures.append(error)
+                self.assertEqual(len(failures), 1)
+                raise failures[0]
+
+            def prepare():
+                return prepare_missing_voice_reuse_candidate_workspace(
+                    plan,
+                    candidate["candidate_id"],
+                    imported,
+                    input_root,
+                    workspaces_root,
+                )
+
+            before = tree_hashes(root)
+            with (
+                patch.object(
+                    reuse_module, "copy_regular_file", side_effect=copy_after_swap
+                ),
+                self.assertRaisesRegex(
+                    MissingVoiceReuseError, "regular file"
+                ) as caught,
+            ):
+                prepare()
+            self.assertIs(caught.exception.__cause__, failures[0])
+            self.assertEqual(tree_hashes(root), before)
+            self.assertEqual(list(input_root.iterdir()), [])
+            self.assertFalse(workspaces_root.exists())
+            self.assertFalse(list(root.rglob(".generation-lease.json")))
+
+            recovered = prepare()
+            recovered_tree = tree_hashes(root)
+            repeated = prepare()
+            self.assertTrue(recovered.input_created)
+            self.assertTrue(recovered.workspace_created)
+            self.assertFalse(repeated.input_created)
+            self.assertFalse(repeated.workspace_created)
+            self.assertEqual(repeated.input_directory, recovered.input_directory)
+            self.assertEqual(
+                repeated.workspace_directory, recovered.workspace_directory
+            )
+            self.assertEqual(tree_hashes(root), recovered_tree)
+            self.assertEqual(
+                (
+                    recovered.input_directory
+                    / candidate["ordered_references"][0]["path"]
+                ).read_bytes(),
+                source.read_bytes(),
+            )
 
     def create_workspace(self, root, *, text=None, missing_voice_policy=None):
         return create_missing_voice_reuse_workspace(
