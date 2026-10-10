@@ -11,6 +11,8 @@ from threading import Event, Timer
 from unittest.mock import MagicMock, Mock, call, patch
 from zipfile import ZipFile
 
+from tests import test_workspace_input_admission as admission
+from tests.authoring_fixtures import tree_hashes
 from tests.symlink_support import symlink_or_skip
 from vntts import game_audio_decoder as decoder
 
@@ -280,15 +282,84 @@ class GameAudioDecoderTest(unittest.TestCase):
                 terminate.assert_not_called()
                 process.wait.assert_not_called()
 
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_public_staging_refuses_fifo_preserves_destination_and_recovers(self):
+        for existing in (False, True):
+            with self.subTest(existing=existing), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                source = root / "system-tool"
+                source.write_bytes(b"tool")
+                source.chmod(0o555)
+                destination = root / "staging"
+                target = destination / source.name
+                if existing:
+                    destination.mkdir()
+                    target.write_bytes(b"previous tool")
+                before = tree_hashes(root)
+                original = decoder.copy_regular_file
+                refused = []
+
+                def copy(path, temporary):
+                    gate = {"path": source, "armed": True}
+                    with (
+                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                            self, gate
+                        ),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original(path, temporary)
+                    self.assertFalse(Path(temporary).exists())
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                def download(_url, _digest, path, *_args):
+                    path.write_bytes(
+                        archive_bytes(
+                            f"vgmstream-{decoder.VERSION}/COPYING", b"license"
+                        )
+                    )
+
+                with (
+                    patch.object(decoder, "ensure_game_decoder", return_value=source),
+                    patch.object(decoder.sys, "platform", "linux"),
+                    patch.object(decoder, "_download", side_effect=download) as fetch,
+                ):
+                    with (
+                        patch.object(decoder, "copy_regular_file", copy),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        decoder.stage_game_decoder(destination)
+                    self.assertEqual(len(refused), 1)
+                    self.assertIs(caught.exception, refused[0])
+                    self.assertEqual(tree_hashes(root), before)
+                    self.assertFalse(list(destination.glob("copy-*")))
+                    fetch.assert_not_called()
+                    self.assertEqual(
+                        decoder.stage_game_decoder(destination), destination
+                    )
+                self.assertEqual(target.read_bytes(), b"tool")
+                self.assertEqual(target.stat().st_mode & 0o777, 0o755)
+                self.assertEqual(source.stat().st_mode & 0o777, 0o555)
+                self.assertEqual(
+                    (destination / "licenses/COPYING").read_bytes(), b"license"
+                )
+
     def test_staging_readonly_system_files_is_repeatable(self):
         source = self.root / "system-tool"
         source.write_bytes(b"tool")
-        source.chmod(0o555)
         target = self.root / "staging" / "tool"
         try:
-            decoder._stage_file(source, target)
-            decoder._stage_file(source, target)
-            self.assertEqual(target.read_bytes(), b"tool")
+            for source_mode, target_mode in ((0o555, 0o755), (0o444, 0o644)):
+                with self.subTest(source_mode=source_mode):
+                    source.chmod(source_mode)
+                    decoder._stage_file(source, target)
+                    decoder._stage_file(source, target)
+                    self.assertEqual(target.read_bytes(), b"tool")
+                    if os.name != "nt":
+                        self.assertEqual(target.stat().st_mode & 0o777, target_mode)
+                        self.assertEqual(source.stat().st_mode & 0o777, source_mode)
         finally:
             source.chmod(0o755)
 

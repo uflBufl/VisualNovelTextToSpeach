@@ -23,7 +23,7 @@ from vntts.authoring.advisory_lock import AdvisoryLockBusyError, exclusive_advis
 from vntts.cleanup import cleanup_on_exit, temporary_directory
 from vntts.document_identity import file_sha256
 from vntts.json_types import decode_json
-from vntts.path_safety import open_regular_binary
+from vntts.path_safety import copy_regular_file, open_regular_binary
 from vntts.runtime_paths import get_bundle_root
 from vntts.subprocess_utils import terminate_process
 
@@ -411,7 +411,7 @@ def _stage_file(source: PathInput, target: PathInput) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     with temporary_directory(prefix="copy-", dir=target.parent) as directory:
         temporary = Path(directory) / target.name
-        shutil.copyfile(source, temporary)
+        copy_regular_file(source, temporary)
         temporary.chmod(0o755 if os.access(source, os.X_OK) else 0o644)
         temporary.replace(target)
 
