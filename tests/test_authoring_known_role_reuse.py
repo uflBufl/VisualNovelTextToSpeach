@@ -206,22 +206,25 @@ class AuthoringKnownRoleReuseTest(unittest.TestCase):
     @unittest.skipUnless(
         hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
     )
-    def test_checksum_phases_refuse_swapped_acquisition_clean_up_and_recover(self):
+    def test_file_phases_refuse_swapped_acquisition_clean_up_and_recover(self):
         phases = (
-            ("_load_workspace_snapshot", False, False),
-            ("_select_manifest", False, False),
-            ("_reference_records", False, False),
-            ("_copy_references", False, False),
-            ("_copy_tree", False, False),
-            ("_copy_tree", True, False),
-            ("_write_bundle", False, False),
-            ("_validate_inventory_files", False, False),
-            ("_validate_inventory_files", False, True),
+            ("_load_workspace_snapshot", False, False, "file_sha256"),
+            ("_select_manifest", False, False, "file_sha256"),
+            ("_reference_records", False, False, "file_sha256"),
+            ("_copy_references", False, False, "file_sha256"),
+            ("_copy_tree", False, False, "file_sha256"),
+            ("_copy_tree", True, False, "file_sha256"),
+            ("_write_bundle", False, False, "file_sha256"),
+            ("_validate_inventory_files", False, False, "file_sha256"),
+            ("_validate_inventory_files", False, True, "file_sha256"),
+            ("_copy_references", False, False, "copy_regular_file"),
+            ("_copy_tree", True, False, "copy_regular_file"),
         )
-        for owner_name, authority_source, retained in phases:
+        for owner_name, authority_source, retained, operation_name in phases:
             with (
                 self.subTest(
                     phase=owner_name,
+                    operation=operation_name,
                     authority_source=authority_source,
                     retained=retained,
                 ),
@@ -248,7 +251,7 @@ class AuthoringKnownRoleReuseTest(unittest.TestCase):
                     publish()
                 before = tree_hashes(root)
                 owner = getattr(known_role_module, owner_name)
-                checksum = known_role_module.file_sha256
+                operation = getattr(known_role_module, operation_name)
                 armed = False
                 acquired = []
 
@@ -260,13 +263,18 @@ class AuthoringKnownRoleReuseTest(unittest.TestCase):
                     finally:
                         armed = False
 
-                def swap_checksum(path, **kwargs):
+                def swap_acquisition(path, *args, **kwargs):
                     if not armed or (
                         owner_name == "_copy_tree"
                         and Path(path).is_relative_to(unresolved) != authority_source
                     ):
-                        return checksum(path, **kwargs)
-                    self.assertEqual(kwargs, {"error_type": OSError})
+                        return operation(path, *args, **kwargs)
+                    self.assertEqual(
+                        kwargs,
+                        {"error_type": OSError}
+                        if operation_name == "file_sha256"
+                        else {},
+                    )
                     acquired.append(Path(path))
                     gate = {"path": Path(path), "armed": True}
                     # Restore staged candidates before publication cleanup removes them.
@@ -276,13 +284,15 @@ class AuthoringKnownRoleReuseTest(unittest.TestCase):
                         ),
                         self.assertRaisesRegex(OSError, "regular file") as refused,
                     ):
-                        checksum(path, **kwargs)
+                        operation(path, *args, **kwargs)
                     raise refused.exception
 
                 with (
                     patch.object(known_role_module, owner_name, side_effect=arm),
                     patch.object(
-                        known_role_module, "file_sha256", side_effect=swap_checksum
+                        known_role_module,
+                        operation_name,
+                        side_effect=swap_acquisition,
                     ),
                     self.assertRaisesRegex(
                         KnownRoleReuseError, "regular file"
@@ -333,6 +343,29 @@ class AuthoringKnownRoleReuseTest(unittest.TestCase):
                 known_role_module._reference_records(root, (source.name,))[0]["sha256"],
                 hashlib.sha256(payload).hexdigest(),
             )
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_authority_copy_retains_raw_oserror(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            authority = root / "authority"
+            authority.mkdir()
+            source = authority / "decision.json"
+            payload = b"exact-authority"
+            source.write_bytes(payload)
+            destination = root / "copied"
+            gate = {"path": source, "armed": True}
+            with (
+                admission.WorkspaceInputAdmissionTest.swap_at_acquisition(self, gate),
+                self.assertRaisesRegex(OSError, "regular file"),
+            ):
+                known_role_module._copy_tree(authority, destination)
+            self.assertEqual(source.read_bytes(), payload)
+            self.assertFalse((destination / source.name).exists())
+            known_role_module._copy_tree(authority, destination)
+            self.assertEqual((destination / source.name).read_bytes(), payload)
 
     def test_reference_hash_identity_and_existing_alias_policy_are_preserved(self):
         with TemporaryDirectory() as directory:

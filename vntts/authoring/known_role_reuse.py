@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import shutil
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -63,7 +62,7 @@ from vntts.authoring.workspace_config import selected_voice_manifest_path
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.document_identity import file_sha256
 from vntts.json_types import decode_json
-from vntts.path_safety import open_regular_binary
+from vntts.path_safety import copy_regular_file, open_regular_binary
 from vntts.voices import load_voice_manifest, synthesis_character_for_line
 
 KNOWN_ROLE_REUSE_DECISION_SCHEMA = "vntts.authoring-known-role-reuse-decision"
@@ -655,7 +654,7 @@ def _copy_references(staging: Path, references: list[ReferenceRecord]) -> None:
     for reference in references:
         target = staging / reference["relative"]
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(reference["source"], target)
+        copy_regular_file(reference["source"], target)
         if file_sha256(target, error_type=OSError) != reference["sha256"]:
             raise KnownRoleReuseError("Known-role voice reference changed while copied")
 
@@ -839,7 +838,7 @@ def _copy_tree(source: Path, destination: Path) -> None:
         relative = path.relative_to(source)
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(path, target)
+        copy_regular_file(path, target)
         if file_sha256(target, error_type=OSError) != file_sha256(
             path, error_type=OSError
         ):
