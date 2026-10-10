@@ -58,7 +58,7 @@ from vntts.authoring.source_reference_review import (
 )
 from vntts.cleanup import temporary_directory
 from vntts.cli import cli_error, cli_success
-from vntts.document_identity import file_sha256
+from vntts.document_identity import file_sha256, sha256_file
 
 
 @dataclass(frozen=True)
@@ -654,7 +654,7 @@ def _copy_optional_portrait(
     destination = staging / relative
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(payload)
-    if hashlib.sha256(destination.read_bytes()).hexdigest() != digest:
+    if sha256_file(destination) != digest:
         raise SourceReferenceQualityError(
             f"Portrait image changed while copied: {source}"
         )

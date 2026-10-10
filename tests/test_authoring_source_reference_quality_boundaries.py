@@ -17,8 +17,13 @@ from tests.source_reference_fixtures import (
     CompositeRenderer,
     publish_source_reference_quality_fixture,
     write_exact_bank_composite_report,
+    write_test_png,
 )
-from vntts.authoring import source_reference_quality, source_reference_quality_records
+from vntts.authoring import (
+    reference_composite,
+    source_reference_quality,
+    source_reference_quality_records,
+)
 from vntts.authoring.bulk_generation import run_bulk_generation
 from vntts.authoring.publication import AtomicPublicationError
 from vntts.authoring.reference_composite import (
@@ -34,6 +39,80 @@ from vntts.authoring.source_reference_quality import (
 
 
 class SourceReferenceQualityBoundariesTest(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_staged_portrait_and_clip_hashes_refuse_fifo_clean_up_and_recover(self):
+        for role in ("portraits", "clips"):
+            with self.subTest(role=role), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                if role == "portraits":
+                    portraits = root / "portrait-inputs"
+                    portraits.mkdir()
+                    for name in ("adult.png", "young.png", "other.png"):
+                        write_test_png(portraits / name, red=127)
+                    plan, evaluation, generation, _expected = (
+                        publish_source_reference_quality_fixture(
+                            root, portrait_directory=portraits
+                        )
+                    )
+                    publish = partial(
+                        publish_source_reference_quality_review,
+                        plan.directory,
+                        evaluation.directory,
+                        generation.state,
+                        portrait_directory=portraits,
+                    )
+                    module, error_type = (
+                        source_reference_quality,
+                        SourceReferenceQualityError,
+                    )
+                else:
+                    report = write_exact_bank_composite_report(root)
+                    publish = partial(
+                        publish_exact_bank_reference_composite,
+                        report,
+                        "Hotelier",
+                        "505401.png",
+                        "hotelier.bnk",
+                    )
+                    module, error_type = reference_composite, ReferenceCompositeError
+                output = root / "refused"
+                before = tree_hashes(root)
+                original = module.sha256_file
+                refused = []
+
+                def checksum(candidate):
+                    path = Path(candidate)
+                    self.assertEqual(path.parent.name, role)
+                    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                    gate = {"path": path, "armed": True}
+                    with (
+                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                            self, gate
+                        ),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original(path)
+                    refused.append((caught.exception, path.name, digest))
+                    raise caught.exception
+
+                with (
+                    patch.object(module, "sha256_file", checksum),
+                    self.assertRaisesRegex(error_type, "regular file") as caught,
+                ):
+                    publish(output)
+                self.assertEqual(len(refused), 1)
+                self.assertIs(caught.exception.__cause__, refused[0][0])
+                self.assertEqual(tree_hashes(root), before)
+                self.assertFalse(output.exists())
+                self.assertFalse(list(root.glob(f".{output.name}.staging-*")))
+                recovered = publish(output)
+                copied = recovered.directory / role / refused[0][1]
+                self.assertEqual(
+                    hashlib.sha256(copied.read_bytes()).hexdigest(), refused[0][2]
+                )
+
     @unittest.skipUnless(
         hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
     )

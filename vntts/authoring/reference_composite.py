@@ -52,7 +52,7 @@ from vntts.authoring.workspace_foundation import (
     load_json_object_snapshot,
 )
 from vntts.cli import cli_error, cli_success
-from vntts.document_identity import file_sha256, is_lowercase_sha256
+from vntts.document_identity import file_sha256, is_lowercase_sha256, sha256_file
 from vntts.json_types import decode_json
 from vntts.reference_quality import ReferenceQualityReport, analyze_reference_bytes
 from vntts.voices import load_voice_manifest
@@ -671,7 +671,7 @@ def _stage_composite_clip(
     copied = staging / copied_relative
     copied.parent.mkdir(parents=True, exist_ok=True)
     copied.write_bytes(clip.payload)
-    if hashlib.sha256(copied.read_bytes()).hexdigest() != clip.expected_sha256:
+    if sha256_file(copied) != clip.expected_sha256:
         raise ReferenceCompositeError(f"Composite clip copy changed: {clip.media_id}")
     return (
         {
