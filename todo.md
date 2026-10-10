@@ -2,15 +2,10 @@
 
 ## Continue regular-file admission through remaining integrity owners
 
-### Authoring import and preparation copy stage
-
-- [ ] Consolidate the identical legacy-job and standalone-generation publication pipelines after tracing both public entry points; retain separate planning, collision/idempotency checks, metadata, source freshness, no-replace publication and cleanup.
-- [ ] Use `path_safety.copy_regular_file` for the seven qualified raw source copies in legacy import, resume workspace creation, quality audio capture, source-reference binding review and experimental composite publication. Keep owner-specific containment, hashes, PCM validation, metadata choices and domain errors.
-- [ ] Move affected mutation/interrupt hooks to the real copy boundary; prove acquisition refusal, staged cleanup, original errors and restored-input recovery with focused public workflow gates. Independently review simplification and correctness.
-- [ ] Run local-first affected tests with sources frozen, configured static gates, then a fresh-main branch selector. Commit each logical repair separately, push normally, recount remaining raw copy leads and remove this completed stage only after verification.
-
-- [ ] Classify the remaining generic SHA/copy inventory by persisted input vs owned staging/output lifecycle (current scan: 51 production SHA importer modules/233 direct imported-name calls and 10 `shutil.copyfile`/`copy2` calls). Migrate only evidenced consumers with their actual error, alias/root, copied metadata, byte-binding and publication contracts. Keep the concrete staged inventory in `.codex/investigations/`; run local-first affected tests, independent review and fresh-main branch checks for each implementation stage.
+- [ ] Classify the remaining generic SHA/copy inventory by persisted input vs owned staging/output lifecycle (current scan: 51 production SHA importer modules/232 direct imported-name calls and 3 production `shutil.copyfile` calls, plus the benchmark script copy listed below). Migrate only evidenced consumers with their actual error, alias/root, copied metadata, byte-binding and publication contracts. Keep the concrete staged inventory in `.codex/investigations/`; run local-first affected tests, independent review and fresh-main branch checks for each implementation stage.
 - [ ] Qualify the remaining production copy owners `game_audio_decoder._stage_file` (executable mode/atomic replacement), `pregeneration_pack._copy_file` (prepared hashes/conflict/dedup/hardlink fallback) and `authoring.game_pack._copy_control` (final-pack inventory/projection/publication). Also qualify the repository-wide search match `scripts/moss_native_compare.py` reference snapshot against its report/error/model-preflight phases. Migrate matching source acquisitions through the shared leaf with public refusal/recovery gates; retain distinct tree-copy operations.
+
+- [ ] After qualifying the remaining file-copy owners, use the existing Ruff `TID251` banned-API check to prevent direct `shutil.copyfile`/`copy2` acquisitions in project code. Preserve the current fixture/test-only exceptions and distinct tree-copy operations; verify alias detection and normal local/CI lint gates.
 
 ## Coordinate source-audio producer numeric admission
 
