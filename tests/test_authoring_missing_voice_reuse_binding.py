@@ -1,4 +1,5 @@
 import json
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -6,6 +7,8 @@ from unittest.mock import patch
 
 from vntts_artifacts.file_integrity import sha256_file
 
+from tests import test_workspace_input_admission as admission
+from tests.authoring_fixtures import tree_hashes
 from tests.missing_voice_reuse_fixtures import (
     build_failed_missing_voice_reuse_plan_fixture,
     create_missing_voice_reuse_binding_review,
@@ -75,6 +78,69 @@ class AuthoringMissingVoiceReuseBindingTest(unittest.TestCase):
                 root / "failed-review",
             )
         return plan_path, session_path, queue_id
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_binding_copy_refuses_swapped_acquisition_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            plan_path, session_path, queue_id = (
+                create_missing_voice_reuse_binding_review(root)
+            )
+            bundle, _session = load_missing_voice_reuse_review(session_path)
+            cohort = bundle["cohorts"][0]
+            selected = cohort["complete_candidate_labels"][0]
+            record_missing_voice_reuse_heard(
+                session_path, cohort["cohort_id"], queue_id, selected
+            )
+            record_missing_voice_reuse_decision(
+                session_path, cohort["cohort_id"], selected
+            )
+            expected = publish_missing_voice_reuse_binding(
+                plan_path, session_path, root / "expected"
+            )
+            before = tree_hashes(root)
+            original = binding_module.copy_regular_file
+            refused = []
+
+            def copy(source, target):
+                gate = {"path": Path(source), "armed": True}
+                with (
+                    admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                        self, gate
+                    ),
+                    self.assertRaisesRegex(OSError, "regular file") as caught,
+                ):
+                    original(source, target)
+                self.assertFalse(Path(target).exists())
+                refused.append(caught.exception)
+                raise caught.exception
+
+            output = root / "binding"
+            with (
+                patch.object(binding_module, "copy_regular_file", copy),
+                self.assertRaisesRegex(
+                    MissingVoiceReuseBindingError, "regular file"
+                ) as caught,
+            ):
+                publish_missing_voice_reuse_binding(plan_path, session_path, output)
+            self.assertEqual(len(refused), 1)
+            self.assertIs(caught.exception.__cause__, refused[0])
+            self.assertEqual(tree_hashes(root), before)
+            self.assertFalse(output.exists())
+            self.assertEqual(list(root.glob(".missing-voice-binding-*")), [])
+            recovered = publish_missing_voice_reuse_binding(
+                plan_path, session_path, output
+            )
+            repeated = publish_missing_voice_reuse_binding(
+                plan_path, session_path, output
+            )
+            self.assertTrue(recovered.created)
+            self.assertFalse(repeated.created)
+            self.assertEqual(
+                tree_hashes(recovered.directory), tree_hashes(expected.directory)
+            )
 
     def test_selected_candidate_binds_the_full_exact_cohort(self):
         with TemporaryDirectory() as directory:

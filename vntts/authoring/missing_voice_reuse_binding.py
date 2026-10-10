@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import json
-import shutil
 from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import partial
@@ -58,6 +57,7 @@ from vntts.authoring.workbench import (
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.document_identity import file_sha256
 from vntts.json_types import decode_json
+from vntts.path_safety import copy_regular_file
 from vntts.voices import voice_manifest_entries_at_path
 
 MISSING_VOICE_REUSE_DECISION_SCHEMA = "vntts.authoring-missing-voice-reuse-decision"
@@ -321,7 +321,7 @@ def publish_missing_voice_reuse_binding(
                         )
                     target_path = staging / relative
                     target_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(source_path, target_path)
+                    copy_regular_file(source_path, target_path)
                     digest = _file_sha256(source_path)
                     if _file_sha256(target_path) != digest:
                         raise MissingVoiceReuseBindingError(
