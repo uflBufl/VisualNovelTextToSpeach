@@ -69,7 +69,7 @@ from vntts.document_identity import canonical_document_sha256, is_lowercase_sha2
 from vntts.game_pack import GamePackImport, import_game_pack
 from vntts.generated_audio import GeneratedAudioLibrary
 from vntts.json_types import decode_json
-from vntts.path_safety import safe_relative_path
+from vntts.path_safety import copy_regular_file, safe_relative_path
 from vntts.pregeneration_contract import (
     OfflineGenerationCancelled,
     OfflineGenerationError,
@@ -1519,7 +1519,7 @@ def _copy_file(source: str | Path, destination: Path) -> str:
         if sha256_file(destination) != before:
             raise OfflinePackError(f"Offline pack destination conflicts: {destination}")
     else:
-        shutil.copyfile(source, destination)
+        copy_regular_file(source, destination)
     if sha256_file(source) != before or sha256_file(destination) != before:
         raise OfflinePackError(f"Offline pack source changed: {source}")
     return before

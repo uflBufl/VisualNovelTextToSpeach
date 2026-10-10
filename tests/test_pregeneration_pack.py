@@ -1,4 +1,5 @@
 import json
+import os
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -8,8 +9,10 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from vntts_artifacts.atomic_io import atomic_write_json
+from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.game_pack import GamePackError
+from vntts_artifacts.generated_audio import load_generated_audio_document
 from vntts_artifacts.live_sequence import (
     load_live_sequence_plan,
     write_live_sequence_plan,
@@ -24,7 +27,10 @@ from vntts_artifacts.voice_generation_queue import (
 )
 from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_manifest
 
+from tests import test_workspace_input_admission as admission
+from tests.authoring_fixtures import tree_hashes
 from tests.pregeneration_fixtures import fixture
+from vntts import pregeneration_pack as pack_module
 from vntts.authoring.bulk_generation import BulkGenerationError
 from vntts.authoring.generation_state import load_generation_state_from_snapshot
 from vntts.game_pack import import_game_pack
@@ -73,6 +79,155 @@ class SavedStoryPackSelectionTest(unittest.TestCase):
 
 
 class OfflinePackPublisherTest(unittest.TestCase):
+    def _publication_copy_fixture(self, root, phase):
+        job, prepared, generated, items = fixture(root / "current")
+        reference = prepared.voice_manifest.parent / "references" / "voice.wav"
+        write_pcm16_wav(reference, [0.1, -0.1] * 400, 16_000)
+        voice_document, _voices = load_voice_manifest(
+            prepared.voice_manifest, allow_legacy=False
+        )
+        voice_document["voices"][0]["references"] = ["references/voice.wav"]
+        write_voice_manifest(prepared.voice_manifest, voice_document)
+        prepared = replace(
+            prepared, voice_manifest_sha256=sha256_file(prepared.voice_manifest)
+        )
+        state = json.loads(generated.state.read_text())
+        source = {
+            "story": prepared.story_index,
+            "voice-manifest": prepared.voice_manifest,
+            "reference": reference,
+            "generated": generated.output
+            / state["items"][items[0]["queue_id"]]["path"],
+        }.get(phase)
+        publisher = OfflinePackPublisher()
+        if phase.startswith("reused-"):
+            base_job, base_input, base_result, _base_items = fixture(
+                root / "base", names=("preserved", "old-fallback")
+            )
+            base_reference = (
+                base_input.voice_manifest.parent / "references" / "voice.wav"
+            )
+            write_pcm16_wav(base_reference, [0.2, -0.2] * 400, 16_000)
+            write_voice_manifest(base_input.voice_manifest, voice_document)
+            base_input = replace(
+                base_input,
+                voice_manifest_sha256=sha256_file(base_input.voice_manifest),
+            )
+            base = OfflinePackPublisher().publish(base_job, base_input, base_result)
+            base_story = load_story_index_document(base_input.story_index)
+            current_story = load_story_index_document(prepared.story_index)
+            source_story = root / "source-story.jsonl"
+            write_story_index_document(
+                source_story,
+                current_story.metadata,
+                [
+                    record.to_record() | {"chapter": str(chapter)}
+                    for chapter, selected in enumerate((base_story, current_story), 1)
+                    for record in selected.records
+                ],
+            )
+            job = replace(
+                job,
+                story_index=str(source_story),
+                story_index_sha256=sha256_file(source_story),
+            )
+            publisher = OfflinePackPublisher(base_pack=base.manifest)
+            if phase == "reused-reference":
+                _document, voices = load_voice_manifest(
+                    base.imported.voice_manifest, allow_legacy=False
+                )
+                source = base.imported.voice_manifest.parent / voices[0].references[0]
+            else:
+                source = (
+                    load_generated_audio_document(
+                        base.imported.generated_audio_manifest
+                    )
+                    .records[0]
+                    .audio
+                )
+        return publisher, job, prepared, generated, source.resolve()
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_public_copy_phases_refuse_fifo_clean_up_and_recover(self):
+        for phase in (
+            "story",
+            "voice-manifest",
+            "reference",
+            "generated",
+            "reused-reference",
+            "reused-audio",
+        ):
+            with self.subTest(phase=phase), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                publisher, job, prepared, generated, source = (
+                    self._publication_copy_fixture(root, phase)
+                )
+                source_bytes = source.read_bytes()
+                before = tree_hashes(root)
+                original_copy = pack_module.copy_regular_file
+                refused = []
+
+                def copy(original, target):
+                    if Path(original) != source:
+                        return original_copy(original, target)
+                    gate = {"path": source, "armed": True}
+                    with (
+                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                            self, gate
+                        ),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original_copy(original, target)
+                    self.assertFalse(Path(target).exists())
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                def link_fallback(original, target, digest):
+                    if phase != "reused-audio":
+                        return _link_verified_file(original, target, digest)
+                    with patch.object(
+                        pack_module.os, "link", side_effect=OSError("no links")
+                    ) as link:
+                        try:
+                            return _link_verified_file(original, target, digest)
+                        finally:
+                            link.assert_called_once_with(
+                                Path(original).resolve(), target
+                            )
+
+                output = prepared.directory.parent / "game-packs"
+                with patch.object(pack_module, "_link_verified_file", link_fallback):
+                    with (
+                        patch.object(pack_module, "copy_regular_file", copy),
+                        self.assertRaisesRegex(
+                            OfflinePackError, "regular file"
+                        ) as caught,
+                    ):
+                        publisher.publish(job, prepared, generated)
+                    self.assertEqual(len(refused), 1)
+                    self.assertIs(caught.exception.__cause__, refused[0])
+                    self.assertEqual(tree_hashes(root), before)
+                    self.assertEqual(list(output.iterdir()), [])
+                    recovered = publisher.publish(job, prepared, generated)
+                self.assertEqual(source.read_bytes(), source_bytes)
+                recovered_tree = tree_hashes(root)
+                self.assertEqual(publisher.publish(job, prepared, generated), recovered)
+                self.assertEqual(tree_hashes(root), recovered_tree)
+                self.assertEqual(load_saved_pack(recovered.manifest), recovered)
+                if phase == "reused-audio":
+                    records = load_generated_audio_document(
+                        recovered.imported.generated_audio_manifest
+                    ).records
+                    reused = next(
+                        record.audio
+                        for record in records
+                        if record.line_id == "pack:preserved"
+                    )
+                    self.assertEqual(reused.read_bytes(), source_bytes)
+                    self.assertFalse(source.samefile(reused))
+
     def test_saved_and_reused_packs_reject_noninteger_counts(self):
         with TemporaryDirectory() as directory:
             job, prepared, generated, _items = fixture(Path(directory))
@@ -418,7 +573,7 @@ class OfflinePackPublisherTest(unittest.TestCase):
             destination = root / "staging" / "audio.wav"
             digest = _copy_file(source, destination)
             with patch(
-                "vntts.pregeneration_pack.shutil.copyfile",
+                "vntts.pregeneration_pack.copy_regular_file",
                 side_effect=AssertionError("verified staged file must be reused"),
             ):
                 self.assertEqual(_copy_file(source, destination), digest)
@@ -445,7 +600,7 @@ class OfflinePackPublisherTest(unittest.TestCase):
             ):
                 _copy_prepared_file(source, destination, "0" * 64, "story index")
             destination.unlink()
-            from shutil import copyfile
+            copyfile = pack_module.copy_regular_file
 
             for target in (source, destination):
                 with self.subTest(changed=target):
@@ -457,7 +612,7 @@ class OfflinePackPublisherTest(unittest.TestCase):
 
                     with (
                         patch(
-                            "vntts.pregeneration_pack.shutil.copyfile",
+                            "vntts.pregeneration_pack.copy_regular_file",
                             side_effect=copy_then_change,
                         ),
                         self.assertRaisesRegex(OfflinePackError, "source changed"),
