@@ -1,62 +1,20 @@
-import builtins
 import json
 import os
 import shutil
 import stat
 import unittest
-from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import tests.test_workspace_input_admission as admission
 from tests.symlink_support import symlink_or_skip
 from vntts.assets import VoicePackManager
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
 
 
 class AssetInputAdmissionTest(unittest.TestCase):
-    @contextmanager
-    def _swapped_file(self, path):
-        payload = path.read_bytes()
-        native_open, plain_open, path_open = os.open, builtins.open, Path.open
-        descriptors = []
-
-        def swap_and_open(candidate, flags, mode=0o777, *, dir_fd=None):
-            if Path(candidate) == path:
-                self.assertTrue(flags & os.O_NONBLOCK)
-                path.unlink()
-                os.mkfifo(path)
-            descriptor = native_open(candidate, flags, mode, dir_fd=dir_fd)
-            if Path(candidate) == path:
-                descriptors.append(descriptor)
-            return descriptor
-
-        def guard_open(candidate, *args, **kwargs):
-            if isinstance(candidate, (str, os.PathLike)) and Path(candidate) == path:
-                if kwargs.get("opener") is None:
-                    self.fail("input must be admitted before opening")
-            return plain_open(candidate, *args, **kwargs)
-
-        def guard_path_open(candidate, *args, **kwargs):
-            if Path(candidate) == path:
-                self.fail("input must not use blocking Path.open")
-            return path_open(candidate, *args, **kwargs)
-
-        try:
-            with (
-                patch("vntts.path_safety.os.open", side_effect=swap_and_open),
-                patch("builtins.open", side_effect=guard_open),
-                patch.object(Path, "open", guard_path_open),
-            ):
-                yield
-            self.assertEqual(len(descriptors), 1)
-            with self.assertRaises(OSError):
-                os.fstat(descriptors[0])
-        finally:
-            path.unlink(missing_ok=True)
-            path.write_bytes(payload)
-
     @unittest.skipUnless(
         hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
     )
@@ -94,7 +52,10 @@ class AssetInputAdmissionTest(unittest.TestCase):
                     invoke = partial(manager.import_pack, source, pack_name="custom")
                 path = source if phase == "pack manifest" else reference
                 error_type = VoiceManifestError if phase == "pack manifest" else OSError
-                with self._swapped_file(path):
+                gate = {"path": path, "armed": True}
+                with admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                    self, gate
+                ):
                     with self.assertRaisesRegex(error_type, "regular file"):
                         invoke()
                 self.assertEqual((manifest.read_bytes(), checksum.read_bytes()), prior)
