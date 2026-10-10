@@ -79,9 +79,8 @@ def publish_single_base_successor(
     error_type: type[Exception],
 ) -> None:
     """Publish one immutable successor while its source authority is stable."""
-    from durable_file import sha256_file
-
     from vntts.authoring.generation_lease import process_is_alive
+    from vntts.document_identity import file_sha256
 
     output = base_directory / "generated-audio"
     with generation_publication_leases(
@@ -90,7 +89,7 @@ def publish_single_base_successor(
         if any(output.rglob("*.partial.wav")):
             raise error_type(f"{label} base became active")
         for path, digest in snapshots:
-            if not path.is_file() or sha256_file(path) != digest:
+            if not path.is_file() or file_sha256(path, error_type=OSError) != digest:
                 raise error_type(f"{label} authority changed before publication")
         leases[0].assert_owned()
         try:

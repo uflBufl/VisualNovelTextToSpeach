@@ -10,6 +10,8 @@ from unittest.mock import patch
 from tests.pregeneration_fixtures import clean_wav_bytes
 from vntts import assets, document_identity, speech_backend_runtime
 from vntts.authoring import managed_model_installation as managed
+from vntts.authoring import publication
+from vntts.authoring.generation_lease import GenerationLease
 from vntts.voices import CharacterVoiceRegistry
 
 
@@ -78,6 +80,50 @@ class ChecksumAdmissionTest(unittest.TestCase):
         finally:
             path.unlink(missing_ok=True)
             path.write_bytes(payload)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_successor_snapshot_acquisition_refuses_publication_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            base = root / "base"
+            output = base / "generated-audio"
+            output.mkdir(parents=True)
+            path = base / "workspace.json"
+            path.write_bytes(b"original authority")
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            staging = root / "staging"
+            staging.mkdir()
+            (staging / "result").write_bytes(b"successor")
+            destination = root / "published"
+            publish = partial(
+                publication.publish_single_base_successor,
+                staging,
+                destination,
+                base,
+                "0" * 64,
+                [(path, digest)],
+                label="Test",
+                publish_label="test",
+                error_type=ValueError,
+            )
+            with (
+                patch.object(GenerationLease, "mark_committed") as commit,
+                patch.object(publication, "rename_directory_no_replace") as rename,
+            ):
+                self._assert_fifo_admission(path, publish, OSError)
+                commit.assert_not_called()
+                rename.assert_not_called()
+            self.assertEqual(path.read_bytes(), b"original authority")
+            self.assertTrue(staging.is_dir())
+            self.assertFalse(destination.exists())
+            self.assertFalse((output / ".generation-lease.json").exists())
+            publish()
+            self.assertFalse(staging.exists())
+            self.assertEqual((destination / "result").read_bytes(), b"successor")
+            self.assertEqual(path.read_bytes(), b"original authority")
+            self.assertFalse((output / ".generation-lease.json").exists())
 
     @unittest.skipUnless(
         hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
