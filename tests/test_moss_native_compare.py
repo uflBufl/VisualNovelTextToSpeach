@@ -11,10 +11,12 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from typing import ClassVar
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from scripts import moss_native_compare as compare
 from scripts import moss_native_pause_probe as probe
+from tests import test_workspace_input_admission as admission
+from tests.authoring_fixtures import tree_hashes
 from tests.native_moss_fixtures import FakeNativeBackend as _FakeBackend
 from tests.pregeneration_fixtures import clean_wav_bytes
 from vntts.services.tts_engine import TTSConfigurationError
@@ -342,6 +344,95 @@ class MossNativeCompareTest(unittest.TestCase):
             settings_loader=lambda: SimpleNamespace(tts_model=None),
         )
         return compare.run(options, probe_runner=runner, path_check=self._path_check)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_snapshot_refusal_retains_failure_report_and_recovers(self):
+        for saved in (False, True):
+            with self.subTest(saved=saved), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                options = self._options(root)
+                reference = options.reference
+                registry = CharacterVoiceRegistry(
+                    [CharacterVoice("Narrator", "saved", reference)]
+                )
+                settings = AppSettings(tts_model=str(options.model))
+                if saved:
+                    options.reference = None
+                library = VoiceLibrary(root / "library")
+                before = tree_hashes(root)
+                original = compare.copy_regular_file
+                refused = []
+
+                def copy(source, snapshot):
+                    gate = {"path": reference, "armed": True}
+                    with (
+                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                            self, gate
+                        ),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original(source, snapshot)
+                    self.assertFalse(Path(snapshot).exists())
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                runner, paths = Mock(), Mock()
+                with (
+                    patch.object(
+                        probe, "application_voice_library", return_value=library
+                    ),
+                    patch.object(compare, "copy_regular_file", copy),
+                ):
+                    code = compare.run(
+                        options,
+                        probe_runner=runner,
+                        path_check=paths,
+                        settings_loader=lambda: settings,
+                        registry_initializer=lambda *_a, **_k: registry,
+                    )
+                self.assertEqual(code, 1)
+                report = json.loads((options.output / "report.json").read_text())
+                self.assertRegex(report["error"], r"^OSError: .*regular file")
+                self.assertEqual(len(refused), 1)
+                self.assertIn(str(refused[0]), report["error"])
+                self.assertFalse(report["complete"])
+                self.assertFalse(report["all_requests_complete"])
+                self.assertEqual(report["runs"], [])
+                runner.assert_not_called()
+                paths.assert_not_called()
+                self.assertEqual(
+                    {key: tree_hashes(root)[key] for key in before}, before
+                )
+                failed_archive = options.output.with_suffix(".zip")
+                failed_payload = failed_archive.read_bytes()
+                with zipfile.ZipFile(failed_archive) as archive:
+                    self.assertEqual(json.loads(archive.read("report.json")), report)
+                    self.assertNotIn("reference-input.wav", archive.namelist())
+                options.output = root / "recovered"
+                _FakeBackend.instances.clear()
+                with patch.object(
+                    probe, "application_voice_library", return_value=library
+                ):
+                    recovered = compare.run(
+                        options,
+                        probe_runner=partial(
+                            probe.run,
+                            backend_factory=_FakeBackend,
+                            path_check=self._path_check,
+                        ),
+                        path_check=self._path_check,
+                        settings_loader=lambda: settings,
+                        registry_initializer=lambda *_a, **_k: registry,
+                    )
+                self.assertEqual(recovered, 0)
+                self.assertEqual(len(_FakeBackend.instances), 4)
+                self.assertEqual(
+                    (options.output / "reference-input.wav").read_bytes(),
+                    reference.read_bytes(),
+                )
+                self.assertEqual(failed_archive.read_bytes(), failed_payload)
 
     def test_abba_uses_four_fresh_cacheless_stable_runs_and_archives_wavs(self):
         with TemporaryDirectory() as temporary:

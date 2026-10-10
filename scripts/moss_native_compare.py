@@ -2,7 +2,6 @@
 
 import argparse
 import math
-import shutil
 import subprocess
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
@@ -14,6 +13,7 @@ from scripts import moss_native_pause_probe as probe
 from vntts.json_types import decode_json
 from vntts.moss_cpp_backend import MossCppVoiceRouterBackend, moss_cpp_paths
 from vntts.moss_cpp_installation import _extract_runtime
+from vntts.path_safety import copy_regular_file
 from vntts.runtime_config import initialize_voice_registry
 from vntts.settings import AppSettings, load_app_settings
 
@@ -523,7 +523,7 @@ def run(
         )
         report["reference"] = _identity(reference)
         snapshot = output / "reference-input.wav"
-        shutil.copyfile(reference, snapshot)
+        copy_regular_file(reference, snapshot)
         if probe._sha256(snapshot) != report["reference"]["sha256"]:
             raise ValueError("Reference changed while copying")
         preflight = probe.analyze_reference(snapshot)
