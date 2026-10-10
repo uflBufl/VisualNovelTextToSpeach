@@ -30,6 +30,7 @@ from vntts.authoring.publication import (
     staged_directory,
 )
 from vntts.authoring.workspace_foundation import contained_regular_file
+from vntts.path_safety import copy_regular_file
 
 AUDIO_EVENT_COMPOSITION_SCHEMA = "vntts.authoring-audio-event-composition"
 AUDIO_EVENT_COMPOSITION_VERSION = 1
@@ -514,7 +515,7 @@ def _copy_review_snapshot(source: Path, target: Path) -> None:
             destination.mkdir(parents=True, exist_ok=True)
         elif path.is_file():
             destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(path.read_bytes())
+            copy_regular_file(path, destination)
 
 
 def _safe_directory(value: str | Path, label: str) -> Path:

@@ -1,13 +1,17 @@
 import io
 import json
+import os
+import stat
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import tests.test_workspace_input_admission as admission
 import vntts.authoring.audio_event_composition as composition_module
 from tests.authoring_fixtures import publish_audio_event_review_fixture as publish
+from tests.authoring_fixtures import tree_hashes
 from vntts.authoring.audio_event_composition import (
     AudioEventCompositionError,
     load_audio_event_composition,
@@ -20,6 +24,64 @@ from vntts.authoring.cli import main as authoring_main
 
 
 class AudioEventCompositionTest(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_review_copy_acquisition_refuses_fifo_cleans_up_and_recovers(self):
+        for role in ("queue", "audio"):
+            with self.subTest(role=role), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                review, _queue, _source = publish(root)
+                record_audio_event_review_decision(review.directory, "accept")
+                selected = (
+                    review.directory / "queue.jsonl"
+                    if role == "queue"
+                    else review.audio
+                )
+                selected.chmod(0o444)
+                before = tree_hashes(root)
+                output = root / "composition"
+                original = composition_module.copy_regular_file
+                refused = []
+
+                def copy(source, target, **options):
+                    if Path(source) != selected:
+                        return original(source, target, **options)
+                    self.assertEqual(options, {})
+                    gate = {"path": selected, "armed": True}
+                    with (
+                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                            self, gate
+                        ),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original(source, target, **options)
+                    self.assertFalse(Path(target).exists())
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                with (
+                    patch.object(composition_module, "copy_regular_file", copy),
+                    self.assertRaisesRegex(OSError, "regular file") as caught,
+                ):
+                    publish_audio_event_composition(review.directory, output)
+                self.assertEqual(len(refused), 1)
+                self.assertIs(caught.exception, refused[0])
+                self.assertFalse(output.exists())
+                self.assertFalse(list(root.glob(".composition.staging-*")))
+                self.assertEqual(tree_hashes(root), before)
+                recovered = publish_audio_event_composition(review.directory, output)
+                copied = output / "review" / selected.relative_to(review.directory)
+                self.assertEqual(copied.read_bytes(), selected.read_bytes())
+                self.assertTrue(stat.S_IMODE(copied.stat().st_mode) & stat.S_IWUSR)
+                self.assertEqual(
+                    recovered.audio.read_bytes(), review.audio.read_bytes()
+                )
+                self.assertEqual(recovered.audio_sha256, review.audio_sha256)
+                self.assertFalse(
+                    publish_audio_event_composition(review.directory, output).created
+                )
+
     def test_final_audio_metadata_decodes_the_captured_bytes(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
