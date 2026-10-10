@@ -1,5 +1,7 @@
 import json
 import os
+import shutil
+import stat
 import subprocess
 import sys
 import unittest
@@ -8,7 +10,10 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from tests import test_workspace_input_admission as admission
+from tests.authoring_fixtures import tree_hashes
 from tests.symlink_support import symlink_or_skip
+from vntts import release_runtime as runtime_module
 from vntts.release_runtime import (
     PROBE_MODULES,
     QWEN_PROBE_MODULES,
@@ -26,6 +31,140 @@ from vntts.release_runtime import (
 
 
 class ReleaseRuntimeTest(unittest.TestCase):
+    def _relocation_fixture(self, root):
+        runtimes = root / "speech-runtimes"
+        managed = runtimes / "_python/cpython/bin/python3.14"
+        module = runtimes / "pocket-tts/lib/python3.14/site-packages/example.py"
+        for path, payload, mode in (
+            (managed, b"interpreter", 0o755),
+            (module, b"module", 0o644),
+        ):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(payload)
+            path.chmod(mode)
+            os.utime(path, ns=(1_600_000_000_000_000_000,) * 2)
+        interpreter = runtimes / "pocket-tts/bin/python"
+        interpreter.parent.mkdir()
+        symlink_or_skip(interpreter, Path("../../_python/cpython/bin/python3.14"))
+        return runtimes, managed, module
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_relocation_refuses_member_acquisition_cleans_up_and_recovers(self):
+        for phase in ("interpreter", "module"):
+            with self.subTest(phase=phase), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                runtimes, managed, module = self._relocation_fixture(root)
+                source = managed if phase == "interpreter" else module
+                before = tree_hashes(runtimes)
+                original_copy = runtime_module.copy_regular_file
+                refused = []
+                targets = []
+
+                def copy(original, target, **options):
+                    target = Path(target)
+                    targets.append(target)
+                    if Path(original) != source:
+                        return original_copy(original, target, **options)
+                    gate = {"path": source, "armed": True}
+                    with (
+                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                            self, gate
+                        ),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original_copy(original, target, **options)
+                    self.assertFalse(target.exists())
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                runner = Mock()
+                with (
+                    patch.object(runtime_module, "copy_regular_file", copy),
+                    self.assertRaises(shutil.Error) as caught,
+                ):
+                    _probe_relocated_runtime(
+                        runtimes, platform_name="darwin", run=runner
+                    )
+                self.assertEqual(len(refused), 1)
+                self.assertEqual(len(caught.exception.args[0]), 1)
+                original, target, message = caught.exception.args[0][0]
+                self.assertEqual(Path(original), source)
+                self.assertIn(Path(target), targets)
+                self.assertIn("regular file", message)
+                self.assertTrue(targets)
+                for destination in targets:
+                    relocated = next(
+                        parent
+                        for parent in destination.parents
+                        if parent.name == "speech-runtimes"
+                    )
+                    self.assertFalse(relocated.parent.exists())
+                runner.assert_not_called()
+                self.assertEqual(tree_hashes(runtimes), before)
+                self._assert_relocation_metadata_and_provenance(runtimes)
+                self.assertEqual(tree_hashes(runtimes), before)
+
+    def _assert_relocation_metadata_and_provenance(self, runtimes):
+        def runner(command, **options):
+            interpreter = Path(command[0])
+            relocated = interpreter.parents[2]
+            runtime = relocated / "pocket-tts"
+            self.assertEqual(command[1:4], ["-I", "-B", "-c"])
+            self.assertTrue(options["check"])
+            for original in runtimes.rglob("*"):
+                copied = relocated / original.relative_to(runtimes)
+                if original.is_symlink():
+                    self.assertTrue(copied.is_symlink())
+                    self.assertEqual(os.readlink(copied), os.readlink(original))
+                else:
+                    self.assertEqual(
+                        copied.stat().st_mtime_ns, original.stat().st_mtime_ns
+                    )
+                    if os.name != "nt":
+                        self.assertEqual(
+                            stat.S_IMODE(copied.stat().st_mode),
+                            stat.S_IMODE(original.stat().st_mode),
+                        )
+                    if original.is_file():
+                        self.assertEqual(copied.read_bytes(), original.read_bytes())
+            self.assertTrue(interpreter.resolve().is_file())
+            return SimpleNamespace(
+                stdout=json.dumps(
+                    {
+                        "executable": str(interpreter),
+                        "prefix": str(runtime),
+                        "base_prefix": str(relocated / "_python/cpython"),
+                        "modules": {
+                            "example": str(
+                                runtime / "lib/python3.14/site-packages/example.py"
+                            )
+                        },
+                    }
+                )
+            )
+
+        report = _probe_relocated_runtime(
+            runtimes,
+            platform_name="darwin",
+            run=runner,
+            probe_modules=("example",),
+        )
+        self.assertEqual(set(report["modules"]), {"example"})
+        self.assertFalse(Path(report["prefix"]).parent.parent.exists())
+
+    def test_relocation_preserves_tree_metadata_and_symlinks(self):
+        with TemporaryDirectory() as directory:
+            runtimes, _managed, module = self._relocation_fixture(Path(directory))
+            symlink_or_skip(
+                runtimes / "site-alias", module.parent, target_is_directory=True
+            )
+            symlink_or_skip(runtimes / "missing-library", Path("absent-library"))
+            module.parent.chmod(0o750)
+            os.utime(module.parent, ns=(1_600_000_000_000_000_000,) * 2)
+            self._assert_relocation_metadata_and_provenance(runtimes)
+
     def test_staging_rejects_aliased_destination_before_removing_files(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -9,11 +9,13 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
+from functools import partial
 from pathlib import Path
 
 from durable_file import sha256_file
 
 from vntts.cleanup import temporary_directory
+from vntts.path_safety import copy_regular_file
 
 BACKEND = "pocket-tts"
 PYTHON_VERSION = "3.14"
@@ -251,7 +253,12 @@ def _probe_relocated_runtime(
 ) -> dict[str, object]:
     with temporary_directory(prefix="vntts-runtime-relocation-") as directory:
         relocated = Path(directory) / "speech-runtimes"
-        shutil.copytree(speech_runtimes, relocated, symlinks=True)
+        shutil.copytree(
+            speech_runtimes,
+            relocated,
+            symlinks=True,
+            copy_function=partial(copy_regular_file, preserve_metadata=True),
+        )
         runtime_root = relocated / backend
         interpreter = _runtime_interpreter(runtime_root, platform_name)
         completed = _run_checked(
