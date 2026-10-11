@@ -4,6 +4,8 @@
 
 - [ ] Qualify admitted SHA readers and direct/recursive/runtime copy behavior on Windows, including native metadata/alternate streams, DLL/junction handling and executable behavior. Local Mac output identities, metadata, relocated interpreter provenance and warm-cache throughput passed; cold-disk/network throughput and native model generation remain unmeasured.
 
+- [ ] On Windows, validate admitted bounded WAV/PCM decoding, cancellable MOSS model hashing, optional reference duration and native log diagnostics. Exercise registered and legacy inline MOSS references, unchanged-reference cache reuse, cancellation/retry and decoder/source cleanup using real files; Mac descriptor and loopback tests do not certify Windows virtual I/O or actual model generation.
+
 ## Coordinate source-audio producer numeric admission
 
 - [ ] In `reverse1999-extractor`, qualify and fix `SourceAudioDurationProbe.probe` optional decoder ratio overflow: positive unbounded `playSamples=10**400` and `sampleRate=1` raise outside its tolerant exception tuple. Add `OverflowError` to that boundary, test overflowing and finite huge ratios, and release/pin only through the separately authorized cross-repository workflow; the current VNTTS consumer repair does not fix the pinned producer.
