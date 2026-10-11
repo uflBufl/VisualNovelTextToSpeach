@@ -4,11 +4,6 @@
 
 - [ ] Qualify admitted SHA readers and direct/recursive/runtime copy behavior on Windows, including native metadata/alternate streams, DLL/junction handling and executable behavior. Local Mac output identities, metadata, relocated interpreter provenance and warm-cache throughput passed; cold-disk/network throughput and native model generation remain unmeasured.
 
-## Continue captured-input admission
-
-- [ ] Finish qualification of the 83 raw full-byte acquisitions migrated to `path_safety.read_regular_bytes`: two verified queue/story seeds plus 81 expansions across initial payloads, final comparisons, owned staging, media/UI, runtime recipes and lease recovery. Preserve each caller's bytes/hash/parser/error/publication phases; finish local-first tests, representative old-primitive counterproofs, semantic rescan and fresh-main validation. Native source restoration must happen before owner cleanup.
-- [ ] Consolidate the 35 already-admitted whole-byte `open_regular_binary`/`read()` contexts through the verified raw capture helper where their exact context shape permits it. Preserve wrappers, prechecks, bytes/digest/error phases and actual acquisition hooks; exclude bounded/text/copy/hash/inode-policy streams. Requalify stream-failure/count controls and rerun local-first/fresh-main gates before closing.
-
 ## Coordinate source-audio producer numeric admission
 
 - [ ] In `reverse1999-extractor`, qualify and fix `SourceAudioDurationProbe.probe` optional decoder ratio overflow: positive unbounded `playSamples=10**400` and `sampleRate=1` raise outside its tolerant exception tuple. Add `OverflowError` to that boundary, test overflowing and finite huge ratios, and release/pin only through the separately authorized cross-repository workflow; the current VNTTS consumer repair does not fix the pinned producer.
