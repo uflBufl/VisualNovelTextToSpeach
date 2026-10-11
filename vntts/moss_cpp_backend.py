@@ -33,6 +33,7 @@ import soundfile as sf
 from vntts.audio_output import AudioOutput
 from vntts.cleanup import attempt_cleanup, cleanup_on_exit
 from vntts.native_resources import NativeResourceSampler, NativeResourceSnapshot
+from vntts.path_safety import open_regular_binary
 from vntts.playback import PreparedPlayback
 from vntts.services.tts_engine import (
     TTSConfigurationError,
@@ -569,15 +570,19 @@ def _managed_runtime(model_name: object | None) -> bool:
     )
 
 
+def _read_native_log_tail(path: str | Path, offset: int = 0) -> tuple[str, bool]:
+    with open_regular_binary(path) as log:
+        log.seek(0, os.SEEK_END)
+        complete_log = log.tell() - offset <= 64 * 1024
+        log.seek(max(offset, log.tell() - 64 * 1024))
+        return log.read(64 * 1024).decode("utf-8", errors="replace"), complete_log
+
 def _startup_failure_category(path: str | Path | None) -> str | None:
     """Read the native machine-readable startup category, never free-form logs."""
     if path is None:
         return None
     try:
-        with open(path, "rb") as log:
-            log.seek(0, os.SEEK_END)
-            log.seek(max(0, log.tell() - 64 * 1024))
-            output = log.read(64 * 1024).decode("utf-8", errors="replace")
+        output, _ = _read_native_log_tail(path)
     except OSError:
         return None
     for line in reversed(output.splitlines()):
@@ -637,11 +642,7 @@ def _native_stage_timings(
     complete_log = False
     if path is not None:
         try:
-            with open(path, "rb") as log:
-                log.seek(0, os.SEEK_END)
-                complete_log = log.tell() - offset <= 64 * 1024
-                log.seek(max(offset, log.tell() - 64 * 1024))
-                output = log.read(64 * 1024).decode("utf-8", errors="replace")
+            output, complete_log = _read_native_log_tail(path, offset)
         except OSError:
             pass
 
@@ -1144,10 +1145,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             if self.server_log is None:
                 output = ""
             else:
-                with open(self.server_log.name, "rb") as log:
-                    log.seek(0, os.SEEK_END)
-                    log.seek(max(0, log.tell() - 64 * 1024))
-                    output = log.read(64 * 1024).decode("utf-8", errors="replace")
+                output, _ = _read_native_log_tail(self.server_log.name)
         offload = re.search(r"offloaded (\d+)/(\d+) layers to GPU", output)
         device = re.search(r"using device (\S+) \(([^\r\n]+?)\)", output)
         if device:

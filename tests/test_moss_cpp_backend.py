@@ -21,6 +21,7 @@ import psutil
 import soundfile as sf
 
 from scripts import moss_native_pause_probe as native_probe
+from tests import test_workspace_input_admission as admission
 from vntts.moss_cpp_backend import (
     MossCppVoiceRouterBackend,
     _aux_cpu_workers,
@@ -28,6 +29,8 @@ from vntts.moss_cpp_backend import (
     _launch_owned_process,
     _native_stage_timings,
     _normalize_reference_audio,
+    _read_native_log_tail,
+    _startup_failure_category,
     moss_cpp_paths,
 )
 from vntts.onboarding import OnboardingDiagnostics
@@ -1451,6 +1454,67 @@ class MossCppBackendTest(unittest.TestCase):
             "generation-failed",
         )
         self.assertIsNone(backend.server_directory)
+
+    def test_native_log_tail_keeps_bounds_offsets_and_writer_position(self):
+        path = self.root / "native.log"
+        payload = b"x" * (65 * 1024) + b"\nlast line\xff"
+        path.write_bytes(payload)
+        with path.open("r+b") as writer:
+            writer.seek(7)
+            output, complete = _read_native_log_tail(path)
+            self.assertEqual(output, payload[-64 * 1024 :].decode("utf-8", "replace"))
+            self.assertFalse(complete)
+            self.assertEqual(writer.tell(), 7)
+            offset = len(payload) - len(b"last line\xff")
+            self.assertEqual(
+                _read_native_log_tail(path, offset), ("last line\ufffd", True)
+            )
+            self.assertEqual(_read_native_log_tail(path, len(payload)), ("", True))
+            self.assertEqual(writer.tell(), 7)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_native_log_readers_refuse_swapped_fifo_and_recover(self):
+        path = self.root / "native.log"
+        payload = (
+            b'VNTTS_STARTUP_FAILURE_JSON={"category":"local_gpu"}\n'
+            b"[generate] generated 2 steps in 1.50s\n"
+        )
+        path.write_bytes(payload)
+        readers = (
+            lambda: _startup_failure_category(path),
+            lambda: _native_stage_timings(path, 0, {}, 600)["gen_s"],
+        )
+        for read, expected in zip(readers, ("local_gpu", 1.5), strict=True):
+            with self.subTest(reader=read):
+                gate = {"path": path, "armed": True}
+                with admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                    self, gate
+                ):
+                    self.assertIsNone(read())
+                self.assertEqual(read(), expected)
+        gate = {"path": path, "armed": True}
+        with (
+            admission.WorkspaceInputAdmissionTest.swap_at_acquisition(self, gate),
+            self.assertRaisesRegex(OSError, "regular file"),
+        ):
+            _read_native_log_tail(path)
+        self.assertIn("generated 2 steps", _read_native_log_tail(path)[0])
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_runtime_placement_keeps_raw_log_refusal_and_recovers(self):
+        backend = self.backend()
+        path = Path(backend.server_log.name)
+        gate = {"path": path, "armed": True}
+        with (
+            admission.WorkspaceInputAdmissionTest.swap_at_acquisition(self, gate),
+            self.assertRaisesRegex(OSError, "regular file"),
+        ):
+            backend._confirmed_runtime_status()
+        self.assertIn("MOSS C++", backend._confirmed_runtime_status())
 
     def test_native_timing_parser_bounds_log_and_rejects_invalid_measurements(self):
         log = self.root / "native.log"
