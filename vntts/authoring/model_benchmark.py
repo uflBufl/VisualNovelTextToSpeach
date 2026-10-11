@@ -48,7 +48,7 @@ from vntts.document_identity import (
 )
 from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
-from vntts.path_safety import open_regular_binary, read_regular_bytes
+from vntts.path_safety import read_regular_bytes
 from vntts.settings import get_local_data_directory
 from vntts.speech_backend_contract import RenderableBackend, is_renderable_backend
 from vntts.speech_backend_runtime import shutdown_speech_backend
@@ -857,8 +857,7 @@ def _render_benchmark_sample(
         _mono_pcm(result.pcm),
         result.sample_rate,
     )
-    with open_regular_binary(staged_audio_path) as source:
-        payload = source.read()
+    payload = read_regular_bytes(staged_audio_path)
     samples, info = read_pcm16_mono_wav(io.BytesIO(payload))
     speech_quality = measure_generated_speech_samples(
         samples,

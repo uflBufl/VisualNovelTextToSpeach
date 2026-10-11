@@ -47,7 +47,7 @@ from vntts.authoring.workbench import (
 from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.document_identity import file_sha256, is_lowercase_sha256
 from vntts.json_types import decode_json, is_json_object
-from vntts.path_safety import copy_regular_file, open_regular_binary
+from vntts.path_safety import copy_regular_file, open_regular_binary, read_regular_bytes
 from vntts.reference_quality import ReferenceQualityReport, analyze_reference_bytes
 from vntts.voices import load_voice_manifest
 
@@ -312,8 +312,7 @@ def _load_audit_publication_source(workspace: Path) -> _AuditPublicationSource:
         ("state", state_path),
         ("voice_manifest", manifest_path),
     ):
-        with open_regular_binary(path) as source:
-            snapshots[label] = source.read()
+        snapshots[label] = read_regular_bytes(path)
     try:
         queue = VoiceGenerationQueue.load(queue_path)
         _manifest, voices = load_voice_manifest(manifest_path, allow_legacy=False)
@@ -526,8 +525,7 @@ def _reference_candidate(manifest_path: Path, reference: Path) -> _ReferenceCand
         ) from error
     if not source.is_file() or source.is_symlink():
         raise FailureReferenceAuditError(f"Reference is missing or unsafe: {reference}")
-    with open_regular_binary(source) as stream:
-        payload = stream.read()
+    payload = read_regular_bytes(source)
     analysis: ReferenceQualityReport | None
     try:
         analysis = analyze_reference_bytes(payload, path=source)
@@ -655,8 +653,7 @@ def _assert_audit_publication_sources_unchanged(
         ("state", source.state_path),
         ("voice_manifest", source.manifest_path),
     ):
-        with open_regular_binary(path) as stream:
-            payload = stream.read()
+        payload = read_regular_bytes(path)
         if payload != source.snapshots[label]:
             raise FailureReferenceAuditError(
                 f"Reference audit {label} changed during publication"
@@ -1130,8 +1127,7 @@ def _prepare_failure_reference_audio(
             f"Reference audit candidate is unknown: {candidate_id}"
         )
     path = _contained_regular_file(audit.directory, candidate["audio"])
-    with open_regular_binary(path) as source:
-        payload = source.read()
+    payload = read_regular_bytes(path)
     digest = hashlib.sha256(payload).hexdigest()
     if digest != candidate["sha256"]:
         raise FailureReferenceAuditError("Reference audit audio changed")

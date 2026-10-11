@@ -14,6 +14,7 @@ from vntts.path_safety import (
     contained_path,
     contained_regular_file,
     open_regular_binary,
+    read_regular_bytes,
     safe_relative_path,
 )
 
@@ -29,8 +30,7 @@ def read_regular_file(
     if path.is_symlink() or not path.is_file():
         raise error_type(f"{label.capitalize()} is missing or unsafe")
     try:
-        with open_regular_binary(path) as source:
-            return source.read()
+        return read_regular_bytes(path)
     except OSError as error:
         raise error_type(f"Unable to read {label}: {error}") from error
 
@@ -64,8 +64,7 @@ def load_json_object_snapshot(
 ) -> tuple[dict[str, object], str, bytes]:
     """Read and decode one JSON object while retaining exact payload identity."""
     try:
-        with open_regular_binary(Path(path)) as source:
-            payload = source.read()
+        payload = read_regular_bytes(Path(path))
     except OSError as error:
         raise error_type(f"Unable to read {description} {path}: {error}") from error
     digest = hashlib.sha256(payload).hexdigest()

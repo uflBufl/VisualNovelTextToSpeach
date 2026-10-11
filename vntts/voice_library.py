@@ -29,8 +29,8 @@ from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import decode_json
 from vntts.path_safety import (
     copy_regular_file,
-    open_regular_binary,
     open_regular_candidate,
+    read_regular_bytes,
 )
 
 VOICE_LIBRARY_VERSION = 3
@@ -644,8 +644,7 @@ class VoiceLibrary:
         path = self._blob_path(checksum)
         if path.is_symlink() or not path.is_file():
             raise VoiceLibraryError(f"Voice blob is missing or unsafe: {checksum}")
-        with open_regular_binary(path) as source:
-            payload = source.read()
+        payload = read_regular_bytes(path)
         if hashlib.sha256(payload).hexdigest() != checksum:
             raise VoiceLibraryError(f"Voice blob checksum failed: {checksum}")
         try:

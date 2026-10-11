@@ -41,7 +41,7 @@ from vntts.authoring.publication import (
 from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.document_identity import is_lowercase_sha256, sha256_file
 from vntts.json_types import decode_json
-from vntts.path_safety import open_regular_binary
+from vntts.path_safety import read_regular_bytes
 
 SILENCE_COMPARISON_SCHEMA = "vntts.authoring-silence-comparison"
 SILENCE_COMPARISON_VERSION = 1
@@ -100,8 +100,7 @@ def _read_silence_comparison_input_plan(
         raise SilenceComparisonError("Silence comparison input plan is a symlink")
     source = source.resolve()
     try:
-        with open_regular_binary(source) as stream:
-            payload = stream.read()
+        payload = read_regular_bytes(source)
         document = decode_json(payload)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SilenceComparisonError(
@@ -995,8 +994,7 @@ def _read_source_wav(
         raise SilenceComparisonError(f"{label.title()} must not be a symlink")
     source = source.resolve()
     try:
-        with open_regular_binary(source) as stream:
-            payload = stream.read()
+        payload = read_regular_bytes(source)
         with wave.open(io.BytesIO(payload), "rb") as wav:
             if (
                 wav.getcomptype() != "NONE"

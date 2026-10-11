@@ -31,7 +31,7 @@ from vntts_artifacts.voice_manifest import (
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.document_identity import canonical_document_sha256
 from vntts.json_types import decode_json
-from vntts.path_safety import open_regular_binary, read_regular_bytes
+from vntts.path_safety import read_regular_bytes
 from vntts.voices import pocket_tts_preset_voices
 
 
@@ -451,8 +451,7 @@ def validate_success_file_with_samples(
     if not audio.is_file():
         raise BulkGenerationError(f"Generated WAV is missing for {queue_id!r}: {audio}")
     try:
-        with open_regular_binary(audio) as source:
-            payload = source.read()
+        payload = read_regular_bytes(audio)
     except OSError as error:
         raise BulkGenerationError(
             f"Generated output is not a readable PCM16 mono WAV: {error}"

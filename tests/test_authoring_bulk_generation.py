@@ -4,7 +4,7 @@ import os
 import socket
 import unittest
 import wave
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -747,32 +747,28 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             result.state.write_bytes(foreign)
             load_generation_state(result.state, queue)
             result.state.write_bytes(original)
-            original_open = foundation_module.open_regular_binary
+            original_read = foundation_module.read_regular_bytes
             for capture, selection in (
                 (generation_review_authority, item["queue_id"]),
                 (generation_review_authorities, [item["queue_id"]]),
             ):
                 captured = False
 
-                @contextmanager
-                def open_replacement(path):
+                def read_replacement(path):
                     nonlocal captured
                     if Path(path) != result.state or captured:
-                        with original_open(path) as source:
-                            yield source
-                        return
+                        return original_read(path)
                     captured = True
                     result.state.write_bytes(foreign)
                     try:
-                        with original_open(path) as source:
-                            yield source
+                        return original_read(path)
                     finally:
                         result.state.write_bytes(original)
 
                 with (
                     self.subTest(capture=capture.__name__),
                     patch.object(
-                        foundation_module, "open_regular_binary", open_replacement
+                        foundation_module, "read_regular_bytes", read_replacement
                     ),
                     self.assertRaisesRegex(
                         BulkGenerationError,

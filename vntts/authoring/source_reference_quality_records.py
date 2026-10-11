@@ -25,7 +25,6 @@ from vntts.json_types import decode_json
 from vntts.path_safety import (
     contained_regular_file,
     copy_regular_file,
-    open_regular_binary,
     read_regular_bytes,
 )
 
@@ -433,8 +432,7 @@ def _copy_audio(
     try:
         destination.parent.mkdir(parents=True, exist_ok=True)
         copy_regular_file(source, destination)
-        with open_regular_binary(destination) as stream:
-            payload = stream.read()
+        payload = read_regular_bytes(destination)
         copied_sha256 = hashlib.sha256(payload).hexdigest()
     except OSError as error:
         raise error_type(f"Unable to copy review WAV {source}: {error}") from error
@@ -514,8 +512,7 @@ def _validate_audio_record(root: Path, value: object, label: str) -> Path:
     path = _contained_file(root, value.get("audio"), f"quality audio {label}")
     digest = _required_sha256(value.get("audio_sha256"), f"quality audio {label} hash")
     try:
-        with open_regular_binary(path) as stream:
-            payload = stream.read()
+        payload = read_regular_bytes(path)
     except OSError as error:
         raise SourceReferenceQualityError(str(error)) from error
     if hashlib.sha256(payload).hexdigest() != digest:

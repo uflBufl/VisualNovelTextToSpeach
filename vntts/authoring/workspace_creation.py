@@ -171,7 +171,7 @@ from vntts.authoring.workspace_voice_runtime import (
 from vntts.document_identity import canonical_document_sha256, file_sha256, sha256_file
 from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
-from vntts.path_safety import copy_regular_file, open_regular_binary
+from vntts.path_safety import copy_regular_file, read_regular_bytes
 from vntts.voices import (
     CharacterVoice,
     CharacterVoiceRegistry,
@@ -1170,8 +1170,7 @@ def _install_audio_event_composition(
     audio = _within(output, relative, "Composed audio-event WAV")
     audio.parent.mkdir(parents=True, exist_ok=True)
     copy_regular_file(composition.audio, audio)
-    with open_regular_binary(audio) as source:
-        payload = source.read()
+    payload = read_regular_bytes(audio)
     if hashlib.sha256(payload).hexdigest() != composition.audio_sha256:
         raise AuthoringWorkbenchError(
             "Audio-event composition changed while copied into its successor"
@@ -2823,8 +2822,7 @@ def _copy_carry_forward_failure_reference_binding(
 
 def _read_source_bytes(path: Path, label: str) -> tuple[bytes, str]:
     try:
-        with open_regular_binary(path) as source:
-            payload = source.read()
+        payload = read_regular_bytes(path)
     except OSError as error:
         raise AuthoringWorkbenchError(
             f"Unable to read {label} {path}: {error}"

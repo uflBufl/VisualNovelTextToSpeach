@@ -23,7 +23,7 @@ from vntts.authoring.failure_repair import (
 )
 from vntts.document_identity import file_sha256, is_lowercase_sha256
 from vntts.json_types import decode_json
-from vntts.path_safety import open_regular_binary
+from vntts.path_safety import read_regular_bytes
 
 SPECIALIST_FAILURE_PLAN_SCHEMA = "vntts.authoring-specialist-failure-plan"
 SPECIALIST_FAILURE_PLAN_VERSION = 1
@@ -436,8 +436,7 @@ def _validate_source_membership(sources: list[object], items: list[JsonObject]) 
 
 def _read(path: str | Path, label: str) -> bytes:
     try:
-        with open_regular_binary(path) as source:
-            return source.read()
+        return read_regular_bytes(path)
     except OSError as error:
         raise CohortReviewError(
             f"Unable to read specialist {label}: {error}"

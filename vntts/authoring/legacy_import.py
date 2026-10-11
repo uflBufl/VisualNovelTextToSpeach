@@ -43,7 +43,7 @@ from vntts.authoring.workspace_foundation import load_json_object
 from vntts.cleanup import temporary_directory
 from vntts.document_identity import canonical_document_sha256, sha256_file
 from vntts.json_types import decode_json
-from vntts.path_safety import copy_regular_file, open_regular_binary, read_regular_bytes
+from vntts.path_safety import copy_regular_file, read_regular_bytes
 
 LEGACY_JOB_SCHEMA = "r1999.pregeneration-job"
 LEGACY_JOB_SCHEMA_VERSION = 1
@@ -994,8 +994,7 @@ def _validate_generated_wav(
         raise LegacyAuthoringImportError(
             f"Generated WAV for {queue_id!r} does not exist: {path}"
         )
-    with open_regular_binary(path) as stream:
-        payload = stream.read()
+    payload = read_regular_bytes(path)
     actual_hash = hashlib.sha256(payload).hexdigest()
     if expected_hash != actual_hash:
         raise LegacyAuthoringImportError(

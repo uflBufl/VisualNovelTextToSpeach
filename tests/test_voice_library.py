@@ -355,8 +355,8 @@ class VoiceLibraryTest(unittest.TestCase):
             with (
                 patch.object(
                     voice_library,
-                    "open_regular_binary",
-                    wraps=voice_library.open_regular_binary,
+                    "read_regular_bytes",
+                    wraps=voice_library.read_regular_bytes,
                 ) as capture,
                 patch.object(
                     voice_library.hashlib, "sha256", wraps=voice_library.hashlib.sha256
@@ -402,7 +402,7 @@ class VoiceLibraryTest(unittest.TestCase):
             library.path.write_text(json.dumps(document))
             index = library.path.read_bytes()
             with (
-                patch.object(voice_library, "open_regular_binary") as capture,
+                patch.object(voice_library, "read_regular_bytes") as capture,
                 patch.object(voice_library.hashlib, "sha256") as hashing,
                 self.assertRaisesRegex(VoiceLibraryError, "not an alternative"),
             ):

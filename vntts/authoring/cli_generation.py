@@ -45,7 +45,7 @@ from vntts.authoring.source_reference_bindings import (
 )
 from vntts.cleanup import temporary_directory
 from vntts.cli import print_json
-from vntts.path_safety import open_regular_binary
+from vntts.path_safety import read_regular_bytes
 from vntts.speech_backend_runtime import shutdown_speech_backend
 from vntts.synthesis import SynthesisCancellation
 from vntts.tts_benchmark import create_backend
@@ -303,8 +303,7 @@ def _load_stable_voice_registry(
 ]:
     manifest_path = Path(manifest_path).expanduser().resolve()
     try:
-        with open_regular_binary(manifest_path) as source:
-            payload = source.read()
+        payload = read_regular_bytes(manifest_path)
     except OSError as error:
         raise BulkGenerationError(
             f"Unable to read voice manifest {manifest_path}: {error}"

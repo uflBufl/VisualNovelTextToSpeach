@@ -51,7 +51,7 @@ from vntts.authoring.workspace_foundation import (
 )
 from vntts.document_identity import is_lowercase_sha256, sha256_file
 from vntts.json_types import decode_json
-from vntts.path_safety import copy_regular_file, open_regular_binary
+from vntts.path_safety import copy_regular_file, open_regular_binary, read_regular_bytes
 from vntts.voices import load_voice_manifest
 
 EXPERIMENTAL_COMPOSITE_VOICE_FIELD = "vntts.authoring.experimental_composite_voices"
@@ -137,8 +137,7 @@ def publish_experimental_composite_voice_input(
     voice_character = _text(voice_character, "Experimental voice character")
 
     try:
-        with open_regular_binary(source_manifest) as source:
-            source_payload = source.read()
+        source_payload = read_regular_bytes(source_manifest)
         source_document = decode_json(source_payload.decode("utf-8"))
         _metadata, source_voices = load_voice_manifest(
             source_manifest, allow_legacy=False

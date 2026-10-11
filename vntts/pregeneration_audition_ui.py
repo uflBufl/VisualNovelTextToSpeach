@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 
 from vntts.async_ui import LatestTaskRunner
 from vntts.document_identity import sha256_file
-from vntts.path_safety import open_regular_binary
+from vntts.path_safety import read_regular_bytes
 from vntts.pregeneration_audition import (
     VoiceAuditionError,
     VoiceAuditionPreviewService,
@@ -98,8 +98,7 @@ class VoiceAuditionUIError(RuntimeError):
 
 
 def _read_verified_audio(path: Path, expected_sha256: str | None) -> bytes:
-    with open_regular_binary(path) as source:
-        payload = source.read()
+    payload = read_regular_bytes(path)
     if sha256(payload).hexdigest() != expected_sha256:
         raise VoiceAuditionUIError("Voice sample changed after validation")
     return payload

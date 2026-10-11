@@ -45,7 +45,7 @@ from vntts.authoring.terminal_conflict_review import (
     validate_terminal_conflict_review_progress_document,
 )
 from vntts.json_types import has_schema_version, is_json_object
-from vntts.path_safety import open_regular_binary
+from vntts.path_safety import read_regular_bytes
 
 TERMINAL_CONFLICT_RESOLUTION_SCHEMA = "vntts.authoring-terminal-conflict-resolution"
 TERMINAL_CONFLICT_RESOLUTION_VERSION = 1
@@ -808,8 +808,7 @@ def _validate_resolution_record_selection(
         )
     selected_audio = _text(record["selected_audio"], "Selected resolution WAV")
     audio = _contained_file(root, selected_audio, "selected WAV")
-    with open_regular_binary(audio) as stream:
-        payload = stream.read()
+    payload = read_regular_bytes(audio)
     if hashlib.sha256(payload).hexdigest() != digest:
         raise TerminalConflictResolutionError("Selected terminal conflict WAV changed")
     try:

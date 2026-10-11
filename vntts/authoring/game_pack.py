@@ -76,7 +76,6 @@ from vntts.document_identity import sha256_file
 from vntts.json_types import decode_json, has_schema_version
 from vntts.path_safety import (
     copy_regular_file,
-    open_regular_binary,
     read_regular_bytes,
     safe_relative_path,
 )
@@ -1318,8 +1317,7 @@ def _project_voice_reference(
 ) -> DecisionRecord:
     destination.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with open_regular_binary(source) as stream:
-            source_payload = stream.read()
+        source_payload = read_regular_bytes(source)
         if hashlib.sha256(source_payload).hexdigest() != source_sha256:
             raise ValueError("voice reference changed before projection")
         samples, sample_rate = sf.read(
@@ -1334,8 +1332,7 @@ def _project_voice_reference(
             format="WAV",
             subtype="PCM_16",
         )
-        with open_regular_binary(destination) as stream:
-            output_payload = stream.read()
+        output_payload = read_regular_bytes(destination)
         info = probe_pcm16_mono_wav(BytesIO(output_payload))
     except Exception as error:
         raise FinalGamePackError(

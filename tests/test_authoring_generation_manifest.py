@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from vntts.authoring import generation_manifest as manifest
 from vntts.authoring.generation_lease import BulkGenerationError
-from vntts.path_safety import open_regular_binary
+from vntts.path_safety import read_regular_bytes
 
 
 def pcm_wav(value=8192, sample_count=2400):
@@ -66,11 +66,17 @@ class GeneratedWavSnapshotTest(unittest.TestCase):
             result = self.result(path)
             original_open = os.open
             descriptors = []
+            refused = []
 
             def swap_before_acquisition(candidate):
+                self.assertEqual(candidate, path)
                 path.unlink()
                 os.mkfifo(path)
-                return open_regular_binary(candidate)
+                try:
+                    return read_regular_bytes(candidate)
+                except OSError as error:
+                    refused.append(error)
+                    raise
 
             def nonblocking_open(candidate, flags, mode=0o777, *, dir_fd=None):
                 self.assertTrue(flags & os.O_NONBLOCK)
@@ -80,12 +86,17 @@ class GeneratedWavSnapshotTest(unittest.TestCase):
 
             with (
                 patch.object(
-                    manifest, "open_regular_binary", side_effect=swap_before_acquisition
-                ),
+                    manifest, "read_regular_bytes", side_effect=swap_before_acquisition
+                ) as capture,
                 patch("vntts.path_safety.os.open", side_effect=nonblocking_open),
             ):
-                with self.assertRaisesRegex(BulkGenerationError, "not a regular file"):
+                with self.assertRaisesRegex(
+                    BulkGenerationError, "not a regular file"
+                ) as caught:
                     manifest.validate_success_file_with_samples("q", result, path)
+            capture.assert_called_once_with(path)
+            self.assertEqual(len(refused), 1)
+            self.assertIs(caught.exception.__cause__, refused[0])
             self.assertEqual(len(descriptors), 1)
             with self.assertRaises(OSError):
                 os.fstat(descriptors[0])

@@ -52,7 +52,7 @@ from vntts.document_identity import (
     sha256_file,
 )
 from vntts.json_types import decode_json
-from vntts.path_safety import open_regular_binary
+from vntts.path_safety import open_regular_binary, read_regular_bytes
 from vntts.pregeneration_voices import VoiceCandidate, VoiceGroup, VoicePlan
 from vntts.reference_quality import analyze_reference
 from vntts.speech_backend_runtime import shutdown_speech_backend
@@ -578,8 +578,7 @@ class VoiceAuditionPreviewService:
             if voice is None or not voice.references:
                 return None
             reference = voice.references[0]
-            with open_regular_binary(reference) as source:
-                payload = source.read()
+            payload = read_regular_bytes(reference)
             if hashlib.sha256(payload).hexdigest() != candidate.reference_sha256s[0]:
                 raise VoiceAuditionError("Original voice anchor changed after planning")
             probe_pcm16_mono_wav(BytesIO(payload))
@@ -956,8 +955,7 @@ def _cached_preview(
     if target.is_symlink():
         raise VoiceAuditionError("Cached voice preview must not be a symbolic link")
     try:
-        with open_regular_binary(target) as source:
-            payload = source.read()
+        payload = read_regular_bytes(target)
         audio_sha256 = hashlib.sha256(payload).hexdigest()
         if expected_audio_sha256 is not None and audio_sha256 != expected_audio_sha256:
             raise VoiceAuditionError("Voice preview changed while it was validated")

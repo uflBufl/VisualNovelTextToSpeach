@@ -60,16 +60,19 @@ class AuthoringAuthorityTest(unittest.TestCase):
                     with self.assertRaisesRegex(error_type, "Test authority changed"):
                         assert_authority_snapshot(snapshot, "test authority", **kwargs)
                     path.write_bytes(b"{}")
+                    primary = PermissionError("denied")
                     with patch(
-                        "vntts.authoring.authority.open_regular_binary",
-                        side_effect=PermissionError("denied"),
-                    ):
+                        "vntts.authoring.authority.read_regular_bytes",
+                        side_effect=primary,
+                    ) as capture:
                         with self.assertRaisesRegex(
                             error_type, "Unable to recheck test authority"
-                        ):
+                        ) as caught:
                             assert_authority_snapshot(
                                 snapshot, "test authority", **kwargs
                             )
+                    capture.assert_called_once_with(snapshot.path)
+                    self.assertIs(caught.exception.__cause__, primary)
 
     def test_temporary_stream_close_keeps_original_publication_failure(self):
         with TemporaryDirectory() as directory:

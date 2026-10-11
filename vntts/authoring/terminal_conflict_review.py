@@ -59,7 +59,7 @@ from vntts.authoring.workbench import (
 )
 from vntts.authoring.workbench_contracts import ReviewItem
 from vntts.json_types import decode_json, has_schema_version, is_json_object
-from vntts.path_safety import open_regular_binary, read_regular_bytes
+from vntts.path_safety import read_regular_bytes
 
 TERMINAL_CONFLICT_REVIEW_SCHEMA = "vntts.authoring-terminal-conflict-review"
 TERMINAL_CONFLICT_REVIEW_VERSION = 1
@@ -472,8 +472,7 @@ def _stable_review_candidates(
                 f"Conflict WAV changed while copied: {queue_id}"
             )
         destination.write_bytes(audio_bytes)
-        with open_regular_binary(destination) as stream:
-            copied_payload = stream.read()
+        copied_payload = read_regular_bytes(destination)
         if hashlib.sha256(copied_payload).hexdigest() != digest:
             raise TerminalConflictReviewError(
                 f"Conflict WAV changed while copied: {queue_id}"
@@ -823,8 +822,7 @@ def _validate_candidate_audio(candidate: object, root: Path, digest: str) -> Non
     if not _is_review_candidate(candidate):
         raise TerminalConflictReviewError("Terminal conflict candidate is malformed")
     audio = _contained_file(root, candidate["audio"], "candidate WAV")
-    with open_regular_binary(audio) as stream:
-        payload = stream.read()
+    payload = read_regular_bytes(audio)
     if hashlib.sha256(payload).hexdigest() != digest:
         raise TerminalConflictReviewError("Terminal conflict WAV changed")
     try:

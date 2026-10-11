@@ -17,7 +17,7 @@ from vntts.json_types import decode_json
 from vntts.path_safety import (
     contained_regular_file,
     no_replace_destination,
-    open_regular_binary,
+    read_regular_bytes,
 )
 
 
@@ -65,8 +65,7 @@ def capture_authority_file(
                 f"{label.capitalize()} leaves its canonical root"
             ) from error
     try:
-        with open_regular_binary(candidate) as source:
-            payload = source.read()
+        payload = read_regular_bytes(candidate)
     except OSError as error:
         raise AuthoringAuthorityError(f"Unable to read {label}: {error}") from error
     if (
@@ -95,8 +94,7 @@ def assert_authority_snapshot(
     if path.is_symlink() or not path.is_file():
         raise error_type(f"{label.capitalize()} changed: {path}")
     try:
-        with open_regular_binary(path) as source:
-            payload = source.read()
+        payload = read_regular_bytes(path)
     except OSError as error:
         raise error_type(f"Unable to recheck {label}: {error}") from error
     if hashlib.sha256(payload).hexdigest() != snapshot.sha256:

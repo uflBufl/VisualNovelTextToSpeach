@@ -43,7 +43,7 @@ from vntts.authoring.cohort_review import (
 from vntts.authoring.speech_quality import optional_finite_number
 from vntts.authoring.workbench import ReviewItem
 from vntts.json_types import decode_json, is_json_object
-from vntts.path_safety import open_regular_binary
+from vntts.path_safety import read_regular_bytes
 
 _canonical_sha256 = canonical_document_sha256
 
@@ -1755,8 +1755,7 @@ def _contained_source_path(root: PathLike, relative: object, label: str) -> Path
 
 def _read_bytes(path: PathLike, label: str) -> bytes:
     try:
-        with open_regular_binary(path) as source:
-            return source.read()
+        return read_regular_bytes(path)
     except OSError as error:
         raise CohortReviewError(f"Unable to read {label} {path}: {error}") from error
 
