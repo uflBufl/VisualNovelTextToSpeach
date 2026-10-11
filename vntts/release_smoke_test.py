@@ -15,6 +15,7 @@ from vntts.ocr import (
     default_minimum_ocr_confidence,
     recognize_dialog_image_result,
 )
+from vntts.path_safety import open_regular_binary
 from vntts.services.tts_engine import TTSEngine
 from vntts.settings import get_local_data_directory
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
@@ -124,7 +125,10 @@ def run_release_smoke_test(
 
         if image_path:
             image_path = Path(image_path).expanduser().resolve()
-            with Image.open(image_path) as screenshot:
+            with (
+                open_regular_binary(image_path) as stream,
+                Image.open(stream) as screenshot,
+            ):
                 image = default_dialog_region.crop(screenshot.convert("RGB"))
             capture_source = str(image_path)
         else:

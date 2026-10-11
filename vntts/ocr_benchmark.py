@@ -15,7 +15,7 @@ from vntts.cli import cli_error, cli_messages
 from vntts.json_types import decode_json, is_json_object
 from vntts.ocr import VoiceRegistry
 from vntts.ocr_backend import OCRBackend, RapidOCRBackend, TesseractOCRBackend
-from vntts.path_safety import read_regular_text
+from vntts.path_safety import open_regular_binary, read_regular_text
 from vntts.settings import get_local_data_directory
 from vntts.voices import CharacterVoiceRegistry, find_default_voice_manifest
 
@@ -148,7 +148,10 @@ def benchmark_ocr(
         expected_text, expected_speaker = _expected_dialog(
             expectations.get(image_path.name), image_path.name
         )
-        with Image.open(image_path) as source:
+        with (
+            open_regular_binary(image_path) as stream,
+            Image.open(stream) as source,
+        ):
             image = source.convert("RGB")
         for _index in range(warmups):
             backend.recognize(
