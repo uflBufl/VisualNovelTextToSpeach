@@ -215,7 +215,7 @@ def _download(
 def _extract_runtime(
     archive: Path, destination: Path, cancellation: Cancellation
 ) -> None:
-    with ZipFile(archive) as source:
+    with open_regular_binary(archive) as stream, ZipFile(stream) as source:
         entries = source.infolist()
         for entry in entries:
             path = PurePosixPath(entry.filename)

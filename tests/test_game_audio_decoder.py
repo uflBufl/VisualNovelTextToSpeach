@@ -5,12 +5,12 @@ import os
 import subprocess
 import sys
 import unittest
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Timer
 from unittest.mock import MagicMock, Mock, call, patch
-from zipfile import ZipFile
+from zipfile import BadZipFile, ZipFile
 
 from tests.authoring_fixtures import tree_hashes
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
@@ -30,6 +30,158 @@ class GameAudioDecoderTest(unittest.TestCase):
         self.directory = TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_runtime_and_licence_zip_refuse_fifo_and_recover(self):
+        for role in ("runtime", "licences"):
+            with self.subTest(role=role), TemporaryDirectory() as directory:
+                root = Path(directory)
+                destination = root / "managed"
+                source = root / "host-decoder"
+                source.write_bytes(b"host")
+                gate: RegularFileGate = {"path": None, "armed": False}
+                opened = decoder.open_regular_binary
+
+                @contextmanager
+                def admitted(path):
+                    if path == gate["path"] and gate["armed"]:
+                        with swap_at_acquisition(self, gate):
+                            with self.assertRaisesRegex(
+                                OSError, "not a regular file"
+                            ) as caught:
+                                with opened(path) as stream:
+                                    yield stream
+                        raise caught.exception
+                    with opened(path) as stream:
+                        yield stream
+
+                def download(_url, _digest, path, *_args):
+                    name = (
+                        "vgmstream-cli"
+                        if role == "runtime"
+                        else f"vgmstream-{decoder.VERSION}/COPYING"
+                    )
+                    path.write_bytes(archive_bytes(name, b"member"))
+                    gate["path"] = path
+                    gate["armed"] = True
+
+                def run():
+                    if role == "runtime":
+                        return decoder._install_managed_decoder(
+                            destination / "vgmstream-cli",
+                            "runtime.zip",
+                            "digest",
+                            lambda _message: None,
+                            None,
+                        )
+                    return decoder.stage_game_decoder(destination)
+
+                with (
+                    patch.object(decoder, "_download", side_effect=download),
+                    patch.object(decoder, "open_regular_binary", admitted),
+                    patch.object(decoder, "probe_game_decoder") as probe,
+                    patch.object(decoder, "ensure_game_decoder", return_value=source),
+                    patch.object(decoder.sys, "platform", "linux"),
+                ):
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    with self.assertRaisesRegex(OSError, "not a regular file"):
+                        run()
+                    probe.assert_not_called()
+                    self.assertFalse((destination / "verified.json").exists())
+                    self.assertFalse((destination / "licenses").exists())
+                    if role == "runtime":
+                        self.assertFalse(destination.exists())
+                    else:
+                        self.assertEqual(
+                            (destination / source.name).read_bytes(), b"host"
+                        )
+                    gate["armed"] = False
+
+                    def retry_download(*args):
+                        download(*args)
+                        gate["armed"] = False
+
+                    with patch.object(decoder, "_download", side_effect=retry_download):
+                        run()
+                    member = destination / (
+                        "vgmstream-cli" if role == "runtime" else "licenses/COPYING"
+                    )
+                    self.assertEqual(member.read_bytes(), b"member")
+
+    def test_zip_consumers_keep_source_owned_through_invalid_and_valid_decode(self):
+        for role in ("runtime", "licences"):
+            for valid in (False, True):
+                with (
+                    self.subTest(role=role, valid=valid),
+                    TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    destination = root / "managed"
+                    source = root / "host-decoder"
+                    source.write_bytes(b"host")
+                    streams = []
+                    opened, zip_file = decoder.open_regular_binary, decoder.ZipFile
+
+                    @contextmanager
+                    def admitted(path):
+                        with opened(path) as stream:
+                            if path.name.endswith(".zip"):
+                                streams.append(stream)
+                            yield stream
+
+                    def decoded(stream):
+                        self.assertIs(stream, streams[-1])
+                        self.assertFalse(stream.closed)
+                        return zip_file(stream)
+
+                    def download(_url, _digest, path, *_args):
+                        name = (
+                            "vgmstream-cli"
+                            if role == "runtime"
+                            else f"vgmstream-{decoder.VERSION}/COPYING"
+                        )
+                        path.write_bytes(
+                            archive_bytes(name, b"member") if valid else b"invalid"
+                        )
+
+                    def run():
+                        if role == "runtime":
+                            return decoder._install_managed_decoder(
+                                destination / "vgmstream-cli",
+                                "runtime.zip",
+                                "digest",
+                                lambda _message: None,
+                                None,
+                            )
+                        return decoder.stage_game_decoder(destination)
+
+                    with (
+                        patch.object(decoder, "open_regular_binary", admitted),
+                        patch.object(decoder, "ZipFile", side_effect=decoded),
+                        patch.object(decoder, "_download", side_effect=download),
+                        patch.object(decoder, "probe_game_decoder"),
+                        patch.object(
+                            decoder, "ensure_game_decoder", return_value=source
+                        ),
+                        patch.object(decoder.sys, "platform", "linux"),
+                    ):
+                        if valid:
+                            run()
+                            member = destination / (
+                                "vgmstream-cli"
+                                if role == "runtime"
+                                else "licenses/COPYING"
+                            )
+                            self.assertEqual(member.read_bytes(), b"member")
+                        else:
+                            with self.assertRaises(BadZipFile):
+                                run()
+                            self.assertFalse((destination / "verified.json").exists())
+                            self.assertFalse((destination / "licenses").exists())
+                    self.assertEqual(len(streams), 1)
+                    self.assertTrue(streams[0].closed)
 
     def test_download_verified_cache_and_corruption_repair(self):
         payload = archive_bytes()

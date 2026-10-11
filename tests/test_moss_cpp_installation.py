@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 from threading import Event
 from types import SimpleNamespace
 from unittest.mock import patch
-from zipfile import ZipFile
+from zipfile import BadZipFile, ZipFile
 
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
@@ -32,6 +32,71 @@ def archive_bytes(entries):
 
 
 class MossCppInstallationTest(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(setup.os, "mkfifo") and hasattr(setup.os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_runtime_zip_refuses_fifo_before_publication_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "runtime.zip"
+            archive.write_bytes(archive_bytes({"moss-tts-server.exe": b"new exe"}))
+            destination = root / "installed"
+            destination.mkdir()
+            server = destination / "moss-tts-server.exe"
+            server.write_bytes(b"prior exe")
+            gate: RegularFileGate = {"path": archive, "armed": True}
+            with (
+                swap_at_acquisition(self, gate),
+                self.assertRaisesRegex(OSError, "not a regular file"),
+            ):
+                setup._extract_runtime(archive, destination, None)
+            self.assertEqual(server.read_bytes(), b"prior exe")
+            self.assertEqual(list(destination.iterdir()), [server])
+            setup._extract_runtime(archive, destination, None)
+            self.assertEqual(server.read_bytes(), b"new exe")
+
+    def test_runtime_zip_keeps_source_open_through_decode_and_closes_on_failure(self):
+        for valid in (False, True):
+            with self.subTest(valid=valid), TemporaryDirectory() as directory:
+                root = Path(directory)
+                archive = root / "runtime.zip"
+                archive.write_bytes(
+                    archive_bytes({"moss-tts-server.exe": b"exe"})
+                    if valid
+                    else b"invalid"
+                )
+                destination = root / "installed"
+                streams = []
+                opened = setup.open_regular_binary
+                zip_file = setup.ZipFile
+
+                @contextmanager
+                def admitted(path):
+                    with opened(path) as stream:
+                        streams.append(stream)
+                        yield stream
+
+                def decoded(stream):
+                    self.assertIs(stream, streams[-1])
+                    self.assertFalse(stream.closed)
+                    return zip_file(stream)
+
+                with (
+                    patch.object(setup, "open_regular_binary", admitted),
+                    patch.object(setup, "ZipFile", side_effect=decoded),
+                ):
+                    if valid:
+                        setup._extract_runtime(archive, destination, None)
+                        self.assertEqual(
+                            (destination / "moss-tts-server.exe").read_bytes(), b"exe"
+                        )
+                    else:
+                        with self.assertRaises(BadZipFile):
+                            setup._extract_runtime(archive, destination, None)
+                        self.assertFalse(destination.exists())
+                self.assertEqual(len(streams), 1)
+                self.assertTrue(streams[0].closed)
+
     def test_first_install_reuse_and_corruption_repair(self):
         runtime = archive_bytes({"moss-tts-server.exe": b"exe", "ggml-cpu.dll": b"dll"})
         model, sidecar = b"GGUF model", b"GGUF codec"

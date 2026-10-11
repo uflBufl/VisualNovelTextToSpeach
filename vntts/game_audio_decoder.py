@@ -381,7 +381,7 @@ def _install_managed_decoder(
             cancellation,
         )
         files: dict[str, str] = {}
-        with ZipFile(archive) as package:
+        with open_regular_binary(archive) as stream, ZipFile(stream) as package:
             if sum(info.file_size for info in package.infolist()) > 64 * 1024 * 1024:
                 raise DecoderSetupError("Decoder archive exceeded the size limit")
             for info in package.infolist():
@@ -454,7 +454,7 @@ def stage_game_decoder(destination: PathInput) -> Path:
     with temporary_directory(prefix="vntts-decoder-licenses-") as temporary:
         archive = Path(temporary) / "source.zip"
         _download(SOURCE_URL, SOURCE_SHA256, archive, print, None)
-        with ZipFile(archive) as source:
+        with open_regular_binary(archive) as stream, ZipFile(stream) as source:
             for info in source.infolist():
                 if not info.is_dir() and (
                     info.filename == f"vgmstream-{VERSION}/COPYING"
