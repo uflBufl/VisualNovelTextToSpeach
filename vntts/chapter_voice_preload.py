@@ -22,7 +22,7 @@ from vntts_artifacts.story_index import (
 from vntts.cleanup import temporary_directory
 from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import decode_json
-from vntts.path_safety import copy_regular_file
+from vntts.path_safety import copy_regular_file, open_regular_text
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
     load_source_audio_semantic_evidence,
@@ -986,7 +986,7 @@ def _load_source_audio_extensions(
     """Retain optional source-audio fields omitted by older contract readers."""
     result: dict[str, SourceAudioExtension] = {}
     try:
-        with open(path, encoding="utf-8") as stream:
+        with open_regular_text(path, encoding="utf-8") as stream:
             next(stream, None)
             for row in stream:
                 record = _string_mapping(decode_json(row))

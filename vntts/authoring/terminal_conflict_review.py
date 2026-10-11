@@ -59,7 +59,7 @@ from vntts.authoring.workbench import (
 )
 from vntts.authoring.workbench_contracts import ReviewItem
 from vntts.json_types import decode_json, has_schema_version, is_json_object
-from vntts.path_safety import read_regular_bytes
+from vntts.path_safety import read_regular_bytes, read_regular_text
 
 TERMINAL_CONFLICT_REVIEW_SCHEMA = "vntts.authoring-terminal-conflict-review"
 TERMINAL_CONFLICT_REVIEW_VERSION = 1
@@ -1696,7 +1696,7 @@ def _recover_stale_progress_lock(directory: Path, path: Path) -> None:
 def _remove_progress_lock(path: Path, guard_path: Path, lease: _ProgressLease) -> None:
     try:
         with exclusive_advisory_lock(guard_path, blocking=True):
-            if decode_json(path.read_text(encoding="utf-8")) == lease:
+            if decode_json(read_regular_text(path, encoding="utf-8")) == lease:
                 path.unlink()
     except OSError, UnicodeError, json.JSONDecodeError, AdvisoryLockBusyError:
         return

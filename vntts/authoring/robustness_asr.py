@@ -31,6 +31,7 @@ from vntts.authoring.robustness_corpus import (
 )
 from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
+from vntts.path_safety import read_regular_text
 
 SPEECH_ROBUSTNESS_ASR_SCHEMA = "vntts.speech-robustness-asr-report"
 SPEECH_ROBUSTNESS_ASR_VERSION = 2
@@ -448,7 +449,7 @@ def _load_progress(
     if path is None or not path.exists():
         return []
     try:
-        document = decode_json(path.read_text(encoding="utf-8"))
+        document = decode_json(read_regular_text(path, encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise SpeechRobustnessAsrError(
             f"Unable to load ASR progress: {error}"

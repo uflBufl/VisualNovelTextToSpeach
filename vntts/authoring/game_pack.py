@@ -77,6 +77,7 @@ from vntts.json_types import decode_json, has_schema_version
 from vntts.path_safety import (
     copy_regular_file,
     read_regular_bytes,
+    read_regular_text,
     safe_relative_path,
 )
 from vntts.source_audio_semantics import (
@@ -929,7 +930,9 @@ class _PublicationLease:
         try:
             with exclusive_advisory_lock(self.guard_path, blocking=True):
                 try:
-                    document = decode_json(self.path.read_text(encoding="utf-8"))
+                    document = decode_json(
+                        read_regular_text(self.path, encoding="utf-8")
+                    )
                 except OSError, UnicodeDecodeError, json.JSONDecodeError:
                     ownership_lost = True
                 else:
@@ -950,7 +953,7 @@ class _PublicationLease:
 
     def assert_owned(self) -> None:
         try:
-            document = decode_json(self.path.read_text(encoding="utf-8"))
+            document = decode_json(read_regular_text(self.path, encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise FinalGamePackError(
                 "Final game-pack publication lease became unreadable"

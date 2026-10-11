@@ -27,6 +27,7 @@ from vntts.authoring.robustness_corpus import (
 )
 from vntts.authoring.workbench import AuthoringWorkbenchError, load_workspace_authority
 from vntts.json_types import decode_json, has_schema_version
+from vntts.path_safety import read_regular_text
 
 PROGRESS_SCHEMA = "vntts.legacy-reason-review-progress"
 PROGRESS_VERSION = 1
@@ -142,7 +143,7 @@ def load_reason_review_progress(
     if not path.is_file():
         return {}
     try:
-        document = decode_json(path.read_text(encoding="utf-8"))
+        document = decode_json(read_regular_text(path, encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise LegacyReasonReviewError(
             f"Reason-review progress is invalid: {error}"

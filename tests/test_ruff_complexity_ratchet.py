@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from scripts import check_ruff_complexity as complexity
 from scripts.check_ruff_complexity import (
     baseline_allowances,
     check_findings,
@@ -190,7 +191,7 @@ class RuffComplexityRatchetTest(unittest.TestCase):
                     }
                 ],
             }
-            original_read_text = Path.read_text
+            original_read_text = complexity.read_regular_text
             original_parse = ast.parse
             reads = 0
             parses = 0
@@ -206,7 +207,7 @@ class RuffComplexityRatchetTest(unittest.TestCase):
                 return original_parse(*args, **kwargs)
 
             with (
-                patch("scripts.check_ruff_complexity.Path.read_text", read_text),
+                patch("scripts.check_ruff_complexity.read_regular_text", read_text),
                 patch("scripts.check_ruff_complexity.ast.parse", parse),
             ):
                 check_findings(root, baseline, [self._finding("C901", source, 1)] * 2)

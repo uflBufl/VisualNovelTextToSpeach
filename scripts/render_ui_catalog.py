@@ -34,6 +34,7 @@ DEFAULT_OUTPUT = PROJECT_ROOT / ".codex" / "ui-catalog"
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from vntts.cleanup import cleanup_on_exit, temporary_directory  # noqa: E402
+from vntts.path_safety import read_regular_text  # noqa: E402
 from vntts.ui_catalog import (  # noqa: E402
     UICatalog,
     _write_catalog,
@@ -1743,7 +1744,7 @@ def _render_stories(
         root = Path(temporary)
         workspace = create_test_workspace(root)[2].directory
         state_path = workspace / "generated-audio" / "generation-state.json"
-        document = json.loads(state_path.read_text(encoding="utf-8"))
+        document = json.loads(read_regular_text(state_path, encoding="utf-8"))
         if state == "ready":
             document["active"] = None
             document["items"] = {}

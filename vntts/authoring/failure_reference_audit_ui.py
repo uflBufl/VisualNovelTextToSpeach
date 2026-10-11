@@ -50,6 +50,7 @@ from vntts.authoring.review_context_ui import (
 )
 from vntts.cli import print_json
 from vntts.json_types import decode_json
+from vntts.path_safety import read_regular_text
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.qt_dialogs import CloseGuardedDialog
 
@@ -171,7 +172,7 @@ def _load_public_document(
 ) -> tuple[FailureReferenceAudit, AuditDocument, AuditDecisions]:
     validated = _audit_loader(audit)
     path = validated.directory / "audit.json"
-    document = decode_json(path.read_text(encoding="utf-8"))
+    document = decode_json(read_regular_text(path, encoding="utf-8"))
     if not isinstance(document, dict):
         raise RuntimeError("Reference audit document is malformed")
     actual = canonical_document_sha256(
@@ -230,8 +231,8 @@ class FailureReferenceAuditDialog(CloseGuardedDialog):
         self.explanation.setWordWrap(True)
         self.decision_context = ReviewDecisionContext()
         workspace = decode_json(
-            (Path(self.document["workspace"]) / "workspace.json").read_text(
-                encoding="utf-8"
+            read_regular_text(
+                Path(self.document["workspace"]) / "workspace.json", encoding="utf-8"
             )
         )
         run_config = (

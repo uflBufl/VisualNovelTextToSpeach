@@ -7,7 +7,6 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from functools import partial
-from io import TextIOWrapper
 from ntpath import isreserved
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from tempfile import mkdtemp
@@ -26,7 +25,7 @@ from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.cleanup import attempt_cleanup, cleanup_on_exit
 from vntts.document_identity import file_sha256
 from vntts.json_types import decode_json
-from vntts.path_safety import copy_regular_file, open_regular_binary
+from vntts.path_safety import copy_regular_file, open_regular_binary, read_regular_text
 from vntts.settings import get_local_data_directory
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
 
@@ -494,11 +493,7 @@ class ModelAssetManager:
         hash_file = model_path / "hash.md5"
         if not hash_file.is_file():
             raise ModelIntegrityError("Model publisher checksum is missing")
-        with (
-            open_regular_binary(hash_file) as source,
-            TextIOWrapper(source, encoding="utf-8") as text,
-        ):
-            published_hash = text.read().strip()
+        published_hash = read_regular_text(hash_file, encoding="utf-8").strip()
         if published_hash != asset.expected_hash:
             raise ModelIntegrityError("Model publisher checksum does not match")
 

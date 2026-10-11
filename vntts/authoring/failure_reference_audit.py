@@ -8,7 +8,6 @@ import random
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from io import TextIOWrapper
 from pathlib import Path
 from typing import TypeAlias, TypedDict
 
@@ -47,7 +46,7 @@ from vntts.authoring.workbench import (
 from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.document_identity import file_sha256, is_lowercase_sha256
 from vntts.json_types import decode_json, is_json_object
-from vntts.path_safety import copy_regular_file, open_regular_binary, read_regular_bytes
+from vntts.path_safety import copy_regular_file, read_regular_bytes, read_regular_text
 from vntts.reference_quality import ReferenceQualityReport, analyze_reference_bytes
 from vntts.voices import load_voice_manifest
 
@@ -690,11 +689,7 @@ def _load_validated_audit(
 
 
 def _read_json(path: Path, *, encoding: str | None = None) -> object:
-    with (
-        open_regular_binary(path) as source,
-        TextIOWrapper(source, encoding=encoding) as text,
-    ):
-        return decode_json(text.read())
+    return decode_json(read_regular_text(path, encoding=encoding))
 
 
 def _read_failure_reference_audit(

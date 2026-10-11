@@ -26,6 +26,7 @@ from vntts.chapter_voice_preload import (
     _validated_source_audio_line_ids,
 )
 from vntts.json_types import decode_json
+from vntts.path_safety import read_regular_text
 from vntts.pregeneration_contract import (
     OfflineGenerationCancelled as OfflineGenerationCancelled,
 )
@@ -220,7 +221,7 @@ class OfflineGenerationWorker:
         if not state_path.is_file():
             return OfflineGenerationProgress(available=False)
         try:
-            state = decode_json(state_path.read_text(encoding="utf-8"))
+            state = decode_json(read_regular_text(state_path, encoding="utf-8"))
         except (json.JSONDecodeError, OSError, UnicodeError) as error:
             raise OfflineGenerationError(
                 f"Unable to inspect offline generation progress: {error}"
@@ -458,7 +459,7 @@ class OfflineGenerationWorker:
                 return
         state_path = _generation_output(generation_input) / "generation-state.json"
         try:
-            state = decode_json(state_path.read_text(encoding="utf-8"))
+            state = decode_json(read_regular_text(state_path, encoding="utf-8"))
             self._record_progress(state, generation_input)
         except OSError, UnicodeError, json.JSONDecodeError, OfflineGenerationError:
             pass

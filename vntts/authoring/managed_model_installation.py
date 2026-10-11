@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from io import TextIOWrapper
 from pathlib import Path
 from typing import Literal, NotRequired, TypeAlias, TypedDict
 
@@ -18,7 +17,7 @@ from vntts.authoring.publication import (
 )
 from vntts.document_identity import file_sha256
 from vntts.json_types import decode_json
-from vntts.path_safety import copy_regular_file, open_regular_binary
+from vntts.path_safety import copy_regular_file, read_regular_text
 
 PathInput: TypeAlias = str | Path
 JsonDocument: TypeAlias = dict[str, object]
@@ -115,20 +114,14 @@ def managed_model_status(
                 status = "invalid"
             else:
                 try:
-                    with (
-                        open_regular_binary(
-                            installation / "managed-model.json"
-                        ) as source,
-                        TextIOWrapper(source, encoding="utf-8") as text,
-                    ):
-                        actual_metadata = decode_json(text.read())
-                    with (
-                        open_regular_binary(
-                            installation / "THIRD_PARTY_NOTICES.txt"
-                        ) as source,
-                        TextIOWrapper(source, encoding="utf-8") as text,
-                    ):
-                        actual_notice = text.read()
+                    actual_metadata = decode_json(
+                        read_regular_text(
+                            installation / "managed-model.json", encoding="utf-8"
+                        )
+                    )
+                    actual_notice = read_regular_text(
+                        installation / "THIRD_PARTY_NOTICES.txt", encoding="utf-8"
+                    )
                 except (OSError, ValueError) as error:
                     status, reason = (
                         "invalid",

@@ -10,6 +10,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from scripts.run_ci_unittests import main as run_unittests
+from vntts.path_safety import read_regular_text
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_DIRS = ("vntts", "scripts", "tests")
@@ -66,7 +67,7 @@ def _import_names(node: ast.AST, package: str) -> Iterable[str]:
 
 
 def _imports(path: Path, module: str, known: set[str]) -> set[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    tree = ast.parse(read_regular_text(path, encoding="utf-8"), filename=str(path))
     found: set[str] = set()
     package = module if path.name == "__init__.py" else module.rpartition(".")[0]
     for node in ast.walk(tree):

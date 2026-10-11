@@ -48,7 +48,7 @@ from vntts.document_identity import (
 )
 from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
-from vntts.path_safety import read_regular_bytes
+from vntts.path_safety import read_regular_bytes, read_regular_text
 from vntts.settings import get_local_data_directory
 from vntts.speech_backend_contract import RenderableBackend, is_renderable_backend
 from vntts.speech_backend_runtime import shutdown_speech_backend
@@ -627,7 +627,7 @@ def load_benchmark_corpus(path: str | Path) -> JsonDocument:
     """Load the authoring corpus without normalizing exact identity or text."""
     path = Path(path).expanduser().resolve()
     try:
-        document = decode_json(path.read_text(encoding="utf-8"))
+        document = decode_json(read_regular_text(path, encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise ModelBenchmarkError(
             f"Unable to read benchmark corpus {path}: {error}"
@@ -1254,7 +1254,7 @@ def _snapshot_voice_registry(
 
 def load_model_variants(path: str | Path) -> list[ModelVariant]:
     try:
-        document = decode_json(Path(path).read_text(encoding="utf-8"))
+        document = decode_json(read_regular_text(Path(path), encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise ModelBenchmarkError(
             f"Unable to read model variants {path}: {error}"

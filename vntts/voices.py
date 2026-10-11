@@ -6,7 +6,6 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-from io import TextIOWrapper
 from pathlib import Path, PurePosixPath
 from typing import Literal, Protocol
 
@@ -24,7 +23,7 @@ from vntts_artifacts.voice_manifest import (
 from vntts.application_directories import get_local_data_directory
 from vntts.cleanup import cleanup_on_exit, temporary_directory
 from vntts.json_types import is_json_object
-from vntts.path_safety import open_regular_binary, open_regular_candidate
+from vntts.path_safety import open_regular_candidate, read_regular_text
 from vntts.voice_library import VoiceBinding, VoiceBindingRollback, VoiceLibrary
 
 default_voice_choice_id = "default"
@@ -515,11 +514,9 @@ def load_voice_manifest(
         raise VoiceManifestError("Voice manifest cannot be a symlink")
     manifest_path = requested.resolve()
     try:
-        with (
-            open_regular_binary(manifest_path) as source,
-            TextIOWrapper(source, encoding="utf-8") as text,
-        ):
-            manifest: object = json.loads(text.read())
+        manifest: object = json.loads(
+            read_regular_text(manifest_path, encoding="utf-8")
+        )
     except (OSError, json.JSONDecodeError) as error:
         raise VoiceManifestError(
             f"Unable to read voice manifest {manifest_path}: {error}"

@@ -43,7 +43,12 @@ from vntts.authoring.workspace_foundation import load_json_object
 from vntts.cleanup import temporary_directory
 from vntts.document_identity import canonical_document_sha256, sha256_file
 from vntts.json_types import decode_json
-from vntts.path_safety import copy_regular_file, read_regular_bytes
+from vntts.path_safety import (
+    copy_regular_file,
+    open_regular_text,
+    read_regular_bytes,
+    read_regular_text,
+)
 
 LEGACY_JOB_SCHEMA = "r1999.pregeneration-job"
 LEGACY_JOB_SCHEMA_VERSION = 1
@@ -1527,7 +1532,7 @@ def _read_snapshot(path: str | Path, description: str) -> tuple[bytes, str]:
 
 def _load_json_optional(path: str | Path) -> JsonDocument:
     try:
-        value = decode_json(Path(path).read_text(encoding="utf-8"))
+        value = decode_json(read_regular_text(Path(path), encoding="utf-8"))
     except OSError, UnicodeError, json.JSONDecodeError:
         return {}
     return value if isinstance(value, dict) else {}
@@ -1535,7 +1540,7 @@ def _load_json_optional(path: str | Path) -> JsonDocument:
 
 def _load_jsonl_metadata_optional(path: str | Path) -> JsonDocument:
     try:
-        with Path(path).open(encoding="utf-8") as stream:
+        with open_regular_text(Path(path), encoding="utf-8") as stream:
             value = decode_json(next(stream))
     except OSError, UnicodeError, StopIteration, json.JSONDecodeError:
         return {}

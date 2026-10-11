@@ -32,7 +32,7 @@ from vntts.authoring.workspace_config import workspace_successor_config_fingerpr
 from vntts.authoring.workspace_inspection import load_review_items_snapshot
 from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import decode_json
-from vntts.path_safety import read_regular_bytes
+from vntts.path_safety import read_regular_bytes, read_regular_text
 
 COHORT_REVIEW_PLAN_SCHEMA = "vntts.authoring-cohort-review-plan"
 COHORT_REVIEW_PLAN_VERSION = 1
@@ -1614,7 +1614,7 @@ def _validate_document_next_samples(
 def _load_document(path: str | Path, label: str) -> JsonObject:
     path = Path(path).expanduser().resolve()
     try:
-        document = decode_json(path.read_text(encoding="utf-8"))
+        document = decode_json(read_regular_text(path, encoding="utf-8"))
         if not isinstance(document, dict):
             raise CohortReviewError(f"{label.title()} must be an object")
         return document

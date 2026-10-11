@@ -13,7 +13,7 @@ from scripts import moss_native_pause_probe as probe
 from vntts.json_types import decode_json
 from vntts.moss_cpp_backend import MossCppVoiceRouterBackend, moss_cpp_paths
 from vntts.moss_cpp_installation import _extract_runtime
-from vntts.path_safety import copy_regular_file
+from vntts.path_safety import copy_regular_file, read_regular_text
 from vntts.runtime_config import initialize_voice_registry
 from vntts.settings import AppSettings, load_app_settings
 
@@ -175,7 +175,7 @@ def _mapping(value: object) -> dict[str, object]:
 
 
 def _read_evidence(path: Path) -> dict[str, object]:
-    payload: object = decode_json(path.read_text(encoding="utf-8-sig"))
+    payload: object = decode_json(read_regular_text(path, encoding="utf-8-sig"))
     return _mapping(payload)
 
 
@@ -261,9 +261,9 @@ def prepare_downloads(options: _ComparisonOptions) -> None:
             unpacked = work / variant / "download"
             _extract_runtime(downloads / f"{name}.zip", unpacked, None)
             inner = unpacked / f"{name}.zip"
-            expected = (
-                (unpacked / f"{name}.zip.sha256").read_text(encoding="ascii").strip()
-            )
+            expected = read_regular_text(
+                unpacked / f"{name}.zip.sha256", encoding="ascii"
+            ).strip()
             if probe._sha256(inner).lower() != expected.lower():
                 raise ValueError(
                     f"Checksum mismatch: {inner}; download that artifact again"

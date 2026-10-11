@@ -31,6 +31,7 @@ from vntts.path_safety import (
     copy_regular_file,
     open_regular_candidate,
     read_regular_bytes,
+    read_regular_text,
 )
 
 VOICE_LIBRARY_VERSION = 3
@@ -575,7 +576,7 @@ class VoiceLibrary:
         if self.path.is_symlink():
             raise VoiceLibraryError("Voice library index must not be a symlink")
         try:
-            document = decode_json(self.path.read_text(encoding="utf-8"))
+            document = decode_json(read_regular_text(self.path, encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as error:
             raise VoiceLibraryError(f"Unable to read voice library: {error}") from error
         if _validate_document(document):

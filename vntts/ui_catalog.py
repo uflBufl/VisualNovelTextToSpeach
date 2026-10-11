@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TypedDict
 
 from vntts.json_types import decode_json
+from vntts.path_safety import read_regular_text
 
 
 class CatalogStory(TypedDict):
@@ -129,7 +130,7 @@ def _surface(value: object, story_ids: set[str]) -> CatalogSurface:
 
 
 def load_catalog(path: Path) -> UICatalog:
-    raw: object = decode_json(path.read_text(encoding="utf-8"))
+    raw: object = decode_json(read_regular_text(path, encoding="utf-8"))
     document = _object(raw, "root")
     version = document.get("schema_version")
     if type(version) is not int or version != 1:

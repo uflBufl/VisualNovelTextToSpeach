@@ -36,7 +36,7 @@ from vntts.chapter_voice_preload import (
 )
 from vntts.document_identity import is_sha256, sha256_file
 from vntts.json_types import decode_json
-from vntts.path_safety import read_regular_bytes
+from vntts.path_safety import open_regular_text, read_regular_bytes
 from vntts.settings import AppSettings
 from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.versioned_json import read_versioned_json, write_versioned_json
@@ -925,7 +925,7 @@ def _collection_stage_groups(
 
 def _is_outdated_reverse1999_index(path: Path) -> bool:
     try:
-        with path.open(encoding="utf-8") as stream:
+        with open_regular_text(path, encoding="utf-8") as stream:
             metadata = decode_json(next(stream))
     except OSError, UnicodeError, StopIteration, json.JSONDecodeError:
         return False

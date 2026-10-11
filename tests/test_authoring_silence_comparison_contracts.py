@@ -1,12 +1,15 @@
 import copy
 import hashlib
+import io
 import json
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
 import vntts.authoring.listening as listening
+import vntts.path_safety as path_safety
 from tests.authoring_fixtures import (
     write_silence_comparison_input_plan,
     write_silence_comparison_sample,
@@ -164,17 +167,20 @@ class SilenceComparisonContractsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             _sample, root, _path, document = self.fixture(Path(directory))
             report = root / document["reports"][0]
-            read = Path.read_text
+            open_text = path_safety.open_regular_text
 
-            def substituted(path, *args, **kwargs):
-                value = read(path, *args, **kwargs)
-                if path == report:
-                    altered = json.loads(value)
-                    altered["model"] = "Reopened unaudited model"
-                    return json.dumps(altered)
-                return value
+            @contextmanager
+            def substituted(path, encoding=None):
+                with open_text(path, encoding) as stream:
+                    if Path(path) == report:
+                        altered = json.loads(stream.read())
+                        altered["model"] = "Reopened unaudited model"
+                        with io.StringIO(json.dumps(altered)) as replacement:
+                            yield replacement
+                    else:
+                        yield stream
 
-            with patch.object(Path, "read_text", substituted):
+            with patch.object(path_safety, "open_regular_text", substituted):
                 session = listening.create_listening_session_from_reports(
                     (root / value for value in document["reports"]),
                     root.parent / "listening",

@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import write_story_index_document
 
+from vntts import path_safety
 from vntts.pregeneration_generation import (
     OfflineGenerationCancelled,
     OfflineGenerationError,
@@ -493,12 +494,12 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
             cancellation = Event()
             snapshots = []
             calls = 0
-            read_text = Path.read_text
+            open_text = path_safety.open_regular_text
 
             def reject_state_poll(path, *args, **kwargs):
-                if path.name == "generation-state.json":
+                if Path(path).name == "generation-state.json":
                     raise AssertionError("disk poll")
-                return read_text(path, *args, **kwargs)
+                return open_text(path, *args, **kwargs)
 
             def generate_with_progress(_parsed, **kwargs):
                 nonlocal calls
@@ -537,7 +538,7 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                     "vntts.pregeneration_generation._static_ready_line_ids",
                     return_value=(),
                 ),
-                patch.object(Path, "read_text", reject_state_poll),
+                patch.object(path_safety, "open_regular_text", reject_state_poll),
             ):
                 result = worker.generate(
                     generation_input, plan, cancel_event=cancellation

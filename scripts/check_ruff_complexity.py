@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from vntts.json_types import decode_json
+from vntts.path_safety import read_regular_text
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASELINE = REPOSITORY_ROOT / "tests" / "fixtures" / "ruff-complexity-v2.json"
@@ -20,7 +21,9 @@ RULES = ("C901", "PLR0912", "PLR0915")
 
 
 def scope_at_line(source_path: Path, line: int) -> str | None:
-    tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=source_path)
+    tree = ast.parse(
+        read_regular_text(source_path, encoding="utf-8"), filename=source_path
+    )
     return _scope_at_line(tree, line)
 
 
@@ -72,7 +75,7 @@ def _finding_identity(
     cache_key = path.resolve()
     if cache_key not in source_trees:
         source_trees[cache_key] = ast.parse(
-            path.read_text(encoding="utf-8"), filename=path
+            read_regular_text(path, encoding="utf-8"), filename=path
         )
     scope = _scope_at_line(source_trees[cache_key], location["row"])
     if scope is None:
@@ -212,7 +215,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, default=REPOSITORY_ROOT)
     arguments = parser.parse_args(argv)
     try:
-        baseline = decode_json(arguments.baseline.read_text(encoding="utf-8"))
+        baseline = decode_json(read_regular_text(arguments.baseline, encoding="utf-8"))
         failures = check_findings(
             arguments.root, baseline, ruff_findings(arguments.root)
         )

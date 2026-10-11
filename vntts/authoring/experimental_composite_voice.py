@@ -6,7 +6,6 @@ import hashlib
 import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from io import TextIOWrapper
 from pathlib import Path
 from typing import TypedDict
 
@@ -51,7 +50,11 @@ from vntts.authoring.workspace_foundation import (
 )
 from vntts.document_identity import is_lowercase_sha256, sha256_file
 from vntts.json_types import decode_json
-from vntts.path_safety import copy_regular_file, open_regular_binary, read_regular_bytes
+from vntts.path_safety import (
+    copy_regular_file,
+    read_regular_bytes,
+    read_regular_text,
+)
 from vntts.voices import load_voice_manifest
 
 EXPERIMENTAL_COMPOSITE_VOICE_FIELD = "vntts.authoring.experimental_composite_voices"
@@ -525,11 +528,7 @@ def _validate_bundle_manifest(
 ) -> None:
     manifest_path = directory / "manifest.json"
     try:
-        with (
-            open_regular_binary(manifest_path) as source,
-            TextIOWrapper(source, encoding="utf-8") as text,
-        ):
-            manifest = decode_json(text.read())
+        manifest = decode_json(read_regular_text(manifest_path, encoding="utf-8"))
         _metadata, voices = load_voice_manifest(manifest_path, allow_legacy=False)
         if not isinstance(manifest, dict):
             raise VoiceManifestError("Voice manifest must be a JSON object")

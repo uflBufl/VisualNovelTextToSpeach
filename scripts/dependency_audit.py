@@ -5,12 +5,17 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import sys
 import tomllib
 import urllib.request
 from pathlib import Path
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from vntts.path_safety import read_regular_text  # noqa: E402
+
 OSV_QUERY_BATCH = "https://api.osv.dev/v1/querybatch"
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 
@@ -76,7 +81,7 @@ def project_label(project: Path) -> str:
 def locked_git_commits(lock_paths: tuple[Path, ...]) -> tuple[str, ...]:
     commits: set[str] = set()
     for lock_path in lock_paths:
-        document = tomllib.loads(lock_path.read_text(encoding="utf-8"))
+        document = tomllib.loads(read_regular_text(lock_path, encoding="utf-8"))
         for package in document.get("package", ()):
             git = package.get("source", {}).get("git")
             if git is None:

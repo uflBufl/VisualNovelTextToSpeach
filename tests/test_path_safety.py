@@ -1,10 +1,12 @@
 import hashlib
 import io
+import json
 import os
 import shutil
 import stat
 import unittest
 import wave
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -14,9 +16,13 @@ from tests.pregeneration_fixtures import ambiguous_fixture
 from tests.symlink_support import symlink_or_skip
 from vntts import (
     assets,
+    chapter_voice_preload,
     game_audio_decoder,
+    game_content_importer,
+    ocr_benchmark,
     pregeneration_audition,
     pregeneration_audition_ui,
+    pregeneration_setup,
     support,
     versioned_json,
     voice_candidate_cache,
@@ -26,8 +32,10 @@ from vntts.authoring import (
     bulk_generation,
     cohort_bundle,
     failure_reference_audit,
+    legacy_import,
     silence_comparison,
     silence_evidence,
+    workspace_foundation,
 )
 from vntts.authoring.generation_manifest import (
     BulkGenerationError,
@@ -39,11 +47,13 @@ from vntts.live_speaker_corpus import LiveSpeakerCorpus
 from vntts.path_safety import (
     contained_regular_file,
     copy_regular_file,
+    open_regular_text,
     read_regular_bytes,
+    read_regular_text,
     safe_relative_path,
 )
 from vntts.runtime_ownership import read_record
-from vntts.voice_library import VoiceLibrary
+from vntts.voice_library import VoiceLibrary, VoiceLibraryError
 from vntts.voices import VoiceManifestError, _read_owned_voice_reference
 
 
@@ -79,6 +89,100 @@ class PathSafetyTest(unittest.TestCase):
 
 
 class RegularFileAdmissionTest(unittest.TestCase):
+    def test_text_capture_matches_encoding_newlines_and_one_acquisition(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "input.txt"
+            for encoding, payload in (
+                (None, b"default\r\nsecond\rthird\n"),
+                ("utf-8", "Русский café\r\nsecond\rthird\n".encode("utf-8")),
+                ("utf-8-sig", b"\xef\xbb\xbftext\r\nsecond\rthird\n"),
+                ("ascii", b"ASCII\r\nsecond\rthird\n"),
+            ):
+                with self.subTest(encoding=encoding):
+                    path.write_bytes(payload)
+                    expected = path.read_text(encoding=encoding)
+                    with patch("vntts.path_safety.os.open", wraps=os.open) as acquire:
+                        self.assertEqual(read_regular_text(path, encoding), expected)
+                    self.assertEqual(acquire.call_count, 1)
+                    self.assertEqual(path.read_bytes(), payload)
+            path.unlink()
+            with self.assertRaises(FileNotFoundError) as missing:
+                read_regular_text(path, "utf-8")
+            self.assertEqual(missing.exception.filename, str(path))
+            error = PermissionError(13, "text denied", str(path))
+            with (
+                patch("vntts.path_safety.os.open", side_effect=error),
+                self.assertRaises(PermissionError) as caught,
+            ):
+                read_regular_text(path, "utf-8")
+            self.assertIs(caught.exception, error)
+
+    def test_text_decoding_failure_closes_wrapper_and_source(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "input.txt"
+            path.write_bytes(b"invalid \xff text")
+            texts = []
+
+            def text_wrapper(*args, **kwargs):
+                text = io.TextIOWrapper(*args, **kwargs)
+                texts.append(text)
+                return text
+
+            with (
+                patch("vntts.path_safety.TextIOWrapper", side_effect=text_wrapper),
+                self.assertRaises(UnicodeDecodeError) as caught,
+            ):
+                read_regular_text(path, "utf-8")
+            with self.assertRaises(UnicodeDecodeError) as expected:
+                path.read_text(encoding="utf-8")
+            self.assertEqual(str(caught.exception), str(expected.exception))
+            self.assertEqual(len(texts), 1)
+            self.assertTrue(texts[0].closed)
+            self.assertTrue(texts[0].buffer.closed)
+
+    def test_text_stream_preserves_first_line_and_closes_after_early_exit(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "input.txt"
+            path.write_bytes(b"{}\r\n" + b"remaining record\n" * 2000)
+            with open_regular_text(path, "utf-8") as text:
+                self.assertEqual(next(text), "{}\n")
+                self.assertEqual(text.readline(), "remaining record\n")
+                self.assertFalse(text.closed)
+            self.assertTrue(text.closed)
+            self.assertTrue(text.buffer.closed)
+
+    def test_text_capture_follows_regular_aliases(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "input.txt"
+            path.write_bytes("text café\r\n".encode("utf-8"))
+            alias = path.with_name("alias.txt")
+            symlink_or_skip(alias, path)
+            self.assertEqual(read_regular_text(alias, "utf-8"), "text café\n")
+            self.assertTrue(alias.is_symlink())
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_text_capture_and_stream_refuse_swapped_fifo_and_recover(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "input.txt"
+            path.write_bytes(b"text\r\nsecond\r")
+            for role in ("capture", "stream"):
+                with self.subTest(role=role):
+                    gate = {"path": path, "armed": True}
+                    with (
+                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                            self, gate
+                        ),
+                        self.assertRaisesRegex(OSError, "regular file"),
+                    ):
+                        if role == "capture":
+                            read_regular_text(path, "utf-8")
+                        else:
+                            with open_regular_text(path, "utf-8"):
+                                self.fail("refused source must never be yielded")
+                    self.assertEqual(read_regular_text(path, "utf-8"), "text\nsecond\n")
+
     def test_full_byte_capture_retains_raw_errors_and_one_acquisition(self):
         with TemporaryDirectory() as directory:
             source = Path(directory) / "input"
@@ -240,6 +344,186 @@ class RegularFileCopyTest(unittest.TestCase):
                 stat.S_IMODE(source.stat().st_mode),
             )
             self.assertEqual(target.stat().st_mtime_ns, source.stat().st_mtime_ns)
+
+
+class TextDocumentAdmissionTest(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_complete_text_consumers_preserve_errors_fallbacks_and_retry(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "document.json"
+            cases = (
+                (
+                    lambda: ocr_benchmark.load_expectations(path),
+                    {"sample": "expected"},
+                    OSError,
+                    None,
+                ),
+                (
+                    lambda: workspace_foundation.load_json_object(path, "Document"),
+                    {"sample": "expected"},
+                    ValueError,
+                    None,
+                ),
+                (
+                    lambda: failure_reference_audit._read_json(path),
+                    ["raw JSON value"],
+                    OSError,
+                    None,
+                ),
+                (
+                    lambda: legacy_import._load_json_optional(path),
+                    {"sample": "expected"},
+                    None,
+                    {},
+                ),
+            )
+            for read, document, error_type, fallback in cases:
+                with self.subTest(reader=read):
+                    path.write_text(json.dumps(document), encoding="utf-8")
+                    gate = {"path": path, "armed": True}
+                    with admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                        self, gate
+                    ):
+                        if error_type is not None:
+                            with self.assertRaises(error_type) as caught:
+                                read()
+                            if error_type is ValueError:
+                                self.assertIsInstance(
+                                    caught.exception.__cause__, OSError
+                                )
+                        else:
+                            self.assertEqual(read(), fallback)
+                    self.assertEqual(read(), document)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_voice_library_text_index_refuses_swapped_fifo_before_cache(self):
+        with TemporaryDirectory() as directory:
+            library = VoiceLibrary(Path(directory) / "library")
+            document = library._load()
+            library.path.parent.mkdir(parents=True, exist_ok=True)
+            library.path.write_text(json.dumps(document), encoding="utf-8")
+            gate = {"path": library.path, "armed": True}
+            with (
+                admission.WorkspaceInputAdmissionTest.swap_at_acquisition(self, gate),
+                self.assertRaises(VoiceLibraryError) as caught,
+            ):
+                library._load()
+            self.assertIsInstance(caught.exception.__cause__, OSError)
+            self.assertEqual(library._load(), document)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_first_line_readers_refuse_swapped_fifo_and_recover(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "story-index.jsonl"
+            metadata = {"game": "Reverse: 1999"}
+            path.write_text(
+                json.dumps(metadata) + "\nnot JSON body\n", encoding="utf-8"
+            )
+            cases = (
+                (
+                    lambda: game_content_importer._read_story_metadata(path),
+                    metadata,
+                    OSError,
+                    None,
+                ),
+                (
+                    lambda: pregeneration_setup._is_outdated_reverse1999_index(path),
+                    True,
+                    None,
+                    False,
+                ),
+                (
+                    lambda: legacy_import._load_jsonl_metadata_optional(path),
+                    metadata,
+                    None,
+                    {},
+                ),
+            )
+            for read, expected, error_type, fallback in cases:
+                with self.subTest(reader=read):
+                    gate = {"path": path, "armed": True}
+                    with admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                        self, gate
+                    ):
+                        if error_type is not None:
+                            with self.assertRaises(error_type):
+                                read()
+                        else:
+                            self.assertEqual(read(), fallback)
+                    self.assertEqual(read(), expected)
+
+    def test_metadata_and_extension_readers_keep_streaming(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "story-index.jsonl"
+            metadata = {"game": "Reverse: 1999"}
+            path.write_text(
+                json.dumps(metadata)
+                + '\n{"line_id": "line-1"}\n{"line_id": "line-2"}\n',
+                encoding="utf-8",
+            )
+            extensions = chapter_voice_preload._load_source_audio_extensions(path)
+            self.assertEqual(set(extensions), {"line-1", "line-2"})
+            cases = (
+                (game_content_importer, "_read_story_metadata", metadata, 1),
+                (pregeneration_setup, "_is_outdated_reverse1999_index", True, 1),
+                (legacy_import, "_load_jsonl_metadata_optional", metadata, 1),
+                (chapter_voice_preload, "_load_source_audio_extensions", extensions, 4),
+            )
+            for module, name, expected, steps in cases:
+                with self.subTest(reader=name):
+                    consumed = []
+                    sources = []
+
+                    class LinesOnly:
+                        def __iter__(self):
+                            return self
+
+                        def __next__(self):
+                            consumed.append("next")
+                            return next(sources[-1])
+
+                        def readline(self):
+                            consumed.append("readline")
+                            return sources[-1].readline()
+
+                        def read(self, *_args, **_kwargs):
+                            raise AssertionError("JSONL reader must remain streaming")
+
+                    @contextmanager
+                    def stream(candidate, encoding=None):
+                        with open_regular_text(candidate, encoding) as source:
+                            sources.append(source)
+                            yield LinesOnly()
+
+                    with patch.object(module, "open_regular_text", stream):
+                        self.assertEqual(getattr(module, name)(path), expected)
+                    self.assertEqual(len(consumed), steps)
+                    self.assertEqual(len(sources), 1)
+                    self.assertTrue(sources[0].closed)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_source_audio_extensions_refuse_swapped_fifo_and_recover(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "story-index.jsonl"
+            path.write_text('{}\n{"line_id": "line-1"}\n', encoding="utf-8")
+            expected = chapter_voice_preload._load_source_audio_extensions(path)
+            self.assertEqual(set(expected), {"line-1"})
+            gate = {"path": path, "armed": True}
+            with admission.WorkspaceInputAdmissionTest.swap_at_acquisition(self, gate):
+                self.assertEqual(
+                    chapter_voice_preload._load_source_audio_extensions(path), {}
+                )
+            self.assertEqual(
+                chapter_voice_preload._load_source_audio_extensions(path), expected
+            )
 
 
 class BoundedDocumentAdmissionTest(unittest.TestCase):

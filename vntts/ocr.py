@@ -22,6 +22,7 @@ from vntts.dialog import (
 )
 from vntts.json_types import decode_json
 from vntts.ocr_review import OCR_REVIEW_SCHEMA_VERSION
+from vntts.path_safety import read_regular_text
 from vntts.versioned_json import write_versioned_json
 
 default_dialog_region_file = Path("~/.config/vntts/dialog-region.json").expanduser()
@@ -282,7 +283,7 @@ def get_dialog_region_file() -> Path:
 def load_dialog_region(path: str | Path) -> DialogRegion:
     path = Path(path).expanduser()
     try:
-        value = decode_json(path.read_text(encoding="utf-8"))
+        value = decode_json(read_regular_text(path, encoding="utf-8"))
         return DialogRegion.from_mapping(value)
     except (OSError, KeyError, TypeError, ValueError) as error:
         raise ValueError(f"Unable to load dialog region {path}: {error}") from error

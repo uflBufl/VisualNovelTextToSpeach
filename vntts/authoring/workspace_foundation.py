@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, MutableSequence
-from io import TextIOWrapper
 from pathlib import Path
 
 from vntts.document_identity import is_sha256
@@ -13,8 +12,8 @@ from vntts.json_types import decode_json
 from vntts.path_safety import (
     contained_path,
     contained_regular_file,
-    open_regular_binary,
     read_regular_bytes,
+    read_regular_text,
     safe_relative_path,
 )
 
@@ -44,11 +43,7 @@ def load_json_object(
 ) -> dict[str, object]:
     """Load one JSON object from a filesystem path."""
     try:
-        with (
-            open_regular_binary(Path(path)) as source,
-            TextIOWrapper(source, encoding="utf-8") as text,
-        ):
-            value = decode_json(text.read())
+        value = decode_json(read_regular_text(Path(path), encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise error_type(f"Unable to read {description} {path}: {error}") from error
     if not isinstance(value, dict):

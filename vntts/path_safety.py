@@ -5,7 +5,7 @@ import shutil
 import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
-from io import BufferedReader
+from io import BufferedReader, TextIOWrapper, text_encoding
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 
 
@@ -26,6 +26,25 @@ def open_regular_binary(path: str | os.PathLike[str]) -> Iterator[BufferedReader
 def read_regular_bytes(path: str | os.PathLike[str]) -> bytes:
     """Capture a regular file once, preserving raw filesystem errors."""
     with open_regular_binary(path) as source:
+        return source.read()
+
+
+@contextmanager
+def open_regular_text(
+    path: str | os.PathLike[str], encoding: str | None = None
+) -> Iterator[TextIOWrapper]:
+    """Own strict decoded text with the platform's universal-newline semantics."""
+    encoding = text_encoding(encoding)
+    with (
+        open_regular_binary(path) as source,
+        TextIOWrapper(source, encoding=encoding) as text,
+    ):
+        yield text
+
+
+def read_regular_text(path: str | os.PathLike[str], encoding: str | None = None) -> str:
+    """Read complete admitted text, preserving filesystem and decoding errors."""
+    with open_regular_text(path, encoding) as source:
         return source.read()
 
 
@@ -130,6 +149,8 @@ __all__ = [
     "no_replace_destination",
     "open_regular_candidate",
     "open_regular_binary",
+    "open_regular_text",
     "read_regular_bytes",
+    "read_regular_text",
     "safe_relative_path",
 ]

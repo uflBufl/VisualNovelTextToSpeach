@@ -15,6 +15,7 @@ from vntts.cli import cli_error, cli_messages
 from vntts.json_types import decode_json, is_json_object
 from vntts.ocr import VoiceRegistry
 from vntts.ocr_backend import OCRBackend, RapidOCRBackend, TesseractOCRBackend
+from vntts.path_safety import read_regular_text
 from vntts.settings import get_local_data_directory
 from vntts.voices import CharacterVoiceRegistry, find_default_voice_manifest
 
@@ -78,7 +79,7 @@ def _percentile(values: Sequence[float], fraction: float) -> float | None:
 def load_expectations(path: PathInput | None) -> Expectations:
     if path is None:
         return {}
-    document: object = decode_json(Path(path).read_text(encoding="utf-8"))
+    document: object = decode_json(read_regular_text(Path(path), encoding="utf-8"))
     if not is_json_object(document):
         raise ValueError("OCR benchmark expectations must be a JSON object")
     return {name: value for name, value in document.items() if isinstance(name, str)}

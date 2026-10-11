@@ -50,7 +50,7 @@ from vntts.authoring.workspace_inspection import generation_failure_category
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 from vntts.document_identity import is_lowercase_sha256, sha256_file
 from vntts.json_types import decode_json
-from vntts.path_safety import read_regular_bytes
+from vntts.path_safety import read_regular_bytes, read_regular_text
 from vntts.speech_backend import get_moss_tts_generation_profile
 from vntts.voices import voice_manifest_entries_at_path
 
@@ -814,7 +814,7 @@ def _candidate_bundle(directory: Path) -> JsonObject:
     if bundle_path.is_symlink():
         raise VoiceRepairComparisonError("Candidate bundle document is unsafe")
     try:
-        bundle = decode_json(bundle_path.read_text(encoding="utf-8"))
+        bundle = decode_json(read_regular_text(bundle_path, encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise VoiceRepairComparisonError(
             f"Unable to load voice repair candidate input: {error}"
@@ -902,7 +902,7 @@ def _validate_candidate_manifest(
 ) -> None:
     try:
         manifest = decode_json(
-            (directory / "manifest.json").read_text(encoding="utf-8")
+            read_regular_text(directory / "manifest.json", encoding="utf-8")
         )
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise VoiceRepairComparisonError(

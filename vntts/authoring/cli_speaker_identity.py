@@ -28,6 +28,7 @@ from vntts.authoring.speaker_identity_model import (
 )
 from vntts.cli import print_json
 from vntts.json_types import decode_json
+from vntts.path_safety import read_regular_text
 
 COMMANDS = frozenset(
     {
@@ -133,7 +134,9 @@ def handle(arguments: argparse.Namespace) -> int:
 
 def _read_pair_draft(path: str | Path) -> list[object]:
     try:
-        document = decode_json(Path(path).expanduser().resolve().read_text("utf-8"))
+        document = decode_json(
+            read_regular_text(Path(path).expanduser().resolve(), "utf-8")
+        )
     except (OSError, ValueError) as error:
         raise SpeakerIdentityError(
             f"Unable to read labelled-pair draft: {error}"

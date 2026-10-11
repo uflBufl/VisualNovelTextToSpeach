@@ -8,6 +8,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import vntts.authoring.failure_reference_audit as audit_module
 from tests.authoring_fixtures import create_failed_reference_workspace
 from tests.source_reference_fixtures import (
     DeferredCollectedResult as _CollectedResult,
@@ -36,7 +37,7 @@ class FailureReferencePreviewTest(unittest.TestCase):
 
     def swapped_read(self, path, replacement):
         original = path.read_bytes()
-        read_text = Path.read_text
+        read_text = audit_module.read_regular_text
         reads = 0
 
         def read(candidate, *args, **kwargs):
@@ -52,7 +53,7 @@ class FailureReferencePreviewTest(unittest.TestCase):
             finally:
                 path.write_bytes(original)
 
-        return patch.object(Path, "read_text", read)
+        return patch.object(audit_module, "read_regular_text", read)
 
     def test_preview_rejects_text_from_reopened_unvalidated_audit(self):
         with TemporaryDirectory() as directory:

@@ -43,7 +43,12 @@ from vntts.cleanup import attempt_cleanup
 from vntts.document_identity import file_sha256, is_lowercase_sha256, sha256_file
 from vntts.game_audio_decoder import Cancellation, ProgressCallback, ensure_game_decoder
 from vntts.json_types import decode_json
-from vntts.path_safety import contained_regular_file, read_regular_bytes
+from vntts.path_safety import (
+    contained_regular_file,
+    open_regular_text,
+    read_regular_bytes,
+    read_regular_text,
+)
 from vntts.pregeneration_setup import (
     GameContent,
     PregenerationJob,
@@ -297,7 +302,7 @@ class Reverse1999GameImporter:
             return False
         state_path = story_index.parent / "source-inputs.json"
         try:
-            saved = decode_json(state_path.read_text(encoding="utf-8"))
+            saved = decode_json(read_regular_text(state_path, encoding="utf-8"))
         except FileNotFoundError:
             roots = self._previous_installation()
             if roots is None:
@@ -421,7 +426,9 @@ class Reverse1999GameImporter:
     def _previous_installation(self) -> InstallationRoots | None:
         """Prefer durable selection; an existing index can recover older imports."""
         try:
-            saved = decode_json(self.installation_file.read_text(encoding="utf-8"))
+            saved = decode_json(
+                read_regular_text(self.installation_file, encoding="utf-8")
+            )
             if not isinstance(saved, dict):
                 raise ValueError("Invalid saved installation paths")
             values: list[Path] = []
@@ -861,7 +868,7 @@ class Reverse1999GameImporter:
     ) -> tuple[str, ...]:
         cache = story_index.parent / "narrator-characters.json"
         try:
-            saved = decode_json(cache.read_text(encoding="utf-8"))
+            saved = decode_json(read_regular_text(cache, encoding="utf-8"))
             if not isinstance(saved, dict):
                 raise ValueError("Narrator character cache must be an object")
             names = saved["characters"]
@@ -921,7 +928,7 @@ class Reverse1999GameImporter:
         from vntts.support import record_game_import
 
         try:
-            document = decode_json(path.read_text(encoding="utf-8"))
+            document = decode_json(read_regular_text(path, encoding="utf-8"))
         except (OSError, ValueError) as error:
             record_game_import(
                 "bank-index", index=path, reason=str(error), cache_state="unreadable"
@@ -1157,7 +1164,7 @@ class Reverse1999GameImporter:
 
 
 def _read_story_metadata(story_index: Path) -> dict[str, object]:
-    with story_index.open(encoding="utf-8") as stream:
+    with open_regular_text(story_index, encoding="utf-8") as stream:
         metadata = decode_json(stream.readline())
     if not isinstance(metadata, dict):
         raise ValueError("Imported story metadata must be a JSON object")
@@ -1230,7 +1237,7 @@ def _cached_playable_voice_roles(index: Path) -> set[str]:
     checksum = sha256_file(index)
     cache = index.parent / "playable-voice-roles.json"
     try:
-        saved = decode_json(cache.read_text(encoding="utf-8"))
+        saved = decode_json(read_regular_text(cache, encoding="utf-8"))
         if isinstance(saved, dict):
             roles = saved.get("roles")
             if (

@@ -22,7 +22,7 @@ from vntts.document_identity import (
     sha256_file,
 )
 from vntts.json_types import decode_json
-from vntts.path_safety import read_regular_bytes
+from vntts.path_safety import read_regular_bytes, read_regular_text
 
 SILENCE_FAILURE_EVIDENCE_SCHEMA = "vntts.authoring-silence-failure-evidence"
 SILENCE_FAILURE_EVIDENCE_VERSION = 1
@@ -74,7 +74,9 @@ def load_silence_failure_evidence(directory: str | Path) -> dict[str, object]:
     """Validate one rejected-WAV evidence directory without making it reviewable."""
     root = Path(directory).expanduser().resolve()
     try:
-        document = decode_json((root / "evidence.json").read_text(encoding="utf-8"))
+        document = decode_json(
+            read_regular_text(root / "evidence.json", encoding="utf-8")
+        )
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise SilenceFailureEvidenceError(
             f"Unable to read silence-failure evidence: {error}"
