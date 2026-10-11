@@ -46,6 +46,7 @@ from vntts.chapter_voice_preload import (
 from vntts.cleanup import attempt_cleanup
 from vntts.document_identity import canonical_document_sha256, is_sha256, sha256_file
 from vntts.json_types import decode_json, has_schema_version
+from vntts.path_safety import open_regular_binary
 from vntts.person_link_suggestions import (
     PersonLinkSuggestion,
     suggest_person_links,
@@ -1811,7 +1812,10 @@ def _reference_duration_seconds(references: Sequence[Path]) -> float | None:
     total = 0.0
     try:
         for reference in references:
-            with wave.open(str(reference), "rb") as audio:
+            with (
+                open_regular_binary(reference) as source,
+                wave.open(source, "rb") as audio,
+            ):
                 total += audio.getnframes() / audio.getframerate()
     except EOFError, OSError, ValueError, wave.Error, ZeroDivisionError:
         return None

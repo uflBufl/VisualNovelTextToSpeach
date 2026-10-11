@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import unittest
 import wave
 from dataclasses import replace
@@ -11,6 +12,7 @@ from unittest.mock import patch
 from PIL import Image
 from vntts_artifacts.file_integrity import sha256_file
 
+from tests import test_workspace_input_admission as input_admission
 from tests.story_fixtures import write_content
 from tests.voice_manifest_fixtures import (
     write_conflicting_manifest,
@@ -32,6 +34,7 @@ from vntts.pregeneration_voices import (
     VoicePlanStore,
     _load_registry,
     _materialize_voice_catalog,
+    _reference_duration_seconds,
     player_voice_catalog_is_current,
     resolve_pregeneration_settings,
 )
@@ -48,6 +51,23 @@ from vntts.voices import (
 
 
 class VoicePlanStoreTest(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_reference_duration_refuses_fifo_swap_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "reference.wav"
+            with wave.open(str(path), "wb") as audio:
+                audio.setparams((1, 2, 16_000, 0, "NONE", "not compressed"))
+                audio.writeframes(b"\x00\x00" * 16_000)
+            gate = {"path": path, "armed": True}
+            with input_admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                self, gate
+            ):
+                self.assertIsNone(_reference_duration_seconds([path]))
+            self.assertFalse(gate["armed"], "regular file must be swapped at open")
+            self.assertEqual(_reference_duration_seconds([path]), 1.0)
+
     def test_registry_and_manifest_share_one_snapshot_and_recheck_final_bytes(self):
         for restore in (True, False):
             with self.subTest(restore=restore), TemporaryDirectory() as directory:

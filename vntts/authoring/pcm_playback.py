@@ -15,6 +15,7 @@ from numpy.typing import NDArray
 from scipy.signal import resample_poly
 
 from vntts.cleanup import attempt_cleanup, cleanup_on_exit
+from vntts.path_safety import open_regular_binary
 
 
 class PcmPlaybackError(RuntimeError):
@@ -138,7 +139,8 @@ class PersistentPcmPlayer:
     def load(self, path: str | Path) -> PcmClip:
         path = Path(path)
         try:
-            samples, sample_rate = sf.read(path, dtype="float32", always_2d=True)
+            with open_regular_binary(path) as source:
+                samples, sample_rate = sf.read(source, dtype="float32", always_2d=True)
         except (OSError, RuntimeError, sf.SoundFileError) as error:
             raise PcmPlaybackError(f"Unable to decode {path.name}: {error}") from error
         return self._prepare(samples, sample_rate, path.name)

@@ -4,6 +4,8 @@ import stat
 import struct
 import time
 import unittest
+import wave
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Barrier, Event, Lock, Thread
@@ -475,15 +477,16 @@ class AuthoringListeningTest(unittest.TestCase):
             root = Path(directory)
             reports = write_model_reports(root, item_count=1)
             probe = listening_module._probe_supported_wav
-            open_path = Path.open
+            admit = listening_module.open_regular_binary
 
             def bounded_probe(path):
+                @contextmanager
+                def bounded_stream(candidate):
+                    with admit(candidate) as stream:
+                        yield ProbeStream(stream)
+
                 with patch.object(
-                    Path,
-                    "open",
-                    lambda path, *args, **kwargs: ProbeStream(
-                        open_path(path, *args, **kwargs)
-                    ),
+                    listening_module, "open_regular_binary", bounded_stream
                 ):
                     return probe(path)
 
@@ -492,6 +495,26 @@ class AuthoringListeningTest(unittest.TestCase):
             ):
                 path = create_listening_session_from_reports(reports, root / "session")
                 self.assertEqual(len(load_listening_session(path)["trials"]), 1)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_wav_probe_refuses_fifo_swap_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "audio.wav"
+            with wave.open(str(path), "wb") as audio:
+                audio.setparams((1, 2, 16_000, 0, "NONE", "not compressed"))
+                audio.writeframes(b"\x00\x00" * 16_000)
+            gate = {"path": path, "armed": True}
+            with (
+                input_admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                    self, gate
+                ),
+                self.assertRaises(OSError),
+            ):
+                listening_module._probe_supported_wav(path)
+            self.assertFalse(gate["armed"], "regular file must be swapped at open")
+            listening_module._probe_supported_wav(path)
 
     def test_creates_deterministic_blind_trials_without_public_model_names(self):
         with TemporaryDirectory() as directory:

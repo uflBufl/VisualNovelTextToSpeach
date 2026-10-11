@@ -1,3 +1,4 @@
+import os
 import unittest
 from io import BytesIO
 from pathlib import Path
@@ -7,6 +8,7 @@ from unittest.mock import patch
 import numpy as np
 import soundfile as sf
 
+from tests import test_workspace_input_admission as input_admission
 from tests.audio_output_fixtures import FakeAudioModule, FakeOutputStream
 from vntts.authoring.pcm_playback import (
     PcmClip,
@@ -46,6 +48,27 @@ class PersistentPcmPlayerTest(unittest.TestCase):
             prepared_mono.samples[:, 0], prepared_mono.samples[:, 1]
         )
         self.assertEqual(prepared_stereo.samples.shape, (4_800, 2))
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_load_refuses_fifo_swap_and_recovers(self):
+        _audio, player = self.create_player()
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "mono.wav"
+            sf.write(path, np.linspace(-0.5, 0.5, 2_400), 24_000, subtype="PCM_16")
+            gate = {"path": path, "armed": True}
+            with (
+                input_admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                    self, gate
+                ),
+                self.assertRaisesRegex(PcmPlaybackError, "Unable to decode mono.wav"),
+            ):
+                player.load(path)
+            self.assertFalse(gate["armed"], "regular file must be swapped at open")
+            clip = player.load(path)
+        self.assertEqual(clip.sample_rate, 48_000)
+        self.assertEqual(clip.samples.shape, (4_800, 2))
 
     def test_load_bytes_uses_the_same_preparation(self):
         _audio, player = self.create_player()

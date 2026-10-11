@@ -1,6 +1,7 @@
 import hashlib
 import io
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
@@ -8,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from zipfile import ZipFile
 
+from tests import test_workspace_input_admission as input_admission
 from tests.symlink_support import symlink_or_skip
 from vntts import moss_cpp_installation as setup
 from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
@@ -85,6 +87,55 @@ class MossCppInstallationTest(unittest.TestCase):
             probe.assert_called_with(
                 [str(paths[0]), "--help"], cancellation=None, timeout=30
             )
+
+    @unittest.skipUnless(
+        hasattr(setup.os, "mkfifo") and hasattr(setup.os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_hash_refuses_fifo_swap_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "model.gguf"
+            path.write_bytes(b"regular seed")
+            gate = {"path": path, "armed": True}
+            with (
+                input_admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                    self, gate
+                ),
+                self.assertRaises(OSError),
+            ):
+                setup._hash(path, None)
+            self.assertFalse(gate["armed"], "regular file must be swapped at open")
+            self.assertEqual(
+                setup._hash(path, None), hashlib.sha256(b"regular seed").hexdigest()
+            )
+
+    def test_hash_cancellation_stops_after_one_megabyte_chunk(self):
+        cancellation = Event()
+        data = b"A" * (2 * 1024 * 1024)
+        original_admit = setup.open_regular_binary
+        reads = []
+
+        class CancellingStream:
+            def __init__(self, stream):
+                self.stream = stream
+
+            def read(self, size):
+                reads.append(size)
+                chunk = self.stream.read(size)
+                cancellation.set()
+                return chunk
+
+        @contextmanager
+        def admit(path):
+            with original_admit(path) as stream:
+                yield CancellingStream(stream)
+
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "model.gguf"
+            path.write_bytes(data)
+            with patch.object(setup, "open_regular_binary", side_effect=admit):
+                with self.assertRaises(TTSSynthesisError):
+                    setup._hash(path, cancellation)
+        self.assertEqual(reads, [1024 * 1024])
 
     def test_cancelled_download_resumes_and_verifies_before_publication(self):
         data = b"A" * (2 * 1024 * 1024)

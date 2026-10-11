@@ -39,7 +39,7 @@ from vntts.document_identity import (
     sha256_file,
 )
 from vntts.json_types import is_json_object as _is_json_object
-from vntts.path_safety import copy_regular_file
+from vntts.path_safety import copy_regular_file, open_regular_binary
 from vntts.settings import get_local_data_directory
 
 SESSION_SCHEMA = "vntts.model-listening-session"
@@ -1403,7 +1403,7 @@ def _verify_pcm_audio(path: PathInput, expected_hash: object, label: str) -> Non
 
 def _probe_supported_wav(path: PathInput) -> None:
     """Validate the PCM16 or legacy float32 WAV envelope without decoding."""
-    with Path(path).open("rb") as stream:
+    with open_regular_binary(path) as stream:
         header = stream.read(12)
         if (
             len(header) != 12

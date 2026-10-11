@@ -15,6 +15,7 @@ from zipfile import ZipFile
 
 from vntts.application_directories import get_local_data_directory
 from vntts.authoring.advisory_lock import AdvisoryLockBusyError, exclusive_advisory_lock
+from vntts.path_safety import open_regular_binary
 from vntts.runtime_preparation import (
     Cancellation,
     check_runtime_cancelled,
@@ -117,7 +118,7 @@ def managed_download_space(
 
 def _hash(path: Path, cancellation: Cancellation) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as source:
+    with open_regular_binary(path) as source:
         while chunk := source.read(1024 * 1024):
             check_runtime_cancelled(cancellation)
             digest.update(chunk)
