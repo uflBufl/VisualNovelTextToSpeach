@@ -23,6 +23,12 @@ def open_regular_binary(path: str | os.PathLike[str]) -> Iterator[BufferedReader
         yield source
 
 
+def read_regular_bytes(path: str | os.PathLike[str]) -> bytes:
+    """Capture a regular file once, preserving raw filesystem errors."""
+    with open_regular_binary(path) as source:
+        return source.read()
+
+
 def copy_regular_file(
     source: str | Path,
     destination: str | Path,
@@ -124,5 +130,6 @@ __all__ = [
     "no_replace_destination",
     "open_regular_candidate",
     "open_regular_binary",
+    "read_regular_bytes",
     "safe_relative_path",
 ]

@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from tests import test_workspace_input_admission as admission
 from tests.pregeneration_fixtures import ambiguous_fixture
+from tests.symlink_support import symlink_or_skip
 from vntts import (
     assets,
     game_audio_decoder,
@@ -38,6 +39,7 @@ from vntts.live_speaker_corpus import LiveSpeakerCorpus
 from vntts.path_safety import (
     contained_regular_file,
     copy_regular_file,
+    read_regular_bytes,
     safe_relative_path,
 )
 from vntts.runtime_ownership import read_record
@@ -77,6 +79,59 @@ class PathSafetyTest(unittest.TestCase):
 
 
 class RegularFileAdmissionTest(unittest.TestCase):
+    def test_full_byte_capture_retains_raw_errors_and_one_acquisition(self):
+        with TemporaryDirectory() as directory:
+            source = Path(directory) / "input"
+            for payload in (b"", b"\x00\xff\r\n" * 300000):
+                source.write_bytes(payload)
+                with patch("vntts.path_safety.os.open", wraps=os.open) as acquire:
+                    self.assertEqual(read_regular_bytes(str(source)), payload)
+                self.assertEqual(acquire.call_count, 1)
+                self.assertEqual(source.read_bytes(), payload)
+            source.unlink()
+            with self.assertRaises(FileNotFoundError) as missing:
+                read_regular_bytes(source)
+            self.assertEqual(missing.exception.filename, str(source))
+            self.assertIsNone(missing.exception.__cause__)
+            denied = PermissionError(13, "denied", str(source))
+            with (
+                patch("vntts.path_safety.os.open", side_effect=denied),
+                self.assertRaises(PermissionError) as caught,
+            ):
+                read_regular_bytes(source)
+            self.assertIs(caught.exception, denied)
+
+    def test_full_byte_capture_follows_regular_aliases(self):
+        with TemporaryDirectory() as directory:
+            source = Path(directory) / "input"
+            payload = b"\x00\xff\r\nalias payload"
+            source.write_bytes(payload)
+            alias = source.with_name("alias")
+            symlink_or_skip(alias, source)
+            self.assertEqual(read_regular_bytes(alias), payload)
+            self.assertTrue(alias.is_symlink())
+            self.assertEqual(source.read_bytes(), payload)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_full_byte_capture_refuses_swapped_fifo_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            source = Path(directory) / "input"
+            payload = b"\x00\xff\r\ncaptured payload"
+            source.write_bytes(payload)
+            source.chmod(0o444)
+            mode = source.stat().st_mode
+            gate = {"path": source, "armed": True}
+            with (
+                admission.WorkspaceInputAdmissionTest.swap_at_acquisition(self, gate),
+                self.assertRaisesRegex(OSError, "regular file"),
+            ):
+                read_regular_bytes(source)
+            self.assertEqual(read_regular_bytes(source), payload)
+            self.assertEqual(source.stat().st_mode, mode)
+            self.assertEqual(list(Path(directory).iterdir()), [source])
+
     @unittest.skipUnless(hasattr(os, "mkfifo"), "POSIX FIFO admission")
     def test_readers_reject_regular_path_swapped_to_fifo_before_open(self):
         native_open = os.open
