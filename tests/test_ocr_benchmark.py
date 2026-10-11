@@ -8,17 +8,22 @@ from unittest.mock import Mock, patch
 
 from PIL import Image, UnidentifiedImageError
 
-from tests import test_workspace_input_admission as admission
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts import ocr_benchmark
-from vntts.ocr import OCRResult
+from vntts.ocr import OCRResult, VoiceRegistry
 from vntts.ocr_benchmark import benchmark_ocr, main, write_report
 
 
 class FakeOCRBackend:
     name = "fake-ocr"
 
-    def recognize(self, image, registry=None, **options):
-        del image, registry, options
+    def recognize(
+        self,
+        image: Image.Image,
+        voice_registry: VoiceRegistry | None = None,
+        **options: object,
+    ) -> OCRResult:
+        del image, voice_registry, options
         return OCRResult("Kamuta", "Paddle out to Itiiti.", 94.0, "balanced", 1)
 
 
@@ -45,12 +50,15 @@ class OCRBenchmarkTest(unittest.TestCase):
                 cpu_clock=lambda: next(cpu_times),
             )
 
-        self.assertAlmostEqual(report["summary"]["median_latency_ms"], 200.0)
-        self.assertAlmostEqual(report["summary"]["p95_latency_ms"], 300.0)
-        self.assertAlmostEqual(
-            report["summary"]["median_cpu_utilization_percent"],
-            58.33333333333333,
-        )
+        median_latency = report["summary"]["median_latency_ms"]
+        p95_latency = report["summary"]["p95_latency_ms"]
+        cpu_utilization = report["summary"]["median_cpu_utilization_percent"]
+        assert median_latency is not None
+        assert p95_latency is not None
+        assert cpu_utilization is not None
+        self.assertAlmostEqual(median_latency, 200.0)
+        self.assertAlmostEqual(p95_latency, 300.0)
+        self.assertAlmostEqual(cpu_utilization, 58.33333333333333)
         self.assertTrue(report["samples"][0]["speaker_match"])
         self.assertEqual(report["samples"][0]["text_similarity"], 1.0)
 
@@ -63,9 +71,9 @@ class OCRBenchmarkTest(unittest.TestCase):
             Image.new("RGB", (20, 10), "white").save(path)
             backend = Mock(wraps=FakeOCRBackend())
             backend.name = "fake-ocr"
-            gate = {"path": path, "armed": True}
+            gate: RegularFileGate = {"path": path, "armed": True}
             with (
-                admission.WorkspaceInputAdmissionTest.swap_at_acquisition(self, gate),
+                swap_at_acquisition(self, gate),
                 self.assertRaisesRegex(OSError, "not a regular file"),
             ):
                 benchmark_ocr([path], backend=backend, repeats=1, warmups=0)
@@ -129,6 +137,7 @@ class OCRBenchmarkTest(unittest.TestCase):
                         if role == "conversion":
                             self.assertIs(caught.exception, error)
                         elif role == "missing":
+                            assert isinstance(caught.exception, FileNotFoundError)
                             self.assertEqual(caught.exception.filename, str(path))
                         backend.recognize.assert_not_called()
                     else:

@@ -8,10 +8,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import tests.test_workspace_input_admission as admission
 import vntts.authoring.audio_event_composition as composition_module
 from tests.authoring_fixtures import publish_audio_event_review_fixture as publish
 from tests.authoring_fixtures import tree_hashes
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.authoring.audio_event_composition import (
     AudioEventCompositionError,
     load_audio_event_composition,
@@ -48,11 +48,9 @@ class AudioEventCompositionTest(unittest.TestCase):
                     if Path(source) != selected:
                         return original(source, target, **options)
                     self.assertEqual(options, {})
-                    gate = {"path": selected, "armed": True}
+                    gate: RegularFileGate = {"path": selected, "armed": True}
                     with (
-                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                            self, gate
-                        ),
+                        swap_at_acquisition(self, gate),
                         self.assertRaisesRegex(OSError, "regular file") as caught,
                     ):
                         original(source, target, **options)

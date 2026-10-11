@@ -11,8 +11,8 @@ from unittest.mock import patch
 
 from vntts_artifacts.audio import write_pcm16_wav
 
-from tests import test_workspace_input_admission as admission
 from tests.authoring_fixtures import tree_hashes
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.source_reference_fixtures import (
     CompositeRenderer,
     publish_source_reference_quality_fixture,
@@ -86,11 +86,9 @@ class SourceReferenceQualityBoundariesTest(unittest.TestCase):
                     path = Path(candidate)
                     self.assertEqual(path.parent.name, role)
                     digest = hashlib.sha256(path.read_bytes()).hexdigest()
-                    gate = {"path": path, "armed": True}
+                    gate: RegularFileGate = {"path": path, "armed": True}
                     with (
-                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                            self, gate
-                        ),
+                        swap_at_acquisition(self, gate),
                         self.assertRaisesRegex(OSError, "regular file") as caught,
                     ):
                         original(path)
@@ -173,11 +171,12 @@ class SourceReferenceQualityBoundariesTest(unittest.TestCase):
                         def copy(source, target):
                             if not Path(target).name.startswith(phase):
                                 return original(source, target)
-                            gate = {"path": Path(source), "armed": True}
+                            gate: RegularFileGate = {
+                                "path": Path(source),
+                                "armed": True,
+                            }
                             with (
-                                admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                                    self, gate
-                                ),
+                                swap_at_acquisition(self, gate),
                                 self.assertRaisesRegex(
                                     OSError, "regular file"
                                 ) as caught,

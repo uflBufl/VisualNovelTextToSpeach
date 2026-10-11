@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 from PIL import Image, ImageDraw
 
 import vntts.live_replay_capture as live_replay_capture
-from tests import test_workspace_input_admission as admission
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
 from vntts.dialog_capture import (
     CapturedDialogFrame,
@@ -162,11 +162,9 @@ class LiveReplayCaptureTest(unittest.TestCase):
 
                 def checksum(candidate):
                     self.assertEqual(Path(candidate), story)
-                    gate = {"path": story, "armed": True}
+                    gate: RegularFileGate = {"path": story, "armed": True}
                     with (
-                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                            self, gate
-                        ),
+                        swap_at_acquisition(self, gate),
                         self.assertRaisesRegex(OSError, "regular file") as caught,
                     ):
                         original_acquisition(candidate)
@@ -275,11 +273,9 @@ class LiveReplayCaptureTest(unittest.TestCase):
                 def checksum(candidate):
                     if Path(candidate) != selected:
                         return original_hash(candidate)
-                    gate = {"path": selected, "armed": True}
+                    gate: RegularFileGate = {"path": selected, "armed": True}
                     with (
-                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                            self, gate
-                        ),
+                        swap_at_acquisition(self, gate),
                         self.assertRaisesRegex(OSError, "regular file") as caught,
                     ):
                         original_hash(candidate)

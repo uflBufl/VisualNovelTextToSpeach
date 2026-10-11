@@ -13,8 +13,8 @@ from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
 )
 
-from tests import test_workspace_input_admission as admission
 from tests.authoring_fixtures import tree_hashes, write_legacy_fixture
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.authoring import legacy_import as legacy_module
 from vntts.authoring.cli import main
 from vntts.authoring.legacy_import import (
@@ -59,11 +59,9 @@ class LegacyAuthoringImportTest(unittest.TestCase):
                         ):
                             return original(path)
                         self.assertEqual(staged_manifest, phase == "prepublication")
-                        gate = {"path": source, "armed": True}
+                        gate: RegularFileGate = {"path": source, "armed": True}
                         with (
-                            admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                                self, gate
-                            ),
+                            swap_at_acquisition(self, gate),
                             self.assertRaisesRegex(OSError, "regular file") as caught,
                         ):
                             original(path)
@@ -126,11 +124,9 @@ class LegacyAuthoringImportTest(unittest.TestCase):
                     def copy(path, target, **kwargs):
                         if Path(path) != source:
                             return original_copy(path, target, **kwargs)
-                        gate = {"path": source, "armed": True}
+                        gate: RegularFileGate = {"path": source, "armed": True}
                         with (
-                            admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                                self, gate
-                            ),
+                            swap_at_acquisition(self, gate),
                             self.assertRaisesRegex(OSError, "regular file") as caught,
                         ):
                             original_copy(path, target, **kwargs)

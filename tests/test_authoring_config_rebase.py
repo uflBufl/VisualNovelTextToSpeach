@@ -16,12 +16,12 @@ from vntts_artifacts.voice_generation_queue import (
     write_voice_generation_queue,
 )
 
-import tests.test_workspace_input_admission as admission
 import vntts.authoring.config_rebase as config_rebase_module
 from tests.authoring_fixtures import (
     create_carry_source_workspace,
     write_carry_target_manifest,
 )
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     authorize_live_fallback,
@@ -108,11 +108,9 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
 
             def checksum(path):
                 self.assertEqual(path, destination)
-                gate = {"path": destination, "armed": True}
+                gate: RegularFileGate = {"path": destination, "armed": True}
                 with (
-                    admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                        self, gate
-                    ),
+                    swap_at_acquisition(self, gate),
                     self.assertRaisesRegex(OSError, "regular file") as caught,
                 ):
                     original(path)

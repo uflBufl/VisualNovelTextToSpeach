@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 from vntts_artifacts.voice_manifest import load_voice_manifest
 
-from tests import test_workspace_input_admission as admission
 from tests.authoring_fixtures import tree_hashes
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.source_reference_fixtures import (
     write_experimental_composite_voice_fixture,
     write_experimental_composite_wav,
@@ -48,11 +48,9 @@ class AuthoringExperimentalCompositeVoiceTest(unittest.TestCase):
                 def copy(source, target, **kwargs):
                     if Path(source) != selected:
                         return original(source, target, **kwargs)
-                    gate = {"path": selected, "armed": True}
+                    gate: RegularFileGate = {"path": selected, "armed": True}
                     with (
-                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                            self, gate
-                        ),
+                        swap_at_acquisition(self, gate),
                         self.assertRaisesRegex(OSError, "regular file") as caught,
                     ):
                         original(source, target, **kwargs)

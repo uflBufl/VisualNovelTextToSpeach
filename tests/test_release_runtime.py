@@ -11,8 +11,8 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from tests import test_workspace_input_admission as admission
 from tests.authoring_fixtures import tree_hashes
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
 from vntts import release_runtime as runtime_module
 from vntts.release_runtime import (
@@ -76,11 +76,9 @@ class ReleaseRuntimeTest(unittest.TestCase):
                 def copy(original, target, **options):
                     if Path(original) != source:
                         return original_copy(original, target, **options)
-                    gate = {"path": source, "armed": True}
+                    gate: RegularFileGate = {"path": source, "armed": True}
                     with (
-                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                            self, gate
-                        ),
+                        swap_at_acquisition(self, gate),
                         self.assertRaisesRegex(OSError, "regular file") as caught,
                     ):
                         original_copy(original, target, **options)
@@ -169,11 +167,9 @@ class ReleaseRuntimeTest(unittest.TestCase):
                     targets.append(target)
                     if Path(original) != source:
                         return original_copy(original, target, **options)
-                    gate = {"path": source, "armed": True}
+                    gate: RegularFileGate = {"path": source, "armed": True}
                     with (
-                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                            self, gate
-                        ),
+                        swap_at_acquisition(self, gate),
                         self.assertRaisesRegex(OSError, "regular file") as caught,
                     ):
                         original_copy(original, target, **options)

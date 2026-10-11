@@ -1,11 +1,8 @@
-import builtins
 import hashlib
-import io
 import json
 import os
 import stat
 import unittest
-from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -21,6 +18,7 @@ from tests.authoring_fixtures import (
 from tests.missing_voice_reuse_fixtures import (
     create_missing_voice_live_fallback_fixture,
 )
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
 from vntts.authoring import failure_reference_audit as audit
 from vntts.authoring import known_role_reuse as known_role
@@ -33,68 +31,6 @@ from vntts.authoring.workbench_contracts import AuthoringWorkbenchError
 
 
 class WorkspaceInputAdmissionTest(unittest.TestCase):
-    @contextmanager
-    def swap_at_acquisition(self, gate):
-        native_open = os.open
-        native_builtin_open, native_io_open = builtins.open, io.open
-        descriptors = []
-        saved = None
-        saved_mode = None
-
-        def selected(path):
-            return (
-                gate["armed"]
-                and isinstance(path, (str, Path))
-                and (Path(path) == gate["path"])
-            )
-
-        def guarded_open(owner, path, *args, **kwargs):
-            if selected(path):
-                self.assertIsNotNone(kwargs.get("opener"), "blocking source open")
-            return owner(path, *args, **kwargs)
-
-        def swap_and_open(path, flags, mode=0o777, *, dir_fd=None):
-            nonlocal saved, saved_mode
-            if selected(path):
-                self.assertTrue(flags & os.O_NONBLOCK)
-                self.assertIsNone(saved, "source must stop after refused acquisition")
-                # Save outside the open guard before swapping the admitted candidate.
-                gate["armed"] = False
-                saved_mode = stat.S_IMODE(Path(path).stat().st_mode)
-                saved = Path(path).read_bytes()
-                gate["armed"] = True
-                Path(path).unlink()
-                os.mkfifo(path)
-            descriptor = native_open(path, flags, mode, dir_fd=dir_fd)
-            if selected(path):
-                descriptors.append(descriptor)
-            return descriptor
-
-        try:
-            with (
-                patch("vntts.path_safety.os.open", side_effect=swap_and_open),
-                patch(
-                    "builtins.open",
-                    side_effect=lambda *a, **k: guarded_open(
-                        native_builtin_open, *a, **k
-                    ),
-                ),
-                patch(
-                    "io.open",
-                    side_effect=lambda *a, **k: guarded_open(native_io_open, *a, **k),
-                ),
-            ):
-                yield
-            self.assertEqual(len(descriptors), 1)
-            with self.assertRaises(OSError):
-                os.fstat(descriptors[0])
-        finally:
-            gate["armed"] = False
-            if saved is not None:
-                gate["path"].unlink()
-                gate["path"].write_bytes(saved)
-                gate["path"].chmod(saved_mode)
-
     @unittest.skipUnless(
         hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
     )
@@ -121,9 +57,9 @@ class WorkspaceInputAdmissionTest(unittest.TestCase):
                 def copy(source, target, **kwargs):
                     if Path(source) != selected:
                         return original(source, target, **kwargs)
-                    gate = {"path": selected, "armed": True}
+                    gate: RegularFileGate = {"path": selected, "armed": True}
                     with (
-                        self.swap_at_acquisition(gate),
+                        swap_at_acquisition(self, gate),
                         self.assertRaisesRegex(OSError, "regular file") as caught,
                     ):
                         original(source, target, **kwargs)
@@ -169,7 +105,10 @@ class WorkspaceInputAdmissionTest(unittest.TestCase):
                 root = Path(directory).resolve()
                 fixture, imported, expected = create_test_workspace(root)
                 destination = root / "successors"
-                gate = {"path": Path(fixture["job"]["story_index"]), "armed": False}
+                gate: RegularFileGate = {
+                    "path": Path(fixture["job"]["story_index"]),
+                    "armed": False,
+                }
                 boundary = (
                     "_read_source_bytes"
                     if phase == "capture"
@@ -195,7 +134,7 @@ class WorkspaceInputAdmissionTest(unittest.TestCase):
 
                 before = tree_hashes(root)
                 with (
-                    self.swap_at_acquisition(gate),
+                    swap_at_acquisition(self, gate),
                     patch.object(creation, boundary, side_effect=arm),
                     self.assertRaisesRegex(AuthoringWorkbenchError, "regular file"),
                 ):
@@ -238,7 +177,7 @@ class WorkspaceInputAdmissionTest(unittest.TestCase):
 
                 expected = create(root / "expected")
                 source_before = tree_hashes(source.directory)
-                gate = {"path": None, "armed": False}
+                gate: RegularFileGate = {"path": None, "armed": False}
                 original = creation._publish_carry_forward_staging
 
                 def arm(target, state, captured, snapshots):
@@ -251,7 +190,7 @@ class WorkspaceInputAdmissionTest(unittest.TestCase):
 
                 before = tree_hashes(root)
                 with (
-                    self.swap_at_acquisition(gate),
+                    swap_at_acquisition(self, gate),
                     patch.object(
                         creation, "_publish_carry_forward_staging", side_effect=arm
                     ),
@@ -276,7 +215,10 @@ class WorkspaceInputAdmissionTest(unittest.TestCase):
                     root, "sentence_boundary_segmentation", "a"
                 )
                 expected = specialist.build_specialist_failure_plan((workspace,))
-                gate = {"path": workspace / "workspace.json", "armed": False}
+                gate: RegularFileGate = {
+                    "path": workspace / "workspace.json",
+                    "armed": False,
+                }
                 reads = 0
                 original_read, original_body = (
                     specialist._read,
@@ -297,7 +239,7 @@ class WorkspaceInputAdmissionTest(unittest.TestCase):
 
                 before = tree_hashes(root)
                 with (
-                    self.swap_at_acquisition(gate),
+                    swap_at_acquisition(self, gate),
                     patch.object(
                         specialist,
                         "_read",
@@ -423,9 +365,9 @@ class WorkspaceInputAdmissionTest(unittest.TestCase):
                 with self.subTest(loader=loader.__name__):
                     path.write_bytes(payload)
                     expected = loader(path, "test", error_type=AuthoringWorkbenchError)
-                    gate = {"path": path, "armed": True}
+                    gate: RegularFileGate = {"path": path, "armed": True}
                     with (
-                        self.swap_at_acquisition(gate),
+                        swap_at_acquisition(self, gate),
                         self.assertRaisesRegex(
                             AuthoringWorkbenchError, "regular file"
                         ) as caught,
@@ -464,7 +406,7 @@ class WorkspaceInputAdmissionTest(unittest.TestCase):
                     workspace, root / "expected", seed=7
                 )
                 output = root / "audit"
-                gate = {"path": workspace / name, "armed": False}
+                gate: RegularFileGate = {"path": workspace / name, "armed": False}
                 boundary = {
                     "capture": "load_workspace_authority",
                     "final": "_assert_audit_publication_sources_unchanged",
@@ -484,7 +426,7 @@ class WorkspaceInputAdmissionTest(unittest.TestCase):
 
                 before = tree_hashes(root)
                 with (
-                    self.swap_at_acquisition(gate),
+                    swap_at_acquisition(self, gate),
                     patch.object(audit, boundary, side_effect=arm),
                     self.assertRaisesRegex(
                         audit.FailureReferenceAuditError, "regular file"
@@ -533,7 +475,7 @@ class WorkspaceInputAdmissionTest(unittest.TestCase):
 
             before = tree_hashes(root)
             with (
-                self.swap_at_acquisition(gate),
+                swap_at_acquisition(self, gate),
                 patch.object(
                     known_role, "load_stable_generation_queue", side_effect=arm
                 ),
@@ -633,7 +575,7 @@ class WorkspaceInputAdmissionTest(unittest.TestCase):
                 )
                 before = tree_hashes(root)
                 with (
-                    self.swap_at_acquisition(gate),
+                    swap_at_acquisition(self, gate),
                     patch.object(audit, boundary, side_effect=arm),
                     self.assertRaisesRegex(error_type, "regular file"),
                 ):
@@ -664,7 +606,7 @@ class WorkspaceInputAdmissionTest(unittest.TestCase):
                 expected = audit.publish_failure_reference_audit(
                     workspace, root / "expected", seed=7
                 )
-                gate = {"path": None, "armed": False}
+                gate: RegularFileGate = {"path": None, "armed": False}
                 if phase in {"copy", "staged", "final"}:
                     if phase in {"copy", "staged"}:
                         boundary = (
@@ -676,7 +618,7 @@ class WorkspaceInputAdmissionTest(unittest.TestCase):
                             gate["path"] = Path(path)
                             gate["armed"] = True
                             with (
-                                self.swap_at_acquisition(gate),
+                                swap_at_acquisition(self, gate),
                                 self.assertRaises(OSError) as caught,
                             ):
                                 original(path, *args, **kwargs)
@@ -703,7 +645,7 @@ class WorkspaceInputAdmissionTest(unittest.TestCase):
                                 )
                         else:
                             with (
-                                self.swap_at_acquisition(gate),
+                                swap_at_acquisition(self, gate),
                                 self.assertRaisesRegex(
                                     audit.FailureReferenceAuditError, "regular file"
                                 ),
@@ -741,7 +683,7 @@ class WorkspaceInputAdmissionTest(unittest.TestCase):
 
                     before = tree_hashes(root)
                     with (
-                        self.swap_at_acquisition(gate),
+                        swap_at_acquisition(self, gate),
                         patch.object(audit, boundary, side_effect=arm),
                         self.assertRaisesRegex(OSError, "regular file"),
                     ):

@@ -12,9 +12,9 @@ from threading import Event, Thread
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import tests.test_workspace_input_admission as admission
 import vntts.voice_library as voice_library
 from tests.authoring_fixtures import tree_hashes
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.voice_library import VoiceLibrary, VoiceLibraryError, VoiceSelection
 
 
@@ -437,11 +437,9 @@ class VoiceLibraryTest(unittest.TestCase):
                 def copy(original, target, **kwargs):
                     if Path(original) != selected:
                         return original_copy(original, target, **kwargs)
-                    gate = {"path": selected, "armed": True}
+                    gate: RegularFileGate = {"path": selected, "armed": True}
                     with (
-                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                            self, gate
-                        ),
+                        swap_at_acquisition(self, gate),
                         self.assertRaisesRegex(OSError, "regular file") as caught,
                     ):
                         original_copy(original, target, **kwargs)

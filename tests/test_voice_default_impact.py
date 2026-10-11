@@ -6,11 +6,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import tests.test_workspace_input_admission as admission
 import vntts.voice_default_impact as impact_module
 import vntts.voice_library as voice_library
 from tests.authoring_fixtures import tree_hashes
 from tests.pregeneration_fixtures import voice_impact_fixture
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.pregeneration_setup import (
     load_verified_story_index_document,
 )
@@ -55,11 +55,9 @@ class VoiceDefaultImpactTest(unittest.TestCase):
                 self.assertTrue(
                     (directories[-1] / "current-voices" / library.path.name).is_file()
                 )
-                gate = {"path": proposed.path, "armed": True}
+                gate: RegularFileGate = {"path": proposed.path, "armed": True}
                 with (
-                    admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                        self, gate
-                    ),
+                    swap_at_acquisition(self, gate),
                     self.assertRaisesRegex(OSError, "regular file") as caught,
                 ):
                     original_copy(original, target, **kwargs)

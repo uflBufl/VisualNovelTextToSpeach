@@ -7,13 +7,13 @@ from unittest.mock import patch
 
 from vntts_artifacts.file_integrity import sha256_file
 
-from tests import test_workspace_input_admission as admission
 from tests.authoring_fixtures import tree_hashes
 from tests.missing_voice_reuse_fixtures import (
     build_failed_missing_voice_reuse_plan_fixture,
     create_missing_voice_reuse_binding_review,
     create_missing_voice_reuse_workspace,
 )
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.authoring import missing_voice_reuse_binding as binding_module
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.missing_voice_reuse import write_missing_voice_reuse_plan
@@ -105,11 +105,9 @@ class AuthoringMissingVoiceReuseBindingTest(unittest.TestCase):
             refused = []
 
             def copy(source, target):
-                gate = {"path": Path(source), "armed": True}
+                gate: RegularFileGate = {"path": Path(source), "armed": True}
                 with (
-                    admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                        self, gate
-                    ),
+                    swap_at_acquisition(self, gate),
                     self.assertRaisesRegex(OSError, "regular file") as caught,
                 ):
                     original(source, target)

@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 
 import psutil
 
-from tests import test_workspace_input_admission as admission
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.authoring import generation_lease as lease_module
 from vntts.authoring.generation_lease import (
     BulkGenerationError,
@@ -91,11 +91,9 @@ class ProcessInspectionTests(unittest.TestCase):
 
             def refuse_capture(path):
                 self.assertEqual(path, lease.path)
-                gate = {"path": path, "armed": True}
+                gate: RegularFileGate = {"path": path, "armed": True}
                 with (
-                    admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                        self, gate
-                    ),
+                    swap_at_acquisition(self, gate),
                     self.assertRaisesRegex(OSError, "regular file") as caught,
                 ):
                     original(path)
@@ -166,11 +164,9 @@ class ProcessInspectionTests(unittest.TestCase):
                     calls.append(path)
                     if len(calls) != selected_call:
                         return original(path)
-                    gate = {"path": path, "armed": True}
+                    gate: RegularFileGate = {"path": path, "armed": True}
                     with (
-                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                            self, gate
-                        ),
+                        swap_at_acquisition(self, gate),
                         self.assertRaisesRegex(OSError, "regular file") as caught,
                     ):
                         original(path)

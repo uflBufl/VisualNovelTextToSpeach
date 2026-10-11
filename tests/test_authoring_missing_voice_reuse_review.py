@@ -9,7 +9,6 @@ from unittest.mock import patch
 
 from vntts_artifacts.file_integrity import sha256_file
 
-from tests import test_workspace_input_admission as input_admission
 from tests.authoring_fixtures import tree_hashes
 from tests.missing_voice_reuse_fixtures import (
     _write_wav as write_wav,
@@ -20,6 +19,7 @@ from tests.missing_voice_reuse_fixtures import (
     create_missing_voice_reuse_review_fixture,
     create_missing_voice_reuse_workspace,
 )
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.authoring import missing_voice_reuse_review as review_module
 from vntts.authoring.advisory_lock import (
     AdvisoryLockBusyError,
@@ -91,11 +91,9 @@ class AuthoringMissingVoiceReuseReviewTest(unittest.TestCase):
             link = review_module._link_or_copy
 
             def refuse(source, target):
-                gate = {"path": Path(source), "armed": True}
+                gate: RegularFileGate = {"path": Path(source), "armed": True}
                 with (
-                    input_admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                        self, gate
-                    ),
+                    swap_at_acquisition(self, gate),
                     patch.object(
                         review_module.os, "link", side_effect=OSError("no links")
                     ),

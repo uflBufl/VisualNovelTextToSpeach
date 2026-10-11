@@ -11,9 +11,9 @@ from unittest.mock import patch
 import numpy as np
 from vntts_artifacts.audio import write_pcm16_wav
 
-import tests.test_workspace_input_admission as admission
 import vntts.authoring.reference_selection as selection_module
 from tests.authoring_fixtures import tree_hashes
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.reference_selection import (
@@ -88,11 +88,9 @@ class AuthoringReferenceSelectionTest(unittest.TestCase):
                 def checksum(path):
                     if Path(path) != selected:
                         return original(path)
-                    gate = {"path": selected, "armed": True}
+                    gate: RegularFileGate = {"path": selected, "armed": True}
                     with (
-                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                            self, gate
-                        ),
+                        swap_at_acquisition(self, gate),
                         self.assertRaisesRegex(OSError, "regular file") as caught,
                     ):
                         original(path)

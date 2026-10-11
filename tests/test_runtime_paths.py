@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 
 import pytesseract
 
-from tests import test_workspace_input_admission as admission
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
 from vntts import runtime_paths
 from vntts.package_self_test import (
@@ -54,11 +54,9 @@ class RuntimePathsTest(unittest.TestCase):
                 def capture(candidate):
                     if candidate != selected:
                         return original(candidate)
-                    gate = {"path": selected, "armed": True}
+                    gate: RegularFileGate = {"path": selected, "armed": True}
                     with (
-                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                            self, gate
-                        ),
+                        swap_at_acquisition(self, gate),
                         self.assertRaisesRegex(OSError, "regular file") as caught,
                     ):
                         original(candidate)

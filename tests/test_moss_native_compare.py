@@ -15,10 +15,10 @@ from unittest.mock import Mock, patch
 
 from scripts import moss_native_compare as compare
 from scripts import moss_native_pause_probe as probe
-from tests import test_workspace_input_admission as admission
 from tests.authoring_fixtures import tree_hashes
 from tests.native_moss_fixtures import FakeNativeBackend as _FakeBackend
 from tests.pregeneration_fixtures import clean_wav_bytes
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.services.tts_engine import TTSConfigurationError
 from vntts.settings import AppSettings
 from vntts.synthesis import SynthesisCachePolicy, SynthesisCompletion
@@ -366,11 +366,9 @@ class MossNativeCompareTest(unittest.TestCase):
                 refused = []
 
                 def copy(source, snapshot):
-                    gate = {"path": reference, "armed": True}
+                    gate: RegularFileGate = {"path": reference, "armed": True}
                     with (
-                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                            self, gate
-                        ),
+                        swap_at_acquisition(self, gate),
                         self.assertRaisesRegex(OSError, "regular file") as caught,
                     ):
                         original(source, snapshot)

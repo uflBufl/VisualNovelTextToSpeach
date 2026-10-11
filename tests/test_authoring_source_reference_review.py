@@ -23,8 +23,8 @@ from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_mani
 
 import vntts.authoring.source_reference_review as source_review_module
 import vntts.story_index_snapshot as story_snapshot_module
-from tests import test_workspace_input_admission as admission
 from tests.authoring_fixtures import tree_hashes
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.source_reference_fixtures import (
     EvaluationRenderer,
     candidate_key,
@@ -148,11 +148,9 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
                     def copy(source, target):
                         if component not in Path(target).parts:
                             return original(source, target)
-                        gate = {"path": Path(source), "armed": True}
+                        gate: RegularFileGate = {"path": Path(source), "armed": True}
                         with (
-                            admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                                self, gate
-                            ),
+                            swap_at_acquisition(self, gate),
                             self.assertRaisesRegex(OSError, "regular file") as caught,
                         ):
                             original(source, target)

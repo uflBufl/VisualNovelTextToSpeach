@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 
 from PIL import Image
 
-from tests import test_workspace_input_admission as admission
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts import release_smoke_test
 from vntts.ocr import OCRResult
 from vntts.release_smoke_test import run_release_smoke_test
@@ -86,8 +86,8 @@ class ReleaseSmokeTest(unittest.TestCase):
             )
             engine_factory = Mock(return_value=Mock(speak=Mock(return_value=True)))
             report = root / "report.json"
-            gate = {"path": path, "armed": True}
-            with admission.WorkspaceInputAdmissionTest.swap_at_acquisition(self, gate):
+            gate: RegularFileGate = {"path": path, "armed": True}
+            with swap_at_acquisition(self, gate):
                 refused = run_release_smoke_test(
                     image_path=path,
                     report_path=report,

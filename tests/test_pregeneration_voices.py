@@ -12,7 +12,7 @@ from unittest.mock import patch
 from PIL import Image
 from vntts_artifacts.file_integrity import sha256_file
 
-from tests import test_workspace_input_admission as input_admission
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.story_fixtures import write_content
 from tests.voice_manifest_fixtures import (
     write_conflicting_manifest,
@@ -60,10 +60,8 @@ class VoicePlanStoreTest(unittest.TestCase):
             with wave.open(str(path), "wb") as audio:
                 audio.setparams((1, 2, 16_000, 0, "NONE", "not compressed"))
                 audio.writeframes(b"\x00\x00" * 16_000)
-            gate = {"path": path, "armed": True}
-            with input_admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                self, gate
-            ):
+            gate: RegularFileGate = {"path": path, "armed": True}
+            with swap_at_acquisition(self, gate):
                 self.assertIsNone(_reference_duration_seconds([path]))
             self.assertFalse(gate["armed"], "regular file must be swapped at open")
             self.assertEqual(_reference_duration_seconds([path]), 1.0)

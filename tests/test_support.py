@@ -13,8 +13,8 @@ from uuid import uuid4
 
 from PIL import Image
 
-import tests.test_workspace_input_admission as admission
 import vntts.support as support_module
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
 from vntts.diagnostics import DiagnosticSnapshot
 from vntts.settings import AppSettings
@@ -1484,11 +1484,9 @@ class SupportBundleBuilderTest(unittest.TestCase):
 
             def checksum(candidate):
                 self.assertEqual(Path(candidate), path)
-                gate = {"path": path, "armed": True}
+                gate: RegularFileGate = {"path": path, "armed": True}
                 with (
-                    admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                        self, gate
-                    ),
+                    swap_at_acquisition(self, gate),
                     self.assertRaisesRegex(OSError, "regular file") as caught,
                 ):
                     original_hash(candidate)

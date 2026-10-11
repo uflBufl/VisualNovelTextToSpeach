@@ -8,11 +8,11 @@ from unittest.mock import patch
 
 from vntts_artifacts.voice_manifest import load_voice_manifest
 
-from tests import test_workspace_input_admission as admission
 from tests.authoring_fixtures import tree_hashes
 from tests.missing_voice_reuse_fixtures import (
     create_missing_voice_live_fallback_fixture,
 )
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
 from vntts.authoring import known_role_reuse as known_role_module
 from vntts.authoring.known_role_reuse import (
@@ -276,12 +276,10 @@ class AuthoringKnownRoleReuseTest(unittest.TestCase):
                         else {},
                     )
                     acquired.append(Path(path))
-                    gate = {"path": Path(path), "armed": True}
+                    gate: RegularFileGate = {"path": Path(path), "armed": True}
                     # Restore staged candidates before publication cleanup removes them.
                     with (
-                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                            self, gate
-                        ),
+                        swap_at_acquisition(self, gate),
                         self.assertRaisesRegex(OSError, "regular file") as refused,
                     ):
                         operation(path, *args, **kwargs)
@@ -332,9 +330,9 @@ class AuthoringKnownRoleReuseTest(unittest.TestCase):
             source = root / "reference.wav"
             payload = b"exact-reference"
             source.write_bytes(payload)
-            gate = {"path": source, "armed": True}
+            gate: RegularFileGate = {"path": source, "armed": True}
             with (
-                admission.WorkspaceInputAdmissionTest.swap_at_acquisition(self, gate),
+                swap_at_acquisition(self, gate),
                 self.assertRaisesRegex(OSError, "regular file"),
             ):
                 known_role_module._reference_records(root, (source.name,))
@@ -356,9 +354,9 @@ class AuthoringKnownRoleReuseTest(unittest.TestCase):
             payload = b"exact-authority"
             source.write_bytes(payload)
             destination = root / "copied"
-            gate = {"path": source, "armed": True}
+            gate: RegularFileGate = {"path": source, "armed": True}
             with (
-                admission.WorkspaceInputAdmissionTest.swap_at_acquisition(self, gate),
+                swap_at_acquisition(self, gate),
                 self.assertRaisesRegex(OSError, "regular file"),
             ):
                 known_role_module._copy_tree(authority, destination)

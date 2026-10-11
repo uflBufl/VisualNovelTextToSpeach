@@ -8,9 +8,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import tests.test_workspace_input_admission as admission
 import vntts.assets as assets_module
 from tests.authoring_fixtures import tree_hashes
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
 from vntts.assets import VoicePackManager
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
@@ -54,10 +54,8 @@ class AssetInputAdmissionTest(unittest.TestCase):
                     invoke = partial(manager.import_pack, source, pack_name="custom")
                 path = source if phase == "pack manifest" else reference
                 error_type = VoiceManifestError if phase == "pack manifest" else OSError
-                gate = {"path": path, "armed": True}
-                with admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                    self, gate
-                ):
+                gate: RegularFileGate = {"path": path, "armed": True}
+                with swap_at_acquisition(self, gate):
                     with self.assertRaisesRegex(error_type, "regular file"):
                         invoke()
                 self.assertEqual((manifest.read_bytes(), checksum.read_bytes()), prior)
@@ -104,11 +102,9 @@ class AssetInputAdmissionTest(unittest.TestCase):
                     def copy(original, target, **kwargs):
                         if Path(original) != selected:
                             return original_copy(original, target, **kwargs)
-                        gate = {"path": selected, "armed": True}
+                        gate: RegularFileGate = {"path": selected, "armed": True}
                         with (
-                            admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                                self, gate
-                            ),
+                            swap_at_acquisition(self, gate),
                             self.assertRaisesRegex(OSError, "regular file") as caught,
                         ):
                             original_copy(original, target, **kwargs)

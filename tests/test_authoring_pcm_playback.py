@@ -8,8 +8,8 @@ from unittest.mock import patch
 import numpy as np
 import soundfile as sf
 
-from tests import test_workspace_input_admission as input_admission
 from tests.audio_output_fixtures import FakeAudioModule, FakeOutputStream
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.authoring.pcm_playback import (
     PcmClip,
     PcmPlaybackError,
@@ -57,11 +57,9 @@ class PersistentPcmPlayerTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "mono.wav"
             sf.write(path, np.linspace(-0.5, 0.5, 2_400), 24_000, subtype="PCM_16")
-            gate = {"path": path, "armed": True}
+            gate: RegularFileGate = {"path": path, "armed": True}
             with (
-                input_admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                    self, gate
-                ),
+                swap_at_acquisition(self, gate),
                 self.assertRaisesRegex(PcmPlaybackError, "Unable to decode mono.wav"),
             ):
                 player.load(path)

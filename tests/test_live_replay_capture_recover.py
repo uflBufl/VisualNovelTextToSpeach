@@ -11,7 +11,7 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.live_sequence import write_live_sequence_plan
 
 import vntts.live_replay_capture_recover as recovery
-from tests import test_workspace_input_admission as admission
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.authoring.publication import AtomicPublicationError
 from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.dialog_capture import (
@@ -154,11 +154,9 @@ class LiveReplayCaptureRecoverTest(unittest.TestCase):
                 selected = Path(candidate)
                 self.assertEqual(selected.name, "observation-ledger.json")
                 self.assertNotEqual(selected.parent, captured.directory)
-                gate = {"path": selected, "armed": True}
+                gate: RegularFileGate = {"path": selected, "armed": True}
                 with (
-                    admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                        self, gate
-                    ),
+                    swap_at_acquisition(self, gate),
                     self.assertRaisesRegex(OSError, "regular file") as caught,
                 ):
                     original_hash(candidate)

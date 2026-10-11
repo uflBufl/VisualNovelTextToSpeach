@@ -7,7 +7,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import tests.test_workspace_input_admission as workspace_input_admission
 import vntts.story_index_snapshot as story_snapshot_module
 from tests.authoring_fixtures import tree_hashes
 from tests.missing_voice_reuse_fixtures import (
@@ -15,6 +14,7 @@ from tests.missing_voice_reuse_fixtures import (
     build_missing_voice_reuse_plan_fixture,
     create_missing_voice_reuse_workspace,
 )
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.authoring import missing_voice_reuse as reuse_module
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.missing_voice_reuse import (
@@ -83,7 +83,7 @@ class AuthoringMissingVoiceReuseTest(unittest.TestCase):
             )
             input_root = root / "candidate-inputs"
             workspaces_root = root / "candidate-workspaces"
-            gate = {"path": source, "armed": False}
+            gate: RegularFileGate = {"path": source, "armed": False}
             failures = []
             original_copy = reuse_module.copy_regular_file
 
@@ -91,9 +91,7 @@ class AuthoringMissingVoiceReuseTest(unittest.TestCase):
                 if original != source:
                     return original_copy(original, target)
                 gate["armed"] = True
-                with workspace_input_admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                    self, gate
-                ):
+                with swap_at_acquisition(self, gate):
                     try:
                         original_copy(original, target)
                     except OSError as error:

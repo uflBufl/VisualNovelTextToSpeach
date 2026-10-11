@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from zipfile import ZipFile
 
-from tests import test_workspace_input_admission as input_admission
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
 from vntts import moss_cpp_installation as setup
 from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
@@ -95,11 +95,9 @@ class MossCppInstallationTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "model.gguf"
             path.write_bytes(b"regular seed")
-            gate = {"path": path, "armed": True}
+            gate: RegularFileGate = {"path": path, "armed": True}
             with (
-                input_admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                    self, gate
-                ),
+                swap_at_acquisition(self, gate),
                 self.assertRaises(OSError),
             ):
                 setup._hash(path, None)

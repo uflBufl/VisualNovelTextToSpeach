@@ -22,7 +22,6 @@ from vntts_artifacts.voice_generation_queue import (
     write_voice_generation_queue,
 )
 
-import tests.test_workspace_input_admission as admission
 import vntts.authoring.bulk_generation as bulk_generation_module
 import vntts.authoring.reconciliation_merge as reconciliation_merge_module
 import vntts.authoring.workbench as workbench_module
@@ -41,6 +40,7 @@ from tests.authoring_fixtures import (
     write_carry_target_manifest,
     write_legacy_fixture,
 )
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.cli import main as authoring_main
@@ -690,11 +690,9 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 self.assertEqual(
                     Path(source).read_bytes(), (imported / "queue.jsonl").read_bytes()
                 )
-                gate = {"path": Path(source), "armed": True}
+                gate: RegularFileGate = {"path": Path(source), "armed": True}
                 with (
-                    admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                        self, gate
-                    ),
+                    swap_at_acquisition(self, gate),
                     self.assertRaisesRegex(OSError, "regular file") as caught,
                 ):
                     original(source, target, **options)

@@ -10,9 +10,9 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import write_story_index_document
 from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 
-from tests import test_workspace_input_admission as admission
 from tests.pregeneration_fixtures import fixture
 from tests.pregeneration_fixtures import item as pack_item
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.authoring import generation_state
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.pregeneration_generation import (
@@ -143,11 +143,9 @@ class PregenerationResourcesTest(unittest.TestCase):
 
             def refuse_at_capture(path):
                 self.assertEqual(path, queue)
-                gate = {"path": queue, "armed": True}
+                gate: RegularFileGate = {"path": queue, "armed": True}
                 with (
-                    admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                        self, gate
-                    ),
+                    swap_at_acquisition(self, gate),
                     self.assertRaisesRegex(OSError, "regular file") as caught,
                 ):
                     original_read(path)

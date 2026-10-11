@@ -12,7 +12,7 @@ import vntts.game_content_importer as importer
 import vntts.game_pack as game_pack
 import vntts.pregeneration_setup as setup
 import vntts.story_index_snapshot as snapshots
-from tests import test_workspace_input_admission as admission
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.story_fixtures import write_story_index
 
 
@@ -53,11 +53,9 @@ class StoryIndexSnapshotTest(unittest.TestCase):
 
                 def capture(candidate):
                     self.assertEqual(Path(candidate), path)
-                    gate = {"path": path, "armed": True}
+                    gate: RegularFileGate = {"path": path, "armed": True}
                     with (
-                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                            self, gate
-                        ),
+                        swap_at_acquisition(self, gate),
                         self.assertRaisesRegex(OSError, "regular file") as caught,
                     ):
                         original(candidate)

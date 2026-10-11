@@ -26,9 +26,9 @@ from vntts_artifacts.voice_manifest import write_voice_manifest
 
 import vntts.authoring.bulk_generation as bulk_generation_module
 import vntts.authoring.game_pack as game_pack_module
-from tests import test_workspace_input_admission as admission
 from tests.authoring_fixtures import tree_hashes
 from tests.bulk_generation_fixtures import audio_samples
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.source_reference_fixtures import (
     write_reference_render_comparison_fixture as write_comparison,
 )
@@ -502,11 +502,9 @@ class AuthoringGamePackTest(unittest.TestCase):
                     def copy(source, target):
                         if Path(source) != selected:
                             return original_copy(source, target)
-                        gate = {"path": selected, "armed": True}
+                        gate: RegularFileGate = {"path": selected, "armed": True}
                         with (
-                            admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                                self, gate
-                            ),
+                            swap_at_acquisition(self, gate),
                             self.assertRaisesRegex(OSError, "regular file") as caught,
                         ):
                             original_copy(source, target)
@@ -2028,11 +2026,9 @@ class AuthoringGamePackTest(unittest.TestCase):
                     calls.append(path)
                     if len(calls) != selected_call:
                         return original(path)
-                    gate = {"path": path, "armed": True}
+                    gate: RegularFileGate = {"path": path, "armed": True}
                     with (
-                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                            self, gate
-                        ),
+                        swap_at_acquisition(self, gate),
                         self.assertRaisesRegex(OSError, "regular file") as caught,
                     ):
                         original(path)

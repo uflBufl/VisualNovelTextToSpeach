@@ -11,8 +11,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from tests import test_workspace_input_admission as admission
 from tests.pregeneration_fixtures import ambiguous_fixture
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
 from vntts import (
     assets,
@@ -169,11 +169,9 @@ class RegularFileAdmissionTest(unittest.TestCase):
             path.write_bytes(b"text\r\nsecond\r")
             for role in ("capture", "stream"):
                 with self.subTest(role=role):
-                    gate = {"path": path, "armed": True}
+                    gate: RegularFileGate = {"path": path, "armed": True}
                     with (
-                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                            self, gate
-                        ),
+                        swap_at_acquisition(self, gate),
                         self.assertRaisesRegex(OSError, "regular file"),
                     ):
                         if role == "capture":
@@ -226,9 +224,9 @@ class RegularFileAdmissionTest(unittest.TestCase):
             source.write_bytes(payload)
             source.chmod(0o444)
             mode = source.stat().st_mode
-            gate = {"path": source, "armed": True}
+            gate: RegularFileGate = {"path": source, "armed": True}
             with (
-                admission.WorkspaceInputAdmissionTest.swap_at_acquisition(self, gate),
+                swap_at_acquisition(self, gate),
                 self.assertRaisesRegex(OSError, "regular file"),
             ):
                 read_regular_bytes(source)
@@ -292,11 +290,9 @@ class RegularFileCopyTest(unittest.TestCase):
                 source.write_bytes(payload)
                 if existing:
                     target.write_bytes(b"prior destination")
-                gate = {"path": source, "armed": True}
+                gate: RegularFileGate = {"path": source, "armed": True}
                 with (
-                    admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                        self, gate
-                    ),
+                    swap_at_acquisition(self, gate),
                     self.assertRaisesRegex(OSError, "regular file"),
                 ):
                     copy_regular_file(source, target)
@@ -382,10 +378,8 @@ class TextDocumentAdmissionTest(unittest.TestCase):
             for read, document, error_type, fallback in cases:
                 with self.subTest(reader=read):
                     path.write_text(json.dumps(document), encoding="utf-8")
-                    gate = {"path": path, "armed": True}
-                    with admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                        self, gate
-                    ):
+                    gate: RegularFileGate = {"path": path, "armed": True}
+                    with swap_at_acquisition(self, gate):
                         if error_type is not None:
                             with self.assertRaises(error_type) as caught:
                                 read()
@@ -406,9 +400,9 @@ class TextDocumentAdmissionTest(unittest.TestCase):
             document = library._load()
             library.path.parent.mkdir(parents=True, exist_ok=True)
             library.path.write_text(json.dumps(document), encoding="utf-8")
-            gate = {"path": library.path, "armed": True}
+            gate: RegularFileGate = {"path": library.path, "armed": True}
             with (
-                admission.WorkspaceInputAdmissionTest.swap_at_acquisition(self, gate),
+                swap_at_acquisition(self, gate),
                 self.assertRaises(VoiceLibraryError) as caught,
             ):
                 library._load()
@@ -447,10 +441,8 @@ class TextDocumentAdmissionTest(unittest.TestCase):
             )
             for read, expected, error_type, fallback in cases:
                 with self.subTest(reader=read):
-                    gate = {"path": path, "armed": True}
-                    with admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                        self, gate
-                    ):
+                    gate: RegularFileGate = {"path": path, "armed": True}
+                    with swap_at_acquisition(self, gate):
                         if error_type is not None:
                             with self.assertRaises(error_type):
                                 read()
@@ -516,8 +508,8 @@ class TextDocumentAdmissionTest(unittest.TestCase):
             path.write_text('{}\n{"line_id": "line-1"}\n', encoding="utf-8")
             expected = chapter_voice_preload._load_source_audio_extensions(path)
             self.assertEqual(set(expected), {"line-1"})
-            gate = {"path": path, "armed": True}
-            with admission.WorkspaceInputAdmissionTest.swap_at_acquisition(self, gate):
+            gate: RegularFileGate = {"path": path, "armed": True}
+            with swap_at_acquisition(self, gate):
                 self.assertEqual(
                     chapter_voice_preload._load_source_audio_extensions(path), {}
                 )

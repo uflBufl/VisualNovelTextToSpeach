@@ -25,7 +25,6 @@ from vntts_artifacts.voice_manifest import (
 )
 
 import vntts.authoring.queue_builder as builder
-from tests import test_workspace_input_admission as admission
 from tests.authoring_fixtures import (
     queue_builder_story_metadata as story_metadata,
 )
@@ -35,6 +34,7 @@ from tests.authoring_fixtures import (
 from tests.authoring_fixtures import (
     write_queue_builder_inputs as write_inputs,
 )
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
 from vntts.authoring.audio_events import AUDIO_EVENT_PLAN_FIELD, STORY_AUDIO_CUES_FIELD
 from vntts.authoring.cli import main as authoring_main
@@ -126,11 +126,9 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
                 def capture(candidate):
                     if Path(candidate) != selected:
                         return original(candidate)
-                    gate = {"path": selected, "armed": True}
+                    gate: RegularFileGate = {"path": selected, "armed": True}
                     with (
-                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                            self, gate
-                        ),
+                        swap_at_acquisition(self, gate),
                         self.assertRaisesRegex(OSError, "regular file") as caught,
                     ):
                         original(candidate)

@@ -22,7 +22,7 @@ import psutil
 import soundfile as sf
 
 from scripts import moss_native_pause_probe as native_probe
-from tests import test_workspace_input_admission as admission
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.moss_cpp_backend import (
     MossCppVoiceRouterBackend,
     _aux_cpu_workers,
@@ -548,9 +548,9 @@ class MossCppBackendTest(unittest.TestCase):
         hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
     )
     def test_reference_normalizer_refuses_swapped_fifo_and_keeps_borrowed_stream(self):
-        gate = {"path": self.reference, "armed": True}
+        gate: RegularFileGate = {"path": self.reference, "armed": True}
         with (
-            admission.WorkspaceInputAdmissionTest.swap_at_acquisition(self, gate),
+            swap_at_acquisition(self, gate),
             patch("vntts.moss_cpp_backend.sf.SoundFile") as decode,
             self.assertRaisesRegex(OSError, "regular file"),
         ):
@@ -1516,15 +1516,13 @@ class MossCppBackendTest(unittest.TestCase):
         )
         for read, expected in zip(readers, ("local_gpu", 1.5), strict=True):
             with self.subTest(reader=read):
-                gate = {"path": path, "armed": True}
-                with admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                    self, gate
-                ):
+                gate: RegularFileGate = {"path": path, "armed": True}
+                with swap_at_acquisition(self, gate):
                     self.assertIsNone(read())
                 self.assertEqual(read(), expected)
-        gate = {"path": path, "armed": True}
+        gate: RegularFileGate = {"path": path, "armed": True}
         with (
-            admission.WorkspaceInputAdmissionTest.swap_at_acquisition(self, gate),
+            swap_at_acquisition(self, gate),
             self.assertRaisesRegex(OSError, "regular file"),
         ):
             _read_native_log_tail(path)
@@ -1536,9 +1534,9 @@ class MossCppBackendTest(unittest.TestCase):
     def test_runtime_placement_keeps_raw_log_refusal_and_recovers(self):
         backend = self.backend()
         path = Path(backend.server_log.name)
-        gate = {"path": path, "armed": True}
+        gate: RegularFileGate = {"path": path, "armed": True}
         with (
-            admission.WorkspaceInputAdmissionTest.swap_at_acquisition(self, gate),
+            swap_at_acquisition(self, gate),
             self.assertRaisesRegex(OSError, "regular file"),
         ):
             backend._confirmed_runtime_status()
@@ -1552,16 +1550,17 @@ class MossCppBackendTest(unittest.TestCase):
         directory = Path(backend.server_directory.name)
         for phase in ("identity", "snapshot"):
             with self.subTest(phase=phase):
-                gate = {"path": self.reference, "armed": phase == "identity"}
+                gate: RegularFileGate = {
+                    "path": self.reference,
+                    "armed": phase == "identity",
+                }
 
                 def cache_miss(*_args):
                     gate["armed"] = True
                     return None
 
                 with (
-                    admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                        self, gate
-                    ),
+                    swap_at_acquisition(self, gate),
                     patch.object(
                         backend, "_registered_reference", side_effect=cache_miss
                     ) as cache,

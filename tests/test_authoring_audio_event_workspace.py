@@ -13,7 +13,6 @@ from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
-import tests.test_workspace_input_admission as admission
 import vntts.authoring.audio_event_workspace as audio_event_workspace_module
 import vntts.authoring.workbench as workbench_module
 import vntts.authoring.workspace_creation as workspace_creation_module
@@ -24,6 +23,7 @@ from tests.authoring_fixtures import (
 from tests.authoring_fixtures import (
     write_audio_event_source_story as write_source_story,
 )
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.authoring.audio_event_composition import (
     publish_audio_event_composition,
     record_audio_event_composition_decision,
@@ -73,11 +73,9 @@ class AudioEventWorkspaceTest(unittest.TestCase):
                 if Path(source) != composition.audio:
                     return original(source, target, **options)
                 self.assertEqual(options, {})
-                gate = {"path": composition.audio, "armed": True}
+                gate: RegularFileGate = {"path": composition.audio, "armed": True}
                 with (
-                    admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                        self, gate
-                    ),
+                    swap_at_acquisition(self, gate),
                     self.assertRaisesRegex(OSError, "regular file") as caught,
                 ):
                     original(source, target, **options)

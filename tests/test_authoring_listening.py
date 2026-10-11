@@ -16,13 +16,13 @@ from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 
 import vntts.authoring.listening as listening_module
-from tests import test_workspace_input_admission as input_admission
 from tests.authoring_fixtures import tree_hashes
 from tests.listening_fixtures import (
     FakePlayback,
     write_listening_fixture,
     write_model_reports,
 )
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.authoring.listening import (
     REPORT_SCHEMA,
     ModelListeningError,
@@ -116,11 +116,9 @@ class AuthoringListeningTest(unittest.TestCase):
                 link = listening_module._link_blind_audio
 
                 def refuse(source, target):
-                    gate = {"path": Path(source), "armed": True}
+                    gate: RegularFileGate = {"path": Path(source), "armed": True}
                     with (
-                        input_admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                            self, gate
-                        ),
+                        swap_at_acquisition(self, gate),
                         patch.object(
                             listening_module.os, "link", side_effect=OSError("no links")
                         ),
@@ -505,11 +503,9 @@ class AuthoringListeningTest(unittest.TestCase):
             with wave.open(str(path), "wb") as audio:
                 audio.setparams((1, 2, 16_000, 0, "NONE", "not compressed"))
                 audio.writeframes(b"\x00\x00" * 16_000)
-            gate = {"path": path, "armed": True}
+            gate: RegularFileGate = {"path": path, "armed": True}
             with (
-                input_admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                    self, gate
-                ),
+                swap_at_acquisition(self, gate),
                 self.assertRaises(OSError),
             ):
                 listening_module._probe_supported_wav(path)

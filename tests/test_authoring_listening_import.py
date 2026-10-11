@@ -10,9 +10,9 @@ from unittest.mock import patch
 
 from vntts_artifacts.file_integrity import sha256_file
 
-from tests import test_workspace_input_admission as admission
 from tests.authoring_fixtures import tree_hashes
 from tests.listening_fixtures import write_listening_fixture
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.authoring import listening_import as listening_import_module
 from vntts.authoring.cli import main
 from vntts.authoring.listening_import import (
@@ -50,11 +50,9 @@ class ListeningImportTest(unittest.TestCase):
                     ):
                         return original(path)
                     self.assertEqual(staged_manifest, phase == "prepublication")
-                    gate = {"path": selected, "armed": True}
+                    gate: RegularFileGate = {"path": selected, "armed": True}
                     with (
-                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                            self, gate
-                        ),
+                        swap_at_acquisition(self, gate),
                         self.assertRaisesRegex(OSError, "regular file") as caught,
                     ):
                         original(path)
@@ -112,11 +110,9 @@ class ListeningImportTest(unittest.TestCase):
                     if Path(path) != selected:
                         return original(path, target, **kwargs)
                     self.assertEqual(kwargs, {"preserve_metadata": True})
-                    gate = {"path": selected, "armed": True}
+                    gate: RegularFileGate = {"path": selected, "armed": True}
                     with (
-                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                            self, gate
-                        ),
+                        swap_at_acquisition(self, gate),
                         self.assertRaisesRegex(OSError, "regular file") as caught,
                     ):
                         original(path, target, **kwargs)

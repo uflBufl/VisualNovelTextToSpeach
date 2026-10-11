@@ -27,9 +27,9 @@ from vntts_artifacts.voice_generation_queue import (
 )
 from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_manifest
 
-from tests import test_workspace_input_admission as admission
 from tests.authoring_fixtures import tree_hashes
 from tests.pregeneration_fixtures import fixture
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts import pregeneration_pack as pack_module
 from vntts.authoring.bulk_generation import BulkGenerationError
 from vntts.authoring.generation_state import load_generation_state_from_snapshot
@@ -91,8 +91,8 @@ class OfflinePackPublisherTest(unittest.TestCase):
             path.write_bytes(payload)
             path.chmod(0o444)
             mode = path.stat().st_mode
-            gate = {"path": path, "armed": True}
-            with admission.WorkspaceInputAdmissionTest.swap_at_acquisition(self, gate):
+            gate: RegularFileGate = {"path": path, "armed": True}
+            with swap_at_acquisition(self, gate):
                 self.assertEqual(_optional_sequence_snapshot(path), (None, None))
             self.assertEqual(path.read_bytes(), payload)
             self.assertEqual(path.stat().st_mode, mode)
@@ -194,11 +194,9 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 def copy(original, target):
                     if Path(original) != source:
                         return original_copy(original, target)
-                    gate = {"path": source, "armed": True}
+                    gate: RegularFileGate = {"path": source, "armed": True}
                     with (
-                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                            self, gate
-                        ),
+                        swap_at_acquisition(self, gate),
                         self.assertRaisesRegex(OSError, "regular file") as caught,
                     ):
                         original_copy(original, target)

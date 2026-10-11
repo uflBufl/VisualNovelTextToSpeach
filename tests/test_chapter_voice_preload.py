@@ -12,10 +12,10 @@ from vntts_artifacts.story_index import (
     load_story_index_document,
 )
 
-import tests.test_workspace_input_admission as admission
 import vntts.chapter_voice_preload as preload_module
 import vntts.path_safety as path_safety
 from tests.authoring_fixtures import tree_hashes
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.story_fixtures import write_verified_source_story
 from vntts.chapter_voice_preload import (
     ChapterDialogue,
@@ -970,11 +970,9 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
             def copy(original, target):
                 self.assertEqual(Path(original), evidence)
                 self.assertFalse(Path(target).with_name(evidence.name).exists())
-                gate = {"path": evidence, "armed": True}
+                gate: RegularFileGate = {"path": evidence, "armed": True}
                 with (
-                    admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                        self, gate
-                    ),
+                    swap_at_acquisition(self, gate),
                     self.assertRaisesRegex(OSError, "regular file") as caught,
                 ):
                     original_copy(original, target)

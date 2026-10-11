@@ -12,8 +12,8 @@ from threading import Event, Timer
 from unittest.mock import MagicMock, Mock, call, patch
 from zipfile import ZipFile
 
-from tests import test_workspace_input_admission as admission
 from tests.authoring_fixtures import tree_hashes
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
 from vntts import game_audio_decoder as decoder
 
@@ -164,7 +164,7 @@ class GameAudioDecoderTest(unittest.TestCase):
         hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
     )
     def test_native_probe_refuses_output_swapped_to_fifo(self):
-        gate = {"path": self.root / "output.wav", "armed": False}
+        gate: RegularFileGate = {"path": self.root / "output.wav", "armed": False}
 
         def write_output(arguments, *_args, **_kwargs):
             path = Path(arguments[3])
@@ -176,7 +176,7 @@ class GameAudioDecoderTest(unittest.TestCase):
                 decoder, "temporary_directory", return_value=nullcontext(str(self.root))
             ),
             patch.object(decoder, "_run", side_effect=write_output),
-            admission.WorkspaceInputAdmissionTest.swap_at_acquisition(self, gate),
+            swap_at_acquisition(self, gate),
             self.assertRaisesRegex(OSError, "regular file"),
         ):
             decoder.probe_game_decoder("decoder")
@@ -324,11 +324,9 @@ class GameAudioDecoderTest(unittest.TestCase):
                 refused = []
 
                 def copy(path, temporary):
-                    gate = {"path": source, "armed": True}
+                    gate: RegularFileGate = {"path": source, "armed": True}
                     with (
-                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                            self, gate
-                        ),
+                        swap_at_acquisition(self, gate),
                         self.assertRaisesRegex(OSError, "regular file") as caught,
                     ):
                         original(path, temporary)
