@@ -6,7 +6,8 @@
 
 ## Continue captured-input admission
 
-- [ ] Qualify remaining captured-byte readers after the SHA migration. Start with `generation_state.load_stable_generation_queue` and `pregeneration_setup._cached_story_index_document`: their `Path.read_bytes` acquisitions remain separate from admitted hashes and can still block on a regular-to-FIFO replacement. Inventory repetitions (current candidate scan: 39 modules/93 read_bytes calls, not a defect count), preserve exact snapshot-derived parsing/digests, caller errors/cache identity and final path rechecks; reuse the existing admitted stream owner. Retarget post-capture mutation controls at the actual byte visibility boundary, add native refusal/recovery gates, and run local-first tests before expanding.
+- [ ] Centralize raw full-byte acquisition in `path_safety.read_regular_bytes`, delegating to the existing admitted stream without adding labels, alias policy, size limits or error wrapping. First migrate `generation_state.load_stable_generation_queue` and `pregeneration_setup._cached_story_index_document`, preserving snapshot-derived parsing/digests and independent final checks. Retarget resource/recovery mutation controls at actual payload capture; qualify native FIFO refusal, exact cause/cleanup, cold-cache refusal and successful retry with local-first tests.
+- [ ] After the first verified capture gates, classify and migrate equivalent remaining full-byte acquisitions across the current 83-call inventory (initial payloads, final comparisons, owned staging, media/UI, runtime markers and lease recovery). Preserve each caller's bytes/hash/parser/error/publication phases; inspect dynamic consumers and affected test hooks, exercise representative public refusal/recovery gates, rescan semantics and run fresh-main validation. Candidate counts alone are not defects.
 
 ## Coordinate source-audio producer numeric admission
 
