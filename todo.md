@@ -8,6 +8,8 @@
 
 - [ ] On Windows, qualify complete and streaming admitted text reads: UTF-8/BOM/ASCII/default locale, regular aliases, source closure and JSONL first-line/iteration behavior. Verify the dependency-audit script starts before project installation. Mac FIFO/descriptor proof does not qualify Windows filesystem behavior or non-UTF-8 locale execution.
 
+- [ ] On Windows, qualify admitted ZIP intake for MOSS runtime, managed game decoder and packaged licences, plus native-probe archive member sources. Verify valid/invalid archives, source closure, member bytes/metadata, refusal before publication and retry. Mac FIFO/byte-parity tests do not establish Windows filesystem or DLL behavior.
+
 ## Coordinate source-audio producer numeric admission
 
 - [ ] In `reverse1999-extractor`, qualify and fix `SourceAudioDurationProbe.probe` optional decoder ratio overflow: positive unbounded `playSamples=10**400` and `sampleRate=1` raise outside its tolerant exception tuple. Add `OverflowError` to that boundary, test overflowing and finite huge ratios, and release/pin only through the separately authorized cross-repository workflow; the current VNTTS consumer repair does not fix the pinned producer.
