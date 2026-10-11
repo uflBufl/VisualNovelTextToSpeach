@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Timer
@@ -158,6 +159,27 @@ class GameAudioDecoderTest(unittest.TestCase):
                         decoder.DecoderSetupError, "audio integrity"
                     ):
                         decoder.probe_game_decoder("decoder")
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_native_probe_refuses_output_swapped_to_fifo(self):
+        gate = {"path": self.root / "output.wav", "armed": False}
+
+        def write_output(arguments, *_args, **_kwargs):
+            path = Path(arguments[3])
+            path.write_bytes(b"decoder output")
+            gate.update(path=path, armed=True)
+
+        with (
+            patch.object(
+                decoder, "temporary_directory", return_value=nullcontext(str(self.root))
+            ),
+            patch.object(decoder, "_run", side_effect=write_output),
+            admission.WorkspaceInputAdmissionTest.swap_at_acquisition(self, gate),
+            self.assertRaisesRegex(OSError, "regular file"),
+        ):
+            decoder.probe_game_decoder("decoder")
 
     def test_native_probe_rejects_incomplete_declared_frame_count(self):
         output = io.BytesIO()

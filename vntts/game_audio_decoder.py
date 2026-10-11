@@ -195,7 +195,10 @@ def probe_game_decoder(
             [str(path), "-i", "-o", str(output), str(source)], cancellation, timeout=15
         )
         try:
-            with wave.open(str(output), "rb") as wav:
+            with (
+                open_regular_binary(output) as source_stream,
+                wave.open(source_stream, "rb") as wav,
+            ):
                 if (
                     wav.getnchannels(),
                     wav.getsampwidth(),
