@@ -250,6 +250,18 @@ def _extract_runtime(
             partial.replace(target)
 
 
+def _install_runtime_archive(
+    archive: Path,
+    destination: Path,
+    report: ProgressCallback,
+    cancellation: Cancellation,
+    *,
+    allow_download: bool,
+) -> None:
+    _download(*ARCHIVE, archive, report, cancellation, allow_download=allow_download)
+    _extract_runtime(archive, destination, cancellation)
+
+
 def _download_runtime_if_needed(
     root: Path,
     paths: tuple[Path, Path, Path],
@@ -265,14 +277,13 @@ def _download_runtime_if_needed(
         or not paths[0].is_file()
     ):
         archive = root / "runtime.zip"
-        _download(
-            *ARCHIVE,
+        _install_runtime_archive(
             archive,
+            paths[0].parent,
             report,
             cancellation,
             allow_download=allow_download,
         )
-        _extract_runtime(archive, paths[0].parent, cancellation)
 
 
 def _repair_runtime_probe(
@@ -293,14 +304,9 @@ def _repair_runtime_probe(
     free = shutil.disk_usage(root).free
     if not allow_download:
         raise MossCppInstallRequired(remaining, required, free) from error
-    _download(
-        *ARCHIVE,
-        archive,
-        report,
-        cancellation,
-        allow_download=True,
+    _install_runtime_archive(
+        archive, paths[0].parent, report, cancellation, allow_download=True
     )
-    _extract_runtime(archive, paths[0].parent, cancellation)
     try:
         run_runtime_command(
             [str(paths[0]), "--help"], cancellation=cancellation, timeout=30
