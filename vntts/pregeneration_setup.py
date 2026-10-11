@@ -36,6 +36,7 @@ from vntts.chapter_voice_preload import (
 )
 from vntts.document_identity import is_sha256, sha256_file
 from vntts.json_types import decode_json
+from vntts.path_safety import read_regular_bytes
 from vntts.settings import AppSettings
 from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.versioned_json import read_versioned_json, write_versioned_json
@@ -402,7 +403,7 @@ def _cached_story_selection(document: object) -> StorySelection:
 
 @lru_cache(maxsize=8)
 def _cached_story_index_document(path: str, expected_sha256: str) -> StoryIndexDocument:
-    payload = Path(path).read_bytes()
+    payload = read_regular_bytes(Path(path))
     if hashlib.sha256(payload).hexdigest() != expected_sha256:
         raise StoryContentChanged("Story content changed while it was being read")
     document = load_story_index_snapshot(path, payload)

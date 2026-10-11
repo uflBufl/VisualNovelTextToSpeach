@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -11,6 +12,7 @@ import vntts.game_content_importer as importer
 import vntts.game_pack as game_pack
 import vntts.pregeneration_setup as setup
 import vntts.story_index_snapshot as snapshots
+from tests import test_workspace_input_admission as admission
 from tests.story_fixtures import write_story_index
 
 
@@ -18,6 +20,68 @@ class StoryIndexSnapshotTest(unittest.TestCase):
     def setUp(self):
         setup._cached_story_index_document.cache_clear()
         self.addCleanup(setup._cached_story_index_document.cache_clear)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_story_capture_refuses_fifo_before_parse_or_cache_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            path = write_story_index(Path(directory)).resolve()
+            payload = path.read_bytes()
+            checksum = hashlib.sha256(payload).hexdigest()
+            expected = load_story_index_document(path)
+            path.chmod(0o444)
+            mode = path.stat().st_mode
+            original = setup.read_regular_bytes
+            refused = []
+
+            def capture(candidate):
+                self.assertEqual(Path(candidate), path)
+                gate = {"path": path, "armed": True}
+                with (
+                    admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                        self, gate
+                    ),
+                    self.assertRaisesRegex(OSError, "regular file") as caught,
+                ):
+                    original(candidate)
+                refused.append(caught.exception)
+                raise caught.exception
+
+            with (
+                patch.object(setup, "read_regular_bytes", capture),
+                patch.object(setup, "load_story_index_snapshot") as parse,
+                self.assertRaisesRegex(OSError, "regular file") as caught,
+            ):
+                setup.load_verified_story_index_document(path, checksum)
+            self.assertEqual(len(refused), 1)
+            self.assertIs(caught.exception, refused[0])
+            parse.assert_not_called()
+            self.assertEqual(
+                setup._cached_story_index_document.cache_info().currsize, 0
+            )
+            self.assertEqual(path.read_bytes(), payload)
+            self.assertEqual(path.stat().st_mode, mode)
+            with (
+                patch.object(setup, "read_regular_bytes", wraps=original) as capture,
+                patch.object(
+                    setup,
+                    "load_story_index_snapshot",
+                    wraps=snapshots.load_story_index_snapshot,
+                ) as parse,
+            ):
+                self.assertEqual(
+                    setup.load_verified_story_index_document(path, checksum), expected
+                )
+                self.assertEqual(
+                    setup.load_verified_story_index_document(path, checksum), expected
+                )
+            self.assertEqual(capture.call_count, 1)
+            self.assertEqual(parse.call_count, 1)
+            self.assertEqual(
+                setup._cached_story_index_document.cache_info().currsize, 1
+            )
+            self.assertEqual(path.read_bytes(), payload)
 
     def test_parse_errors_retain_original_source_path_and_cause(self):
         with TemporaryDirectory() as directory:
