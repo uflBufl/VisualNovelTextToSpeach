@@ -43,7 +43,7 @@ from vntts.cleanup import attempt_cleanup
 from vntts.document_identity import file_sha256, is_lowercase_sha256, sha256_file
 from vntts.game_audio_decoder import Cancellation, ProgressCallback, ensure_game_decoder
 from vntts.json_types import decode_json
-from vntts.path_safety import contained_regular_file
+from vntts.path_safety import contained_regular_file, read_regular_bytes
 from vntts.pregeneration_setup import (
     GameContent,
     PregenerationJob,
@@ -876,7 +876,7 @@ class Reverse1999GameImporter:
                 return tuple(names)
         except OSError, ValueError, KeyError, TypeError:
             pass
-        banks_payload = narrator_banks.read_bytes()
+        banks_payload = read_regular_bytes(narrator_banks)
         if hashlib.sha256(banks_payload).hexdigest() != banks_sha256:
             raise GameContentImportError("Narrator banks changed while being read")
         banks = decode_json(banks_payload.decode("utf-8"))
@@ -1247,7 +1247,7 @@ def _cached_playable_voice_roles(index: Path) -> set[str]:
                 return set(roles)
     except OSError, ValueError, TypeError:
         pass
-    payload = index.read_bytes()
+    payload = read_regular_bytes(index)
     if hashlib.sha256(payload).hexdigest() != checksum:
         raise GameContentImportError("Voice reference index changed while being read")
     available = _playable_voice_roles(load_story_index_snapshot(index, payload))

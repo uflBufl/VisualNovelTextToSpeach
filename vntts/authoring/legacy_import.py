@@ -43,7 +43,7 @@ from vntts.authoring.workspace_foundation import load_json_object
 from vntts.cleanup import temporary_directory
 from vntts.document_identity import canonical_document_sha256, sha256_file
 from vntts.json_types import decode_json
-from vntts.path_safety import copy_regular_file, open_regular_binary
+from vntts.path_safety import copy_regular_file, open_regular_binary, read_regular_bytes
 
 LEGACY_JOB_SCHEMA = "r1999.pregeneration-job"
 LEGACY_JOB_SCHEMA_VERSION = 1
@@ -1518,7 +1518,7 @@ def _load_generated_index_snapshot(
 def _read_snapshot(path: str | Path, description: str) -> tuple[bytes, str]:
     path = Path(path)
     try:
-        payload = path.read_bytes()
+        payload = read_regular_bytes(path)
     except OSError as error:
         raise LegacyAuthoringImportError(
             f"Unable to read {description} {path}: {error}"

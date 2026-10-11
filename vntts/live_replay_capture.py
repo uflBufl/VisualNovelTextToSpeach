@@ -32,6 +32,7 @@ from vntts.dialog_capture import (
 from vntts.document_identity import sha256_file
 from vntts.ocr import get_dialog_region
 from vntts.ocr_corrections import OCRCorrectionStore
+from vntts.path_safety import read_regular_bytes
 from vntts.profiles import GameProfileStore
 from vntts.settings import load_app_settings
 from vntts.window_capture import WindowCaptureTarget
@@ -762,7 +763,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _load_capture_story(story_path: Path) -> tuple[StoryResolver, str]:
-    payload = story_path.read_bytes()
+    payload = read_regular_bytes(story_path)
     digest = hashlib.sha256(payload).hexdigest()
     resolver = ChapterVoicePreloader.load_snapshot(story_path, payload)
     if not resolver.dialogue:

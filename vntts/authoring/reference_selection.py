@@ -19,6 +19,7 @@ from vntts.authoring.publication import no_replace_destination
 from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.document_identity import is_lowercase_sha256, sha256_file
 from vntts.json_types import decode_json
+from vntts.path_safety import read_regular_bytes
 from vntts.reference_quality import (
     ReferenceQualityReport,
     analyze_reference_bytes,
@@ -269,7 +270,7 @@ def validate_reference_selection_provenance(
 def _capture_manifest(manifest_path: PathInput, character: str) -> _ManifestSnapshot:
     manifest_path = Path(manifest_path).expanduser().resolve()
     try:
-        payload = manifest_path.read_bytes()
+        payload = read_regular_bytes(manifest_path)
         document = decode_json(payload.decode("utf-8"))
         entries = validate_voice_manifest(document)
         assert isinstance(document, dict)
@@ -312,7 +313,7 @@ def _capture_manifest(manifest_path: PathInput, character: str) -> _ManifestSnap
         seen.add(relative)
         path = _contained_reference(manifest_path.parent, relative)
         try:
-            reference_payload = path.read_bytes()
+            reference_payload = read_regular_bytes(path)
             analysis = analyze_reference_bytes(reference_payload, path=path)
         except (OSError, ValueError) as error:
             raise ReferenceSelectionError(str(error)) from error

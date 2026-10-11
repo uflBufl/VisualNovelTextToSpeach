@@ -10,7 +10,9 @@ from unittest.mock import Mock, patch
 
 import pytesseract
 
+from tests import test_workspace_input_admission as admission
 from tests.symlink_support import symlink_or_skip
+from vntts import runtime_paths
 from vntts.package_self_test import (
     probe_bundled_pocket_render,
     probe_bundled_pocket_runtime,
@@ -26,6 +28,71 @@ from vntts.synthesis import SynthesisCompletion
 
 
 class RuntimePathsTest(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_runtime_recipe_capture_refuses_fifo_without_creating_runtime_and_recovers(
+        self,
+    ):
+        for role in ("pyproject.toml", "uv.lock"):
+            with self.subTest(role=role), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                project = root / "project"
+                project.mkdir()
+                payloads = {
+                    "pyproject.toml": b"project recipe",
+                    "uv.lock": b"locked sources",
+                }
+                for name, payload in payloads.items():
+                    (project / name).write_bytes(payload)
+                selected = project / role
+                selected.chmod(0o444)
+                mode = selected.stat().st_mode
+                original = runtime_paths.read_regular_bytes
+                refused = []
+
+                def capture(candidate):
+                    if candidate != selected:
+                        return original(candidate)
+                    gate = {"path": selected, "armed": True}
+                    with (
+                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                            self, gate
+                        ),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original(candidate)
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                with (
+                    patch.object(
+                        runtime_paths, "source_runtime_project", return_value=project
+                    ),
+                    patch(
+                        "vntts.application_directories.get_local_data_directory",
+                        return_value=root / "data",
+                    ),
+                ):
+                    expected = runtime_paths.managed_runtime_location("pocket-tts")
+                    with (
+                        patch.object(runtime_paths, "read_regular_bytes", capture),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        runtime_paths.managed_runtime_location("pocket-tts")
+                    self.assertEqual(len(refused), 1)
+                    self.assertIs(caught.exception, refused[0])
+                    self.assertFalse((root / "data").exists())
+                    self.assertEqual(selected.stat().st_mode, mode)
+                    self.assertEqual(
+                        {path.name: path.read_bytes() for path in project.iterdir()},
+                        payloads,
+                    )
+                    self.assertEqual(
+                        runtime_paths.managed_runtime_location("pocket-tts"), expected
+                    )
+                    self.assertFalse((root / "data").exists())
+
     @staticmethod
     def _speech_runtime_report():
         return {"executable": "python", "modules": {}}

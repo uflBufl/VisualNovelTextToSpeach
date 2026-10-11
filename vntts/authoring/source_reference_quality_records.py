@@ -26,6 +26,7 @@ from vntts.path_safety import (
     contained_regular_file,
     copy_regular_file,
     open_regular_binary,
+    read_regular_bytes,
 )
 
 QUALITY_REVIEW_SCHEMA = "vntts.authoring-source-reference-quality-review"
@@ -313,7 +314,7 @@ def record_source_reference_quality_decision(
         session = validate_source_reference_quality_review_document(
             session, session_path.parent
         )
-        if session_path.read_bytes() != original_payload:
+        if read_regular_bytes(session_path) != original_payload:
             raise SourceReferenceQualityError(
                 "Quality review changed while the decision was loaded"
             )
@@ -342,7 +343,7 @@ def record_source_reference_quality_decision(
         card["decision"] = {"decision": decision, "reviewed_at": _utc_now()}
         session["completed_count"] = quality_review_progress(session)[0]
         session["updated_at"] = _utc_now()
-        if session_path.read_bytes() != original_payload:
+        if read_regular_bytes(session_path) != original_payload:
             raise SourceReferenceQualityError(
                 "Quality review changed before the decision was saved"
             )
@@ -459,7 +460,7 @@ def _validate_portrait_record(root: Path, value: object, label: str) -> Path:
         value.get("image_sha256"), f"quality portrait {label} hash"
     )
     try:
-        payload = path.read_bytes()
+        payload = read_regular_bytes(path)
     except OSError as error:
         raise SourceReferenceQualityError(
             f"Unable to read quality portrait {label}: {error}"
@@ -559,7 +560,7 @@ def _validate_sample(
 def _read_json(path: str | Path, label: str) -> tuple[bytes, JsonObject]:
     path = Path(path).expanduser().resolve()
     try:
-        payload = path.read_bytes()
+        payload = read_regular_bytes(path)
         value = decode_json(payload)
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise SourceReferenceQualityError(

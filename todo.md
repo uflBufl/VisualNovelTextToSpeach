@@ -6,8 +6,8 @@
 
 ## Continue captured-input admission
 
-- [ ] Centralize raw full-byte acquisition in `path_safety.read_regular_bytes`, delegating to the existing admitted stream without adding labels, alias policy, size limits or error wrapping. First migrate `generation_state.load_stable_generation_queue` and `pregeneration_setup._cached_story_index_document`, preserving snapshot-derived parsing/digests and independent final checks. Retarget resource/recovery mutation controls at actual payload capture; qualify native FIFO refusal, exact cause/cleanup, cold-cache refusal and successful retry with local-first tests.
-- [ ] After the first verified capture gates, classify and migrate equivalent remaining full-byte acquisitions across the current 83-call inventory (initial payloads, final comparisons, owned staging, media/UI, runtime markers and lease recovery). Preserve each caller's bytes/hash/parser/error/publication phases; inspect dynamic consumers and affected test hooks, exercise representative public refusal/recovery gates, rescan semantics and run fresh-main validation. Candidate counts alone are not defects.
+- [ ] Finish qualification of the 83 raw full-byte acquisitions migrated to `path_safety.read_regular_bytes`: two verified queue/story seeds plus 81 expansions across initial payloads, final comparisons, owned staging, media/UI, runtime recipes and lease recovery. Preserve each caller's bytes/hash/parser/error/publication phases; finish local-first tests, representative old-primitive counterproofs, semantic rescan and fresh-main validation. Native source restoration must happen before owner cleanup.
+- [ ] Consolidate the 35 already-admitted whole-byte `open_regular_binary`/`read()` contexts through the verified raw capture helper where their exact context shape permits it. Preserve wrappers, prechecks, bytes/digest/error phases and actual acquisition hooks; exclude bounded/text/copy/hash/inode-policy streams. Requalify stream-failure/count controls and rerun local-first/fresh-main gates before closing.
 
 ## Coordinate source-audio producer numeric admission
 

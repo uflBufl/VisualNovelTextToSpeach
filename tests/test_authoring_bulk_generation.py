@@ -1771,23 +1771,13 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 for queue_id, item in items.items()
             }
             reads = []
-            real_read_bytes = Path.read_bytes
-            original_open = foundation_module.open_regular_binary
-
-            @contextmanager
-            def tracked_open(path):
-                reads.append(Path(path).resolve())
-                with original_open(path) as source:
-                    yield source
+            real_read_bytes = bulk_module.read_regular_bytes
 
             def tracked_read_bytes(path):
                 reads.append(Path(path).resolve())
                 return real_read_bytes(path)
 
-            with (
-                patch.object(Path, "read_bytes", tracked_read_bytes),
-                patch.object(foundation_module, "open_regular_binary", tracked_open),
-            ):
+            with patch.object(bulk_module, "read_regular_bytes", tracked_read_bytes):
                 state, snapshots = bulk_module._assert_review_authorities(
                     state_path, authorities, queue
                 )

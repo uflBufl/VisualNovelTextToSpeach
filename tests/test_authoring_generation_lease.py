@@ -1,4 +1,7 @@
+import hashlib
 import json
+import os
+import stat
 import subprocess
 import sys
 import unittest
@@ -8,6 +11,8 @@ from unittest.mock import Mock, patch
 
 import psutil
 
+from tests import test_workspace_input_admission as admission
+from vntts.authoring import generation_lease as lease_module
 from vntts.authoring.generation_lease import (
     BulkGenerationError,
     GenerationLease,
@@ -59,6 +64,153 @@ class ProcessInspectionTests(unittest.TestCase):
 
         self.assertEqual(inspect_process_status(child.pid), "dead")
         self.assertFalse(process_is_alive(child.pid))
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_existing_generation_lease_capture_refuses_fifo_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            output = Path(directory).resolve()
+            checker = Mock(return_value=False)
+            lease = GenerationLease(output, "1" * 64, process_checker=checker)
+            payload = json.dumps(
+                {
+                    "schema": lease_module.LEASE_SCHEMA,
+                    "schema_version": lease_module.LEASE_VERSION,
+                    "queue_sha256": "1" * 64,
+                    "pid": 999999,
+                }
+            ).encode()
+            lease.path.write_bytes(payload)
+            lease.path.chmod(0o444)
+            guard = lease.path.with_suffix(".guard")
+            guard.touch()
+            guard_inode = guard.stat().st_ino
+            original = lease_module.read_regular_bytes
+            refused = []
+
+            def refuse_capture(path):
+                self.assertEqual(path, lease.path)
+                gate = {"path": path, "armed": True}
+                with (
+                    admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                        self, gate
+                    ),
+                    self.assertRaisesRegex(OSError, "regular file") as caught,
+                ):
+                    original(path)
+                refused.append(caught.exception)
+                raise caught.exception
+
+            with (
+                patch.object(lease_module, "read_regular_bytes", refuse_capture),
+                self.assertRaisesRegex(
+                    BulkGenerationError, "Unable to read generation lease"
+                ) as caught,
+            ):
+                lease.__enter__()
+
+            self.assertEqual(len(refused), 1)
+            self.assertIs(caught.exception.__cause__, refused[0])
+            checker.assert_not_called()
+            self.assertIsNone(lease.document)
+            self.assertEqual(lease.path.read_bytes(), payload)
+            self.assertEqual(stat.S_IMODE(lease.path.stat().st_mode), 0o444)
+            self.assertEqual(set(output.iterdir()), {lease.path, guard})
+            self.assertEqual(guard.stat().st_ino, guard_inode)
+            with lease:
+                self.assertEqual(json.loads(lease.path.read_bytes()), lease.document)
+            checker.assert_called_once_with(999999)
+            self.assertFalse(lease.path.exists())
+            archived = list((output / "interrupted").iterdir())
+            self.assertEqual(len(archived), 1)
+            self.assertEqual(archived[0].read_bytes(), payload)
+            self.assertEqual(guard.stat().st_ino, guard_inode)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_interrupted_archive_captures_refuse_fifo_and_recover(self):
+        for phase in ("source", "candidate", "dedup-final", "move-final"):
+            with self.subTest(phase=phase), TemporaryDirectory() as directory:
+                output = Path(directory).resolve()
+                source = output / "artifact.json"
+                payload = b"interrupted payload"
+                source.write_bytes(payload)
+                source.chmod(0o444)
+                archive_root = output / "interrupted"
+                archive_root.mkdir()
+                candidate = archive_root / (
+                    "artifact-json-"
+                    + hashlib.sha256(payload).hexdigest()[:12]
+                    + ".json"
+                )
+                if phase in {"candidate", "dedup-final"}:
+                    candidate.write_bytes(
+                        b"foreign archive" if phase == "candidate" else payload
+                    )
+                    candidate.chmod(0o444)
+                selected = candidate if phase == "candidate" else source
+                selected_call = 2 if phase in {"dedup-final", "move-final"} else 1
+                before = {
+                    path: path.read_bytes()
+                    for path in output.rglob("*")
+                    if path.is_file()
+                }
+                original = lease_module.read_regular_bytes
+                calls, refused = [], []
+
+                def refuse_capture(path):
+                    if path != selected:
+                        return original(path)
+                    calls.append(path)
+                    if len(calls) != selected_call:
+                        return original(path)
+                    gate = {"path": path, "armed": True}
+                    with (
+                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                            self, gate
+                        ),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original(path)
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                with (
+                    patch.object(lease_module, "read_regular_bytes", refuse_capture),
+                    self.assertRaisesRegex(OSError, "regular file") as caught,
+                ):
+                    lease_module.archive_interrupted_artifact(
+                        output, source, expected_payload=payload
+                    )
+
+                self.assertEqual(len(calls), selected_call)
+                self.assertEqual(len(refused), 1)
+                self.assertIs(caught.exception, refused[0])
+                self.assertEqual(stat.S_IMODE(selected.stat().st_mode), 0o444)
+                self.assertEqual(
+                    {
+                        path: path.read_bytes()
+                        for path in output.rglob("*")
+                        if path.is_file()
+                    },
+                    before,
+                )
+                recovered = lease_module.archive_interrupted_artifact(
+                    output, source, expected_payload=payload
+                )
+                self.assertFalse(source.exists())
+                self.assertEqual(recovered.read_bytes(), payload)
+                self.assertEqual(stat.S_IMODE(recovered.stat().st_mode), 0o444)
+                if phase == "candidate":
+                    self.assertNotEqual(recovered, candidate)
+                    self.assertEqual(candidate.read_bytes(), before[candidate])
+                else:
+                    self.assertEqual(recovered, candidate)
+                self.assertEqual(
+                    len(list(archive_root.iterdir())), 2 if phase == "candidate" else 1
+                )
 
     def test_deep_generation_lease_blocks_output_without_reclaiming_it(self):
         with TemporaryDirectory() as directory:

@@ -74,7 +74,12 @@ from vntts.authoring.source_reference_bindings import (
 )
 from vntts.document_identity import sha256_file
 from vntts.json_types import decode_json, has_schema_version
-from vntts.path_safety import copy_regular_file, open_regular_binary, safe_relative_path
+from vntts.path_safety import (
+    copy_regular_file,
+    open_regular_binary,
+    read_regular_bytes,
+    safe_relative_path,
+)
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidence,
     SourceAudioSemanticEvidenceError,
@@ -881,7 +886,7 @@ class _PublicationLease:
                     )
                 if self.path.exists():
                     try:
-                        existing_payload = self.path.read_bytes()
+                        existing_payload = read_regular_bytes(self.path)
                         existing = decode_json(existing_payload.decode("utf-8"))
                     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
                         raise FinalGamePackError(
@@ -981,7 +986,7 @@ class _PublicationLease:
 
     def _archive_stale(self, expected_payload: bytes) -> None:
         try:
-            payload = self.path.read_bytes()
+            payload = read_regular_bytes(self.path)
         except OSError as error:
             raise FinalGamePackError(
                 f"Unable to inspect stale publication lease: {error}"
@@ -996,7 +1001,7 @@ class _PublicationLease:
             raise FinalGamePackError(
                 f"Stale publication lease archive already exists: {archive}"
             )
-        if self.path.read_bytes() != expected_payload:
+        if read_regular_bytes(self.path) != expected_payload:
             raise FinalGamePackError(
                 "Final game-pack publication lease changed during stale recovery"
             )
@@ -1501,7 +1506,7 @@ def _load_stable_state(
     state_path: Path, queue: _Queue, queue_sha256: str
 ) -> tuple[JsonDocument, str]:
     try:
-        payload = state_path.read_bytes()
+        payload = read_regular_bytes(state_path)
         state = decode_json(payload)
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise FinalGamePackError(

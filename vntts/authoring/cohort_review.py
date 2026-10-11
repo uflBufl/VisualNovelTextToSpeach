@@ -32,6 +32,7 @@ from vntts.authoring.workspace_config import workspace_successor_config_fingerpr
 from vntts.authoring.workspace_inspection import load_review_items_snapshot
 from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import decode_json
+from vntts.path_safety import read_regular_bytes
 
 COHORT_REVIEW_PLAN_SCHEMA = "vntts.authoring-cohort-review-plan"
 COHORT_REVIEW_PLAN_VERSION = 1
@@ -709,7 +710,7 @@ def _bound_workspace_document(directory: Path) -> JsonObject:
     if workspace_path.is_symlink() or not workspace_path.is_file():
         raise CohortReviewError("Workspace document is missing or unsafe")
     try:
-        workspace_payload = workspace_path.read_bytes()
+        workspace_payload = read_regular_bytes(workspace_path)
         workspace = decode_json(workspace_payload.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise CohortReviewError(
@@ -800,8 +801,8 @@ def _bound_workspace_controls(
     queue_path: Path, state_path: Path
 ) -> tuple[bytes, bytes, object]:
     try:
-        queue_payload = queue_path.read_bytes()
-        state_payload = state_path.read_bytes()
+        queue_payload = read_regular_bytes(queue_path)
+        state_payload = read_regular_bytes(state_path)
         state = decode_json(state_payload.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise CohortReviewError(

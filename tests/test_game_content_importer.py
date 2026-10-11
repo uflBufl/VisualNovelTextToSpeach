@@ -13,6 +13,7 @@ from vntts_artifacts import load_story_index_document, write_story_index_documen
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 
+import vntts.game_content_importer as importer_module
 from tests.story_fixtures import (
     write_content,
     write_source_audio_semantic_evidence,
@@ -216,33 +217,27 @@ class Reverse1999GameImporterTest(unittest.TestCase):
             banks.write_bytes(original)
             story_checksum = sha256_file(story)
             banks_checksum = sha256_file(banks)
-            read_bytes, read_text = Path.read_bytes, Path.read_text
+            read_bytes = importer_module.read_regular_bytes
+            captures = []
 
-            def replaced_read(reader, path, *args, **kwargs):
+            def replaced_read(path):
                 if path != banks:
-                    return reader(path, *args, **kwargs)
+                    return read_bytes(path)
+                captures.append(path)
                 banks.write_bytes(b'["Unbound character"]')
                 try:
-                    return reader(path, *args, **kwargs)
+                    return read_bytes(path)
                 finally:
                     banks.write_bytes(original)
 
             with (
-                patch.object(
-                    Path, "read_bytes", lambda path: replaced_read(read_bytes, path)
-                ),
-                patch.object(
-                    Path,
-                    "read_text",
-                    lambda path, *args, **kwargs: replaced_read(
-                        read_text, path, *args, **kwargs
-                    ),
-                ),
+                patch.object(importer_module, "read_regular_bytes", replaced_read),
                 self.assertRaisesRegex(GameContentImportError, "banks changed while"),
             ):
                 Reverse1999GameImporter._cached_narrator_characters(
                     story, banks, story_checksum, banks_checksum
                 )
+            self.assertEqual(captures, [banks])
             self.assertEqual(banks.read_bytes(), original)
             self.assertFalse((root / "narrator-characters.json").exists())
 

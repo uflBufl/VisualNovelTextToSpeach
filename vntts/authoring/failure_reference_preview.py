@@ -31,6 +31,7 @@ from vntts.authoring.workbench import (
 )
 from vntts.document_identity import sha256_file
 from vntts.json_types import is_json_object
+from vntts.path_safety import read_regular_bytes
 from vntts.speech_backend_runtime import shutdown_speech_backend
 from vntts.synthesis import (
     SynthesisCachePolicy,
@@ -395,7 +396,7 @@ class FailureReferencePreviewService:
             write_pcm16_wav(output, pcm, result.sample_rate)
         except Pcm16MonoWavError as error:
             raise FailureReferencePreviewError(str(error)) from error
-        payload = output.read_bytes()
+        payload = read_regular_bytes(output)
         output.unlink(missing_ok=True)
         return payload
 

@@ -71,7 +71,7 @@ from vntts.document_identity import (
     sha256_file,
 )
 from vntts.json_types import decode_json
-from vntts.path_safety import copy_regular_file
+from vntts.path_safety import copy_regular_file, read_regular_bytes
 from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.voices import load_voice_manifest, voice_manifest_entries_at_path
 
@@ -213,7 +213,7 @@ def import_source_reference_review(
     candidates = _load_candidates(report_path, report)
     decisions, invalidated = _load_decisions(review, candidates)
     try:
-        story_payload = story_index_path.read_bytes()
+        story_payload = read_regular_bytes(story_index_path)
     except OSError as error:
         raise SourceReferenceReviewError(
             f"Unable to read story index {story_index_path}: {error}"
@@ -652,7 +652,7 @@ def _quality_review_selection(
         document = validate_source_reference_quality_review_document(
             snapshot, quality_review_path.parent
         )
-        if quality_review_path.read_bytes() != payload:
+        if read_regular_bytes(quality_review_path) != payload:
             raise SourceReferenceReviewError(
                 "Source-reference quality review changed while it was loaded"
             )
@@ -1176,11 +1176,11 @@ def publish_source_reference_binding_successor(
                 raise SourceReferenceReviewError(
                     "Successor queue bindings changed during publication"
                 )
-            if base_binding_manifest.read_bytes() != base_payload:
+            if read_regular_bytes(base_binding_manifest) != base_payload:
                 raise SourceReferenceReviewError(
                     "Base source-reference manifest changed during publication"
                 )
-            if addition_manifest.read_bytes() != addition_payload:
+            if read_regular_bytes(addition_manifest) != addition_payload:
                 raise SourceReferenceReviewError(
                     "Added source-reference manifest changed during publication"
                 )
@@ -1417,7 +1417,7 @@ def publish_source_reference_binding_retirement(
             raise SourceReferenceReviewError(
                 "Retired source-reference queue bindings changed during publication"
             )
-        if base_binding_manifest.read_bytes() != base_payload:
+        if read_regular_bytes(base_binding_manifest) != base_payload:
             raise SourceReferenceReviewError(
                 "Base source-reference manifest changed during retirement"
             )
@@ -1541,7 +1541,7 @@ def _stage_evaluation_variant(
     relative = Path("references") / variant_id / f"source-{media_id}.wav"
     destination = staging / relative
     destination.parent.mkdir(parents=True, exist_ok=True)
-    payload = source.read_bytes()
+    payload = read_regular_bytes(source)
     if hashlib.sha256(payload).hexdigest() != reference_sha256:
         raise SourceReferenceReviewError(
             f"Source-reference plan changed during evaluation: {reference['path']}"
@@ -2243,7 +2243,7 @@ def _load_candidate(
         )
     relative = _text(value.get("reference"), f"candidate {index} reference")
     reference_path = _contained_file(root, relative)
-    payload = reference_path.read_bytes()
+    payload = read_regular_bytes(reference_path)
     reference_sha256 = _sha256(
         value.get("reference_sha256"), f"candidate {index} reference hash"
     )
@@ -2414,7 +2414,7 @@ def _cluster_id(character: str, portrait: str | None, bank: str) -> str:
 def _read_json(path: str | Path, label: str) -> tuple[Path, bytes, JsonObject]:
     path = Path(path).expanduser().resolve()
     try:
-        payload = path.read_bytes()
+        payload = read_regular_bytes(path)
         document = decode_json(payload.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SourceReferenceReviewError(

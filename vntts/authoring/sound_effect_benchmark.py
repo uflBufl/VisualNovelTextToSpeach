@@ -24,6 +24,7 @@ from vntts.authoring.publication import (
 )
 from vntts.cuda_probe import CudaProbeError, inspect_cuda
 from vntts.json_types import decode_json
+from vntts.path_safety import read_regular_bytes
 
 CORPUS_SCHEMA = "vntts.sound-effect-benchmark-corpus"
 REPORT_SCHEMA = "vntts.sound-effect-benchmark"
@@ -69,7 +70,7 @@ class SoundEffectPipeline(Protocol):
 def load_sound_effect_corpus(path: str | Path) -> SoundEffectCorpus:
     path = Path(path).expanduser().resolve()
     try:
-        payload = path.read_bytes()
+        payload = read_regular_bytes(path)
         document = decode_json(payload)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SoundEffectBenchmarkError(f"Unable to read corpus: {error}") from error
@@ -323,7 +324,7 @@ def _render_sample(
     filename = f"{sample['id']}-seed-{seed}.wav"
     path = audio_directory / filename
     _write_pcm16_mono(path, pcm, sample_rate)
-    payload = path.read_bytes()
+    payload = read_regular_bytes(path)
     peak_memory = (
         int(cuda.max_memory_allocated())
         if callable(getattr(cuda, "max_memory_allocated", None))

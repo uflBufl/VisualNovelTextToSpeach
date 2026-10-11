@@ -142,86 +142,101 @@ class LiveReplayCaptureTest(unittest.TestCase):
     @unittest.skipUnless(
         hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
     )
-    def test_capture_story_hash_refuses_fifo_before_session_and_recovers(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-            story = root / "story.jsonl"
-            payload = b"captured original story"
-            story.write_bytes(payload)
-            story.chmod(0o444)
-            mode = story.stat().st_mode
-            output = root / "capture"
-            original_hash = live_replay_capture.sha256_file
-            refused = []
+    def test_capture_story_acquisitions_refuse_fifo_before_session_and_recover(self):
+        for phase in ("initial capture", "final hash"):
+            with self.subTest(phase=phase), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                story = root / "story.jsonl"
+                payload = b"captured original story"
+                story.write_bytes(payload)
+                story.chmod(0o444)
+                mode = story.stat().st_mode
+                output = root / "capture"
+                alias = (
+                    "read_regular_bytes"
+                    if phase == "initial capture"
+                    else "sha256_file"
+                )
+                original_acquisition = getattr(live_replay_capture, alias)
+                refused = []
 
-            def checksum(candidate):
-                self.assertEqual(Path(candidate), story)
-                gate = {"path": story, "armed": True}
+                def checksum(candidate):
+                    self.assertEqual(Path(candidate), story)
+                    gate = {"path": story, "armed": True}
+                    with (
+                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                            self, gate
+                        ),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original_acquisition(candidate)
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                def capture(session, **_kwargs):
+                    session.observe(frame("red"), "Rhiannon", "Hello there.")
+                    return session.finish()
+
                 with (
-                    admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
-                        self, gate
+                    patch.object(
+                        live_replay_capture,
+                        "load_app_settings",
+                        return_value=AppSettings(),
                     ),
-                    self.assertRaisesRegex(OSError, "regular file") as caught,
+                    patch.object(
+                        live_replay_capture.GameProfileStore, "load"
+                    ) as profiles,
+                    patch.object(
+                        live_replay_capture, "get_dialog_region", return_value=None
+                    ),
+                    patch.object(live_replay_capture.OCRCorrectionStore, "load"),
+                    patch.object(
+                        live_replay_capture.ChapterVoicePreloader,
+                        "load_optional",
+                        return_value=FakeStoryResolver(),
+                    ) as load_story,
+                    patch.object(
+                        live_replay_capture,
+                        "capture_replay_session",
+                        side_effect=capture,
+                    ) as run_capture,
+                    patch.object(
+                        live_replay_capture, "cli_error", return_value=1
+                    ) as cli_failure,
                 ):
-                    original_hash(candidate)
-                refused.append(caught.exception)
-                raise caught.exception
-
-            def capture(session, **_kwargs):
-                session.observe(frame("red"), "Rhiannon", "Hello there.")
-                return session.finish()
-
-            with (
-                patch.object(
-                    live_replay_capture, "load_app_settings", return_value=AppSettings()
-                ),
-                patch.object(live_replay_capture.GameProfileStore, "load") as profiles,
-                patch.object(
-                    live_replay_capture, "get_dialog_region", return_value=None
-                ),
-                patch.object(live_replay_capture.OCRCorrectionStore, "load"),
-                patch.object(
-                    live_replay_capture.ChapterVoicePreloader,
-                    "load_optional",
-                    return_value=FakeStoryResolver(),
-                ),
-                patch.object(
-                    live_replay_capture, "capture_replay_session", side_effect=capture
-                ) as run_capture,
-                patch.object(
-                    live_replay_capture, "cli_error", return_value=1
-                ) as cli_failure,
-            ):
-                profiles.return_value.get.return_value = None
-                with patch.object(live_replay_capture, "sha256_file", checksum):
+                    profiles.return_value.get.return_value = None
+                    with patch.object(live_replay_capture, alias, checksum):
+                        self.assertEqual(
+                            live_replay_capture.main(
+                                [str(output), "--story-index", str(story)]
+                            ),
+                            1,
+                        )
+                    self.assertEqual(len(refused), 1)
+                    cli_failure.assert_called_once_with(refused[0])
+                    run_capture.assert_not_called()
+                    self.assertEqual(
+                        load_story.call_count, 0 if phase == "initial capture" else 1
+                    )
+                    self.assertFalse(output.exists())
+                    self.assertEqual(story.read_bytes(), payload)
+                    self.assertEqual(story.stat().st_mode, mode)
+                    self.assertEqual(list(root.iterdir()), [story])
                     self.assertEqual(
                         live_replay_capture.main(
                             [str(output), "--story-index", str(story)]
                         ),
-                        1,
+                        0,
                     )
-                self.assertEqual(len(refused), 1)
-                cli_failure.assert_called_once_with(refused[0])
-                run_capture.assert_not_called()
-                self.assertFalse(output.exists())
-                self.assertEqual(story.read_bytes(), payload)
-                self.assertEqual(story.stat().st_mode, mode)
-                self.assertEqual(list(root.iterdir()), [story])
+                    run_capture.assert_called_once()
+                document = json.loads((output / "corpus.json").read_text())
                 self.assertEqual(
-                    live_replay_capture.main(
-                        [str(output), "--story-index", str(story)]
-                    ),
-                    0,
+                    document["capture"]["story_index_sha256"],
+                    hashlib.sha256(payload).hexdigest(),
                 )
-                run_capture.assert_called_once()
-            document = json.loads((output / "corpus.json").read_text())
-            self.assertEqual(
-                document["capture"]["story_index_sha256"],
-                hashlib.sha256(payload).hexdigest(),
-            )
-            self.assertEqual(
-                len(load_live_replay_corpus(output / "corpus.json").dialogue), 1
-            )
+                self.assertEqual(
+                    len(load_live_replay_corpus(output / "corpus.json").dialogue), 1
+                )
 
     @unittest.skipUnless(
         hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"

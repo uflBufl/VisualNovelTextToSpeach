@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from typing import TypeAlias
 
+from vntts.path_safety import read_regular_bytes
 from vntts.services.tts_engine import TTSConfigurationError
 
 PathInput: TypeAlias = str | Path
@@ -39,7 +40,7 @@ def managed_runtime_location(backend: str) -> Path | None:
     digest = hashlib.sha256()
     for name in ("pyproject.toml", "uv.lock"):
         digest.update(name.encode() + b"\0")
-        digest.update((project / name).read_bytes())
+        digest.update(read_regular_bytes(project / name))
     digest.update(f"3.14:{sys.platform}:{platform.machine()}".encode())
     return get_local_data_directory() / "speech-runtimes" / backend / digest.hexdigest()
 

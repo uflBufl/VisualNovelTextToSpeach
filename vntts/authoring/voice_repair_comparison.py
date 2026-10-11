@@ -50,6 +50,7 @@ from vntts.authoring.workspace_inspection import generation_failure_category
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 from vntts.document_identity import is_lowercase_sha256, sha256_file
 from vntts.json_types import decode_json
+from vntts.path_safety import read_regular_bytes
 from vntts.speech_backend import get_moss_tts_generation_profile
 from vntts.voices import voice_manifest_entries_at_path
 
@@ -771,7 +772,7 @@ def _copy_candidate_reference(
     if key in seen:
         return
     seen.add(key)
-    payload = source.read_bytes()
+    payload = read_regular_bytes(source)
     target = staging / relative
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(payload)
@@ -1513,7 +1514,7 @@ def _read(path: str | Path, label: str) -> bytes:
     if path.is_symlink():
         raise VoiceRepairComparisonError(f"Comparison {label} must not be a symlink")
     try:
-        return path.read_bytes()
+        return read_regular_bytes(path)
     except OSError as error:
         raise VoiceRepairComparisonError(
             f"Unable to read comparison {label}: {error}"

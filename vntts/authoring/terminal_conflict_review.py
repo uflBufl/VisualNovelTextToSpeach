@@ -59,7 +59,7 @@ from vntts.authoring.workbench import (
 )
 from vntts.authoring.workbench_contracts import ReviewItem
 from vntts.json_types import decode_json, has_schema_version, is_json_object
-from vntts.path_safety import open_regular_binary
+from vntts.path_safety import open_regular_binary, read_regular_bytes
 
 TERMINAL_CONFLICT_REVIEW_SCHEMA = "vntts.authoring-terminal-conflict-review"
 TERMINAL_CONFLICT_REVIEW_VERSION = 1
@@ -287,7 +287,7 @@ def _review_publication_input(reconciliation_path: Path) -> _ReviewPublicationIn
         ValueError,
     ) as error:
         raise TerminalConflictReviewError(str(error)) from error
-    if report_snapshot.path.read_bytes() != report_snapshot.payload:
+    if read_regular_bytes(report_snapshot.path) != report_snapshot.payload:
         raise TerminalConflictReviewError(
             "Authoring reconciliation changed while it was loaded"
         )
@@ -733,7 +733,7 @@ def load_terminal_conflict_candidate_audio(
             f"Unknown terminal conflict candidate: {candidate_id}"
         )
     path = _contained_file(directory, candidate["audio"], "candidate WAV")
-    payload = path.read_bytes()
+    payload = read_regular_bytes(path)
     if hashlib.sha256(payload).hexdigest() != candidate["audio_sha256"]:
         raise TerminalConflictReviewError("Terminal conflict WAV changed")
     return payload
@@ -1054,7 +1054,7 @@ def record_terminal_conflict_decision(
         _assert_source_authorities(review)
         if (
             original_progress is not None
-            and progress_path.read_bytes() != original_progress
+            and read_regular_bytes(progress_path) != original_progress
         ):
             raise TerminalConflictReviewError(
                 "Terminal conflict progress changed before save"
@@ -1647,7 +1647,7 @@ def _is_stored_progress_lease(value: object) -> TypeGuard[_StoredProgressLease]:
 
 def _stored_progress_lease(path: Path) -> tuple[bytes, _StoredProgressLease]:
     try:
-        payload = path.read_bytes()
+        payload = read_regular_bytes(path)
         existing = decode_json(payload.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise TerminalConflictReviewError(
@@ -1683,7 +1683,7 @@ def _recover_stale_progress_lock(directory: Path, path: Path) -> None:
             "Another terminal conflict decision is being saved"
         )
     interrupted = directory / (".progress.lock.interrupted-" + uuid.uuid4().hex)
-    if path.read_bytes() != existing_payload:
+    if read_regular_bytes(path) != existing_payload:
         raise TerminalConflictReviewError(
             "Terminal conflict progress lock changed during recovery"
         )

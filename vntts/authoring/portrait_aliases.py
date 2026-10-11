@@ -25,6 +25,7 @@ from vntts.authoring.source_reference_quality import (
     validate_source_reference_quality_review_document,
 )
 from vntts.authoring.workspace_foundation import contained_regular_file
+from vntts.path_safety import read_regular_bytes
 
 PORTRAIT_ALIAS_PLAN_SCHEMA = "vntts.authoring-portrait-alias-plan"
 PORTRAIT_ALIAS_PLAN_VERSION = 1
@@ -509,7 +510,7 @@ def _contained_file(root: str | Path, relative: object) -> Path:
 
 def _read(path: str | Path, label: str) -> bytes:
     try:
-        return Path(path).read_bytes()
+        return read_regular_bytes(Path(path))
     except OSError as error:
         raise PortraitAliasError(f"Unable to read {label} {path}: {error}") from error
 

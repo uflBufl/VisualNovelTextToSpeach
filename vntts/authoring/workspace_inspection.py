@@ -115,6 +115,7 @@ from vntts.authoring.workspace_state import (
 )
 from vntts.document_identity import canonical_document_sha256, sha256_file
 from vntts.json_types import decode_json, has_schema_version
+from vntts.path_safety import read_regular_bytes
 from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.voices import (
     CharacterVoice,
@@ -588,7 +589,7 @@ def _corrected_legacy_speech_quality(
     """Re-measure one legacy WAV from digest-bound bytes for review attention."""
     path = Path(audio_path)
     try:
-        content = path.read_bytes()
+        content = read_regular_bytes(path)
     except OSError as error:
         raise AuthoringWorkbenchError(
             f"Unable to read generated WAV for review metrics: {error}"

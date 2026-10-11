@@ -39,6 +39,7 @@ from vntts.authoring.source_reference_quality_records import (
     quality_review_progress,
     record_source_reference_quality_decision,
 )
+from vntts.path_safety import read_regular_bytes
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.qt_dialogs import CloseGuardedDialog
 
@@ -557,7 +558,7 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         path = (self.session_path.parent / record["image"]).resolve()
         try:
             path.relative_to(self.session_path.parent)
-            payload = path.read_bytes()
+            payload = read_regular_bytes(path)
         except (OSError, ValueError) as error:
             self._set_portrait_message(f"Portrait unavailable: {error}")
             return
@@ -709,7 +710,7 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
             raise ValueError("audio path is a symlink")
         path = path.resolve()
         path.relative_to(root)
-        payload = path.read_bytes()
+        payload = read_regular_bytes(path)
         if hashlib.sha256(payload).hexdigest() != record["audio_sha256"]:
             raise ValueError("audio checksum changed")
         return variant_id, token, record["audio_sha256"], payload

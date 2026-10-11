@@ -31,7 +31,7 @@ from vntts_artifacts.voice_manifest import (
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.document_identity import canonical_document_sha256
 from vntts.json_types import decode_json
-from vntts.path_safety import open_regular_binary
+from vntts.path_safety import open_regular_binary, read_regular_bytes
 from vntts.voices import pocket_tts_preset_voices
 
 
@@ -97,7 +97,7 @@ def snapshot_recorded_voices(
     if manifest is None or manifest["kind"] != "file":
         return {}
     try:
-        payload = manifest["path"].read_bytes()
+        payload = read_regular_bytes(manifest["path"])
         if hashlib.sha256(payload).hexdigest() != manifest["sha256"]:
             raise BulkGenerationError("Recorded voice manifest changed during capture")
         document = decode_json(payload)

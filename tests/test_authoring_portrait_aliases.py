@@ -10,6 +10,7 @@ from tests.source_reference_fixtures import (
     write_test_png,
 )
 from vntts.authoring import portrait_aliases as aliases
+from vntts.authoring import source_reference_quality_records as quality_records
 from vntts.authoring.source_reference_quality import (
     load_source_reference_quality_review,
     record_source_reference_quality_decision,
@@ -86,7 +87,7 @@ class PortraitAliasesTest(unittest.TestCase):
                 )
             accepted = quality.session.read_bytes()
             quality.session.write_bytes(rejected)
-            read_bytes = Path.read_bytes
+            read_bytes = aliases.read_regular_bytes
             reads = 0
 
             def read_other_review(path):
@@ -102,11 +103,15 @@ class PortraitAliasesTest(unittest.TestCase):
                 finally:
                     path.write_bytes(rejected)
 
-            with patch.object(Path, "read_bytes", read_other_review):
+            with (
+                patch.object(aliases, "read_regular_bytes", read_other_review),
+                patch.object(quality_records, "read_regular_bytes", read_other_review),
+            ):
                 with self.assertRaisesRegex(
                     aliases.PortraitAliasError, "changed while"
                 ):
                     aliases.build_portrait_alias_plan(quality.session)
+            self.assertEqual(reads, 2)
             self.assertEqual(quality.session.read_bytes(), rejected)
 
     def test_pair_search_only_visits_same_voice_families(self):

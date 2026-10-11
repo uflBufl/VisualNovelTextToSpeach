@@ -23,6 +23,7 @@ from vntts.authoring.advisory_lock import (
 from vntts.authoring.authority import write_json_document_no_replace
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.json_types import decode_json
+from vntts.path_safety import read_regular_bytes
 
 LEASE_SCHEMA = "vntts.authoring-generation-lease"
 LEASE_VERSION = 1
@@ -141,7 +142,7 @@ def archive_interrupted_artifact(
     """Move one abandoned output artifact into its contained recovery archive."""
     output_directory = Path(output_directory).resolve()
     source = Path(source)
-    payload = source.read_bytes()
+    payload = read_regular_bytes(source)
     if expected_payload is not None and payload != expected_payload:
         raise BulkGenerationError(
             f"Interrupted artifact changed before recovery: {source}"
@@ -159,8 +160,11 @@ def archive_interrupted_artifact(
     candidate = archive_root / f"{stem}-{digest}{source.suffix}"
     suffix = 2
     while candidate.exists():
-        if candidate.read_bytes() == payload:
-            if expected_payload is not None and source.read_bytes() != expected_payload:
+        if read_regular_bytes(candidate) == payload:
+            if (
+                expected_payload is not None
+                and read_regular_bytes(source) != expected_payload
+            ):
                 raise BulkGenerationError(
                     f"Interrupted artifact changed before recovery: {source}"
                 )
@@ -168,7 +172,7 @@ def archive_interrupted_artifact(
             return candidate
         candidate = archive_root / f"{stem}-{digest}-{suffix}{source.suffix}"
         suffix += 1
-    if expected_payload is not None and source.read_bytes() != expected_payload:
+    if expected_payload is not None and read_regular_bytes(source) != expected_payload:
         raise BulkGenerationError(
             f"Interrupted artifact changed before recovery: {source}"
         )
@@ -199,7 +203,7 @@ class GenerationLease:
             with exclusive_advisory_lock(self.path.with_suffix(".guard")):
                 if self.path.exists():
                     try:
-                        lease_payload = self.path.read_bytes()
+                        lease_payload = read_regular_bytes(self.path)
                         parsed: object = decode_json(lease_payload.decode("utf-8"))
                     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
                         raise BulkGenerationError(

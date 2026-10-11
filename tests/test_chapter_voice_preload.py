@@ -98,7 +98,10 @@ class _EvidenceReadFailure:
 
     @contextmanager
     def admitted(self, candidate):
-        self.test.assertEqual(Path(candidate), self.evidence)
+        if Path(candidate) != self.evidence:
+            with self.original_open(candidate) as source:
+                yield source
+            return
         with self.original_open(candidate) as original:
             self.streams.append(original)
 

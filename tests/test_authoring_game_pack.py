@@ -3,6 +3,7 @@ import io
 import json
 import os
 import shutil
+import stat
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -1987,6 +1988,98 @@ class AuthoringGamePackTest(unittest.TestCase):
                     lease.owner,
                 )
             self.assertFalse(lease_path.exists())
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_publication_lease_captures_refuse_fifo_and_recover(self):
+        for selected_call in (1, 2, 3):
+            with self.subTest(capture=selected_call), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                fixture = prepare_authoring_fixture(root / "source", names=("one",))
+                review_generation_item(
+                    fixture["state"], fixture["items"][0]["queue_id"], "approved"
+                )
+                source_before = tree_hashes(root / "source")
+                destination = root / "final-pack"
+                publication = game_pack_module._PublicationLease(destination)
+                payload = json.dumps(
+                    {
+                        "schema": "vntts.game-pack-publication-lease",
+                        "schema_version": 1,
+                        "owner": "stale-owner",
+                        "pid": 999999,
+                        "hostname": game_pack_module.socket.gethostname(),
+                        "process_started_at": "stale-start",
+                        "destination": str(destination),
+                    }
+                ).encode()
+                publication.path.write_bytes(payload)
+                publication.path.chmod(0o444)
+                publication.guard_path.touch()
+                guard_inode = publication.guard_path.stat().st_ino
+                before = tree_hashes(root)
+                original = game_pack_module.read_regular_bytes
+                calls, refused = [], []
+
+                def refuse_capture(path):
+                    if path != publication.path:
+                        return original(path)
+                    calls.append(path)
+                    if len(calls) != selected_call:
+                        return original(path)
+                    gate = {"path": path, "armed": True}
+                    with (
+                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                            self, gate
+                        ),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original(path)
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                error_type = OSError if selected_call == 3 else FinalGamePackError
+                label = {
+                    1: "Unable to inspect publication lease: .*regular file",
+                    2: "Unable to inspect stale publication lease: .*regular file",
+                    3: "regular file",
+                }[selected_call]
+                with patch.object(
+                    game_pack_module, "process_is_alive", return_value=False
+                ):
+                    with (
+                        patch.object(
+                            game_pack_module, "read_regular_bytes", refuse_capture
+                        ),
+                        self.assertRaisesRegex(error_type, label) as caught,
+                    ):
+                        publish(fixture, destination)
+                    self.assertEqual(len(calls), selected_call)
+                    self.assertEqual(len(refused), 1)
+                    self.assertIs(
+                        caught.exception
+                        if selected_call == 3
+                        else caught.exception.__cause__,
+                        refused[0],
+                    )
+                    self.assertEqual(tree_hashes(root), before)
+                    self.assertEqual(
+                        stat.S_IMODE(publication.path.stat().st_mode), 0o444
+                    )
+                    self.assertFalse(destination.exists())
+                    self.assertFalse(list(root.glob(".final-pack.staging-*")))
+                    self.assertFalse(list(root.glob("*.interrupted-*")))
+                    recovered = publish(fixture, destination)
+                self.assertEqual(
+                    load_game_pack(recovered.manifest).game_id, "synthetic-game"
+                )
+                self.assertEqual(tree_hashes(root / "source"), source_before)
+                self.assertFalse(publication.path.exists())
+                archives = list(root.glob("*.interrupted-*"))
+                self.assertEqual(len(archives), 1)
+                self.assertEqual(archives[0].read_bytes(), payload)
+                self.assertEqual(publication.guard_path.stat().st_ino, guard_inode)
 
     def test_stale_publication_recovery_cannot_archive_a_replacement_owner(self):
         with TemporaryDirectory() as directory:

@@ -48,7 +48,7 @@ from vntts.document_identity import (
 )
 from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
-from vntts.path_safety import open_regular_binary
+from vntts.path_safety import open_regular_binary, read_regular_bytes
 from vntts.settings import get_local_data_directory
 from vntts.speech_backend_contract import RenderableBackend, is_renderable_backend
 from vntts.speech_backend_runtime import shutdown_speech_backend
@@ -273,7 +273,7 @@ def _capture_failure_corpus_inputs(
     else:
         # Custom loaders retain their path-based and byte-decoder contracts.
         try:
-            state_payload = state_path.read_bytes()
+            state_payload = read_regular_bytes(state_path)
             state_snapshot = decode_json(state_payload)
         except (OSError, UnicodeError, json.JSONDecodeError) as error:
             raise ModelBenchmarkError(
@@ -479,7 +479,7 @@ def _comparison_voice_context(
 ) -> _ComparisonVoiceContext:
     manifest_path = Path(manifest_path).expanduser().resolve()
     try:
-        payload = manifest_path.read_bytes()
+        payload = read_regular_bytes(manifest_path)
         document = decode_json(payload.decode("utf-8"))
         registry = CharacterVoiceRegistry.from_document(document, manifest_path)
     except (

@@ -17,6 +17,7 @@ from durable_file import atomic_write_json
 from numpy.typing import NDArray
 
 from vntts.cli import cli_error, cli_messages
+from vntts.path_safety import read_regular_bytes
 
 
 class ReferenceQualityReport(TypedDict):
@@ -63,7 +64,7 @@ def analyze_reference(
 ) -> ReferenceQualityReport:
     path = Path(path).expanduser().resolve()
     try:
-        payload = path.read_bytes()
+        payload = read_regular_bytes(path)
     except OSError as error:
         raise ValueError(f"Unable to read reference WAV {path}: {error}") from error
     return analyze_reference_bytes(

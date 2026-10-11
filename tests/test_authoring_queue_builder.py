@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import os
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -23,6 +24,8 @@ from vntts_artifacts.voice_manifest import (
     write_voice_manifest,
 )
 
+import vntts.authoring.queue_builder as builder
+from tests import test_workspace_input_admission as admission
 from tests.authoring_fixtures import (
     queue_builder_story_metadata as story_metadata,
 )
@@ -74,7 +77,7 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
                 source = story_path if source_name == "story" else manifest_path
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 manifest["voices"][0]["character"] = "Replacement Ada"
-                read_bytes = Path.read_bytes
+                read_bytes = builder.read_regular_bytes
                 captured = False
 
                 def replace_after_capture(path):
@@ -93,13 +96,87 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
                     return payload
 
                 with (
-                    patch.object(Path, "read_bytes", replace_after_capture),
+                    patch.object(builder, "read_regular_bytes", replace_after_capture),
                     self.assertRaisesRegex(
                         GenerationQueueBuildError, "changed during queue planning"
                     ),
                 ):
                     inspect_generation_queue(story_path, manifest_path)
                 self.assertTrue(captured)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_inspection_captures_refuse_fifo_preserve_inputs_and_recover(self):
+        for role in ("story", "manifest"):
+            with self.subTest(role=role), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                story, manifest = write_inputs(root, [story_record("line-1", "absent")])
+                selected = story if role == "story" else manifest
+                selected.chmod(0o444)
+                mode = selected.stat().st_mode
+                before = {
+                    path: path.read_bytes()
+                    for path in root.rglob("*")
+                    if path.is_file()
+                }
+                original = builder.read_regular_bytes
+                refused = []
+
+                def capture(candidate):
+                    if Path(candidate) != selected:
+                        return original(candidate)
+                    gate = {"path": selected, "armed": True}
+                    with (
+                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                            self, gate
+                        ),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original(candidate)
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                error_type = (
+                    StoryIndexError if role == "story" else GenerationQueueBuildError
+                )
+                with (
+                    patch.object(builder, "read_regular_bytes", capture),
+                    self.assertRaisesRegex(error_type, "regular file") as caught,
+                ):
+                    inspect_generation_queue(story, manifest)
+                self.assertEqual(len(refused), 1)
+                cause = caught.exception.__cause__
+                if role == "manifest":
+                    cause = cause.__cause__
+                self.assertIs(cause, refused[0])
+                self.assertEqual(
+                    {
+                        path: path.read_bytes()
+                        for path in root.rglob("*")
+                        if path.is_file()
+                    },
+                    before,
+                )
+                self.assertEqual(selected.stat().st_mode, mode)
+                plan = inspect_generation_queue(story, manifest)
+                self.assertEqual(
+                    plan.metadata["source_story_index_sha256"],
+                    hashlib.sha256(before[story]).hexdigest(),
+                )
+                self.assertEqual(
+                    plan.metadata["source_voice_manifest_sha256"],
+                    hashlib.sha256(before[manifest]).hexdigest(),
+                )
+                self.assertEqual(len(plan.items), 1)
+                self.assertEqual(
+                    {
+                        path: path.read_bytes()
+                        for path in root.rglob("*")
+                        if path.is_file()
+                    },
+                    before,
+                )
 
     def test_only_needed_references_are_probed_once_per_plan(self):
         with TemporaryDirectory() as directory:

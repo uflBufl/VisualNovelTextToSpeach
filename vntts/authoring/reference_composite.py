@@ -54,6 +54,7 @@ from vntts.authoring.workspace_foundation import (
 from vntts.cli import cli_error, cli_success
 from vntts.document_identity import file_sha256, is_lowercase_sha256, sha256_file
 from vntts.json_types import decode_json
+from vntts.path_safety import read_regular_bytes
 from vntts.reference_quality import ReferenceQualityReport, analyze_reference_bytes
 from vntts.voices import load_voice_manifest
 
@@ -375,7 +376,7 @@ def _composite_quality_session(
 
 
 def _read_json(path: Path) -> tuple[bytes, object]:
-    payload = path.read_bytes()
+    payload = read_regular_bytes(path)
     value = decode_json(payload.decode("utf-8"))
     return payload, value
 
@@ -627,7 +628,7 @@ def _read_composite_clip(
     source = _contained_file(
         report_directory, _text(candidate.get("reference"), "Candidate reference")
     )
-    payload = source.read_bytes()
+    payload = read_regular_bytes(source)
     expected_sha256 = _sha256(
         candidate.get("reference_sha256"), "Candidate reference hash"
     )
@@ -708,7 +709,7 @@ def _write_composite_artifacts(
 ) -> ReferenceCompositeResult:
     composite, composite_path = _write_composite_wav(staging, staged, gap_ms)
     preflight = analyze_reference_bytes(
-        composite_path.read_bytes(), path=composite_path
+        read_regular_bytes(composite_path), path=composite_path
     )
     composite_sha256 = preflight["sha256"]
     ledger_path = staging / "composite.json"

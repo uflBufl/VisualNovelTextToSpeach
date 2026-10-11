@@ -37,6 +37,7 @@ from vntts.authoring.workspace_voice_runtime import (
 )
 from vntts.document_identity import sha256_file
 from vntts.json_types import decode_json
+from vntts.path_safety import read_regular_bytes
 
 FAILED_CONTROL_CARRY_SCHEMA = "vntts.authoring-failed-control-carry"
 FAILED_CONTROL_CARRY_VERSION = 1
@@ -118,8 +119,8 @@ def carry_failed_controls(
     source_queue = source_directory / "queue.jsonl"
     target_queue = target_directory / "queue.jsonl"
     try:
-        source_queue_payload = source_queue.read_bytes()
-        target_queue_payload = target_queue.read_bytes()
+        source_queue_payload = read_regular_bytes(source_queue)
+        target_queue_payload = read_regular_bytes(target_queue)
     except OSError as error:
         raise FailedControlCarryError(str(error)) from error
     if source_queue_payload != target_queue_payload:

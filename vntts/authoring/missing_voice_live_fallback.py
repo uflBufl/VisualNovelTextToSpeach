@@ -49,6 +49,7 @@ from vntts.authoring.workbench import inspect_workspace
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.document_identity import file_sha256
 from vntts.json_types import decode_json, has_schema_version
+from vntts.path_safety import read_regular_bytes
 from vntts.voices import synthesis_character_for_line
 
 AUTOMATIC_UNRESOLVED_ORIGIN = "automatic_no_complete_candidate"
@@ -113,7 +114,7 @@ def authorize_missing_voice_live_fallback(
     queue_by_id: dict[str, VoiceGenerationQueueItem] = {
         item.queue_id: item for item in queue.items
     }
-    state_payload = state_path.read_bytes()
+    state_payload = read_regular_bytes(state_path)
     state_sha256 = hashlib.sha256(state_payload).hexdigest()
     state = _decode_state(state_payload)
     validate_generation_state_document(state, state_path.parent, queue, queue_sha256)

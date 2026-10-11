@@ -1,10 +1,13 @@
 import json
+import os
 import socket
+import stat
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from tests import test_workspace_input_admission as admission
 from tests.authoring_fixtures import tree_hashes
 from tests.symlink_support import symlink_or_skip
 from tests.terminal_conflict_fixtures import create_terminal_conflict_fixture
@@ -443,6 +446,104 @@ class TerminalConflictReviewTest(unittest.TestCase):
             self.assertEqual(len(progress["decisions"]), 1)
             self.assertFalse(lock.exists())
             self.assertEqual(len(list(output.glob(".progress.lock.interrupted-*"))), 1)
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_progress_lease_captures_refuse_fifo_and_recover(self):
+        for selected_call in (1, 2):
+            with self.subTest(capture=selected_call), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                _primary, _secondary, _queue_id, report_path = self.create_fixture(root)
+                sources_before = tree_hashes(root)
+                output = root / "conflict-review"
+                created = publish_terminal_conflict_review(report_path, output)
+                case_id = json.loads(created.review.read_bytes())["cases"][0]["case_id"]
+                lock = output / ".progress.lock"
+                payload = json.dumps(
+                    {
+                        "schema": PROGRESS_LEASE_SCHEMA,
+                        "schema_version": PROGRESS_LEASE_VERSION,
+                        "pid": 999999,
+                        "hostname": socket.gethostname(),
+                        "process_started_at": "stale",
+                        "lease_id": "dead-owner",
+                        "started_at": "2026-08-26T12:00:00+00:00",
+                    }
+                ).encode()
+                lock.write_bytes(payload)
+                lock.chmod(0o444)
+                guard = output / ".progress.lock.guard"
+                guard.touch()
+                guard_inode = guard.stat().st_ino
+                before = tree_hashes(root)
+                original = terminal_module.read_regular_bytes
+                calls, refused = [], []
+
+                def refuse_capture(path):
+                    if path != lock:
+                        return original(path)
+                    calls.append(path)
+                    if len(calls) != selected_call:
+                        return original(path)
+                    gate = {"path": path, "armed": True}
+                    with (
+                        admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                            self, gate
+                        ),
+                        self.assertRaisesRegex(OSError, "regular file") as caught,
+                    ):
+                        original(path)
+                    refused.append(caught.exception)
+                    raise caught.exception
+
+                error_type = (
+                    OSError if selected_call == 2 else TerminalConflictReviewError
+                )
+                label = (
+                    "regular file"
+                    if selected_call == 2
+                    else "Unrecognized terminal conflict progress lock"
+                )
+                with patch.object(
+                    terminal_module, "process_is_alive", return_value=False
+                ):
+                    with (
+                        patch.object(
+                            terminal_module, "read_regular_bytes", refuse_capture
+                        ),
+                        self.assertRaisesRegex(error_type, label) as caught,
+                    ):
+                        record_terminal_conflict_decision(
+                            output, case_id, NEITHER_ACCEPTABLE
+                        )
+                    self.assertEqual(len(calls), selected_call)
+                    self.assertEqual(len(refused), 1)
+                    self.assertIs(
+                        caught.exception
+                        if selected_call == 2
+                        else caught.exception.__cause__,
+                        refused[0],
+                    )
+                    self.assertEqual(tree_hashes(root), before)
+                    self.assertEqual(stat.S_IMODE(lock.stat().st_mode), 0o444)
+                    self.assertFalse(list(output.glob(".progress.lock.interrupted-*")))
+                    progress = record_terminal_conflict_decision(
+                        output, case_id, NEITHER_ACCEPTABLE
+                    )
+                self.assertEqual(progress["decisions"][0]["case_id"], case_id)
+                self.assertEqual(
+                    load_terminal_conflict_review_progress(output), progress
+                )
+                self.assertFalse(lock.exists())
+                archives = list(output.glob(".progress.lock.interrupted-*"))
+                self.assertEqual(len(archives), 1)
+                self.assertEqual(archives[0].read_bytes(), payload)
+                after = tree_hashes(root)
+                self.assertEqual(
+                    {path: after[path] for path in sources_before}, sources_before
+                )
+                self.assertEqual(guard.stat().st_ino, guard_inode)
 
     def test_progress_lease_write_failure_leaves_no_partial_lock(self):
         with TemporaryDirectory() as directory:

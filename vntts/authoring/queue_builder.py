@@ -46,6 +46,7 @@ from vntts.chapter_voice_preload import (
 )
 from vntts.document_identity import canonical_document_sha256, file_sha256
 from vntts.json_types import decode_json
+from vntts.path_safety import read_regular_bytes
 from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.voices import synthesis_character_for_line, voice_manifest_entries_at_path
 
@@ -403,7 +404,7 @@ def inspect_generation_queue(
     story_index_path = Path(story_index_path).expanduser().resolve()
     voice_manifest_path = Path(voice_manifest_path).expanduser().resolve()
     try:
-        story_payload = story_index_path.read_bytes()
+        story_payload = read_regular_bytes(story_index_path)
     except OSError as error:
         raise StoryIndexError(
             f"Unable to open story index {story_index_path}: {error}"
@@ -412,7 +413,7 @@ def inspect_generation_queue(
     document = load_story_index_snapshot(story_index_path, story_payload)
     try:
         try:
-            manifest_payload = voice_manifest_path.read_bytes()
+            manifest_payload = read_regular_bytes(voice_manifest_path)
             manifest = decode_json(manifest_payload.decode("utf-8"))
         except (OSError, json.JSONDecodeError) as error:
             raise VoiceManifestError(

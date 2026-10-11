@@ -79,6 +79,28 @@ class SavedStoryPackSelectionTest(unittest.TestCase):
 
 
 class OfflinePackPublisherTest(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_optional_sequence_capture_refuses_fifo_without_publishing_and_recovers(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "sequence.json"
+            payload = b"captured optional evidence"
+            path.write_bytes(payload)
+            path.chmod(0o444)
+            mode = path.stat().st_mode
+            gate = {"path": path, "armed": True}
+            with admission.WorkspaceInputAdmissionTest.swap_at_acquisition(self, gate):
+                self.assertEqual(_optional_sequence_snapshot(path), (None, None))
+            self.assertEqual(path.read_bytes(), payload)
+            self.assertEqual(path.stat().st_mode, mode)
+            self.assertEqual(list(Path(directory).iterdir()), [path])
+            self.assertEqual(
+                _optional_sequence_snapshot(path), (sha256_file(path), payload)
+            )
+
     def _publication_copy_fixture(self, root, phase):
         job, prepared, generated, items = fixture(root / "current")
         reference = prepared.voice_manifest.parent / "references" / "voice.wav"

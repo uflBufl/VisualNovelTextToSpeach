@@ -72,7 +72,7 @@ from vntts.document_identity import (
 from vntts.game_pack import GamePackImport, import_game_pack
 from vntts.generated_audio import GeneratedAudioLibrary
 from vntts.json_types import decode_json
-from vntts.path_safety import copy_regular_file, safe_relative_path
+from vntts.path_safety import copy_regular_file, read_regular_bytes, safe_relative_path
 from vntts.pregeneration_contract import (
     OfflineGenerationCancelled,
     OfflineGenerationError,
@@ -965,7 +965,7 @@ def _optional_sequence_snapshot(path: Path | None) -> tuple[str | None, bytes | 
     if path is None or not path.is_file():
         return None, None
     try:
-        payload = path.read_bytes()
+        payload = read_regular_bytes(path)
     except OSError:
         return None, None
     return hashlib.sha256(payload).hexdigest(), payload
@@ -1027,7 +1027,7 @@ def _safe_sequence_document(
     path: Path, story_index: Path, *, payload: bytes | None = None
 ) -> tuple[JsonObject, LiveSequencePlan]:
     if payload is None:
-        payload = path.read_bytes()
+        payload = read_regular_bytes(path)
     document = decode_json(payload)
     if not isinstance(document, dict) or not isinstance(document.get("chapters"), list):
         raise LiveSequencePlanError("Live sequence plan document is malformed")

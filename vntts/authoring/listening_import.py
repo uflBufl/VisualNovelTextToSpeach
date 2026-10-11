@@ -26,7 +26,7 @@ from vntts.authoring.workspace_foundation import load_json_object, require_sha25
 from vntts.document_identity import canonical_document_sha256, sha256_file
 from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_object
-from vntts.path_safety import copy_regular_file, safe_relative_path
+from vntts.path_safety import copy_regular_file, read_regular_bytes, safe_relative_path
 
 SESSION_SCHEMA = "r1999.model-listening-session"
 KEY_SCHEMA = "r1999.model-listening-key"
@@ -720,7 +720,7 @@ def _load_schema_snapshot(
 ) -> tuple[JsonObject, str]:
     path = Path(path)
     try:
-        payload = path.read_bytes()
+        payload = read_regular_bytes(path)
     except OSError as error:
         raise ListeningImportError(
             f"Unable to read {description} {path}: {error}"

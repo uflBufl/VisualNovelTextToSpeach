@@ -240,7 +240,7 @@ from vntts.authoring.workspace_foundation import (
 from vntts.document_identity import file_sha256, is_lowercase_sha256, sha256_file
 from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
-from vntts.path_safety import open_regular_binary
+from vntts.path_safety import open_regular_binary, read_regular_bytes
 from vntts.speech_presentation import speech_runtime_label
 from vntts.synthesis import (
     SynthesisCachePolicy,
@@ -697,8 +697,8 @@ def _read_review_state(
     state_path: Path, queue_path: Path, state_sha256: str, queue_sha256: str
 ) -> JsonDocument:
     try:
-        state_payload = state_path.read_bytes()
-        queue_payload = queue_path.read_bytes()
+        state_payload = read_regular_bytes(state_path)
+        queue_payload = read_regular_bytes(queue_path)
     except OSError as error:
         raise BulkGenerationError(
             f"Unable to read cohort review controls: {error}"
@@ -830,7 +830,7 @@ def _load_displayed_review_state(
     state_path: Path, queue_path: Path | None, authority: ReviewAuthority
 ) -> JsonDocument:
     try:
-        payload = state_path.read_bytes()
+        payload = read_regular_bytes(state_path)
     except OSError as error:
         raise BulkGenerationError(
             f"Unable to read generation state {state_path}: {error}"
@@ -1161,7 +1161,7 @@ def _fallback_manifest_entries(
 ) -> Sequence[VoiceManifestEntry]:
     path = control["path"]
     try:
-        payload = path.read_bytes()
+        payload = read_regular_bytes(path)
     except OSError as error:
         raise BulkGenerationError(
             f"Unable to read fallback voice manifest: {error}"
@@ -2223,7 +2223,7 @@ def _store_failed_generation_attempt(
         and partial.is_file()
         and not partial.is_symlink()
     ):
-        captured_partial = partial.read_bytes()
+        captured_partial = read_regular_bytes(partial)
     if partial.exists():
         partial.unlink()
     is_cancelled = (
@@ -4027,7 +4027,7 @@ def _live_fallback_backend(
 
 def _live_fallback_state(path: Path) -> tuple[JsonDocument, str]:
     try:
-        payload = path.read_bytes()
+        payload = read_regular_bytes(path)
         state = decode_json(payload.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise BulkGenerationError(
@@ -4364,7 +4364,7 @@ def _capture_live_fallback_evidence(
     base_root = state_path.parent.parent
     base_workspace_path = base_root / "workspace.json"
     try:
-        base_workspace_payload = base_workspace_path.read_bytes()
+        base_workspace_payload = read_regular_bytes(base_workspace_path)
         base_workspace = decode_json(base_workspace_payload.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise BulkGenerationError(
@@ -4430,9 +4430,9 @@ def _live_fallback_workspace_hypothesis(
     source_queue_path = directory / "queue.jsonl"
     source_state_path = directory / "generated-audio" / "generation-state.json"
     try:
-        workspace_payload = workspace_path.read_bytes()
-        source_queue_payload = source_queue_path.read_bytes()
-        source_state_payload = source_state_path.read_bytes()
+        workspace_payload = read_regular_bytes(workspace_path)
+        source_queue_payload = read_regular_bytes(source_queue_path)
+        source_state_payload = read_regular_bytes(source_state_path)
         workspace = decode_json(workspace_payload.decode("utf-8"))
         source_state = decode_json(source_state_payload.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:

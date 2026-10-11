@@ -32,7 +32,7 @@ from vntts.live_replay import (
     load_live_replay_corpus,
 )
 from vntts.live_sequence import LiveSequenceEvent, LiveSequencePlan
-from vntts.path_safety import open_regular_candidate
+from vntts.path_safety import open_regular_candidate, read_regular_bytes
 from vntts.settings import AppSettings, audio_source_policies, load_app_settings
 
 SEQUENCE_REPLAY_SEAL_VERSION = 1
@@ -596,7 +596,7 @@ def _snapshot_generated_audio(
         relative = f"audio/{record.audio_sha256}.wav"
         destination = staging / "generated" / relative
         if destination.exists():
-            if destination.read_bytes() != payload:
+            if read_regular_bytes(destination) != payload:
                 raise SequenceReplaySealError(
                     "Generated audio digest collision while sealing"
                 )
@@ -620,7 +620,7 @@ def _snapshot_generated_audio(
         raise SequenceReplaySealError(
             f"Sealed generated audio is invalid: {error}"
         ) from error
-    payload = path.read_bytes()
+    payload = read_regular_bytes(path)
     return (
         {
             "path": path.relative_to(staging).as_posix(),

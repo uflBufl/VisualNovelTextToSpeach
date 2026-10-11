@@ -99,6 +99,7 @@ from vntts.json_types import (
 from vntts.json_types import (
     is_json_object as _is_json_document,
 )
+from vntts.path_safety import read_regular_bytes
 from vntts.voices import load_voice_manifest
 
 WorkspaceDocument: TypeAlias = JsonDocument
@@ -624,7 +625,8 @@ def _validate_workspace_queue_extension(
         or target_path.is_symlink()
         or sha256_file(target_path)
         != _require_sha256(config["queue_sha256"], "Extended queue SHA-256")
-        or (directory / "queue.jsonl").read_bytes() != target_path.read_bytes()
+        or read_regular_bytes(directory / "queue.jsonl")
+        != read_regular_bytes(target_path)
     ):
         raise AuthoringWorkbenchError("Workspace queue extension snapshot changed")
     try:

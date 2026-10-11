@@ -16,7 +16,7 @@ from vntts_artifacts.story_index import (
 
 from vntts.cli import print_json
 from vntts.document_identity import sha256_file
-from vntts.path_safety import contained_path, safe_relative_path
+from vntts.path_safety import contained_path, read_regular_bytes, safe_relative_path
 from vntts.settings import AppSettings
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
@@ -209,7 +209,7 @@ def _validate_semantic_evidence(
 
 
 def _load_bound_story_index(path: Path, checksum: str) -> StoryIndexDocument:
-    payload = path.read_bytes()
+    payload = read_regular_bytes(path)
     if hashlib.sha256(payload).hexdigest() != checksum:
         raise GamePackError("Game pack story checksum changed while it was being read")
     document = load_story_index_snapshot(path, payload)

@@ -15,6 +15,7 @@ from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 import vntts.authoring.model_benchmark as benchmark_module
 from tests.authoring_fixtures import write_legacy_fixture
 from tests.symlink_support import symlink_or_skip
+from vntts.authoring import generation_state
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.model_benchmark import (
     ModelBenchmarkError,
@@ -213,19 +214,26 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
             }
             manifest.write_text(json.dumps(document), encoding="utf-8")
             payload = manifest.read_bytes()
-            original_read = Path.read_bytes
+            original_read = benchmark_module.read_regular_bytes
+
+            replaced = []
 
             def replace_after_read(path):
                 captured = original_read(path)
                 if path == manifest:
+                    replaced.append(path)
                     changed = json.loads(captured)
                     changed["voices"][0]["speaker"] = "unreviewed"
                     manifest.write_text(json.dumps(changed), encoding="utf-8")
                 return captured
 
-            with patch.object(Path, "read_bytes", replace_after_read):
+            with patch.object(
+                benchmark_module, "read_regular_bytes", replace_after_read
+            ):
                 context = _comparison_voice_context(manifest, None)
 
+            self.assertEqual(replaced, [manifest])
+            self.assertNotEqual(manifest.read_bytes(), payload)
             self.assertEqual(context.sha256, hashlib.sha256(payload).hexdigest())
             voice = context.registry.resolve("Voice")
             self.assertEqual(voice.speaker, "captured")
@@ -243,11 +251,14 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
                 }
             }
             fixture["state"].write_text(json.dumps(state), encoding="utf-8")
-            original_read = Path.read_bytes
+            original_read = generation_state.read_regular_bytes
+
+            replaced = []
 
             def replace_after_read(path):
                 captured = original_read(path)
                 if path == queue:
+                    replaced.append(path)
                     records = [json.loads(line) for line in captured.splitlines()]
                     records[-1]["voice_character"] = "Unreviewed voice"
                     queue.write_text(
@@ -258,16 +269,21 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
 
             def restore_queue(_state_path, _queue_path):
                 self.assertEqual(Path(_queue_path), queue)
+                self.assertNotEqual(queue.read_bytes(), original_payload)
                 queue.write_bytes(original_payload)
                 return state
 
-            with patch.object(Path, "read_bytes", replace_after_read):
+            with patch.object(
+                generation_state, "read_regular_bytes", replace_after_read
+            ):
                 corpus = build_failure_comparison_corpus(
                     queue,
                     fixture["state"],
                     root / "corpus.json",
                     state_loader=restore_queue,
                 )
+            self.assertEqual(replaced, [queue])
+            self.assertEqual(queue.read_bytes(), original_payload)
             self.assertEqual(corpus["samples"][0]["character"], "Rhiannon")
             self.assertEqual(
                 corpus["source_queue_sha256"],

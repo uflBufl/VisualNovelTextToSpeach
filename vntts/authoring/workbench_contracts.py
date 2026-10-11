@@ -13,6 +13,7 @@ from vntts_artifacts.voice_generation_queue import (
 )
 
 from vntts.authoring.bulk_generation import ReviewAuthority
+from vntts.path_safety import read_regular_bytes
 
 WORKSPACE_SCHEMA = "vntts.authoring-workspace"
 WORKSPACE_VERSION = 1
@@ -252,7 +253,7 @@ def _read_bound_bytes(path: str | Path, expected_sha256: str, label: str) -> byt
     if path.is_symlink() or not path.is_file():
         raise AuthoringWorkbenchError(f"{label} is missing or unsafe")
     try:
-        payload = path.read_bytes()
+        payload = read_regular_bytes(path)
     except OSError as error:
         raise AuthoringWorkbenchError(f"Unable to read {label}: {error}") from error
     if hashlib.sha256(payload).hexdigest() != expected_sha256:

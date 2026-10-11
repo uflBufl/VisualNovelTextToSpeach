@@ -59,6 +59,7 @@ from vntts.authoring.source_reference_review import (
 from vntts.cleanup import temporary_directory
 from vntts.cli import cli_error, cli_success
 from vntts.document_identity import file_sha256, sha256_file
+from vntts.path_safety import read_regular_bytes
 
 
 @dataclass(frozen=True)
@@ -166,7 +167,7 @@ def _load_quality_review_evaluation(
     if _file_sha256(queue_path) != queue_sha256:
         raise SourceReferenceQualityError("Evaluation queue changed")
     try:
-        queue_payload = queue_path.read_bytes()
+        queue_payload = read_regular_bytes(queue_path)
     except OSError as error:
         raise SourceReferenceQualityError(
             f"Unable to read evaluation queue {queue_path}: {error}"
@@ -643,7 +644,7 @@ def _copy_optional_portrait(
     if not source.is_file():
         raise SourceReferenceQualityError(f"Portrait image is not a file: {source}")
     try:
-        payload = source.read_bytes()
+        payload = read_regular_bytes(source)
     except OSError as error:
         raise SourceReferenceQualityError(
             f"Unable to read portrait image {source}: {error}"

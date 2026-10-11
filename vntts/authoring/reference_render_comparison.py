@@ -55,6 +55,7 @@ from vntts.document_identity import (
     sha256_file,
 )
 from vntts.json_types import decode_json, is_json_object
+from vntts.path_safety import read_regular_bytes
 
 REFERENCE_RENDER_INPUT_SCHEMA = "vntts.authoring-reference-render-input"
 REFERENCE_RENDER_INPUT_VERSION = 1
@@ -201,7 +202,7 @@ def _read_reference_render_plan(
         raise ReferenceRenderComparisonError("Reference render plan is a symlink")
     source = source.resolve()
     try:
-        payload = source.read_bytes()
+        payload = read_regular_bytes(source)
         document = decode_json(payload)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ReferenceRenderComparisonError(

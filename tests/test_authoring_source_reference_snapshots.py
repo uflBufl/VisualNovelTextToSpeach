@@ -84,33 +84,22 @@ class SourceReferenceSnapshotsTest(unittest.TestCase):
             for item in replacement["items"].values():
                 item["model"] = "different-admissible-model"
             replacement_payload = json.dumps(replacement).encode("utf-8")
-            read_bytes, read_text = Path.read_bytes, Path.read_text
+            read_bytes = source_review.read_regular_bytes
             captures = []
 
-            def read_replacement(reader, path, *arguments, **keywords):
+            def read_replacement(path):
                 if path.resolve() != generation.state.resolve():
-                    return reader(path, *arguments, **keywords)
+                    return read_bytes(path)
                 path.write_bytes(replacement_payload)
                 try:
                     captures.append(path)
-                    return reader(path, *arguments, **keywords)
+                    return read_bytes(path)
                 finally:
                     path.write_bytes(original)
 
             output = root / "listening-reports"
             with (
-                patch.object(
-                    Path,
-                    "read_bytes",
-                    autospec=True,
-                    side_effect=partial(read_replacement, read_bytes),
-                ),
-                patch.object(
-                    Path,
-                    "read_text",
-                    autospec=True,
-                    side_effect=partial(read_replacement, read_text),
-                ),
+                patch.object(source_review, "read_regular_bytes", read_replacement),
                 self.assertRaisesRegex(
                     source_review.SourceReferenceReviewError,
                     "generation state changed",
@@ -119,7 +108,7 @@ class SourceReferenceSnapshotsTest(unittest.TestCase):
                 source_review.publish_source_reference_listening_reports(
                     evaluation.directory, generation.state, output
                 )
-            self.assertTrue(captures)
+            self.assertEqual(captures, [generation.state.resolve()])
             self.assertEqual(generation.state.read_bytes(), original)
             self.assertFalse(output.exists())
             self.assertFalse(list(root.glob(".listening-reports.staging-*")))
