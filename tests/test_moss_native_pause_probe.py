@@ -1,6 +1,8 @@
 import json
+import os
 import unittest
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -10,6 +12,7 @@ from scripts import moss_native_pause_probe as probe
 from tests.native_moss_fixtures import FakeNativeBackend as _FakeBackend
 from tests.native_moss_fixtures import OwnedServer as _OwnedServer
 from tests.pregeneration_fixtures import clean_wav_bytes
+from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.settings import AppSettings
 from vntts.synthesis import SynthesisCompletion
 from vntts.voice_library import VoiceLibrary
@@ -80,7 +83,7 @@ class MossNativePauseProbeTest(unittest.TestCase):
                     cleanup_error.add_note("unlink detail")
                     failure_target = {
                         "close": "os.close",
-                        "write": "zipfile.ZipFile.write",
+                        "write": "scripts.moss_native_pause_probe.shutil.copyfileobj",
                         "replace": "pathlib.Path.replace",
                     }[stage]
                     original_close = probe.os.close
@@ -123,6 +126,117 @@ class MossNativePauseProbeTest(unittest.TestCase):
                     self.assertEqual(
                         len(list(root.glob(".probe.zip-*"))), int(fail_cleanup)
                     )
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_archive_source_refuses_fifo_before_member_metadata_and_recovers(self):
+        for recursive in (False, True):
+            with self.subTest(recursive=recursive), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                output = root / "probe"
+                source = (
+                    output / "nested" / "report.json"
+                    if recursive
+                    else output / "report.json"
+                )
+                source.parent.mkdir(parents=True)
+                source.write_bytes(b'{"report": "unchanged"}')
+                archive = root / "probe.zip"
+                archive.write_bytes(b"existing archive")
+                gate: RegularFileGate = {"path": source, "armed": True}
+                with (
+                    swap_at_acquisition(self, gate),
+                    patch.object(zipfile.ZipInfo, "from_file") as metadata,
+                    self.assertRaisesRegex(OSError, "regular file"),
+                ):
+                    probe._write_archive(output, archive, recursive=recursive)
+                metadata.assert_not_called()
+                self.assertEqual(archive.read_bytes(), b"existing archive")
+                self.assertEqual(list(root.glob(".probe.zip-*")), [])
+                probe._write_archive(output, archive, recursive=recursive)
+                with zipfile.ZipFile(archive) as bundle:
+                    self.assertEqual(
+                        bundle.read(source.relative_to(output).as_posix()),
+                        b'{"report": "unchanged"}',
+                    )
+
+    def test_archive_matches_stdlib_bytes_metadata_and_closes_sources(self):
+        for recursive, failure in (
+            (False, False),
+            (False, True),
+            (True, False),
+            (True, True),
+        ):
+            with (
+                self.subTest(recursive=recursive, failure=failure),
+                TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                output = root / "probe"
+                output.mkdir()
+                payloads = {
+                    "z-report.json": b'{"report": 1}',
+                    "a-raw.wav": clean_wav_bytes(),
+                    "b-output-mono.wav": clean_wav_bytes(amplitude=0.11),
+                }
+                if recursive:
+                    payloads["nested/report.json"] = b'{"nested": true}'
+                for name, payload in payloads.items():
+                    path = output / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(payload)
+                    path.chmod(0o640)
+                    os.utime(path, (1700000000, 1700000000))
+                (output / "ignored.txt").write_bytes(b"excluded")
+                expected = root / "stdlib.zip"
+                with zipfile.ZipFile(
+                    expected, "w", compression=zipfile.ZIP_STORED
+                ) as bundle:
+                    for name in sorted(payloads):
+                        bundle.write(output / name, name)
+                archive = root / "probe.zip"
+                archive.write_bytes(b"existing archive")
+                sources = []
+                acquire = probe.open_regular_binary
+                capture_metadata = zipfile.ZipInfo.from_file
+                copy = probe.shutil.copyfileobj
+                error = OSError("copy failed")
+
+                @contextmanager
+                def admitted(path):
+                    with acquire(path) as source:
+                        sources.append(source)
+                        yield source
+
+                def metadata(*args, **kwargs):
+                    self.assertFalse(sources[-1].closed)
+                    return capture_metadata(*args, **kwargs)
+
+                def copied(source, member):
+                    self.assertIs(source, sources[-1])
+                    self.assertFalse(source.closed)
+                    if failure:
+                        member.write(source.read(7))
+                        raise error
+                    copy(source, member)
+
+                with (
+                    patch.object(probe, "open_regular_binary", admitted),
+                    patch.object(zipfile.ZipInfo, "from_file", side_effect=metadata),
+                    patch.object(probe.shutil, "copyfileobj", side_effect=copied),
+                ):
+                    if failure:
+                        with self.assertRaises(OSError) as caught:
+                            probe._write_archive(output, archive, recursive=recursive)
+                        self.assertIs(caught.exception, error)
+                        self.assertEqual(archive.read_bytes(), b"existing archive")
+                    else:
+                        probe._write_archive(output, archive, recursive=recursive)
+                        self.assertEqual(archive.read_bytes(), expected.read_bytes())
+                self.assertEqual(len(sources), 1 if failure else len(payloads))
+                self.assertTrue(all(source.closed for source in sources))
+                self.assertEqual(list(root.glob(".probe.zip-*")), [])
 
     def test_unrelated_log_events_do_not_disrupt_native_evidence(self):
         class LoggedBackend(_FakeBackend):

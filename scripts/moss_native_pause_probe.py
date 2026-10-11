@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import io
 import os
+import shutil
 import tempfile
 import wave
 import zipfile
@@ -32,6 +33,7 @@ from vntts.moss_cpp_backend import (
     NativeHeaders,
     moss_cpp_paths,
 )
+from vntts.path_safety import open_regular_binary
 from vntts.pregeneration_audition import _mono_pcm
 from vntts.reference_quality import ReferenceQualityReport, analyze_reference
 from vntts.runtime_config import initialize_voice_registry
@@ -504,7 +506,12 @@ def _write_archive(output: Path, archive: Path, *, recursive: bool = False) -> N
         os.close(descriptor)
         with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_STORED) as bundle:
             for path in sorted(paths):
-                bundle.write(path, path.relative_to(output).as_posix())
+                with open_regular_binary(path) as source:
+                    info = zipfile.ZipInfo.from_file(
+                        path, path.relative_to(output).as_posix()
+                    )
+                    with bundle.open(info, "w") as member:
+                        shutil.copyfileobj(source, member)
         Path(temporary).replace(archive)
     except BaseException as error:
         attempt_cleanup(
