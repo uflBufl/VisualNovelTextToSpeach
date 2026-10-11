@@ -17,8 +17,8 @@ import socket
 import subprocess
 import sys
 import wave
-from collections.abc import Callable, Generator, Mapping
-from contextlib import ExitStack
+from collections.abc import Callable, Generator, Iterator, Mapping
+from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 from pathlib import Path
 from tempfile import SpooledTemporaryFile, TemporaryDirectory
@@ -577,6 +577,7 @@ def _read_native_log_tail(path: str | Path, offset: int = 0) -> tuple[str, bool]
         log.seek(max(offset, log.tell() - 64 * 1024))
         return log.read(64 * 1024).decode("utf-8", errors="replace"), complete_log
 
+
 def _startup_failure_category(path: str | Path | None) -> str | None:
     """Read the native machine-readable startup category, never free-form logs."""
     if path is None:
@@ -605,13 +606,28 @@ def _diagnostic_file_size(path: Path) -> int | None:
         return None
 
 
+@contextmanager
+def _open_reference_source(path: str | Path) -> Iterator[BinaryIO]:
+    owner = ExitStack()
+    source = owner.enter_context(open_regular_binary(path))
+    with cleanup_on_exit(
+        owner.close, description="Native speech reference source cleanup"
+    ):
+        yield source
+
+
 def _normalize_reference_audio(
     path: str | Path | BinaryIO | SpooledTemporaryFile[bytes],
 ) -> tuple[bytes, float, int, int]:
-    reference = sf.SoundFile(path)
-    with cleanup_on_exit(
-        reference.close, description="Native speech reference decoder cleanup"
-    ):
+    with ExitStack() as reference_stack:
+        if isinstance(path, (str, Path)):
+            path = reference_stack.enter_context(_open_reference_source(path))
+        reference = sf.SoundFile(path)
+        reference_stack.enter_context(
+            cleanup_on_exit(
+                reference.close, description="Native speech reference decoder cleanup"
+            )
+        )
         duration = round(reference.frames / reference.samplerate, 6)
         sample_rate = reference.samplerate
         channels = reference.channels
@@ -1501,10 +1517,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             reference: Path | BinaryIO | SpooledTemporaryFile[bytes] = prompt_audio_path
             if registered:
                 digest = hashlib.sha256()
-                source = prompt_audio_path.open("rb")
-                with cleanup_on_exit(
-                    source.close, description="Native speech reference source cleanup"
-                ):
+                with _open_reference_source(prompt_audio_path) as source:
                     while chunk := source.read(1024 * 1024):
                         digest.update(chunk)
                 reference_identity = digest.hexdigest()
@@ -1512,12 +1525,8 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 reference_identity, server_directory
             )
             if registered and cached_reference is None:
-                source = prompt_audio_path.open("rb")
-                reference_stack.enter_context(
-                    cleanup_on_exit(
-                        source.close,
-                        description="Native speech reference source cleanup",
-                    )
+                source = reference_stack.enter_context(
+                    _open_reference_source(prompt_audio_path)
                 )
                 # Keep a cache miss's identity and decoded audio on one
                 # immutable snapshot in case the source changes mid-read.

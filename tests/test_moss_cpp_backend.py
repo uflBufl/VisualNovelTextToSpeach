@@ -11,6 +11,7 @@ import sys
 import time
 import unittest
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import SpooledTemporaryFile, TemporaryDirectory
 from threading import Event, Lock, Thread
@@ -34,6 +35,7 @@ from vntts.moss_cpp_backend import (
     moss_cpp_paths,
 )
 from vntts.onboarding import OnboardingDiagnostics
+from vntts.path_safety import open_regular_binary
 from vntts.pregeneration_voices import resolve_pregeneration_settings
 from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
 from vntts.settings import AppSettings
@@ -542,6 +544,34 @@ class MossCppBackendTest(unittest.TestCase):
             ["Native speech reference decoder cleanup failed: decoder close failed"],
         )
 
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_reference_normalizer_refuses_swapped_fifo_and_keeps_borrowed_stream(self):
+        gate = {"path": self.reference, "armed": True}
+        with (
+            admission.WorkspaceInputAdmissionTest.swap_at_acquisition(self, gate),
+            patch("vntts.moss_cpp_backend.sf.SoundFile") as decode,
+            self.assertRaisesRegex(OSError, "regular file"),
+        ):
+            _normalize_reference_audio(self.reference)
+        decode.assert_not_called()
+        with self.reference.open("rb") as source:
+            expected = _normalize_reference_audio(self.reference)
+            self.assertEqual(_normalize_reference_audio(source), expected)
+            self.assertFalse(source.closed)
+
+    def test_reference_normalizer_preserves_raw_acquisition_error(self):
+        error = PermissionError(13, "reference access denied", str(self.reference))
+        with (
+            patch("vntts.path_safety.os.open", side_effect=error),
+            patch("vntts.moss_cpp_backend.sf.SoundFile") as decode,
+            self.assertRaises(PermissionError) as caught,
+        ):
+            _normalize_reference_audio(self.reference)
+        self.assertIs(caught.exception, error)
+        decode.assert_not_called()
+
     def test_reference_snapshot_failure_releases_snapshot_and_source(self):
         backend = self.backend()
         reference_path = self.reference
@@ -552,27 +582,25 @@ class MossCppBackendTest(unittest.TestCase):
         source_open_count = 0
         source_close_error = OSError("reference source close failed")
         snapshot_close_error = OSError("reference snapshot close failed")
-        real_path_open = Path.open
         real_spooled = SpooledTemporaryFile
 
-        def open_source(path, *args, **kwargs):
+        @contextmanager
+        def open_source(path):
             nonlocal source_open_count
-            source = real_path_open(path, *args, **kwargs)
-            if path != reference_path:
-                return source
-            source_open_count += 1
-            sources.append(source)
-            if source_open_count != 2:
-                return source
-            original_close = source.close
+            with open_regular_binary(path) as source:
+                if path == reference_path:
+                    source_open_count += 1
+                    sources.append(source)
+                    if source_open_count == 2:
+                        original_close = source.close
 
-            def close_source():
-                original_close()
-                closed.append("source")
-                raise source_close_error
+                        def close_source():
+                            original_close()
+                            closed.append("source")
+                            raise source_close_error
 
-            source.close = close_source
-            return source
+                        source.close = close_source
+                yield source
 
         def open_snapshot(*args, **kwargs):
             snapshot = real_spooled(*args, **kwargs)
@@ -589,7 +617,7 @@ class MossCppBackendTest(unittest.TestCase):
             return snapshot
 
         with (
-            patch.object(Path, "open", new=open_source),
+            patch("vntts.moss_cpp_backend.open_regular_binary", new=open_source),
             patch(
                 "vntts.moss_cpp_backend.SpooledTemporaryFile", side_effect=open_snapshot
             ),
@@ -1515,6 +1543,44 @@ class MossCppBackendTest(unittest.TestCase):
         ):
             backend._confirmed_runtime_status()
         self.assertIn("MOSS C++", backend._confirmed_runtime_status())
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_registered_reference_refuses_swapped_fifo_before_cache_or_decoder(self):
+        backend = self.backend()
+        directory = Path(backend.server_directory.name)
+        for phase in ("identity", "snapshot"):
+            with self.subTest(phase=phase):
+                gate = {"path": self.reference, "armed": phase == "identity"}
+
+                def cache_miss(*_args):
+                    gate["armed"] = True
+                    return None
+
+                with (
+                    admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                        self, gate
+                    ),
+                    patch.object(
+                        backend, "_registered_reference", side_effect=cache_miss
+                    ) as cache,
+                    patch(
+                        "vntts.moss_cpp_backend._normalize_reference_audio"
+                    ) as normalize,
+                    patch("vntts.moss_cpp_backend.SpooledTemporaryFile") as snapshot,
+                    self.assertRaisesRegex(OSError, "regular file"),
+                ):
+                    backend._prepare_reference(
+                        self.reference, directory, registered=True
+                    )
+                self.assertEqual(cache.call_count, phase == "snapshot")
+                normalize.assert_not_called()
+                snapshot.assert_not_called()
+        prepared = backend._prepare_reference(
+            self.reference, directory, registered=True
+        )
+        self.assertTrue(prepared[2].startswith(b"RIFF"))
 
     def test_native_timing_parser_bounds_log_and_rejects_invalid_measurements(self):
         log = self.root / "native.log"
