@@ -1,3 +1,5 @@
+import os
+import stat
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -7,7 +9,10 @@ from unittest.mock import Mock, patch
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 
+from tests import test_workspace_input_admission as admission
 from tests.pregeneration_fixtures import fixture
+from vntts.authoring import generation_state
+from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.pregeneration_generation import (
     OfflineGenerationError,
     OfflineGenerationResult,
@@ -114,7 +119,7 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
             recovery_root = Path(directory) / "recovery-fixture"
             recovery_root.mkdir()
             _unused, _unused_result, voice_plan = inputs(recovery_root)
-            original_read = Path.read_bytes
+            original_read = generation_state.read_regular_bytes
             replaced = []
 
             def read_then_replace(path):
@@ -135,7 +140,9 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
                     )
                 return payload
 
-            with patch.object(Path, "read_bytes", read_then_replace):
+            with patch.object(
+                generation_state, "read_regular_bytes", read_then_replace
+            ):
                 queue_ids, _index = _ordered_generation_queue_ids(
                     generation_input, voice_plan
                 )
@@ -145,6 +152,68 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
                 sha256_file(generation_input.queue), generation_input.queue_sha256
             )
             self.assertEqual(queue_ids, tuple(item["queue_id"] for item in items))
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_recovery_plan_queue_capture_refuses_fifo_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            _job, generation_input, result, _items = fixture(root)
+            recovery_root = root / "recovery-fixture"
+            recovery_root.mkdir()
+            _unused, _unused_result, voice_plan = inputs(recovery_root)
+            queue = generation_input.queue
+            queue.chmod(0o444)
+            mode = stat.S_IMODE(queue.stat().st_mode)
+            before_paths = set(root.rglob("*"))
+            before = {
+                path: path.read_bytes() for path in root.rglob("*") if path.is_file()
+            }
+            expected = plan_automatic_recovery(generation_input, voice_plan, result)
+            original_read = generation_state.read_regular_bytes
+            refused = []
+
+            def refuse_at_capture(path):
+                self.assertEqual(path, queue)
+                gate = {"path": queue, "armed": True}
+                with (
+                    admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                        self, gate
+                    ),
+                    self.assertRaisesRegex(OSError, "regular file") as caught,
+                ):
+                    original_read(path)
+                refused.append(caught.exception)
+                raise caught.exception
+
+            with (
+                patch.object(generation_state, "read_regular_bytes", refuse_at_capture),
+                self.assertRaisesRegex(
+                    OfflineRecoveryError,
+                    "Unable to inspect offline generation failures",
+                ) as caught,
+            ):
+                plan_automatic_recovery(generation_input, voice_plan, result)
+
+            self.assertEqual(len(refused), 1)
+            self.assertIsInstance(caught.exception.__cause__, BulkGenerationError)
+            self.assertIs(caught.exception.__cause__.__cause__, refused[0])
+            self.assertEqual(str(caught.exception.__cause__), str(refused[0]))
+            self.assertEqual(stat.S_IMODE(queue.stat().st_mode), mode)
+            self.assertEqual(set(root.rglob("*")), before_paths)
+            self.assertEqual(
+                {path: path.read_bytes() for path in root.rglob("*") if path.is_file()},
+                before,
+            )
+            self.assertEqual(
+                plan_automatic_recovery(generation_input, voice_plan, result), expected
+            )
+            self.assertEqual(
+                {path: path.read_bytes() for path in root.rglob("*") if path.is_file()},
+                before,
+            )
+            self.assertEqual(set(root.rglob("*")), before_paths)
 
     def test_recovery_rejects_a_changed_voice_manifest_before_loading_the_queue(self):
         with TemporaryDirectory() as temporary_directory:

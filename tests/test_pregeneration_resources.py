@@ -1,3 +1,5 @@
+import os
+import stat
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -8,8 +10,11 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import write_story_index_document
 from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 
+from tests import test_workspace_input_admission as admission
 from tests.pregeneration_fixtures import fixture
 from tests.pregeneration_fixtures import item as pack_item
+from vntts.authoring import generation_state
+from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.pregeneration_generation import (
     OfflineGenerationError,
     OfflineGenerationWorker,
@@ -23,6 +28,7 @@ from vntts.pregeneration_queue import PregenerationInput
 from vntts.pregeneration_setup import (
     GenerationResourceEstimate,
     PregenerationJob,
+    PregenerationSetupError,
     PreparationEstimate,
     estimate_generation_resources,
     estimate_preparation,
@@ -89,7 +95,7 @@ class PregenerationResourcesTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             _job, generation_input, result, items = fixture(Path(directory))
             result.state.unlink()
-            original_read = Path.read_bytes
+            original_read = generation_state.read_regular_bytes
             replaced = []
 
             def read_then_replace(path):
@@ -103,7 +109,9 @@ class PregenerationResourcesTest(unittest.TestCase):
                     )
                 return payload
 
-            with patch.object(Path, "read_bytes", read_then_replace):
+            with patch.object(
+                generation_state, "read_regular_bytes", read_then_replace
+            ):
                 estimate = estimate_generation_resources(generation_input)
 
             self.assertEqual(replaced, [generation_input.queue])
@@ -114,6 +122,63 @@ class PregenerationResourcesTest(unittest.TestCase):
             self.assertEqual(
                 estimate.total_text_characters, sum(len(item["text"]) for item in items)
             )
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
+    )
+    def test_resource_estimate_queue_capture_refuses_fifo_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            _job, generation_input, _result, _items = fixture(root)
+            queue = generation_input.queue
+            queue.chmod(0o444)
+            mode = stat.S_IMODE(queue.stat().st_mode)
+            before_paths = set(root.rglob("*"))
+            before = {
+                path: path.read_bytes() for path in root.rglob("*") if path.is_file()
+            }
+            expected = estimate_generation_resources(generation_input)
+            original_read = generation_state.read_regular_bytes
+            refused = []
+
+            def refuse_at_capture(path):
+                self.assertEqual(path, queue)
+                gate = {"path": queue, "armed": True}
+                with (
+                    admission.WorkspaceInputAdmissionTest.swap_at_acquisition(
+                        self, gate
+                    ),
+                    self.assertRaisesRegex(OSError, "regular file") as caught,
+                ):
+                    original_read(path)
+                refused.append(caught.exception)
+                raise caught.exception
+
+            with (
+                patch.object(generation_state, "read_regular_bytes", refuse_at_capture),
+                self.assertRaisesRegex(
+                    PregenerationSetupError,
+                    "Unable to estimate remaining offline audio storage",
+                ) as caught,
+            ):
+                estimate_generation_resources(generation_input)
+
+            self.assertEqual(len(refused), 1)
+            self.assertIsInstance(caught.exception.__cause__, BulkGenerationError)
+            self.assertIs(caught.exception.__cause__.__cause__, refused[0])
+            self.assertEqual(str(caught.exception.__cause__), str(refused[0]))
+            self.assertEqual(stat.S_IMODE(queue.stat().st_mode), mode)
+            self.assertEqual(set(root.rglob("*")), before_paths)
+            self.assertEqual(
+                {path: path.read_bytes() for path in root.rglob("*") if path.is_file()},
+                before,
+            )
+            self.assertEqual(estimate_generation_resources(generation_input), expected)
+            self.assertEqual(
+                {path: path.read_bytes() for path in root.rglob("*") if path.is_file()},
+                before,
+            )
+            self.assertEqual(set(root.rglob("*")), before_paths)
 
     def test_resource_estimate_excludes_completed_audio_when_resuming(self):
         with TemporaryDirectory() as temporary_directory:

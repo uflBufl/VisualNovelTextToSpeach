@@ -58,6 +58,7 @@ from vntts.authoring.workspace_foundation import load_json_object
 from vntts.cleanup import temporary_directory
 from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import has_schema_version as _has_exact_schema_version
+from vntts.path_safety import read_regular_bytes
 from vntts.synthesis import SynthesisCompletion
 from vntts.voices import synthesis_character_for_line
 
@@ -126,7 +127,7 @@ def load_stable_generation_queue(
     """Load a queue from one immutable byte snapshot and return its SHA-256."""
     queue_path = Path(queue_path)
     try:
-        payload = queue_path.read_bytes()
+        payload = read_regular_bytes(queue_path)
     except OSError as error:
         raise BulkGenerationError(str(error)) from error
     digest = hashlib.sha256(payload).hexdigest()
