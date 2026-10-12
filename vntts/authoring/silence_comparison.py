@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-import math
 import shutil
 import wave
 from collections.abc import Iterable, Mapping, Sequence
@@ -41,6 +40,7 @@ from vntts.authoring.publication import (
 from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.document_identity import is_lowercase_sha256, sha256_file
 from vntts.json_types import decode_json
+from vntts.numeric_values import optional_finite_number
 from vntts.path_safety import read_regular_bytes
 
 SILENCE_COMPARISON_SCHEMA = "vntts.authoring-silence-comparison"
@@ -579,12 +579,9 @@ def _validate_silence_comparison_document(
         or policy["kind"] != "single_sentence_boundary_silence_compression"
         or policy["production_enabled"] is not False
         or policy["requires_blind_review"] is not True
-        or not isinstance(policy["target_seconds"], (int, float))
-        or isinstance(policy["target_seconds"], bool)
-        or not math.isfinite(policy["target_seconds"])
-        or policy["target_seconds"] <= 0
     ):
         raise SilenceComparisonError("Silence comparison policy is invalid")
+    _silence_comparison_policy_target(policy)
     reports = document.get("reports")
     samples = document.get("samples")
     artifacts = document.get("artifacts")
@@ -799,8 +796,8 @@ def _silence_comparison_sample_audio(
 
 
 def _silence_comparison_policy_target(policy: Mapping[str, object]) -> float:
-    target_seconds = policy["target_seconds"]
-    if not isinstance(target_seconds, (int, float)) or isinstance(target_seconds, bool):
+    target_seconds = optional_finite_number(policy["target_seconds"])
+    if target_seconds is None or target_seconds <= 0:
         raise SilenceComparisonError("Silence comparison policy is invalid")
     return target_seconds
 

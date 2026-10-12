@@ -57,8 +57,11 @@ class ReferenceQualityTest(unittest.TestCase):
             path = Path(directory) / "tone.wav"
             write_wav(path, self.tone(1000))
             for field, values in (
-                ("window_ms", (0.0, -1.0, float("nan"), float("inf"))),
-                ("silence_db", (float("nan"), float("inf"), -float("inf"))),
+                ("window_ms", (0.0, -1.0, float("nan"), float("inf"), 10**400)),
+                (
+                    "silence_db",
+                    (float("nan"), float("inf"), -float("inf"), 10**400, -(10**400)),
+                ),
             ):
                 for value in values:
                     with (
@@ -79,6 +82,31 @@ class ReferenceQualityTest(unittest.TestCase):
                     self.assertRaisesRegex(ValueError, "truncated PCM"),
                 ):
                     analyze_reference_bytes(path.read_bytes()[:-missing], path=path)
+
+    def test_numeric_bool_and_large_finite_parameters_keep_reports(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "tone.wav"
+            write_wav(path, self.tone(1000))
+            payload = path.read_bytes()
+            for options, equivalent in (
+                (
+                    {"window_ms": True, "silence_db": False},
+                    {"window_ms": 1.0, "silence_db": 0.0},
+                ),
+                (
+                    {"window_ms": np.int64(20), "silence_db": np.float32(-40)},
+                    {"window_ms": 20.0, "silence_db": -40.0},
+                ),
+                (
+                    {"window_ms": 10**300, "silence_db": -(10**300)},
+                    {"window_ms": 1e300, "silence_db": -1e300},
+                ),
+            ):
+                with self.subTest(options=options):
+                    self.assertEqual(
+                        analyze_reference_bytes(payload, path=path, **options),
+                        analyze_reference_bytes(payload, path=path, **equivalent),
+                    )
 
     @staticmethod
     def tone(length, amplitude=0.2):

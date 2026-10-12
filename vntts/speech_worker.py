@@ -919,6 +919,17 @@ def worker_main(
         return 1
 
 
+def _worker_timeout_seconds(value: float, name: str) -> float:
+    message = f"Speech worker {name} timeout must be positive and finite"
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise TTSConfigurationError(message) from error
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise TTSConfigurationError(message)
+    return seconds
+
+
 class IsolatedSpeechBackend:
     """Parent-side audio owner for a model loaded in its locked interpreter."""
 
@@ -968,16 +979,8 @@ class IsolatedSpeechBackend:
         self.audio_output: AudioOutput | None = audio_output
         self.clock = clock
         self.process_factory = process_factory
-        self.startup_timeout = float(startup_timeout)
-        self.request_timeout = float(request_timeout)
-        if not math.isfinite(self.startup_timeout) or self.startup_timeout <= 0:
-            raise TTSConfigurationError(
-                "Speech worker startup timeout must be positive and finite"
-            )
-        if not math.isfinite(self.request_timeout) or self.request_timeout <= 0:
-            raise TTSConfigurationError(
-                "Speech worker request timeout must be positive and finite"
-            )
+        self.startup_timeout = _worker_timeout_seconds(startup_timeout, "startup")
+        self.request_timeout = _worker_timeout_seconds(request_timeout, "request")
         self.startup_cancellation = startup_cancellation
         self.startup_progress = startup_progress
         self.playback_latency = playback_latency or (

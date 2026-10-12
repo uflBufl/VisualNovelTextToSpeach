@@ -1,7 +1,6 @@
 """Compare two existing native MOSS builds without changing app settings."""
 
 import argparse
-import math
 import subprocess
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
@@ -13,6 +12,7 @@ from scripts import moss_native_pause_probe as probe
 from vntts.json_types import decode_json
 from vntts.moss_cpp_backend import MossCppVoiceRouterBackend, moss_cpp_paths
 from vntts.moss_cpp_installation import _extract_runtime
+from vntts.numeric_values import optional_finite_number
 from vntts.path_safety import copy_regular_file, read_regular_text
 from vntts.runtime_config import initialize_voice_registry
 from vntts.settings import AppSettings, load_app_settings
@@ -329,8 +329,7 @@ def _median(values: Sequence[object]) -> _Metric | None:
         x
         for x in values
         if isinstance(x, (int, float))
-        and not isinstance(x, bool)
-        and math.isfinite(x)
+        and optional_finite_number(x) is not None
         and x >= 0
     ]
     return median(finite) if finite and len(finite) == len(values) else None

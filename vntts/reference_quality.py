@@ -17,6 +17,7 @@ from durable_file import atomic_write_json
 from numpy.typing import NDArray
 
 from vntts.cli import cli_error, cli_messages
+from vntts.numeric_values import optional_finite_scalar
 from vntts.path_safety import read_regular_bytes
 
 
@@ -140,10 +141,13 @@ def _reference_metrics(
     silence_db: float,
     window_ms: float,
 ) -> ReferenceMetrics:
-    if not math.isfinite(window_ms) or window_ms <= 0:
+    window = optional_finite_scalar(window_ms)
+    if window is None or window <= 0:
         raise ValueError("Reference analysis window must be finite and positive")
-    if not math.isfinite(silence_db):
+    silence = optional_finite_scalar(silence_db)
+    if silence is None:
         raise ValueError("Reference silence threshold must be finite")
+    window_ms, silence_db = window, silence
     absolute = np.abs(samples)
     squared = np.square(samples)
     duration_seconds = len(samples) / sample_rate

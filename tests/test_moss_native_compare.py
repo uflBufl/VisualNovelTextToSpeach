@@ -172,6 +172,37 @@ class MossNativeCompareTest(unittest.TestCase):
         runs[0]["report"].clear()
         self.assertIsNone(compare.summarize(runs)["owned_servers_confirmed_stopped"])
 
+    def test_summary_keeps_unrepresentable_seconds_unavailable(self):
+        for seconds in (10**400, -(10**400)):
+            runs = [
+                {
+                    "variant": variant,
+                    "report": {
+                        "startup_seconds": seconds,
+                        "attempts": [
+                            {
+                                "text": text,
+                                "elapsed_seconds": seconds,
+                                "completion": "complete",
+                                "result": {"cache_source": "fresh-generation"},
+                                "raw_response": {"http_status": 200},
+                            }
+                            for _, text in probe.TEXTS
+                        ],
+                    },
+                }
+                for variant in compare.ORDER
+            ]
+            with self.subTest(negative=seconds < 0):
+                summary = compare.summarize(runs)
+                for startup in summary["startup"].values():
+                    self.assertIsNone(startup["startup_seconds_median"])
+                for case in summary["cases"]:
+                    self.assertIsNone(case["candidate_over_baseline"])
+                    for variant in compare.ORDER:
+                        self.assertTrue(case[variant]["complete_fresh_attempts"])
+                        self.assertIsNone(case[variant]["elapsed_seconds_median"])
+
     def test_summary_keeps_invalid_observations_unavailable(self):
         for peak in ("4096", True, float("nan"), 1.5, -1):
             with self.subTest(peak=peak):

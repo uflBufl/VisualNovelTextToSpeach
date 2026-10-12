@@ -31,6 +31,46 @@ from vntts.authoring.source_reference_quality_records import capture_quality_out
 
 
 class AuthoringReferenceCompositeTest(unittest.TestCase):
+    def test_invalid_silence_threshold_uses_domain_error_without_publication(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = write_exact_bank_composite_report(root)
+            original = {
+                path: path.read_bytes() for path in root.rglob("*") if path.is_file()
+            }
+            output = root / "composite"
+            for threshold in (
+                -(10**400),
+                10**400,
+                True,
+                1,
+                "-40",
+                float("inf"),
+                float("-inf"),
+                float("nan"),
+            ):
+                with self.subTest(threshold=threshold):
+                    with self.assertRaisesRegex(
+                        ReferenceCompositeError, "finite and non-positive"
+                    ):
+                        publish_exact_bank_reference_composite(
+                            report,
+                            "Hotelier",
+                            "505401.png",
+                            "hotelier.bnk",
+                            output,
+                            silence_dbfs=threshold,
+                        )
+                    self.assertFalse(output.exists())
+                    self.assertEqual(
+                        {
+                            path: path.read_bytes()
+                            for path in root.rglob("*")
+                            if path.is_file()
+                        },
+                        original,
+                    )
+
     def test_composite_publishers_preserve_racing_outputs_and_cleanup(self):
         with TemporaryDirectory() as directory:
             root = Path(directory).resolve()

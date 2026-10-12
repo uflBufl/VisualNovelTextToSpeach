@@ -6,7 +6,6 @@ import argparse
 import hashlib
 import io
 import json
-import math
 import wave
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -54,6 +53,7 @@ from vntts.authoring.workspace_foundation import (
 from vntts.cli import cli_error, cli_success
 from vntts.document_identity import file_sha256, is_lowercase_sha256, sha256_file
 from vntts.json_types import decode_json
+from vntts.numeric_values import optional_finite_number
 from vntts.path_safety import read_regular_bytes
 from vntts.reference_quality import ReferenceQualityReport, analyze_reference_bytes
 from vntts.voices import load_voice_manifest
@@ -456,12 +456,7 @@ def publish_exact_bank_reference_composite(
         or not 0 <= trim_padding_ms < trim_trigger_ms <= 500
     ):
         raise ReferenceCompositeError("Composite edge-trim timing is invalid")
-    if (
-        isinstance(silence_dbfs, bool)
-        or not isinstance(silence_dbfs, (int, float))
-        or silence_dbfs > 0
-        or not math.isfinite(silence_dbfs)
-    ):
+    if optional_finite_number(silence_dbfs) is None or silence_dbfs > 0:
         raise ReferenceCompositeError(
             "Composite silence threshold must be finite and non-positive"
         )

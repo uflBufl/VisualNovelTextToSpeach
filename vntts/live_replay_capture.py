@@ -30,7 +30,7 @@ from vntts.dialog_capture import (
     recognize_screenshot_result,
 )
 from vntts.document_identity import sha256_file
-from vntts.numeric_values import optional_milliseconds_seconds
+from vntts.numeric_values import optional_finite_scalar, optional_milliseconds_seconds
 from vntts.ocr import get_dialog_region
 from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.path_safety import read_regular_bytes
@@ -611,12 +611,14 @@ def capture_replay_session(
     focused: Callable[[], bool] = lambda: True,
 ) -> CapturedReplayResult:
     """Capture distinct accepted observations until a bound software limit."""
-    if not math.isfinite(interval_seconds) or interval_seconds < 0:
+    interval = optional_finite_scalar(interval_seconds)
+    if interval is None or interval < 0:
         raise LiveReplayCaptureError("Capture interval must be finite and non-negative")
-    if duration_seconds is not None and (
-        not math.isfinite(duration_seconds) or duration_seconds <= 0
-    ):
+    interval_seconds = interval
+    duration = optional_finite_scalar(duration_seconds)
+    if duration_seconds is not None and (duration is None or duration <= 0):
         raise LiveReplayCaptureError("Capture duration must be finite and positive")
+    duration_seconds = duration
     if maximum_frames is not None and (
         type(maximum_frames) is not int or maximum_frames < 1
     ):

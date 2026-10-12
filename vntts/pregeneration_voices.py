@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import math
 import wave
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
@@ -46,6 +45,7 @@ from vntts.chapter_voice_preload import (
 from vntts.cleanup import attempt_cleanup
 from vntts.document_identity import canonical_document_sha256, is_sha256, sha256_file
 from vntts.json_types import decode_json, has_schema_version
+from vntts.numeric_values import optional_finite_number
 from vntts.path_safety import open_regular_binary, read_regular_text
 from vntts.person_link_suggestions import (
     PersonLinkSuggestion,
@@ -2052,7 +2052,7 @@ def _validate_player_voice_variant(variant: object, index: int) -> None:
             "duration_seconds",
             not isinstance(duration, bool)
             and isinstance(duration, (int, float))
-            and math.isfinite(duration)
+            and optional_finite_number(duration) is not None
             and duration > 0,
         ),
         (

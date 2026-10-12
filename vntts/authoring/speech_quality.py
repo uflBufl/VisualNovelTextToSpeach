@@ -196,12 +196,8 @@ def _validated_sample_values(
         raise BulkGenerationError(
             "Generated speech sample rate must be a positive integer"
         )
-    if (
-        isinstance(duration_seconds, bool)
-        or not isinstance(duration_seconds, (int, float))
-        or not math.isfinite(duration_seconds)
-        or duration_seconds < 0
-    ):
+    duration = optional_finite_number(duration_seconds)
+    if duration is None or duration < 0:
         raise BulkGenerationError(
             "Generated speech duration must be finite and nonnegative"
         )
@@ -216,7 +212,7 @@ def _validated_sample_values(
     # AudioQuality stores duration rounded to four decimal places. Preserve
     # that supported caller while rejecting unrelated sample/duration pairs.
     if not math.isclose(
-        duration_seconds, values.size / sample_rate, rel_tol=1e-12, abs_tol=0.00005
+        duration, values.size / sample_rate, rel_tol=1e-12, abs_tol=0.00005
     ):
         raise BulkGenerationError(
             "Generated speech duration does not match its samples"

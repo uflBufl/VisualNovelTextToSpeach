@@ -1189,6 +1189,54 @@ class SpeechWorkerTest(unittest.TestCase):
                         "moss-tts", CharacterVoiceRegistry(), **options
                     )
 
+    def test_worker_rejects_unrepresentable_timeouts_before_process_acquisition(self):
+        for name in ("startup_timeout", "request_timeout"):
+            for value in (10**400, -(10**400)):
+                process_factory = MagicMock()
+                with self.subTest(field=name, negative=value < 0):
+                    with (
+                        patch(
+                            "vntts.runtime_installation.ensure_speech_runtime"
+                        ) as prepare,
+                        self.assertRaisesRegex(
+                            TTSConfigurationError, "timeout must be positive and finite"
+                        ) as caught,
+                    ):
+                        IsolatedSpeechBackend(
+                            "moss-tts",
+                            CharacterVoiceRegistry(),
+                            process_factory=process_factory,
+                            **{name: value},
+                        )
+                    self.assertIsInstance(caught.exception.__cause__, OverflowError)
+                    prepare.assert_not_called()
+                    process_factory.assert_not_called()
+
+    def test_worker_timeout_conversion_keeps_string_bool_and_large_finite_values(self):
+        for value, expected in (("12.5", 12.5), (True, 1.0), (10**300, 1e300)):
+            with (
+                self.subTest(value=value),
+                patch.object(IsolatedSpeechBackend, "_start_worker"),
+                patch(
+                    "vntts.runtime_installation.ensure_speech_runtime",
+                    return_value=(
+                        Path("/runtime"),
+                        Path("/runtime/python"),
+                        Path("/site"),
+                    ),
+                ),
+            ):
+                backend = IsolatedSpeechBackend(
+                    "moss-tts",
+                    CharacterVoiceRegistry(),
+                    startup_timeout=value,
+                    request_timeout=value,
+                )
+                self.assertEqual(
+                    (backend.startup_timeout, backend.request_timeout),
+                    (expected, expected),
+                )
+
     def test_cancelled_startup_terminates_the_exact_worker(self):
         registry = CharacterVoiceRegistry()
         cancellation = Event()

@@ -3,11 +3,13 @@ import json
 import os
 import tempfile
 import unittest
+from decimal import Decimal
 from pathlib import Path
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import numpy as np
 from PIL import Image, ImageDraw
 
 import vntts.live_replay_capture as live_replay_capture
@@ -323,11 +325,11 @@ class LiveReplayCaptureTest(unittest.TestCase):
         invalid = (
             *(
                 dict(interval_seconds=value)
-                for value in (float("nan"), float("inf"), -1)
+                for value in (float("nan"), float("inf"), -1, 10**400)
             ),
             *(
                 dict(duration_seconds=value)
-                for value in (float("nan"), float("inf"), 0, -1)
+                for value in (float("nan"), float("inf"), 0, -1, 10**400)
             ),
             *(dict(maximum_frames=value) for value in (True, 1.5, 0)),
         )
@@ -335,16 +337,75 @@ class LiveReplayCaptureTest(unittest.TestCase):
             with self.subTest(options=options), TemporaryDirectory() as directory:
                 session = LiveReplayCaptureSession(Path(directory) / "capture")
                 capture = Mock(side_effect=AssertionError("must not capture"))
+                clock = Mock(side_effect=AssertionError("must not start clock"))
                 with self.assertRaises(LiveReplayCaptureError):
                     capture_replay_session(
                         session,
                         capture_frame=capture,
                         recognize_frame=lambda _frame: ("Ada", "Line."),
+                        clock=clock,
                         **(dict(interval_seconds=0) | options),
                     )
                 capture.assert_not_called()
+                clock.assert_not_called()
                 self.assertEqual(session.frame_count, 0)
                 self.assertFalse((session.directory / "corpus.json").exists())
+
+    def test_capture_limits_keep_bool_zero_and_large_comparison_duration(self):
+        for interval, duration in (
+            (False, True),
+            (True, 10**300),
+            (np.float32(0.25), np.int64(2)),
+            (Decimal("0.25"), Decimal("2")),
+        ):
+            with self.subTest(interval=interval), TemporaryDirectory() as directory:
+                session = LiveReplayCaptureSession(Path(directory) / "capture")
+                frames = iter((frame("red"), frame("blue")))
+                sleeps = []
+                result = capture_replay_session(
+                    session,
+                    capture_frame=lambda: next(frames),
+                    recognize_frame=lambda _frame: ("Narrator", "A line."),
+                    fingerprint_frame=lambda value: value.image.getpixel((0, 0)),
+                    interval_seconds=interval,
+                    duration_seconds=duration,
+                    maximum_frames=2,
+                    clock=lambda: 0,
+                    sleep=sleeps.append,
+                )
+                self.assertEqual(sleeps, [float(interval)])
+                self.assertEqual(result.frame_count, 2)
+                self.assertEqual(result.dialogue_count, 1)
+
+    def test_capture_normalizes_each_numeric_scalar_once(self):
+        class Once(float):
+            calls = 0
+
+            def __float__(self):
+                self.calls += 1
+                if self.calls > 1:
+                    raise AssertionError("numeric scalar converted twice")
+                return super().__float__()
+
+        with TemporaryDirectory() as directory:
+            interval, duration = Once(0.25), Once(2)
+            session = LiveReplayCaptureSession(Path(directory) / "capture")
+            frames = iter((frame("red"), frame("blue")))
+            sleeps = []
+            result = capture_replay_session(
+                session,
+                capture_frame=lambda: next(frames),
+                recognize_frame=lambda _frame: ("Narrator", "A line."),
+                fingerprint_frame=lambda value: value.image.getpixel((0, 0)),
+                interval_seconds=interval,
+                duration_seconds=duration,
+                maximum_frames=2,
+                clock=lambda: 0,
+                sleep=sleeps.append,
+            )
+            self.assertEqual((interval.calls, duration.calls), (1, 1))
+            self.assertEqual(sleeps, [0.25])
+            self.assertEqual(result.frame_count, 2)
 
     def test_canonical_ellipsis_precedes_punctuation_and_noise_keeps_groups(self):
         with TemporaryDirectory() as directory:
@@ -388,7 +449,6 @@ class LiveReplayCaptureTest(unittest.TestCase):
             self.assertEqual(result.boundary_review_count, 0)
             self.assertEqual(session.recognized_observation_count, 5)
             self.assertEqual(len(load_live_replay_corpus(result.corpus).dialogue), 3)
-
 
     def test_capture_groups_prefixes_and_publishes_loadable_exact_frames(self):
         with TemporaryDirectory() as directory:

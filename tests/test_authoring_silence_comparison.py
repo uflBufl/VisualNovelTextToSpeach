@@ -275,11 +275,28 @@ class AuthoringSilenceComparisonTest(unittest.TestCase):
             comparison_path = result.directory / "comparison.json"
             original = json.loads(comparison_path.read_text(encoding="utf-8"))
 
-            forged = json.loads(json.dumps(original))
-            forged["policy"]["production_enabled"] = True
-            comparison_path.write_text(json.dumps(forged), encoding="utf-8")
-            with self.assertRaisesRegex(SilenceComparisonError, "policy"):
-                load_silence_comparison(result.directory)
+            for key, value in (
+                ("production_enabled", True),
+                *(
+                    ("target_seconds", target)
+                    for target in (
+                        10**400,
+                        -(10**400),
+                        True,
+                        0,
+                        -1,
+                        "0.2",
+                        float("inf"),
+                        float("nan"),
+                    )
+                ),
+            ):
+                with self.subTest(policy=key, value=value):
+                    forged = json.loads(json.dumps(original))
+                    forged["policy"][key] = value
+                    comparison_path.write_text(json.dumps(forged), encoding="utf-8")
+                    with self.assertRaisesRegex(SilenceComparisonError, "policy"):
+                        load_silence_comparison(result.directory)
 
             forged = json.loads(json.dumps(original))
             forged["samples"][0]["transform"]["removed_samples"] += 1

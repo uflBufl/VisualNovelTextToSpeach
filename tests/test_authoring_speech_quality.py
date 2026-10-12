@@ -294,6 +294,8 @@ class AuthoringSpeechQualityTest(unittest.TestCase):
             ([1], 125.0, 1 / 125),
             ([1], 125, float("nan")),
             ([1], 125, float("inf")),
+            ([1], 125, 10**400),
+            ([1], 125, -(10**400)),
             ([1], 125, True),
             ([1], 125, -1.0),
             ([1], 125, "bad"),

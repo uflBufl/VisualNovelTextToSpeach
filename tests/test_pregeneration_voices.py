@@ -37,6 +37,7 @@ from vntts.pregeneration_voices import (
     _reference_duration_seconds,
     player_voice_catalog_is_current,
     resolve_pregeneration_settings,
+    validated_player_voice_candidates,
 )
 from vntts.settings import AppSettings
 from vntts.versioned_json import write_versioned_json
@@ -885,6 +886,43 @@ class VoicePlanStoreTest(unittest.TestCase):
                 rhiannon.candidates[0].source_voice_ids,
                 ("play_rhiannon_1",),
             )
+
+    def test_player_variant_duration_refuses_unrepresentable_integer_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, jobs = self.create_fixture(root)
+            manifest = write_player_candidate_manifest(
+                root / "player-voices", job.story_index_sha256
+            )
+            original = manifest.read_bytes()
+            _, original_variants = validated_player_voice_candidates(manifest)
+            for duration in (10**400, -(10**400)):
+                document = json.loads(original)
+                document[PLAYER_VOICE_CANDIDATES_FIELD]["variants"][0][
+                    "duration_seconds"
+                ] = duration
+                manifest.write_text(json.dumps(document), encoding="utf-8")
+                with (
+                    self.subTest(negative=duration < 0),
+                    patch("vntts.support.record_game_import") as rejected,
+                ):
+                    _, variants = validated_player_voice_candidates(manifest)
+                    self.assertEqual(variants, original_variants[1:])
+                    rejected.assert_called_once_with(
+                        "voice-candidate-validation",
+                        outcome="rejected",
+                        reason="Player voice candidate 0 has invalid duration_seconds",
+                    )
+                    plan = VoicePlanStore(jobs).create(
+                        job,
+                        AppSettings(pocket_gated_model_accepted=True),
+                        manifest_path=manifest,
+                    )
+                    self.assertTrue(plan.groups)
+            manifest.write_bytes(original)
+            _, restored = validated_player_voice_candidates(manifest)
+            self.assertEqual(restored, original_variants)
+            self.assertEqual(manifest.read_bytes(), original)
 
     def test_player_import_accepts_empty_optional_source_links(self):
         with TemporaryDirectory() as temporary_directory:
