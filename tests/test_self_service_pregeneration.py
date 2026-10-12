@@ -1153,6 +1153,38 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
         self.assertIsNotNone(dialog.pack_result())
         return content, jobs, dialog, generator, visible_text
 
+    def test_restored_evidence_final_coverage_uses_prepared_input_not_job_estimate(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story = write_story_index(root / "content")
+            evidence = story.parent / "source-audio-semantic-evidence.json"
+            payload = evidence.read_bytes()
+            evidence.unlink()
+            missing = inspect_story_index(story)
+            jobs = PregenerationJobStore(root / "jobs")
+            planned = jobs.create_or_resume(
+                missing, (selection.selection_id for selection in missing.selections)
+            )
+            self.assertEqual(planned.estimate.original_audio_lines, 0)
+            evidence.write_bytes(payload)
+            content, _jobs, dialog, _generator, _visible = (
+                self._prepared_synthetic_live_fallback_pack(root)
+            )
+            self.addCleanup(dialog.deleteLater)
+            try:
+                self.assertEqual(content.story_index_sha256, planned.story_index_sha256)
+                self.assertEqual(dialog.job().job_id, planned.job_id)
+                self.assertEqual(dialog.job().estimate.original_audio_lines, 0)
+                self.assertEqual(dialog.job().status, "prepared")
+                self.assertIn(
+                    "Original game audio: 1 in this selection",
+                    plain_label_text(dialog.progress_coverage),
+                )
+            finally:
+                dialog.reject()
+
     def test_zero_ambiguity_story_reaches_an_active_portable_pack(self):
         with (
             TemporaryDirectory() as temporary_directory,
@@ -1218,6 +1250,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 pack = dialog.pack_result()
                 self.assertIsNotNone(pack)
                 dialog._show_final_handoff(
+                    original=dialog.job().estimate.original_audio_lines,
                     approved=pack.approved,
                     live_fallbacks=pack.live_fallbacks,
                     story_lines=pack.story_lines,

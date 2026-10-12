@@ -1443,7 +1443,11 @@ def _render_stories(
         dialog._stop_generation_progress()
         dialog._render_generation_progress(OfflineGenerationProgress(generated=34))
         dialog._show_final_handoff(
-            approved=34, live_fallbacks=0, story_lines=42, omissions=0
+            original=dialog._job.estimate.original_audio_lines,
+            approved=34,
+            live_fallbacks=0,
+            story_lines=42,
+            omissions=0,
         )
         dialog.defer_activation("Reading settings changed after preparation started.")
         dialog.continue_button.setFocus()

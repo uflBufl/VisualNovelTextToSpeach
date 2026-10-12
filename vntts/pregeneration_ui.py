@@ -387,6 +387,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._prepared_voice_manifest: str | Path | None = None
         self._prepared_voice_job: str | None = None
         self._generation_input: PregenerationInput | None = None
+        self._prepared_original_audio_lines = 0
         self._prepared_sequence_plan: Path | None = None
         self._generation_result: OfflineGenerationResult | None = None
         self._recovery_result: OfflineRecoveryResult | None = None
@@ -2635,7 +2636,13 @@ class OfflineAudioPreparationDialog(QDialog):
         )
 
     def _show_final_handoff(
-        self, *, approved: int, live_fallbacks: int, story_lines: int, omissions: int
+        self,
+        *,
+        original: int,
+        approved: int,
+        live_fallbacks: int,
+        story_lines: int,
+        omissions: int,
     ) -> None:
         assert self._job is not None
         self.progress_timer.stop()
@@ -2648,7 +2655,6 @@ class OfflineAudioPreparationDialog(QDialog):
         self.progress_bar.setValue(1)
         self.progress_bar.setFormat("Audio saved")
         self.play_ready_button.hide()
-        original = self._job.estimate.original_audio_lines
         self._show_phase(
             "Ready with live speech for remaining lines"
             if live_fallbacks
@@ -4217,6 +4223,7 @@ class OfflineAudioPreparationDialog(QDialog):
             return
         assert _is_generation_input_result(prepared)
         self._generation_input, changes, resources = prepared
+        self._prepared_original_audio_lines = changes.original
         self._start_prepared_sequence(self._generation_input)
         assert self._job is not None
         self._changes_rows = (
@@ -4481,6 +4488,7 @@ class OfflineAudioPreparationDialog(QDialog):
         except (OSError, PregenerationSetupError) as error:
             status_error = error
         self._show_final_handoff(
+            original=self._prepared_original_audio_lines,
             approved=result.approved,
             live_fallbacks=result.live_fallbacks,
             story_lines=result.story_lines,
