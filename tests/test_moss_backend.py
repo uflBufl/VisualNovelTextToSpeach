@@ -474,6 +474,41 @@ class MossTTSBackendTest(unittest.TestCase):
             "fresh-generation",
         )
 
+    def test_cache_key_computes_generation_limits_once(self):
+        backend = object.__new__(MossTTSVoiceRouterBackend)
+        backend.generation_profile = "stable"
+        backend.generation_options = {"audio_temperature": 1.7}
+        backend.speed = 1.0
+        backend.language = "en"
+        backend.streaming_first_chunk_frames = 12
+        backend.streaming_interval = 8
+        backend.persistent_cache_keys = Mock()
+        backend.persistent_cache_keys.key.return_value = "same-key"
+        text = "Keep this complete sentence."
+        limits = moss_generation_limits(text)
+        with patch(
+            "vntts.speech_backend.moss_generation_limits", wraps=moss_generation_limits
+        ) as count:
+            key = backend._persistent_cache_key(
+                "voice", text, Path("reference.wav"), seed=123
+            )
+        count.assert_called_once_with(text)
+        self.assertEqual(key, "same-key")
+        backend.persistent_cache_keys.key.assert_called_once_with(
+            voice_key="voice",
+            source=Path("reference.wav"),
+            text=text,
+            speed=1.0,
+            language="en",
+            generation_profile="stable",
+            audio_temperature=1.7,
+            seed=123,
+            max_tokens=limits[0],
+            max_audio_seconds=limits[1],
+            streaming_first_chunk_frames=12,
+            streaming_interval=8,
+        )
+
     def test_short_text_has_a_bounded_generation_budget_in_cache_identity(self):
         backend, _model, _output = self.create_backend()
         backend.persistent_cache_keys.key = Mock(return_value="bounded-key")

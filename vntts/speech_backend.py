@@ -2566,6 +2566,7 @@ class MossTTSVoiceRouterBackend:
         profile = generation_profile or self.generation_profile
         options = generation_options or self.generation_options
         seed_identity = {} if seed is None else {"seed": seed}
+        max_tokens, max_audio_seconds = moss_generation_limits(text)
         return str(
             self.persistent_cache_keys.key(
                 voice_key=voice_key,
@@ -2576,8 +2577,8 @@ class MossTTSVoiceRouterBackend:
                 generation_profile=profile,
                 **options,
                 **seed_identity,
-                max_tokens=moss_generation_limits(text)[0],
-                max_audio_seconds=moss_generation_limits(text)[1],
+                max_tokens=max_tokens,
+                max_audio_seconds=max_audio_seconds,
                 streaming_first_chunk_frames=self.streaming_first_chunk_frames,
                 streaming_interval=self.streaming_interval,
             )
