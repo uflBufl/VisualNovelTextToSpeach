@@ -346,6 +346,50 @@ class LiveReplayCaptureTest(unittest.TestCase):
                 self.assertEqual(session.frame_count, 0)
                 self.assertFalse((session.directory / "corpus.json").exists())
 
+    def test_canonical_ellipsis_precedes_punctuation_and_noise_keeps_groups(self):
+        with TemporaryDirectory() as directory:
+            resolver = FakeStoryResolver()
+            ellipsis = resolver._line("story:3", "1", "Narrator", "...")
+            resolver.known[("Narrator", "...")] = ellipsis
+            resolver.by_chapter["1"].append(ellipsis)
+            session = LiveReplayCaptureSession(
+                Path(directory) / "capture", story_resolver=resolver
+            )
+            for color, character, text in (
+                ("red", "Rhiannon", "Hello there."),
+                ("green", "Narrator", "..."),
+                ("blue", "Narrator", "Unresolved noise"),
+                ("yellow", "Narrator", ". . ."),
+                ("purple", "Narrator", ".  .  ."),
+            ):
+                session.observe(frame(color), character, text)
+            result = session.finish()
+            corpus = json.loads(result.corpus.read_bytes())
+            ledger = json.loads(result.observation_ledger.read_bytes())
+            report = json.loads(result.report.read_bytes())
+            self.assertEqual(
+                [entry["status"] for entry in ledger["observations"]],
+                [
+                    "canonical",
+                    "canonical",
+                    "unresolved",
+                    "punctuation-only",
+                    "punctuation-only",
+                ],
+            )
+            self.assertEqual(
+                [item["line_id"] for item in corpus["dialogue"]],
+                ["story:1", "story:3", "capture:3"],
+            )
+            self.assertEqual(
+                [len(item["frames"]) for item in corpus["dialogue"]], [1, 1, 2]
+            )
+            self.assertEqual(report["unresolved_observation_count"], 1)
+            self.assertEqual(result.boundary_review_count, 0)
+            self.assertEqual(session.recognized_observation_count, 5)
+            self.assertEqual(len(load_live_replay_corpus(result.corpus).dialogue), 3)
+
+
     def test_capture_groups_prefixes_and_publishes_loadable_exact_frames(self):
         with TemporaryDirectory() as directory:
             root = Path(directory) / "capture"

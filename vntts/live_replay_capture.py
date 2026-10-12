@@ -256,48 +256,29 @@ class LiveReplayCaptureSession:
         if self.story_resolver is not None:
             line, match_result = self._resolve_story_line(character, text)
             if line is not None:
-                self._record_observation(
-                    frame_spec,
-                    status="canonical",
-                    character=character,
-                    text=text,
-                    story_line=line,
-                    story_match=match_result,
-                )
-                self._observe_resolved_group(
-                    character,
-                    text,
-                    frame_spec,
-                    story_line=line,
-                    story_match=match_result,
-                )
-                return True
-            if is_standalone_ellipsis_text(text):
-                self._record_observation(
-                    frame_spec,
-                    status="punctuation-only",
-                    character=character,
-                    text=text,
-                    story_line=None,
-                    story_match="punctuation-only",
-                )
-                self._observe_resolved_group(
-                    character,
-                    text,
-                    frame_spec,
-                    story_line=None,
-                    story_match="punctuation-only",
-                )
-                return True
-            self.unresolved_observations += 1
+                status = "canonical"
+            elif is_standalone_ellipsis_text(text):
+                status = "punctuation-only"
+                match_result = "punctuation-only"
+            else:
+                status = "unresolved"
+                self.unresolved_observations += 1
             self._record_observation(
                 frame_spec,
-                status="unresolved",
+                status=status,
                 character=character,
                 text=text,
-                story_line=None,
+                story_line=line,
                 story_match=match_result,
             )
+            if status != "unresolved":
+                self._observe_resolved_group(
+                    character,
+                    text,
+                    frame_spec,
+                    story_line=line,
+                    story_match=match_result,
+                )
             return True
         self._record_observation(
             frame_spec,
