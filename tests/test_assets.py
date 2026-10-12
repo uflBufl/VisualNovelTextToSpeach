@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import unittest
+from itertools import product
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
@@ -73,6 +74,107 @@ class MemoryOpener:
 
 
 class ModelAssetManagerTest(unittest.TestCase):
+    def test_zero_offset_partial_response_requires_complete_range_and_body(self):
+        url = "https://models.invalid/model.bin"
+        asset = ModelAsset("zero-offset", (url,))
+        for advertised, (content_range, message), prior_partial in product(
+            (None, 6),
+            (
+                (None, "invalid resume range"),
+                ("bytes 2-5/6", "invalid resume range"),
+                ("bytes 0-3/6", "invalid resume range"),
+                ("bytes 0-5/6", "wrong size"),
+            ),
+            (None, b""),
+        ):
+            with (
+                self.subTest(
+                    advertised=advertised,
+                    content_range=content_range,
+                    prior_partial=prior_partial,
+                ),
+                TemporaryDirectory() as directory,
+            ):
+                requests = []
+
+                def opener(request, timeout):
+                    requests.append(request)
+                    if request.get_method() == "HEAD":
+                        if advertised is None:
+                            raise OSError("HEAD unavailable")
+                        return MemoryResponse(
+                            b"", headers={"Content-Length": str(advertised)}
+                        )
+                    headers = {"Content-Length": "4"}
+                    if content_range is not None:
+                        headers["Content-Range"] = content_range
+                    return MemoryResponse(b"cdef", status=206, headers=headers)
+
+                manager = ModelAssetManager(directory, opener=opener)
+                model = manager.model_path(asset.name)
+                model.mkdir(parents=True)
+                output = model / "model.bin"
+                checksum = model / assets.asset_manifest_name
+                output.write_bytes(b"previous model")
+                checksum.write_bytes(b"invalid prior checksum")
+                partial = model / "model.bin.part"
+                if prior_partial is not None:
+                    partial.write_bytes(prior_partial)
+                with self.assertRaisesRegex(ModelIntegrityError, message):
+                    manager.download(asset.name, asset=asset)
+                self.assertIsNone(requests[-1].get_header("Range"))
+                self.assertEqual(output.read_bytes(), b"previous model")
+                self.assertEqual(checksum.read_bytes(), b"invalid prior checksum")
+                if message == "wrong size":
+                    self.assertEqual(partial.read_bytes(), b"cdef")
+                elif prior_partial is None:
+                    self.assertFalse(partial.exists())
+                else:
+                    self.assertEqual(partial.read_bytes(), prior_partial)
+                self.assertFalse(manager.is_ready(asset.name, asset=asset))
+
+    def test_complete_zero_offset_partial_response_restarts_without_appending(self):
+        url = "https://models.invalid/model.bin"
+        asset = ModelAsset("zero-offset", (url,))
+        for advertised, prior_partial in (
+            (None, None),
+            (None, b""),
+            (6, None),
+            (6, b""),
+            (6, b"oversized prior partial"),
+        ):
+            with (
+                self.subTest(advertised=advertised, prior_partial=prior_partial),
+                TemporaryDirectory() as directory,
+            ):
+                requests = []
+
+                def opener(request, timeout):
+                    requests.append(request)
+                    if request.get_method() == "HEAD":
+                        if advertised is None:
+                            raise OSError("HEAD unavailable")
+                        return MemoryResponse(
+                            b"", headers={"Content-Length": str(advertised)}
+                        )
+                    return MemoryResponse(
+                        b"abcdef",
+                        status=206,
+                        headers={"Content-Length": "6", "Content-Range": "bytes 0-5/6"},
+                    )
+
+                manager = ModelAssetManager(directory, opener=opener)
+                model = manager.model_path(asset.name)
+                model.mkdir(parents=True)
+                partial = model / "model.bin.part"
+                if prior_partial is not None:
+                    partial.write_bytes(prior_partial)
+                manager.download(asset.name, asset=asset)
+                self.assertIsNone(requests[-1].get_header("Range"))
+                self.assertEqual((model / "model.bin").read_bytes(), b"abcdef")
+                self.assertFalse(partial.exists())
+                self.assertTrue(manager.is_ready(asset.name, asset=asset))
+
     @unittest.skipUnless(
         hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
     )

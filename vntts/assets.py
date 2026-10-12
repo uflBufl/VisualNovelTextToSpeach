@@ -365,7 +365,7 @@ class ModelAssetManager:
                 self._resume_length(
                     response, existing_bytes, expected_length, output.name
                 )
-                if resumes
+                if status == 206
                 else expected_length
             )
             if file_length is None:
