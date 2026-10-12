@@ -5,7 +5,7 @@ from contextvars import copy_context
 from dataclasses import dataclass, replace
 from pathlib import Path
 from queue import Empty, Full, Queue
-from threading import Event, Lock, Thread
+from threading import TIMEOUT_MAX, Event, Lock, Thread
 from time import monotonic
 from types import MethodType
 from typing import ClassVar, Protocol, TypeAlias, TypedDict, TypeGuard, TypeVar
@@ -23,6 +23,7 @@ from vntts.audio_output import (
     resolve_audio_output,
     sanitize_playback_audio,
 )
+from vntts.numeric_values import optional_finite_number
 from vntts.playback import (
     PlaybackOutcome,
     PlaybackStatus,
@@ -1031,6 +1032,47 @@ def _install_pocket_generation_cancellation(
     return True
 
 
+def _finite_streaming_seconds(value: float, name: str) -> float:
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise TTSConfigurationError(f"{name} must be a finite number") from error
+    if optional_finite_number(seconds) is None:
+        raise TTSConfigurationError(f"{name} must be a finite number")
+    return seconds
+
+
+def _moss_streaming_options(
+    cached_stream_chunk_seconds: float,
+    streaming_first_chunk_frames: int,
+    streaming_interval: float,
+    playback_consumer_join_timeout: float,
+) -> tuple[float, int, float, float]:
+    cached_seconds = _finite_streaming_seconds(
+        cached_stream_chunk_seconds, "cached_stream_chunk_seconds"
+    )
+    try:
+        first_frames = max(1, int(streaming_first_chunk_frames))
+    except (TypeError, ValueError, OverflowError) as error:
+        raise TTSConfigurationError(
+            "streaming_first_chunk_frames must be convertible to an integer"
+        ) from error
+    interval = max(
+        0.08, _finite_streaming_seconds(streaming_interval, "streaming_interval")
+    )
+    join_timeout = max(
+        0.01,
+        _finite_streaming_seconds(
+            playback_consumer_join_timeout, "playback_consumer_join_timeout"
+        ),
+    )
+    if join_timeout > TIMEOUT_MAX:
+        raise TTSConfigurationError(
+            "playback_consumer_join_timeout exceeds the thread timeout range"
+        )
+    return cached_seconds, first_frames, interval, join_timeout
+
+
 class PocketTTSVoiceRouterBackend:
     """Experimental CPU voice cloning with first-chunk streaming playback."""
 
@@ -1067,6 +1109,12 @@ class PocketTTSVoiceRouterBackend:
         stream_prefill_seconds: float = 0.25,
     ) -> None:
         validate_volume(volume)
+        cached_stream_chunk_seconds = _finite_streaming_seconds(
+            cached_stream_chunk_seconds, "cached_stream_chunk_seconds"
+        )
+        stream_prefill_seconds = _finite_streaming_seconds(
+            stream_prefill_seconds, "stream_prefill_seconds"
+        )
         if model_factory is None:
             runtime_site_packages = activate_pocket_tts_runtime(runtime_directory)
             try:
@@ -1128,12 +1176,10 @@ class PocketTTSVoiceRouterBackend:
             sample_rate=self.sample_rate,
         )
         self.cached_stream_chunk_samples = max(
-            1,
-            round(self.sample_rate * float(cached_stream_chunk_seconds)),
+            1, round(self.sample_rate * cached_stream_chunk_seconds)
         )
         self.stream_prefill_samples = max(
-            1,
-            round(self.sample_rate * float(stream_prefill_seconds)),
+            1, round(self.sample_rate * stream_prefill_seconds)
         )
         self.set_volume(volume)
         self.set_speed(1.0)
@@ -1747,6 +1793,17 @@ class MossTTSVoiceRouterBackend:
         ) = get_moss_tts_generation_profile(
             generation_profile, profiles=self._generation_profiles
         )
+        (
+            cached_stream_chunk_seconds,
+            streaming_first_chunk_frames,
+            streaming_interval,
+            playback_consumer_join_timeout,
+        ) = _moss_streaming_options(
+            cached_stream_chunk_seconds,
+            streaming_first_chunk_frames,
+            streaming_interval,
+            playback_consumer_join_timeout,
+        )
         self.model_name = str(
             model_name
             or os.environ.get("VNTTS_MOSS_MODEL", "")
@@ -1805,14 +1862,11 @@ class MossTTSVoiceRouterBackend:
             sample_rate=self.sample_rate,
         )
         self.cached_stream_chunk_samples = max(
-            1,
-            round(self.sample_rate * float(cached_stream_chunk_seconds)),
+            1, round(self.sample_rate * cached_stream_chunk_seconds)
         )
-        self.streaming_first_chunk_frames = max(1, int(streaming_first_chunk_frames))
-        self.streaming_interval = max(0.08, float(streaming_interval))
-        self.playback_consumer_join_timeout = max(
-            0.01, float(playback_consumer_join_timeout)
-        )
+        self.streaming_first_chunk_frames = streaming_first_chunk_frames
+        self.streaming_interval = streaming_interval
+        self.playback_consumer_join_timeout = playback_consumer_join_timeout
         self.set_volume(volume)
         self.set_speed(1.0)
 

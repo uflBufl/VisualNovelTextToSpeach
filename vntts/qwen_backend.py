@@ -15,6 +15,7 @@ from vntts.services.tts_engine import TTSConfigurationError, validate_volume
 from vntts.speech_backend import (
     MossTTSPreparedSpeech,
     MossTTSVoiceRouterBackend,
+    _moss_streaming_options,
     _MossGeneratedChunk,
     _MossTTSModelFactory,
     moss_generation_limits,
@@ -173,6 +174,17 @@ class QwenTTSVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 "Qwen3-TTS requires Apple Silicon or Windows CUDA"
             )
         validate_volume(volume)
+        (
+            cached_stream_chunk_seconds,
+            streaming_first_chunk_frames,
+            streaming_interval,
+            playback_consumer_join_timeout,
+        ) = _moss_streaming_options(
+            cached_stream_chunk_seconds,
+            streaming_first_chunk_frames,
+            streaming_interval,
+            playback_consumer_join_timeout,
+        )
         del model_name, generation_profile  # This backend pins one tested model.
         metal_available = False
         resolved_model_factory: _QwenTTSModelFactory
