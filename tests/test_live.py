@@ -1064,6 +1064,32 @@ class IncrementalDialogTrackerTest(unittest.TestCase):
         self.assertTrue(tracker.is_idle_complete())
 
 
+    def test_punctuation_boundaries_preserve_decimals_ellipsis_and_clauses(self):
+        for text, sentences in (
+            (
+                "A 3.14 value. Wait... Yes!\tNext?\nTail",
+                ["A 3.14 value.", "Wait...", "Yes!", "Next?", "Tail"],
+            ),
+            ("internal.word stays", ["internal.word stays"]),
+            ("...!? ", ["...!?"]),
+        ):
+            tracker = self.create_tracker()
+            tracker.observe("Ada", text)
+            chunks = tracker.observe("Ada", text)
+            emitted = [chunk.text for chunk in chunks]
+            emitted += [chunk.text for chunk in tracker.flush()]
+            self.assertEqual(
+                emitted, [part for part in sentences if any(c.isalnum() for c in part)]
+            )
+        tracker = self.create_tracker(
+            complete_sentences_only=False, min_chunk_characters=1
+        )
+        tracker.observe("Ada", "One, two; three: tail")
+        chunks = tracker.observe("Ada", "One, two; three: tail")
+        self.assertEqual([chunk.text for chunk in chunks], ["One, two; three:"])
+        self.assertEqual([chunk.text for chunk in tracker.flush()], ["tail"])
+
+
     def create_tracker(self, **options):
         self.clock = FakeClock()
         return IncrementalDialogTracker(clock=self.clock, **options)

@@ -2,12 +2,21 @@
 
 import os
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from hashlib import sha256
 from time import monotonic
 from unicodedata import normalize
+
+
+def _punctuation_boundaries(text: str, punctuation: str) -> Iterator[int]:
+    for position, character in enumerate(text):
+        following = position + 1
+        if character in punctuation and (
+            following == len(text) or text[following].isspace()
+        ):
+            yield following
 
 
 @dataclass(frozen=True)
@@ -365,12 +374,7 @@ class IncrementalDialogTracker:
     def _split_sentences(text: str) -> list[str]:
         sentences = []
         start = 0
-        for position, character in enumerate(text):
-            if character not in ".!?":
-                continue
-            next_position = position + 1
-            if next_position != len(text) and not text[next_position].isspace():
-                continue
+        for next_position in _punctuation_boundaries(text, ".!?"):
             sentence = text[start:next_position].strip()
             if sentence:
                 sentences.append(sentence)
@@ -399,11 +403,4 @@ class IncrementalDialogTracker:
 
     @staticmethod
     def _last_punctuation_boundary(text: str, punctuation: str) -> int:
-        boundary = 0
-        for position, character in enumerate(text):
-            if character not in punctuation:
-                continue
-            next_position = position + 1
-            if next_position == len(text) or text[next_position].isspace():
-                boundary = next_position
-        return boundary
+        return max(_punctuation_boundaries(text, punctuation), default=0)
