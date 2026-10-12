@@ -211,13 +211,36 @@ class AuthoringMissingVoiceReuseReviewUiTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             session_path, _queue_id = self.create_review(Path(directory))
             dialog = MissingVoiceReuseReviewDialog(session_path)
-            dialog._pending_heard = [("cohort", "queue", "A")]
+            dialog._pending_heard.append(("cohort", "queue", "A"))
 
             dialog.reject()
 
             self.assertTrue(dialog._close_pending)
             self.assertIn("Close requested", dialog.status.text())
-            dialog._pending_heard = []
+            dialog._pending_heard.clear()
+            dialog.close()
+            dialog.deleteLater()
+
+    def test_failed_heard_save_removes_duplicates_and_starts_next_in_order(self):
+        with TemporaryDirectory() as directory:
+            session_path, _queue_id = self.create_review(Path(directory))
+            dialog = MissingVoiceReuseReviewDialog(session_path)
+            failed = ("cohort", "first", "A")
+            next_key = ("cohort", "second", "B")
+            last_key = ("cohort", "third", "A")
+            dialog._saving_heard = failed
+            dialog._pending_heard.extend((failed, next_key, failed, last_key))
+
+            with patch.object(dialog.heard_runner, "start") as start:
+                dialog._heard_saved(None, RuntimeError("save refused"))
+
+            start.assert_called_once_with(
+                dialog.heard_recorder, dialog.session_path, *next_key
+            )
+            self.assertEqual(dialog._saving_heard, next_key)
+            self.assertEqual(tuple(dialog._pending_heard), (last_key,))
+            dialog._pending_heard.clear()
+            dialog._saving_heard = None
             dialog.close()
             dialog.deleteLater()
 

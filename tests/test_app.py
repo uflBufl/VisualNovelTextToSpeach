@@ -2105,7 +2105,7 @@ class TrayApplicationTest(unittest.TestCase):
         controller.toggle_live.assert_not_called()
         prompt.assert_called_once_with("Hotelier")
         self.assertEqual(tray_application.pending_unknown_speaker, "Hotelier")
-        self.assertEqual(tray_application._queued_unknown_speakers, [])
+        self.assertFalse(tray_application._queued_unknown_speakers)
         self.assertTrue(tray_application.resume_live_after_unknown_mapping)
         tray_application.shutdown()
 

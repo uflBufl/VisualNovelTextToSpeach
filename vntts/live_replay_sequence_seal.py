@@ -8,6 +8,7 @@ import json
 import os
 import stat
 import unicodedata
+from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -463,11 +464,11 @@ def _ordered_visible_events(plan: LiveSequencePlan) -> tuple[LiveSequenceEvent, 
 def _next_visible_events(
     plan: LiveSequencePlan, event: LiveSequenceEvent
 ) -> tuple[LiveSequenceEvent, ...]:
-    pending = list(event.successors)
+    pending = deque(event.successors)
     visited: set[str] = set()
     visible: list[LiveSequenceEvent] = []
     while pending:
-        event_id = pending.pop(0)
+        event_id = pending.popleft()
         if event_id in visited:
             continue
         visited.add(event_id)

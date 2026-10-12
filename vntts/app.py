@@ -1,5 +1,6 @@
 import argparse
 import sys
+from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from multiprocessing import freeze_support
@@ -1802,7 +1803,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.unknown_speaker_continue_button: QPushButton | None = None
         self.unknown_speaker_cancel_button: QPushButton | None = None
         self.pending_unknown_speaker: str | None = None
-        self._queued_unknown_speakers: list[str] = []
+        self._queued_unknown_speakers: deque[str] = deque()
         self.unknown_speaker_mapping_in_progress: str | None = None
         self.resume_live_after_unknown_mapping = False
         self.onboarding_cancel_event = Event()
@@ -3836,7 +3837,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             )
             return False
         if self._queued_unknown_speakers:
-            next_speaker = self._queued_unknown_speakers.pop(0)
+            next_speaker = self._queued_unknown_speakers.popleft()
             self.pending_unknown_speaker = next_speaker
             self.speaker_mapping_action.setText(f"Manage voice for {next_speaker}...")
             QTimer.singleShot(
@@ -3969,7 +3970,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def _continue_unknown_with_narrator(self, speaker: str) -> None:
         self.controller.allow_narrator_fallback(speaker)
         if self._queued_unknown_speakers:
-            next_speaker = self._queued_unknown_speakers.pop(0)
+            next_speaker = self._queued_unknown_speakers.popleft()
             self.pending_unknown_speaker = next_speaker
             self.speaker_mapping_action.setText(f"Manage voice for {next_speaker}...")
             self._show_unknown_speaker_prompt(next_speaker)

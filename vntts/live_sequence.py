@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
@@ -317,14 +318,14 @@ class StoryCursor:
         current = self.current_event
         if current is None or maximum_visible_depth < 1 or maximum_nodes < 1:
             return ()
-        pending: list[tuple[str, int]] = [
+        pending: deque[tuple[str, int]] = deque(
             (event_id, 0) for event_id in current.successors
-        ]
+        )
         visited_depth: dict[str, int] = {}
         visible: list[LiveSequenceEvent] = []
         emitted_event_ids: set[str] = set()
         while pending and len(visited_depth) < maximum_nodes:
-            event_id, visible_depth = pending.pop(0)
+            event_id, visible_depth = pending.popleft()
             previous_depth = visited_depth.get(event_id)
             if previous_depth is not None and previous_depth <= visible_depth:
                 continue
