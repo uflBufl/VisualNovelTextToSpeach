@@ -1,6 +1,28 @@
-"""Deferred Qt tasks with explicit test-controlled execution."""
+"""Qt worker ownership and test-controlled execution."""
 
-from PySide6.QtCore import QRunnable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from threading import Event
+
+from PySide6.QtCore import QRunnable, QThreadPool
+
+
+@contextmanager
+def release_and_wait_for_pool(
+    pool: QThreadPool,
+    release: Event,
+    *,
+    finish: Callable[[], None] | None = None,
+) -> Iterator[None]:
+    try:
+        yield
+    finally:
+        release.set()
+        try:
+            if finish is not None:
+                finish()
+        finally:
+            assert pool.waitForDone(3000), "Qt workers did not finish"
 
 
 class ManualThreadPool:

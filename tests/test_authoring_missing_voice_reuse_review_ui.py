@@ -10,12 +10,14 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
+    from PySide6.QtCore import QThreadPool
     from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtWidgets import QApplication
 
     from tests.missing_voice_reuse_fixtures import (
         create_missing_voice_reuse_review_fixture,
     )
+    from tests.qt_task_fixtures import release_and_wait_for_pool
     from vntts.authoring.missing_voice_reuse_review import (
         AUTOMATIC_UNRESOLVED_ORIGIN,
         build_missing_voice_reuse_review,
@@ -298,11 +300,29 @@ class AuthoringMissingVoiceReuseReviewUiTest(unittest.TestCase):
             release.wait(3)
             return record_missing_voice_reuse_decision(*arguments)
 
-        with TemporaryDirectory() as directory:
+        pool = QThreadPool()
+        dialog = None
+        with (
+            TemporaryDirectory() as directory,
+            release_and_wait_for_pool(
+                pool,
+                release,
+                finish=lambda: self.wait_for(
+                    lambda: (
+                        dialog is None
+                        or (
+                            not dialog.decision_runner.active
+                            and not dialog.heard_runner.active
+                        )
+                    )
+                ),
+            ),
+        ):
             session_path, _queue_id = self.create_review(Path(directory))
             dialog = MissingVoiceReuseReviewDialog(
                 session_path,
                 decision_recorder=slow_decision,
+                thread_pool=pool,
                 confirmer=lambda _decision: True,
             )
             dialog.player = Mock()

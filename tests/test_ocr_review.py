@@ -10,11 +10,12 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PIL import Image  # noqa: E402
-from PySide6.QtCore import Qt, QTimer  # noqa: E402
+from PySide6.QtCore import Qt, QThreadPool, QTimer  # noqa: E402
 from PySide6.QtGui import QCloseEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox, QScrollArea  # noqa: E402
 
+from tests.qt_task_fixtures import release_and_wait_for_pool  # noqa: E402
 from tests.symlink_support import symlink_or_skip  # noqa: E402
 from vntts.ocr import OCRResult, UncertainFrameRecorder  # noqa: E402
 from vntts.ocr_corrections import OCRCorrectionStore  # noqa: E402
@@ -618,12 +619,23 @@ class OCRReviewDialogTest(unittest.TestCase):
             dialog.deleteLater()
 
     def test_save_disables_competing_edits_and_failed_deferred_close_keeps_draft(self):
-        with TemporaryDirectory() as temporary_directory:
+        release = Event()
+        pool = QThreadPool()
+        dialog = None
+        with (
+            TemporaryDirectory() as temporary_directory,
+            release_and_wait_for_pool(
+                pool,
+                release,
+                finish=lambda: self.wait_for(
+                    lambda: dialog is None or (not dialog._write_active)
+                ),
+            ),
+        ):
             record_uncertain_sample(temporary_directory)
-            dialog = OCRReviewDialog(temporary_directory)
+            dialog = OCRReviewDialog(temporary_directory, thread_pool=pool)
             dialog.corrected_character.setText("Marcus")
             started = Event()
-            release = Event()
 
             def fail_late(*_args):
                 started.set()
@@ -668,13 +680,24 @@ class OCRReviewDialogTest(unittest.TestCase):
             dialog.deleteLater()
 
     def test_slow_resolution_keeps_qt_responsive_and_defers_close(self):
-        with TemporaryDirectory() as temporary_directory:
+        release = Event()
+        pool = QThreadPool()
+        dialog = None
+        with (
+            TemporaryDirectory() as temporary_directory,
+            release_and_wait_for_pool(
+                pool,
+                release,
+                finish=lambda: self.wait_for(
+                    lambda: dialog is None or (not dialog._write_active)
+                ),
+            ),
+        ):
             review_directory = Path(temporary_directory) / "review"
             record_uncertain_sample(review_directory)
-            dialog = OCRReviewDialog(review_directory)
+            dialog = OCRReviewDialog(review_directory, thread_pool=pool)
             original = dialog.review_store.mark_resolved
             started = Event()
-            release = Event()
 
             def slow_resolve(*args, **kwargs):
                 started.set()

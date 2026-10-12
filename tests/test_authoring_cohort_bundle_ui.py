@@ -22,6 +22,7 @@ try:
     from PySide6.QtWidgets import QApplication
 
     from tests.authoring_fixtures import create_pending_cohort_workspace
+    from tests.qt_task_fixtures import release_and_wait_for_pool
     from vntts.authoring.cohort_bundle import (
         build_cohort_review_bundle,
         execute_cohort_bundle_decision,
@@ -563,28 +564,35 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
                 decision_executor=execute,
                 confirmer=lambda *_args: True,
             )
-            dialog.show()
-            self.wait_for(lambda: dialog.table.rowCount() == 1)
-            sample = dialog._selected_sample()
-            key = dialog._current_key()
-            dialog.heard[key].add(sample.item.queue_id)
-            dialog._update_actions()
+            with release_and_wait_for_pool(
+                dialog.thread_pool,
+                release,
+                finish=lambda: self.wait_for(
+                    lambda: not dialog._decision_active and not dialog._load_active
+                ),
+            ):
+                dialog.show()
+                self.wait_for(lambda: dialog.table.rowCount() == 1)
+                sample = dialog._selected_sample()
+                key = dialog._current_key()
+                dialog.heard[key].add(sample.item.queue_id)
+                dialog._update_actions()
 
-            dialog.table.setFocus()
-            QTest.keyClick(
-                dialog.table,
-                Qt.Key.Key_Return,
-                Qt.KeyboardModifier.ControlModifier,
-            )
-            self.wait_for(started.is_set)
-            self.assertTrue(dialog._decision_active)
-            self.assertTrue(dialog.replay.isEnabled())
-            self.assertFalse(dialog.accept_button.isEnabled())
-            self.assertTrue(dialog.progress.isVisible())
-            self.assertIn("Saving in background", dialog.operation.text())
-            self.assertIn("approving all 1 cohort WAVs", dialog.operation.text())
-            release.set()
-            self.wait_for(lambda: bool(calls) and not dialog._decision_active)
+                dialog.table.setFocus()
+                QTest.keyClick(
+                    dialog.table,
+                    Qt.Key.Key_Return,
+                    Qt.KeyboardModifier.ControlModifier,
+                )
+                self.wait_for(started.is_set)
+                self.assertTrue(dialog._decision_active)
+                self.assertTrue(dialog.replay.isEnabled())
+                self.assertFalse(dialog.accept_button.isEnabled())
+                self.assertTrue(dialog.progress.isVisible())
+                self.assertIn("Saving in background", dialog.operation.text())
+                self.assertIn("approving all 1 cohort WAVs", dialog.operation.text())
+                release.set()
+                self.wait_for(lambda: bool(calls) and not dialog._decision_active)
 
         self.assertEqual(calls[0][1], sample.workspace_id)
         self.assertEqual(calls[0][2], sample.cohort_id)
@@ -910,35 +918,40 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
                 publication,
                 observation_writer=slow_writer,
             )
-            dialog.show()
-            self.wait_for(lambda: dialog.table.rowCount() == 1)
-            sample = dialog._selected_sample()
-            key = dialog._current_key()
-            dialog.heard[key].add(sample.item.queue_id)
-            heartbeat = []
+            with release_and_wait_for_pool(
+                dialog.thread_pool,
+                release,
+                finish=lambda: self.wait_for(lambda: not dialog._observation_active),
+            ):
+                dialog.show()
+                self.wait_for(lambda: dialog.table.rowCount() == 1)
+                sample = dialog._selected_sample()
+                key = dialog._current_key()
+                dialog.heard[key].add(sample.item.queue_id)
+                heartbeat = []
 
-            QTimer.singleShot(0, lambda: heartbeat.append(True))
-            dialog._checkpoint_observations()
-            self.assertTrue(started.wait(1))
-            dialog.bad[key].add(sample.item.queue_id)
-            dialog._checkpoint_observations()
-            close_event = QCloseEvent()
-            dialog.closeEvent(close_event)
-            dialog.reject()
-            self.application.processEvents()
+                QTimer.singleShot(0, lambda: heartbeat.append(True))
+                dialog._checkpoint_observations()
+                self.assertTrue(started.wait(1))
+                dialog.bad[key].add(sample.item.queue_id)
+                dialog._checkpoint_observations()
+                close_event = QCloseEvent()
+                dialog.closeEvent(close_event)
+                dialog.reject()
+                self.application.processEvents()
 
-            self.assertEqual(heartbeat, [True])
-            self.assertFalse(close_event.isAccepted())
-            self.assertTrue(dialog.replay.isEnabled())
-            self.assertTrue(dialog._close_after_observation)
-            release.set()
-            self.wait_for(
-                lambda: len(snapshots) == 2 and not dialog._observation_active
-            )
-            self.wait_for(lambda: not dialog.isVisible())
+                self.assertEqual(heartbeat, [True])
+                self.assertFalse(close_event.isAccepted())
+                self.assertTrue(dialog.replay.isEnabled())
+                self.assertTrue(dialog._close_after_observation)
+                release.set()
+                self.wait_for(
+                    lambda: len(snapshots) == 2 and not dialog._observation_active
+                )
+                self.wait_for(lambda: not dialog.isVisible())
 
-            final_bad = snapshots[-1][-2]
-            self.assertIn(sample.item.queue_id, final_bad[key])
+                final_bad = snapshots[-1][-2]
+                self.assertIn(sample.item.queue_id, final_bad[key])
 
     def test_published_expand_reopens_with_exact_prior_assessments(self):
         with TemporaryDirectory() as directory:

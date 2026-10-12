@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from durable_file import atomic_write_bytes  # noqa: E402
-from PySide6.QtCore import Qt, QTimer  # noqa: E402
+from PySide6.QtCore import Qt, QThreadPool, QTimer  # noqa: E402
 from PySide6.QtGui import QCloseEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
@@ -21,7 +21,10 @@ from PySide6.QtWidgets import (  # noqa: E402
     QMessageBox,
 )
 
-from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
+from tests.qt_task_fixtures import (  # noqa: E402
+    ManualThreadPool,
+    release_and_wait_for_pool,
+)
 from vntts.main import recognize_screenshot_result  # noqa: E402
 from vntts.ocr import OCRResult  # noqa: E402
 from vntts.ocr_corrections import (  # noqa: E402
@@ -412,27 +415,36 @@ class OCRCorrectionsDialogTest(unittest.TestCase):
             release.wait(3)
 
         store.replace_entries.side_effect = replace_entries
-        dialog = OCRCorrectionsDialog("game", "Game", store)
-        dialog._append_row(dialog.global_table, "Mareus", "Marcus")
-        heartbeat = []
-        QTimer.singleShot(0, lambda: heartbeat.append("painted"))
+        pool = QThreadPool()
+        dialog = None
+        with release_and_wait_for_pool(
+            pool,
+            release,
+            finish=lambda: self.wait_for(
+                lambda: dialog is None or (not dialog._save_active)
+            ),
+        ):
+            dialog = OCRCorrectionsDialog("game", "Game", store, thread_pool=pool)
+            dialog._append_row(dialog.global_table, "Mareus", "Marcus")
+            heartbeat = []
+            QTimer.singleShot(0, lambda: heartbeat.append("painted"))
 
-        before = time.monotonic()
-        dialog.save()
-        elapsed = time.monotonic() - before
-        self.wait_for(lambda: started.is_set() and bool(heartbeat))
+            before = time.monotonic()
+            dialog.save()
+            elapsed = time.monotonic() - before
+            self.wait_for(lambda: started.is_set() and bool(heartbeat))
 
-        self.assertLess(elapsed, 0.1)
-        self.assertTrue(dialog._save_active)
-        self.assertFalse(dialog.buttons.isEnabled())
-        close_event = QCloseEvent()
-        dialog.closeEvent(close_event)
-        self.assertFalse(close_event.isAccepted())
-        self.assertIn("Close is deferred", dialog.status.text())
+            self.assertLess(elapsed, 0.1)
+            self.assertTrue(dialog._save_active)
+            self.assertFalse(dialog.buttons.isEnabled())
+            close_event = QCloseEvent()
+            dialog.closeEvent(close_event)
+            self.assertFalse(close_event.isAccepted())
+            self.assertIn("Close is deferred", dialog.status.text())
 
-        release.set()
-        self.wait_for(lambda: not dialog._save_active)
-        self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+            release.set()
+            self.wait_for(lambda: not dialog._save_active)
+            self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
 
     def test_save_failure_restores_controls_for_retry(self):
         store = Mock(global_entries={}, profile_entries={})

@@ -12,11 +12,12 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import QPoint, QTimer
+    from PySide6.QtCore import QPoint, QThreadPool, QTimer
     from PySide6.QtGui import QCloseEvent
     from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtWidgets import QApplication
 
+    from tests.qt_task_fixtures import release_and_wait_for_pool
     from tests.symlink_support import symlink_or_skip
     from tests.terminal_conflict_fixtures import create_terminal_conflict_review
     from vntts.authoring.terminal_conflict_review import (
@@ -371,11 +372,30 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
             release.wait(3)
             return record_terminal_conflict_decision(*args)
 
-        with TemporaryDirectory() as directory:
+        pool = QThreadPool()
+        dialog = None
+        with (
+            TemporaryDirectory() as directory,
+            release_and_wait_for_pool(
+                pool,
+                release,
+                finish=lambda: self.wait_for(
+                    lambda: (
+                        dialog is None
+                        or (
+                            not dialog._active
+                            and not dialog.load_runner.active
+                            and not dialog.playback_runner.active
+                        )
+                    )
+                ),
+            ),
+        ):
             review = self.create_review(Path(directory))
             dialog = self.create_dialog(
                 review,
                 decision_recorder=slow_recorder,
+                thread_pool=pool,
                 confirmer=lambda _decision: True,
             )
             dialog.show()
