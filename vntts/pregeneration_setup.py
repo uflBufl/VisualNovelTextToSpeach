@@ -491,7 +491,7 @@ def discover_game_content(
                     sha256_file(path),
                 )
             )
-        except PregenerationSetupError as error:
+        except (OSError, PregenerationSetupError) as error:
             errors.append(str(error))
     discovered.sort(key=lambda content: len(content.selections), reverse=True)
     return ContentDiscovery(tuple(discovered), tuple(errors))

@@ -169,6 +169,40 @@ class PregenerationSetupTest(unittest.TestCase):
             self.assertEqual(first.selections, rebuilt.selections)
             self.assertEqual(second.provider_id, "second")
 
+    def test_discovery_keeps_other_content_when_a_source_disappears(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            removed = write_story_index(root / "removed")
+            retained = write_story_index(root / "retained")
+            from vntts.pregeneration_setup import sha256_file
+
+            def remove_at_checksum(path):
+                if path == removed:
+                    path.unlink()
+                return sha256_file(path)
+
+            with (
+                patch(
+                    "vntts.pregeneration_setup.get_local_data_directory",
+                    return_value=root / "data",
+                ),
+                patch(
+                    "vntts.pregeneration_setup.sha256_file",
+                    side_effect=remove_at_checksum,
+                ),
+            ):
+                discovered = discover_game_content(
+                    AppSettings(story_index=str(removed)),
+                    extra_paths=(retained,),
+                    environment={"R1999_EXTRACTOR_DATA": str(root / "extractor")},
+                )
+            self.assertEqual(
+                tuple(content.story_index for content in discovered.content),
+                (retained,),
+            )
+            self.assertEqual(len(discovered.errors), 1)
+            self.assertIn(str(removed), discovered.errors[0])
+
     def test_saved_job_queries_skip_damage_and_read_current_sources(self):
         with TemporaryDirectory() as directory:
             root = Path(directory).resolve()
