@@ -602,6 +602,32 @@ class GenerationTimelineLogTest(unittest.TestCase):
 
 
 class RuntimeSupportLogTest(unittest.TestCase):
+    def test_previous_session_keeps_valid_logs_when_integer_exceeds_parser_limit(self):
+        previous_limit = sys.get_int_max_str_digits()
+        try:
+            sys.set_int_max_str_digits(640)
+            with TemporaryDirectory() as temporary_directory:
+                directory = Path(temporary_directory)
+                corrupt = '{"timelines":[{"generation":' + "1" * 641 + ',"events":[]}]}'
+                timelines = directory / "generation-timelines.json"
+                timelines.write_text(corrupt, encoding="utf-8")
+                (directory / "runtime.log").write_text(
+                    json.dumps({"level": "info", "message": "valid evidence"}) + "\n",
+                    encoding="utf-8",
+                )
+                restored = preserve_previous_session(directory)
+                persisted = json.loads(
+                    (directory / "previous-session.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(timelines.read_text(encoding="utf-8"), corrupt)
+        finally:
+            sys.set_int_max_str_digits(previous_limit)
+        self.assertTrue(restored["available"])
+        self.assertEqual(restored["generation_timelines"], [])
+        self.assertEqual(restored["runtime_events"][0]["message"], "valid evidence")
+        self.assertEqual(persisted, restored)
+        self.assertEqual(sys.get_int_max_str_digits(), previous_limit)
+
     def test_performance_evidence_preserves_exact_valid_integer(self):
         log = PerformanceLog()
         elapsed_ms = 2**53 + 1

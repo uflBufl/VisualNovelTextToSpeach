@@ -6,13 +6,17 @@ from typing import TypeGuard
 
 
 def decode_json(payload: str | bytes | bytearray) -> object:
-    """Decode JSON, reporting unsupported nesting as a parse error."""
+    """Decode JSON, reporting decoder limits as parse errors."""
     try:
         return json.loads(payload)
     except RecursionError as error:
         raise json.JSONDecodeError(
             "JSON nesting exceeds the decoder limit", "", 0
         ) from error
+    except json.JSONDecodeError, UnicodeError:
+        raise
+    except ValueError as error:
+        raise json.JSONDecodeError(str(error), "", 0) from error
 
 
 def is_json_object(value: object) -> TypeGuard[dict[str, object]]:
