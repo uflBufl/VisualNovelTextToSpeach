@@ -1280,7 +1280,7 @@
       "path": "vntts/live.py",
       "scope": "LiveDialogReader.__init__",
       "count": 1,
-      "maximum": 103
+      "maximum": 95
     },
     {
       "code": "PLR0915",
