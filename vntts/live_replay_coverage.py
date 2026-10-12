@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import TypedDict
 
 from vntts.authoring.authority import write_json_document_no_replace
-from vntts.cleanup import temporary_directory
 from vntts.cli import cli_error, cli_messages
 from vntts.json_types import is_json_object
 from vntts.live_replay_evidence import _decode_json, _read_regular_file
@@ -19,6 +18,7 @@ from vntts.live_sequence import (
     LiveSequencePlan,
     _next_visible_events,
     _ordered_visible_events,
+    load_live_sequence_snapshot,
 )
 
 
@@ -77,7 +77,7 @@ def audit_live_replay_coverage(
     plan_path, plan_payload = _read_coverage_file(sequence_plan, "Sequence plan")
     story_sha256 = hashlib.sha256(story_payload).hexdigest()
     plan_sha256 = hashlib.sha256(plan_payload).hexdigest()
-    plan = _load_snapshot_plan(story_payload, plan_payload)
+    plan = _load_snapshot_plan(story_path, plan_path, story_payload, plan_payload)
     visible = _ordered_visible_events(plan)
     if len({event.chapter for event in visible}) != 1:
         raise LiveReplayCoverageError(
@@ -241,17 +241,15 @@ def _decode_coverage_json(payload: bytes, label: str) -> dict[str, object]:
 
 
 def _load_snapshot_plan(
+    story_path: Path,
+    plan_path: Path,
     story_payload: bytes,
     plan_payload: bytes,
 ) -> LiveSequencePlan:
     try:
-        with temporary_directory(prefix=".live-replay-coverage-") as directory:
-            snapshot = Path(directory)
-            snapshot_story = snapshot / "story-index.jsonl"
-            snapshot_plan = snapshot / "sequence-plan.json"
-            snapshot_story.write_bytes(story_payload)
-            snapshot_plan.write_bytes(plan_payload)
-            return LiveSequencePlan.load(snapshot_plan, snapshot_story)
+        return load_live_sequence_snapshot(
+            plan_path, story_path, plan_payload, story_payload
+        )
     except Exception as error:
         raise LiveReplayCoverageError(
             f"Story index and sequence plan are incompatible: {error}"

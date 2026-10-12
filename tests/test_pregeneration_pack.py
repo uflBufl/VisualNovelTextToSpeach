@@ -521,14 +521,20 @@ class OfflinePackPublisherTest(unittest.TestCase):
             replacement = root / "replacement.json"
             write_live_sequence_plan(replacement, replacement_document, current_story)
 
-            def replace_source_after_validation(path, story_index):
-                validated = load_live_sequence_plan(path, story_index)
+            from vntts.live_sequence import load_live_sequence_snapshot
+
+            def replace_source_after_validation(
+                path, story_index, plan_payload, story_payload
+            ):
+                validated = load_live_sequence_snapshot(
+                    path, story_index, plan_payload, story_payload
+                )
                 if story_index == current_story and replacement.exists():
                     replacement.replace(plans[1])
                 return validated
 
             with patch(
-                "vntts.pregeneration_pack.load_live_sequence_plan",
+                "vntts.pregeneration_pack.load_live_sequence_snapshot",
                 side_effect=replace_source_after_validation,
             ):
                 staged = _stage_live_sequence(
@@ -548,6 +554,7 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 .entry_event_ids,
                 ("2-one",),
             )
+            self.assertFalse(replacement.exists())
             self.assertEqual(
                 load_live_sequence_plan(plans[1], current_story).source_extract_sha256,
                 "b" * 64,

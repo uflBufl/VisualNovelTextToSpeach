@@ -64,11 +64,11 @@ from vntts.live import (
 )
 from vntts.live_sequence import (
     LiveSequenceEvent,
-    LiveSequencePlan,
     StoryCursor,
     StoryCursorError,
     StoryCursorSnapshot,
     StoryCursorState,
+    load_live_sequence_plan,
 )
 from vntts.live_snapshot import read_live_snapshot as read_live_snapshot
 from vntts.live_speaker_corpus import LiveSpeakerCorpus
@@ -518,7 +518,7 @@ class AppController:
         pipeline_event_handler: Callable[..., object] | None = None,
         live_sequence_plan_factory: Callable[
             [str, str], _LiveSequencePlanContract
-        ] = LiveSequencePlan.load,
+        ] = load_live_sequence_plan,
         voice_library: VoiceLibrary | None = None,
         profile_store: GameProfileStore | None = None,
     ) -> None:

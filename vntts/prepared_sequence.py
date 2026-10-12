@@ -15,13 +15,15 @@ from typing import Protocol, TypeAlias
 from vntts_artifacts.live_sequence import (
     LiveSequencePlan,
     LiveSequencePlanError,
-    load_live_sequence_plan,
 )
-from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
+from vntts_artifacts.story_index import StoryIndexError
 
 from vntts.authoring.publication import staged_directory
 from vntts.cleanup import cleanup_on_exit
 from vntts.document_identity import sha256_file
+from vntts.live_sequence import load_live_sequence_plan
+from vntts.path_safety import read_regular_bytes
+from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.subprocess_utils import last_output_line, terminate_running_process
 
 PathInput: TypeAlias = str | PathLike[str]
@@ -124,7 +126,7 @@ def prepare_sequence_for_prepared_story(
     """Prepare an exact Reverse: 1999 plan using only prepared-story inputs."""
     story_index = _required_file(story_index, "Story index")
     try:
-        story = load_story_index_document(story_index)
+        story = load_story_index_snapshot(story_index, read_regular_bytes(story_index))
     except (OSError, StoryIndexError) as error:
         raise PreparedSequenceError(
             f"Unable to read prepared story: {error}"

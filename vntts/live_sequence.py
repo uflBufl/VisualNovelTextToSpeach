@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
+from os import PathLike
+from pathlib import Path
 
 from vntts_artifacts.live_sequence import (
     LIVE_SEQUENCE_SCHEMA,
@@ -17,9 +19,11 @@ from vntts_artifacts.live_sequence import (
     write_live_sequence_plan,
 )
 from vntts_artifacts.live_sequence import (
-    load_live_sequence_plan,
+    load_live_sequence_plan as _load_artifact_sequence_plan,
 )
 
+from vntts.cleanup import temporary_directory
+from vntts.path_safety import read_regular_bytes
 
 __all__ = [
     "LIVE_SEQUENCE_SCHEMA",
@@ -33,8 +37,54 @@ __all__ = [
     "StoryCursorSnapshot",
     "StoryCursorState",
     "load_live_sequence_plan",
+    "load_live_sequence_snapshot",
     "write_live_sequence_plan",
 ]
+
+
+def load_live_sequence_plan(
+    path: str | PathLike[str], story_index_path: str | PathLike[str]
+) -> LiveSequencePlan:
+    """Admit both source files before parsing their checksum-bound snapshots."""
+    source = Path(path).expanduser().resolve()
+    story = Path(story_index_path).expanduser().resolve()
+    try:
+        plan_payload = read_regular_bytes(source)
+    except OSError as error:
+        raise LiveSequencePlanError(
+            f"Unable to read live sequence plan {source}: {error}"
+        ) from error
+    try:
+        story_payload = read_regular_bytes(story)
+    except OSError as error:
+        raise LiveSequencePlanError(
+            f"Unable to checksum story index {story}: {error}"
+        ) from error
+    return load_live_sequence_snapshot(source, story, plan_payload, story_payload)
+
+
+def load_live_sequence_snapshot(
+    path: Path,
+    story_index: Path,
+    plan_payload: bytes,
+    story_payload: bytes,
+) -> LiveSequencePlan:
+    """Validate captured authority bytes while retaining their original paths."""
+    with temporary_directory(prefix="vntts-sequence-snapshot-") as directory:
+        snapshot = Path(directory)
+        plan_copy = snapshot / "live-sequence.json"
+        story_copy = snapshot / "story-index.jsonl"
+        plan_copy.write_bytes(plan_payload)
+        story_copy.write_bytes(story_payload)
+        try:
+            plan = _load_artifact_sequence_plan(plan_copy, story_copy)
+        except LiveSequencePlanError as error:
+            raise LiveSequencePlanError(
+                str(error)
+                .replace(str(plan_copy), str(path))
+                .replace(str(story_copy), str(story_index))
+            ) from error.__cause__
+    return replace(plan, path=path, story_index_path=story_index)
 
 
 def _ordered_visible_events(plan: LiveSequencePlan) -> tuple[LiveSequenceEvent, ...]:

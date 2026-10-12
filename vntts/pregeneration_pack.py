@@ -23,7 +23,6 @@ from vntts_artifacts.generated_audio import (
 from vntts_artifacts.live_sequence import (
     LiveSequencePlan,
     LiveSequencePlanError,
-    load_live_sequence_plan,
     write_live_sequence_plan,
 )
 from vntts_artifacts.story_index import (
@@ -63,7 +62,6 @@ from vntts.chapter_voice_preload import (
     _source_audio_covers_full_line,
     _validated_source_audio_line_ids,
 )
-from vntts.cleanup import temporary_directory
 from vntts.document_identity import (
     canonical_document_sha256,
     is_lowercase_sha256,
@@ -72,6 +70,7 @@ from vntts.document_identity import (
 from vntts.game_pack import GamePackImport, import_game_pack
 from vntts.generated_audio import GeneratedAudioLibrary
 from vntts.json_types import decode_json
+from vntts.live_sequence import load_live_sequence_snapshot
 from vntts.path_safety import copy_regular_file, read_regular_bytes, safe_relative_path
 from vntts.pregeneration_contract import (
     OfflineGenerationCancelled,
@@ -1031,10 +1030,9 @@ def _safe_sequence_document(
     document = decode_json(payload)
     if not isinstance(document, dict) or not isinstance(document.get("chapters"), list):
         raise LiveSequencePlanError("Live sequence plan document is malformed")
-    with temporary_directory(prefix="vntts-sequence-") as directory:
-        snapshot = Path(directory) / "live-sequence.json"
-        snapshot.write_bytes(payload)
-        plan = load_live_sequence_plan(snapshot, story_index)
+    plan = load_live_sequence_snapshot(
+        path, story_index, payload, read_regular_bytes(story_index)
+    )
     if plan.game_id != "reverse1999":
         raise LiveSequencePlanError("Live sequence is not for Reverse: 1999")
     for event in plan.events.values():
