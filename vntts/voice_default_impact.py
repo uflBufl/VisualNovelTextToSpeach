@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Literal, Protocol, TypeAlias
 
 from vntts_artifacts.generated_audio import load_generated_audio_document
 from vntts_artifacts.story_index import StoryIndexRecord
@@ -31,6 +31,11 @@ from vntts.voices import is_narrator, normalize_character_name
 
 class Cancellation(Protocol):
     def is_set(self) -> bool: ...
+
+
+_PackContents: TypeAlias = tuple[
+    dict[str, StoryIndexRecord], GeneratedAudioLibrary | None, frozenset[str]
+]
 
 
 @dataclass(frozen=True)
@@ -84,16 +89,9 @@ def _saved_packs(
 
 def _load_pack(
     path: Path,
-    cache: dict[
-        Path,
-        tuple[
-            dict[str, StoryIndexRecord],
-            GeneratedAudioLibrary | None,
-            frozenset[str],
-        ],
-    ],
+    cache: dict[Path, _PackContents],
     cancellation: Cancellation | None,
-) -> tuple[dict[str, StoryIndexRecord], GeneratedAudioLibrary | None, frozenset[str]]:
+) -> _PackContents:
     _raise_if_cancelled(cancellation)
     path = path.expanduser().resolve()
     if path not in cache:
@@ -126,14 +124,7 @@ def _compatible_packs(
     cancellation: Cancellation | None,
 ) -> tuple[_CompatiblePack, ...]:
     saved = _saved_packs(content, job_store, cancellation)
-    cache: dict[
-        Path,
-        tuple[
-            dict[str, StoryIndexRecord],
-            GeneratedAudioLibrary | None,
-            frozenset[str],
-        ],
-    ] = {}
+    cache: dict[Path, _PackContents] = {}
     selected: list[_CompatiblePack] = []
     for selection in content.selections:
         _raise_if_cancelled(cancellation)
