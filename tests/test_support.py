@@ -1693,6 +1693,43 @@ class SupportBundleBuilderTest(unittest.TestCase):
         self.assertFalse(active["available"])
         self.assertIn("invalid", active["reason"])
 
+    def test_ocr_average_avoids_intermediate_sum_overflow(self):
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            for index in range(2):
+                (directory / f"uncertain-{index}.json").write_text(
+                    json.dumps({"confidence": sys.float_info.max, "attempts": 1}),
+                    encoding="utf-8",
+                )
+            metrics = collect_ocr_metrics(directory)
+        self.assertEqual(metrics["sample_count"], 2)
+        self.assertEqual(metrics["invalid_metadata_count"], 0)
+        self.assertEqual(metrics["average_confidence"], sys.float_info.max)
+        self.assertEqual(metrics["average_attempts"], 1)
+        json.dumps(metrics, allow_nan=False)
+
+    def test_ocr_average_preserves_counts_with_unrepresentable_mean(self):
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            for index, attempts in enumerate((10**400, 1)):
+                (directory / f"uncertain-{index}.json").write_text(
+                    json.dumps({"confidence": 50, "attempts": attempts}),
+                    encoding="utf-8",
+                )
+            metrics = collect_ocr_metrics(directory)
+            self.assertEqual(metrics["sample_count"], 2)
+            self.assertEqual(metrics["invalid_metadata_count"], 0)
+            self.assertEqual(metrics["average_confidence"], 50)
+            self.assertIsNone(metrics["average_attempts"])
+            json.dumps(metrics, allow_nan=False)
+            (directory / "uncertain-1.json").write_text(
+                json.dumps({"confidence": 50, "attempts": 10**400}), encoding="utf-8"
+            )
+            integral = collect_ocr_metrics(directory)
+        self.assertEqual(integral["average_attempts"], 10**400)
+        self.assertEqual(integral["sample_count"], 2)
+        json.dumps(integral, allow_nan=False)
+
     def test_ocr_metrics_skip_malformed_fields_and_keep_metadata_only_samples(self):
         cases = (
             ("confidence", True),

@@ -10,11 +10,13 @@ import subprocess
 import sys
 import zipfile
 from collections import Counter, OrderedDict, deque
+from collections.abc import Sequence
 from contextvars import ContextVar
 from dataclasses import asdict, fields
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
+from statistics import mean
 from threading import RLock
 from typing import Callable, Mapping, TypedDict
 from uuid import UUID
@@ -2125,6 +2127,15 @@ def sanitize_diagnostic(snapshot: object) -> SupportDocument:
     return {key: _sanitize_event_value(value) for key, value in values.items()}
 
 
+def _ocr_metric_average(values: Sequence[int | float]) -> int | float | None:
+    if not values:
+        return None
+    try:
+        return round(mean(values), 2)
+    except OverflowError:
+        return None
+
+
 def collect_ocr_metrics(directory: str | Path) -> SupportDocument:
     directory = Path(directory).expanduser()
     confidences: list[float] = []
@@ -2153,12 +2164,8 @@ def collect_ocr_metrics(directory: str | Path) -> SupportDocument:
         "resolved_count": resolved,
         "pending_count": len(confidences) - resolved,
         "invalid_metadata_count": invalid,
-        "average_confidence": (
-            round(sum(confidences) / len(confidences), 2) if confidences else None
-        ),
-        "average_attempts": (
-            round(sum(attempts) / len(attempts), 2) if attempts else None
-        ),
+        "average_confidence": _ocr_metric_average(confidences),
+        "average_attempts": _ocr_metric_average(attempts),
         "preprocessing_profiles": dict(sorted(profiles.items())),
     }
 
