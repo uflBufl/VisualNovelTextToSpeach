@@ -84,6 +84,10 @@ def load_live_sequence_snapshot(
                 .replace(str(plan_copy), str(path))
                 .replace(str(story_copy), str(story_index))
             ) from error.__cause__
+        except (ValueError, RecursionError) as error:
+            raise LiveSequencePlanError(
+                f"Unable to read live sequence plan {path}: {error}"
+            ) from error
     return replace(plan, path=path, story_index_path=story_index)
 
 

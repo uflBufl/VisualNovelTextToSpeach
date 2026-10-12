@@ -192,6 +192,42 @@ class PreparedSequenceAdmissionTest(unittest.TestCase):
                     recovered.live_sequence_plan.story_index_path, self.story
                 )
 
+    def test_foreign_decoder_failures_reject_cache_and_publish_valid_replacement(self):
+        from vntts.live_sequence import LiveSequencePlanError, load_live_sequence_plan
+
+        for name, payload in (
+            ("utf8", b"\xff"),
+            ("nesting", b"[" * 20_000 + b"0" + b"]" * 20_000),
+            ("integer-limit", b'{"value":' + b"1" * 5000 + b"}"),
+        ):
+            with self.subTest(case=name):
+                self.output.write_bytes(payload)
+                with self.assertRaises(LiveSequencePlanError):
+                    load_live_sequence_plan(self.output, self.story)
+                published = []
+
+                def publish(arguments):
+                    published.append(arguments)
+                    fixtures.write_plan(
+                        Path(arguments[arguments.index("--output") + 1]),
+                        self.story,
+                        self.bundle,
+                    )
+
+                plan = prepare_reverse1999_sequence(
+                    self.story,
+                    self.bundle,
+                    ("314501",),
+                    self.output,
+                    command=("publisher",),
+                    popen_factory=lambda arguments, **_kwargs: (
+                        fixtures.FinishedPublisher(arguments, publish)
+                    ),
+                )
+                self.assertEqual(len(published), 1)
+                self.assertEqual(plan.path, self.output)
+                self.assertEqual(load_live_sequence_plan(self.output, self.story), plan)
+
     def test_chapter_objects_are_normalized_once_before_cached_plan_reuse(self):
         class ChapterOnce:
             calls = 0
