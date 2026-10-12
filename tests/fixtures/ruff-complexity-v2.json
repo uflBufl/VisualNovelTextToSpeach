@@ -419,7 +419,7 @@
       "path": "vntts/live_replay_sequence_seal.py",
       "scope": "seal_sequence_replay",
       "count": 1,
-      "maximum": 18
+      "maximum": 15
     },
     {
       "code": "C901",
@@ -860,7 +860,7 @@
       "path": "vntts/live_replay_sequence_seal.py",
       "scope": "seal_sequence_replay",
       "count": 1,
-      "maximum": 17
+      "maximum": 14
     },
     {
       "code": "PLR0912",
@@ -1329,7 +1329,7 @@
       "path": "vntts/live_replay_sequence_seal.py",
       "scope": "seal_sequence_replay",
       "count": 1,
-      "maximum": 99
+      "maximum": 90
     },
     {
       "code": "PLR0915",
