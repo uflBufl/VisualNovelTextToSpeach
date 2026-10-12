@@ -17,7 +17,12 @@ from vntts.runtime_installation import (
     ensure_speech_runtime,
     runtime_installation_available,
 )
-from vntts.runtime_ownership import claim_runtime, cleanup_managed_runtimes, read_record
+from vntts.runtime_ownership import (
+    RuntimeUse,
+    claim_runtime,
+    cleanup_managed_runtimes,
+    read_record,
+)
 from vntts.runtime_paths import find_managed_speech_runtime, managed_runtime_location
 from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
 from vntts.speech_worker import (
@@ -196,6 +201,47 @@ class RuntimeInstallationTest(unittest.TestCase):
         cleanup_managed_runtimes("pocket-tts", new[0])
         self.assertFalse(old[0].exists())
         self.assertEqual(find_managed_speech_runtime("pocket-tts"), new[0])
+
+    def test_runtime_claim_rejects_invalid_child_pids_before_recording_and_recovers(
+        self,
+    ):
+        for platform, maximum in (("darwin", 0x7FFFFFFF), ("win32", 0xFFFFFFFF)):
+            for pid in (True, False, 0, -1, maximum + 1, 42.0, "42", None):
+                with self.subTest(platform=platform, pid=pid):
+                    use = RuntimeUse(self.root / "claim-control")
+                    use.begin_launch()
+                    previous = use.path.read_bytes()
+                    child = Mock(pid=pid, poll=Mock(return_value=0))
+                    with patch("sys.platform", platform):
+                        with self.assertRaisesRegex(TTSConfigurationError, "malformed"):
+                            use.launched(child)
+                    self.assertEqual(use.path.read_bytes(), previous)
+                    self.assertEqual(use.processes, [])
+                    child.poll.assert_not_called()
+                    use.close()
+                    self.assertTrue(use.path.exists())
+                    use.launched(None)
+                    self.assertEqual(read_record(use.path)["children"], [])
+                    use.close()
+                    self.assertFalse(use.path.exists())
+
+    def test_runtime_claim_accepts_platform_pid_limits_and_releases_exited_children(
+        self,
+    ):
+        for platform, maximum in (("darwin", 0x7FFFFFFF), ("win32", 0xFFFFFFFF)):
+            for pid in (1, maximum):
+                with self.subTest(platform=platform, pid=pid):
+                    use = RuntimeUse(self.root / "claim-control")
+                    use.begin_launch()
+                    child = Mock(pid=pid, poll=Mock(return_value=0))
+                    with patch("sys.platform", platform):
+                        use.launched(child)
+                    self.assertEqual(read_record(use.path)["children"], [pid])
+                    self.assertFalse(read_record(use.path)["launching"])
+                    self.assertEqual(use.processes, [child])
+                    use.close()
+                    child.poll.assert_called_once_with()
+                    self.assertFalse(use.path.exists())
 
     def test_dead_windows_dword_pid_does_not_hold_runtime(self):
         old = self.prepared_runtime()

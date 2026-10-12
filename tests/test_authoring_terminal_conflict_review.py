@@ -410,6 +410,93 @@ class TerminalConflictReviewTest(unittest.TestCase):
                     document, root / "conflict-review"
                 )
 
+    def test_malformed_progress_pids_preserve_lock_and_review_without_lookup(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _primary, _secondary, _queue_id, report = self.create_fixture(root)
+            output = root / "conflict-review"
+            created = publish_terminal_conflict_review(report, output)
+            review = json.loads(created.review.read_text(encoding="utf-8"))
+            case_id = review["cases"][0]["case_id"]
+            lock = output / ".progress.lock"
+            (output / ".progress.lock.guard").touch()
+            for pid in (True, False, 0, -1, 42.0, "42", None, 0x100000000, 10**100):
+                lock.write_bytes(
+                    json.dumps(
+                        {
+                            "schema": PROGRESS_LEASE_SCHEMA,
+                            "schema_version": PROGRESS_LEASE_VERSION,
+                            "pid": pid,
+                            "hostname": socket.gethostname(),
+                            "lease_id": "malformed-owner",
+                            "process_started_at": "recorded-start",
+                        },
+                        indent=2,
+                    ).encode()
+                    + b"\n"
+                )
+                before = tree_hashes(output)
+                with (
+                    self.subTest(pid=pid),
+                    patch.object(
+                        terminal_module, "process_is_alive", return_value=False
+                    ) as alive,
+                    patch.object(
+                        terminal_module, "process_started_at", return_value="own-start"
+                    ) as started,
+                    self.assertRaisesRegex(
+                        TerminalConflictReviewError,
+                        "Unrecognized terminal conflict progress lock",
+                    ),
+                ):
+                    record_terminal_conflict_decision(
+                        output, case_id, NEITHER_ACCEPTABLE
+                    )
+                alive.assert_not_called()
+                started.assert_called_once_with(os.getpid())
+                self.assertEqual(tree_hashes(output), before)
+
+    def test_foreign_windows_dword_progress_lease_stays_recognized_and_blocks(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _primary, _secondary, _queue_id, report = self.create_fixture(root)
+            output = root / "conflict-review"
+            created = publish_terminal_conflict_review(report, output)
+            review = json.loads(created.review.read_text(encoding="utf-8"))
+            lock = output / ".progress.lock"
+            lock.write_bytes(
+                json.dumps(
+                    {
+                        "schema": PROGRESS_LEASE_SCHEMA,
+                        "schema_version": PROGRESS_LEASE_VERSION,
+                        "pid": 0xFFFFFFFF,
+                        "hostname": "foreign-" + socket.gethostname(),
+                        "lease_id": "windows-owner",
+                    },
+                    indent=2,
+                ).encode()
+                + b"\n"
+            )
+            (output / ".progress.lock.guard").touch()
+            before = tree_hashes(output)
+            with (
+                patch("sys.platform", "darwin"),
+                patch.object(terminal_module, "process_is_alive") as alive,
+                patch.object(
+                    terminal_module, "process_started_at", return_value="own-start"
+                ) as started,
+                self.assertRaisesRegex(
+                    TerminalConflictReviewError,
+                    "Another terminal conflict decision is being saved",
+                ),
+            ):
+                record_terminal_conflict_decision(
+                    output, review["cases"][0]["case_id"], NEITHER_ACCEPTABLE
+                )
+            alive.assert_not_called()
+            started.assert_called_once_with(os.getpid())
+            self.assertEqual(tree_hashes(output), before)
+
     def test_dead_progress_lease_is_archived_and_review_continues(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

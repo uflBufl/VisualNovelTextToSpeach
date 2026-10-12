@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import re
 import shutil
-import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol, TypeAlias, TypedDict, TypeGuard
@@ -15,7 +14,10 @@ from durable_file import atomic_write_json
 
 from vntts import application_directories
 from vntts.authoring.advisory_lock import AdvisoryLockBusyError, exclusive_advisory_lock
-from vntts.authoring.generation_lease import inspect_process_status
+from vntts.authoring.generation_lease import (
+    inspect_process_status,
+    is_native_process_id,
+)
 from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import decode_json
 from vntts.path_safety import open_regular_binary
@@ -48,7 +50,7 @@ class _ClaimedProcess(Protocol):
 
 
 def _is_claimed_process(value: object) -> TypeGuard[_ClaimedProcess]:
-    return isinstance(getattr(value, "pid", None), int) and callable(
+    return is_native_process_id(getattr(value, "pid", None)) and callable(
         getattr(value, "poll", None)
     )
 
@@ -188,7 +190,6 @@ def _in_use(generation: Path) -> bool:
         return True
     if not users.exists():
         return False
-    max_pid = 0xFFFFFFFF if sys.platform == "win32" else 0x7FFFFFFF
     for path in users.iterdir():
         record = read_record(path)
         parent, children = record.get("parent_pid"), record.get("children")
@@ -196,10 +197,7 @@ def _in_use(generation: Path) -> bool:
         # add an OS process-tree identity only if orphaned storage becomes material.
         if record.get("launching") is not False or not isinstance(children, list):
             return True
-        if any(
-            type(pid) is not int or not 0 < pid <= max_pid
-            for pid in [parent, *children]
-        ):
+        if any(not is_native_process_id(pid) for pid in [parent, *children]):
             return True
         if any(inspect_process_status(pid) != "dead" for pid in [parent, *children]):
             return True

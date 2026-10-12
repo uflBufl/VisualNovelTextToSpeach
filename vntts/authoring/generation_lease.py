@@ -12,7 +12,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from types import TracebackType
-from typing import Callable, Literal, SupportsInt, TypedDict
+from typing import Callable, Literal, SupportsInt, TypedDict, TypeGuard
 
 from vntts_artifacts.text_utils import slugify
 
@@ -44,12 +44,18 @@ class BulkGenerationError(RuntimeError):
     """A queue cannot be generated or resumed safely."""
 
 
+def is_process_id(value: object) -> TypeGuard[int]:
+    return type(value) is int and 0 < value <= 0xFFFFFFFF
+
+
+def is_native_process_id(value: object) -> TypeGuard[int]:
+    return is_process_id(value) and (sys.platform == "win32" or value <= 0x7FFFFFFF)
+
+
 def inspect_process_status(pid: object) -> Literal["live", "dead", "unknown"]:
     """Return ``live``, ``dead`` or ``unknown`` without changing the process."""
     process_id = _process_id(pid)
     if process_id is None:
-        return "unknown"
-    if process_id <= 0:
         return "unknown"
     if sys.platform == "win32":
         return _inspect_windows_process(process_id)
@@ -108,7 +114,7 @@ def _inspect_windows_process(pid: int) -> Literal["live", "dead", "unknown"]:
 def process_started_at(pid: object) -> str | None:
     """Return the operating-system process start identity when inspectable."""
     process_id = _process_id(pid)
-    if process_id is None or process_id <= 0:
+    if process_id is None:
         return None
     try:
         completed = subprocess.run(
@@ -215,6 +221,7 @@ class GenerationLease:
                         or parsed.get("schema") != LEASE_SCHEMA
                         or parsed.get("schema_version") != LEASE_VERSION
                         or not isinstance(parsed.get("queue_sha256"), str)
+                        or not is_process_id(parsed.get("pid"))
                     ):
                         raise BulkGenerationError(
                             f"Unrecognized generation lease blocks output: {self.path}"
@@ -317,12 +324,15 @@ def _load_json(path: str | Path) -> dict[str, object]:
 
 
 def _process_id(value: object) -> int | None:
-    if not isinstance(value, (str, bytes, bytearray, SupportsInt)):
+    if isinstance(value, bool) or not isinstance(
+        value, (str, bytes, bytearray, SupportsInt)
+    ):
         return None
     try:
-        return int(value)
-    except TypeError, ValueError:
+        process_id = int(value)
+    except TypeError, ValueError, OverflowError:
         return None
+    return process_id if is_native_process_id(process_id) else None
 
 
 __all__ = [
@@ -333,6 +343,8 @@ __all__ = [
     "GenerationLease",
     "archive_interrupted_artifact",
     "inspect_process_status",
+    "is_process_id",
+    "is_native_process_id",
     "process_is_alive",
     "process_started_at",
 ]

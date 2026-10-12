@@ -9,7 +9,7 @@ from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 from vntts_artifacts.audio import write_pcm16_wav
@@ -3993,6 +3993,58 @@ class AuthoringWorkbenchTest(unittest.TestCase):
 
             self.assertEqual(state_path.read_bytes(), state_before)
             self.assertEqual(manifest.read_bytes(), manifest_before)
+
+    def test_runtime_malformed_pid_blocks_without_inspection_or_record_changes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, _imported, created = self.create_workspace(root)
+            output = created.directory / "generated-audio"
+            state = json.loads((output / "generation-state.json").read_bytes())
+            lease_path = output / ".generation-lease.json"
+            lease = {
+                "schema": "vntts.authoring-generation-lease",
+                "schema_version": 1,
+                "queue_sha256": state["queue_sha256"],
+                "hostname": None,
+                "process_started_at": "recorded-start",
+                "lease_id": "owner",
+            }
+            for pid in (True, False, 0, -1, 42.0, "42", None, 0x100000000, 10**100):
+                lease["pid"] = pid
+                lease_path.write_bytes(json.dumps(lease, indent=2).encode() + b"\n")
+                before = tree_hashes(created.directory)
+                checker, started = Mock(return_value=False), Mock(return_value=None)
+                with self.subTest(pid=pid):
+                    summary = inspect_workspace(
+                        created.directory,
+                        process_checker=checker,
+                        process_start_checker=started,
+                    )
+                    self.assertEqual(
+                        summary.runtime_status, AuthoringRuntimeStatus.BLOCKED
+                    )
+                    checker.assert_not_called()
+                    started.assert_not_called()
+                    self.assertEqual(tree_hashes(created.directory), before)
+
+            lease["pid"] = 0xFFFFFFFF
+            lease["hostname"] = (
+                "foreign-" + workspace_inspection_module.socket.gethostname()
+            )
+            lease_path.write_bytes(json.dumps(lease, indent=2).encode() + b"\n")
+            before = tree_hashes(created.directory)
+            with patch("sys.platform", "darwin"):
+                summary = inspect_workspace(
+                    created.directory,
+                    process_checker=checker,
+                    process_start_checker=started,
+                )
+            self.assertEqual(
+                summary.runtime_status, AuthoringRuntimeStatus.RUNNING_EXTERNAL
+            )
+            checker.assert_not_called()
+            started.assert_not_called()
+            self.assertEqual(tree_hashes(created.directory), before)
 
     def test_runtime_distinguishes_local_external_pid_reuse_and_interruption(self):
         with TemporaryDirectory() as directory:

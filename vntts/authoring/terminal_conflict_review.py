@@ -37,6 +37,7 @@ from vntts.authoring.bulk_generation import (
     process_is_alive,
     process_started_at,
 )
+from vntts.authoring.generation_lease import is_process_id
 from vntts.authoring.publication import (
     AtomicPublicationError,
     no_replace_destination,
@@ -1634,8 +1635,7 @@ def _is_stored_progress_lease(value: object) -> TypeGuard[_StoredProgressLease]:
         and value.get("schema") == PROGRESS_LEASE_SCHEMA
         and type(value.get("schema_version")) is int
         and value.get("schema_version") == PROGRESS_LEASE_VERSION
-        and isinstance(value.get("pid"), int)
-        and value["pid"] > 0
+        and is_process_id(value.get("pid"))
         and isinstance(value.get("hostname"), str)
         and bool(value["hostname"])
         and isinstance(value.get("lease_id"), str)

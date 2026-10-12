@@ -45,6 +45,7 @@ from vntts.authoring.failure_repair import (
 from vntts.authoring.generation_lease import (
     LEASE_SCHEMA,
     LEASE_VERSION,
+    is_process_id,
     process_is_alive,
     process_started_at,
 )
@@ -1817,7 +1818,7 @@ def _leased_runtime_status(
     ):
         return AuthoringRuntimeStatus.BLOCKED
     pid = lease.get("pid")
-    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+    if not is_process_id(pid):
         return AuthoringRuntimeStatus.BLOCKED
     if lease.get("hostname") not in {None, socket.gethostname()}:
         return AuthoringRuntimeStatus.RUNNING_EXTERNAL

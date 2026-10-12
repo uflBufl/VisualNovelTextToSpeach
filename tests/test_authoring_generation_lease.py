@@ -1,13 +1,15 @@
 import hashlib
 import json
 import os
+import socket
 import stat
 import subprocess
 import sys
 import unittest
+from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import psutil
 
@@ -17,12 +19,180 @@ from vntts.authoring.generation_lease import (
     BulkGenerationError,
     GenerationLease,
     inspect_process_status,
+    is_native_process_id,
+    is_process_id,
     process_is_alive,
     process_started_at,
 )
 
 
+class LegacyPid:
+    def __int__(self):
+        return 123
+
+
 class ProcessInspectionTests(unittest.TestCase):
+    def test_portable_and_native_pid_rules_reject_coercion_and_preserve_platform_bounds(
+        self,
+    ):
+        for value in (1, 0x7FFFFFFF, 0xFFFFFFFF):
+            self.assertTrue(is_process_id(value))
+        for value in (True, False, 0, -1, 0x100000000, 42.0, "42", None, LegacyPid()):
+            with self.subTest(value=value):
+                self.assertFalse(is_process_id(value))
+        for platform, maximum in (("darwin", 0x7FFFFFFF), ("win32", 0xFFFFFFFF)):
+            with self.subTest(platform=platform), patch("sys.platform", platform):
+                self.assertTrue(is_native_process_id(maximum))
+                self.assertFalse(is_native_process_id(maximum + 1))
+                self.assertFalse(is_native_process_id(True))
+
+    def test_invalid_native_pids_never_reach_any_process_lookup(self):
+        cases = [
+            (platform, value)
+            for platform, maximum in (("darwin", 0x7FFFFFFF), ("win32", 0xFFFFFFFF))
+            for value in (
+                True,
+                False,
+                0,
+                -1,
+                maximum + 1,
+                10**100,
+                float("nan"),
+                float("inf"),
+                float("-inf"),
+                Decimal("Infinity"),
+                "not-a-pid",
+                b"nan",
+                None,
+                object(),
+            )
+        ]
+        for platform, value in cases:
+            with (
+                self.subTest(platform=platform, value=value),
+                patch("sys.platform", platform),
+                patch.object(lease_module.os, "kill") as kill,
+                patch.object(lease_module, "_inspect_windows_process") as windows,
+                patch.object(lease_module.subprocess, "run") as ps,
+                patch("psutil.Process") as psutil_process,
+            ):
+                self.assertEqual(inspect_process_status(value), "unknown")
+                self.assertTrue(process_is_alive(value))
+                self.assertIsNone(process_started_at(value))
+                kill.assert_not_called()
+                windows.assert_not_called()
+                ps.assert_not_called()
+                psutil_process.assert_not_called()
+
+    def test_native_probes_keep_legacy_pid_normalization_and_maximum_values(self):
+        cases = [
+            (platform, value, expected)
+            for platform, maximum in (("darwin", 0x7FFFFFFF), ("win32", 0xFFFFFFFF))
+            for value, expected in (
+                (1, 1),
+                (maximum, maximum),
+                (str(maximum), maximum),
+                ("00123", 123),
+                (b"123", 123),
+                (bytearray(b"123"), 123),
+                (123.9, 123),
+                (Decimal("123.9"), 123),
+                (LegacyPid(), 123),
+            )
+        ]
+        for platform, value, expected in cases:
+            with (
+                self.subTest(platform=platform, value=value),
+                patch("sys.platform", platform),
+                patch.object(lease_module.os, "kill") as kill,
+                patch.object(
+                    lease_module, "_inspect_windows_process", return_value="live"
+                ) as windows,
+                patch.object(
+                    lease_module.subprocess,
+                    "run",
+                    return_value=Mock(stdout="start identity\n"),
+                ) as ps,
+            ):
+                self.assertEqual(inspect_process_status(value), "live")
+                self.assertEqual(process_started_at(value), "start identity")
+                self.assertEqual(
+                    kill.call_args_list,
+                    {"darwin": [call(expected, 0)], "win32": []}[platform],
+                )
+                self.assertEqual(
+                    windows.call_args_list,
+                    {"darwin": [], "win32": [call(expected)]}[platform],
+                )
+                self.assertEqual(
+                    ps.call_args.args[0], ("ps", "-o", "lstart=", "-p", str(expected))
+                )
+
+    def test_malformed_generation_pid_blocks_without_recovery_or_lookup(self):
+        with TemporaryDirectory() as directory:
+            output = Path(directory)
+            path = output / ".generation-lease.json"
+            guard = path.with_suffix(".guard")
+            guard.touch()
+            for pid in (True, False, 0, -1, 42.0, "42", None, 0x100000000, 10**100):
+                payload = (
+                    json.dumps(
+                        {
+                            "schema": lease_module.LEASE_SCHEMA,
+                            "schema_version": lease_module.LEASE_VERSION,
+                            "queue_sha256": "1" * 64,
+                            "pid": pid,
+                        },
+                        indent=2,
+                    ).encode()
+                    + b"\n"
+                )
+                path.write_bytes(payload)
+                checker = Mock(return_value=False)
+                lease = GenerationLease(output, "1" * 64, process_checker=checker)
+                with (
+                    self.subTest(pid=pid),
+                    patch.object(lease_module, "process_started_at") as started,
+                    self.assertRaisesRegex(
+                        BulkGenerationError, "Unrecognized generation lease"
+                    ),
+                ):
+                    lease.__enter__()
+                checker.assert_not_called()
+                started.assert_not_called()
+                self.assertIsNone(lease.document)
+                self.assertEqual(path.read_bytes(), payload)
+                self.assertEqual(set(output.iterdir()), {path, guard})
+
+    def test_foreign_windows_dword_generation_lease_stays_recognized_and_blocks(self):
+        with TemporaryDirectory() as directory:
+            output = Path(directory)
+            path = output / ".generation-lease.json"
+            payload = json.dumps(
+                {
+                    "schema": lease_module.LEASE_SCHEMA,
+                    "schema_version": lease_module.LEASE_VERSION,
+                    "queue_sha256": "1" * 64,
+                    "pid": 0xFFFFFFFF,
+                    "hostname": "foreign-" + socket.gethostname(),
+                }
+            ).encode()
+            path.write_bytes(payload)
+            checker = Mock(return_value=False)
+            lease = GenerationLease(output, "1" * 64, process_checker=checker)
+            with (
+                patch("sys.platform", "darwin"),
+                patch.object(lease_module, "process_started_at") as started,
+                self.assertRaisesRegex(
+                    BulkGenerationError, "Another generation process is active"
+                ),
+            ):
+                lease.__enter__()
+            checker.assert_not_called()
+            started.assert_not_called()
+            self.assertEqual(path.read_bytes(), payload)
+            self.assertFalse((output / "interrupted").exists())
+
     def test_windows_start_identity_survives_missing_ps(self):
         with (
             patch("vntts.authoring.generation_lease.sys.platform", "win32"),
