@@ -10,6 +10,7 @@ from unittest.mock import ANY, Mock, call, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from durable_file import atomic_write_bytes  # noqa: E402
 from PySide6.QtCore import (  # noqa: E402
     QCoreApplication,
     QEvent,
@@ -44,6 +45,7 @@ from vntts.controller import AppController, LiveSequenceStatus  # noqa: E402
 from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
 from vntts.generated_audio import AudioRouteTrace  # noqa: E402
 from vntts.ocr import DialogRegion  # noqa: E402
+from vntts.ocr_corrections import OCRCorrectionStore  # noqa: E402
 from vntts.onboarding import DiagnosticResult  # noqa: E402
 from vntts.pregeneration_activation import OfflinePackActivationResult  # noqa: E402
 from vntts.pregeneration_pack import OfflinePackResult  # noqa: E402
@@ -5661,6 +5663,76 @@ class TrayApplicationTest(unittest.TestCase):
                         tray.settings.updated(compact_controls=True)
                     )
             self.assertEqual(path.read_bytes(), original)
+
+    def test_settings_replacement_while_saving_requires_reload_and_preserves_foreign_preferences(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "settings.json"
+            original = AppSettings()
+            original.save(path)
+            foreign_settings = original.updated(
+                game_window_title="Foreign game", output_volume_percent=42
+            )
+            replacement = root / "external-settings.json"
+            foreign_settings.save(replacement)
+            foreign = replacement.read_bytes()
+            with patch.dict(os.environ, {"VNTTS_SETTINGS_FILE": str(path)}):
+                tray = TrayApplication(
+                    self.application,
+                    original,
+                    controller_factory=Mock(return_value=Mock()),
+                    profile_store=GameProfileStore(root / "profiles.json"),
+                    correction_store=OCRCorrectionStore(root / "ocr.json"),
+                )
+                self.addCleanup(tray.shutdown)
+                revision, last_saved = (
+                    tray._settings_revision,
+                    tray._last_saved_settings,
+                )
+
+                def replace_after_write(destination, payload):
+                    result = atomic_write_bytes(destination, payload)
+                    if Path(destination) == path:
+                        replacement.replace(path)
+                    return result
+
+                with (
+                    patch(
+                        "vntts.versioned_json.atomic_write_bytes",
+                        side_effect=replace_after_write,
+                    ) as write,
+                    self.assertRaisesRegex(OSError, "changed while saving"),
+                ):
+                    tray._save_settings_candidate(
+                        original.updated(compact_controls=True)
+                    )
+                write.assert_called_once()
+                self.assertEqual(tray.settings, original)
+                self.assertEqual(tray._settings_revision, revision)
+                self.assertIs(tray._last_saved_settings, last_saved)
+                self.assertEqual(path.read_bytes(), foreign)
+                with self.assertRaisesRegex(OSError, "changed on disk"):
+                    tray._save_settings_candidate(
+                        original.updated(compact_controls=True)
+                    )
+                self.assertEqual(path.read_bytes(), foreign)
+                tray.shutdown()
+
+                reloaded = TrayApplication(
+                    self.application,
+                    load_app_settings(path, environment={}),
+                    controller_factory=Mock(return_value=Mock()),
+                    profile_store=GameProfileStore(root / "profiles.json"),
+                    correction_store=OCRCorrectionStore(root / "ocr.json"),
+                )
+                self.addCleanup(reloaded.shutdown)
+                recovered = foreign_settings.updated(compact_controls=True)
+                reloaded._save_settings_candidate(recovered)
+                self.assertEqual(reloaded._last_saved_settings, recovered)
+                self.assertEqual(load_app_settings(path, environment={}), recovered)
+                reloaded.shutdown()
 
     def test_second_application_cannot_replace_newer_settings(self):
         with TemporaryDirectory() as directory:

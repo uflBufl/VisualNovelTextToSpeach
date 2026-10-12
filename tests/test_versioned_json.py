@@ -5,15 +5,136 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from durable_file import atomic_write_bytes, atomic_write_json
+
+from vntts import versioned_json
 from vntts.versioned_json import (
     load_versioned_json,
     read_versioned_json,
     read_versioned_json_snapshot,
     write_versioned_json,
+    write_versioned_json_if_unchanged,
 )
 
 
 class VersionedJsonTest(unittest.TestCase):
+    def test_writers_preserve_the_existing_json_bytes(self):
+        documents = (
+            {"value": "Zażółć 🐈", "nested": {"b": 2, "a": [None, True, 1.25]}},
+            {"schema_version": 1, "value": ("first", "second")},
+            {"schema_version": 1.0, "value": "equivalent supplied version"},
+            {},
+        )
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            for number, fields in enumerate(documents):
+                with self.subTest(fields=fields):
+                    expected = root / f"expected-{number}.json"
+                    atomic_write_json(expected, dict(fields, schema_version=1))
+                    before = dict(fields)
+                    direct, guarded = (
+                        root / f"direct-{number}.json",
+                        root / f"guarded-{number}.json",
+                    )
+                    self.assertEqual(write_versioned_json(direct, 1, fields), direct)
+                    revision = write_versioned_json_if_unchanged(
+                        guarded, 1, fields, revision=None, document_name="test document"
+                    )
+                    self.assertEqual(direct.read_bytes(), expected.read_bytes())
+                    self.assertEqual(guarded.read_bytes(), expected.read_bytes())
+                    self.assertEqual(revision, sha256(expected.read_bytes()).digest())
+                    self.assertEqual(fields, before)
+
+    def test_guarded_writer_refuses_replaced_or_missing_published_document(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            foreign = b'{"schema_version":1,"value":"external"}\n'
+            for disappeared in (False, True):
+                with self.subTest(disappeared=disappeared):
+                    path = root / f"document-{disappeared}.json"
+                    write_versioned_json(path, 1, {"value": "before"})
+                    previous = versioned_json.file_revision(path)
+
+                    def replace_after_publication(destination, raw):
+                        result = atomic_write_bytes(destination, raw)
+                        if disappeared:
+                            path.unlink()
+                        else:
+                            path.write_bytes(foreign)
+                        return result
+
+                    with (
+                        patch.object(
+                            versioned_json,
+                            "atomic_write_bytes",
+                            side_effect=replace_after_publication,
+                        ) as publish,
+                        self.assertRaisesRegex(
+                            OSError,
+                            "disappeared after saving"
+                            if disappeared
+                            else "changed while saving",
+                        ),
+                    ):
+                        write_versioned_json_if_unchanged(
+                            path,
+                            1,
+                            {"value": "candidate"},
+                            revision=previous,
+                            document_name="test document",
+                        )
+                    publish.assert_called_once()
+                    self.assertEqual(path.exists(), not disappeared)
+                    if not disappeared:
+                        self.assertEqual(path.read_bytes(), foreign)
+                    fresh = versioned_json.file_revision(path)
+                    revision = write_versioned_json_if_unchanged(
+                        path,
+                        1,
+                        {"value": "recovered"},
+                        revision=fresh,
+                        document_name="test document",
+                    )
+                    self.assertEqual(revision, sha256(path.read_bytes()).digest())
+
+    def test_guarded_writer_keeps_its_receipt_when_replaced_after_verification(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "document.json"
+            write_versioned_json(path, 1, {"value": "before"})
+            previous = versioned_json.file_revision(path)
+            foreign = b'{"schema_version":1,"value":"external"}\n'
+            native_revision = versioned_json.file_revision
+            revisions = []
+
+            def replace_after_read(source):
+                revision = native_revision(source)
+                revisions.append(revision)
+                if len(revisions) == 2:
+                    path.write_bytes(foreign)
+                return revision
+
+            with patch.object(
+                versioned_json, "file_revision", side_effect=replace_after_read
+            ):
+                owned = write_versioned_json_if_unchanged(
+                    path,
+                    1,
+                    {"value": "candidate"},
+                    revision=previous,
+                    document_name="test document",
+                )
+            self.assertEqual(owned, revisions[1])
+            self.assertNotEqual(owned, sha256(foreign).digest())
+            with self.assertRaisesRegex(OSError, "changed on disk"):
+                write_versioned_json_if_unchanged(
+                    path,
+                    1,
+                    {"value": "next candidate"},
+                    revision=owned,
+                    document_name="test document",
+                )
+            self.assertEqual(path.read_bytes(), foreign)
+
     def test_snapshot_digest_is_for_bytes_read_before_document_replacement(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "document.json"
@@ -262,7 +383,7 @@ class VersionedJsonTest(unittest.TestCase):
 
             with (
                 patch(
-                    "vntts.versioned_json.atomic_write_json",
+                    "vntts.versioned_json.atomic_write_bytes",
                     side_effect=OSError("blocked"),
                 ),
                 self.assertRaisesRegex(OSError, "blocked"),

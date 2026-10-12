@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from durable_file import atomic_write_bytes  # noqa: E402
 from PySide6.QtCore import Qt, QTimer  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton  # noqa: E402
@@ -112,16 +113,77 @@ class GameProfileStoreTest(unittest.TestCase):
                 store = GameProfileStore(Path(directory) / "profiles.json")
                 profile = store.create("Game", AppSettings())
                 before = list(store.profiles)
+                revision = store._revision
+                disk_error = OSError("disk full")
                 with (
                     patch(
-                        "vntts.versioned_json.write_versioned_json",
-                        side_effect=OSError("disk full"),
-                    ),
-                    self.assertRaisesRegex(OSError, "disk full"),
+                        "vntts.versioned_json.atomic_write_bytes",
+                        side_effect=disk_error,
+                    ) as write,
+                    self.assertRaisesRegex(OSError, "disk full") as raised,
                 ):
                     operation(store, profile)
 
+                self.assertIs(raised.exception, disk_error)
+                write.assert_called_once()
+                self.assertEqual(store._revision, revision)
                 self.assertEqual(store.profiles, before)
+
+    def test_profile_replacement_while_saving_preserves_external_data_until_reload(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "profiles.json"
+            store = GameProfileStore(path)
+            profile = store.create(
+                "Original", AppSettings(), region=DialogRegion(0.1, 0.6, 0.8, 0.3)
+            )
+            revision = store._revision
+            external = GameProfile.from_settings(
+                "External",
+                AppSettings(game_window_title="Foreign"),
+                region=profile.dialog_region,
+            )
+            foreign = (
+                json.dumps(
+                    {
+                        "schema_version": profiles_schema_version,
+                        "profiles": [profile.to_mapping(), external.to_mapping()],
+                    },
+                    indent=2,
+                ).encode()
+                + b"\n"
+            )
+            replacement = path.with_name("external.json")
+            replacement.write_bytes(foreign)
+
+            def replace_after_write(destination, payload):
+                result = atomic_write_bytes(destination, payload)
+                if Path(destination) == path:
+                    replacement.replace(path)
+                return result
+
+            with (
+                patch(
+                    "vntts.versioned_json.atomic_write_bytes",
+                    side_effect=replace_after_write,
+                ) as write,
+                self.assertRaisesRegex(OSError, "changed while saving"),
+            ):
+                store.rename(profile.id, "Mine")
+            write.assert_called_once()
+            self.assertEqual(store.profiles, [profile])
+            self.assertEqual(store._revision, revision)
+            self.assertEqual(path.read_bytes(), foreign)
+            with self.assertRaisesRegex(OSError, "changed on disk"):
+                store.rename(profile.id, "Retry")
+            self.assertEqual(path.read_bytes(), foreign)
+
+            reloaded = GameProfileStore.load(path)
+            reloaded.rename(profile.id, "Recovered")
+            saved = GameProfileStore.load(path)
+            self.assertEqual(saved.get(profile.id).name, "Recovered")
+            self.assertEqual(saved.get(external.id), external)
 
     def test_stale_store_cannot_overwrite_another_store(self):
         with TemporaryDirectory() as directory:
@@ -188,14 +250,17 @@ class GameProfileStoreTest(unittest.TestCase):
             )
             store.remove(removed.id)
             before = path.read_bytes()
+            disk_error = OSError("disk full")
             with (
                 patch(
-                    "vntts.versioned_json.write_versioned_json",
-                    side_effect=OSError("disk full"),
-                ),
-                self.assertRaisesRegex(OSError, "disk full"),
+                    "vntts.versioned_json.atomic_write_bytes",
+                    side_effect=disk_error,
+                ) as write,
+                self.assertRaisesRegex(OSError, "disk full") as raised,
             ):
                 store.restore(removed)
+            self.assertIs(raised.exception, disk_error)
+            write.assert_called_once()
             self.assertEqual(store.profiles, [remaining])
             self.assertEqual(path.read_bytes(), before)
 
