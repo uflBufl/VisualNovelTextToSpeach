@@ -149,6 +149,11 @@ def _positive_count(value: object, name: str) -> int:
     return count
 
 
+def _recheck_interval_milliseconds(seconds: float) -> int | None:
+    milliseconds = optional_finite_number(seconds * 1000)
+    return round(milliseconds) if milliseconds is not None else None
+
+
 class AdaptiveSpeechBackpressure:
     """Temporarily serialize speech after an output underrun."""
 
@@ -1040,8 +1045,8 @@ class LiveDialogReader:
                             visible=True,
                             focused=True,
                             owner=self.stable_frame_owner(),
-                            recheck_interval_ms=round(
-                                self.frame_recheck_interval_seconds * 1000
+                            recheck_interval_ms=_recheck_interval_milliseconds(
+                                self.frame_recheck_interval_seconds
                             ),
                         )
                 else:

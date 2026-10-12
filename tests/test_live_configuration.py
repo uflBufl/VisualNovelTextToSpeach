@@ -6,6 +6,7 @@ from concurrent.futures import Future, TimeoutError
 from threading import TIMEOUT_MAX
 from unittest.mock import Mock
 
+from tests.test_live import AutoAdvanceFakeFrameHarness
 from vntts.live import (
     AdaptiveCapturePolicy,
     AdaptiveSpeechBackpressure,
@@ -261,3 +262,20 @@ class LiveConfigurationTest(unittest.TestCase):
         policy.assert_not_called()
         self.assertIs(reader.tracker_options, tracker_options)
         self.assertIs(reader.adaptive_options, policy_options)
+
+    def test_unrepresentable_recheck_telemetry_does_not_prevent_ocr(self):
+        harness = AutoAdvanceFakeFrameHarness(
+            frame_recheck_required=lambda: True,
+            frame_recheck_interval_seconds=sys.float_info.max,
+        )
+        harness.start()
+        self.addCleanup(harness.stop)
+        harness.push("Alice", "hello", background="first")
+        self.assertEqual(len(harness.recognized_frames), 1)
+        self.assertEqual(harness.errors, [])
+        details = next(
+            details
+            for stage, _generation, _at, details in harness.pipeline_events
+            if stage == "canonical-prefix-visual-recheck"
+        )
+        self.assertIsNone(details["recheck_interval_ms"])
