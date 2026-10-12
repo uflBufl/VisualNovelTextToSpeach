@@ -175,7 +175,7 @@ def fixture(
         None,
         audio_event_omission_queue_ids=omission_queue_ids,
     )
-    output = root / f"generation-output-{identity[:16]}"
+    output = generation_input.output_directory
     renderer = SyntheticRenderer(
         [SynthesisCompletion.COMPLETE, SynthesisCompletion.LIMITED]
     )
@@ -468,9 +468,7 @@ class InProcessPocketGenerator(OfflineGenerationWorker):
         queue_ids: object = None,
     ) -> OfflineGenerationResult:
         assert queue_ids is None or isinstance(queue_ids, Sequence)
-        output = generation_input.directory.parent / (
-            f"generation-output-{generation_input.identity[:16]}"
-        )
+        output = generation_input.output_directory
         renderer = SyntheticRenderer(
             [
                 SynthesisCompletion.COMPLETE
@@ -517,9 +515,7 @@ class InterruptingPocketGenerator(InProcessPocketGenerator):
         queue_ids: object = None,
     ) -> OfflineGenerationResult:
         assert queue_ids is None or isinstance(queue_ids, Sequence)
-        output = generation_input.directory.parent / (
-            f"generation-output-{generation_input.identity[:16]}"
-        )
+        output = generation_input.output_directory
         cancel_now = self.interrupt and bool(self.rendered_texts)
         renderer = SyntheticRenderer(
             [

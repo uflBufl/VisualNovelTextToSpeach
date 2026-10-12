@@ -538,11 +538,7 @@ def estimate_generation_resources(
             raise PregenerationSetupError(
                 "Generation queue changed before estimating storage"
             )
-        state_path = (
-            generation_input.directory.parent
-            / f"generation-output-{generation_input.identity[:16]}"
-            / "generation-state.json"
-        )
+        state_path = generation_input.output_directory / "generation-state.json"
         state = (
             load_generation_state_from_snapshot(state_path, queue, queue_sha256)
             if state_path.is_file()

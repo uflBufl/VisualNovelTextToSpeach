@@ -104,6 +104,10 @@ class PregenerationInput:
     audio_event_omission_queue_ids: tuple[str, ...] = ()
     source_audio_semantic_evidence: Path | None = None
 
+    @property
+    def output_directory(self) -> Path:
+        return Path(self.directory).parent / f"generation-output-{self.identity[:16]}"
+
 
 class PregenerationInputStore:
     def __init__(self, job_store: PregenerationJobStore) -> None:

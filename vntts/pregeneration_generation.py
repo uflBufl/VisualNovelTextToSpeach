@@ -494,9 +494,7 @@ def _megabytes(value: int) -> int:
 def _generation_output(generation_input: PregenerationInput) -> Path:
     if not isinstance(generation_input, PregenerationInput):
         raise OfflineGenerationError("Offline generation input is invalid")
-    return Path(generation_input.directory).parent / (
-        f"generation-output-{generation_input.identity[:16]}"
-    )
+    return generation_input.output_directory
 
 
 def runtime_progress_manifest_path(generation_input: PregenerationInput) -> Path:

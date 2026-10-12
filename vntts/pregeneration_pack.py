@@ -79,6 +79,7 @@ from vntts.pregeneration_contract import (
 )
 from vntts.pregeneration_generation import (
     _generation_output,
+    validate_offline_generation_result,
 )
 from vntts.pregeneration_queue import (
     PregenerationInput,
@@ -882,19 +883,15 @@ def _load_terminal_generation(
 
 
 def _validate_inputs(
-    job: object, generation_input: object, generation_result: object
+    job: PregenerationJob,
+    generation_input: PregenerationInput,
+    generation_result: OfflineGenerationResult,
 ) -> None:
     if not isinstance(job, PregenerationJob):
         raise OfflinePackError("Offline preparation job is invalid")
-    if not isinstance(generation_input, PregenerationInput):
-        raise OfflinePackError("Offline generation input is invalid")
-    if not isinstance(generation_result, OfflineGenerationResult):
-        raise OfflinePackError("Offline generation result is invalid")
-    expected_output = generation_input.directory.parent / (
-        f"generation-output-{generation_input.identity[:16]}"
+    validate_offline_generation_result(
+        generation_input, generation_result, "pack", error_type=OfflinePackError
     )
-    if generation_result.output.resolve() != expected_output.resolve():
-        raise OfflinePackError("Offline pack output identity changed")
 
 
 def _require_terminal_generation(

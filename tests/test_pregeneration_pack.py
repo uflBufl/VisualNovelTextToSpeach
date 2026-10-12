@@ -49,6 +49,7 @@ from vntts.pregeneration_pack import (
     _portable_voice_entries,
     _stage_live_sequence,
     _story_audio_pack,
+    _validate_inputs,
     _write_cumulative_routes,
     inspect_story_audio,
     load_saved_pack,
@@ -79,6 +80,36 @@ class SavedStoryPackSelectionTest(unittest.TestCase):
 
 
 class OfflinePackPublisherTest(unittest.TestCase):
+    def test_publication_reuses_the_generation_result_identity_contract(self):
+        with TemporaryDirectory() as directory:
+            job, prepared, generated, _items = fixture(Path(directory))
+            expected = (
+                prepared.directory.parent
+                / f"generation-output-{prepared.identity[:16]}"
+            )
+            self.assertEqual(prepared.output_directory, expected)
+            self.assertEqual(generated.output, expected)
+            _validate_inputs(job, prepared, generated)
+            cases = (
+                ((None, prepared, generated), "Offline preparation job is invalid"),
+                ((job, None, generated), "Offline generation input is invalid"),
+                ((job, prepared, None), "Offline generation result is invalid"),
+                (
+                    (
+                        job,
+                        prepared,
+                        replace(generated, output=expected.parent / "foreign-output"),
+                    ),
+                    "Offline pack output identity changed",
+                ),
+            )
+            for values, message in cases:
+                with (
+                    self.subTest(message=message),
+                    self.assertRaisesRegex(OfflinePackError, message),
+                ):
+                    _validate_inputs(*values)
+
     @unittest.skipUnless(
         hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
     )
