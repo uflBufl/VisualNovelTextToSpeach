@@ -169,6 +169,27 @@ class PregenerationSetupTest(unittest.TestCase):
             self.assertEqual(first.selections, rebuilt.selections)
             self.assertEqual(second.provider_id, "second")
 
+    def test_saved_job_queries_skip_damage_and_read_current_sources(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            story = write_story_index(root / "content")
+            content = inspect_story_index(story)
+            store = PregenerationJobStore(root / "jobs")
+            self.assertEqual(store.jobs_for_content(content), ())
+            self.assertEqual(store.source_story_indexes(), ())
+            first = store.create_or_resume(content, ("main-1",))
+            store.create_or_resume(content, ("rhiannon",))
+            damaged = store.path_for("d" * 24)
+            damaged.parent.mkdir()
+            damaged.write_text("invalid job", encoding="utf-8")
+            self.assertEqual(len(store.jobs_for_content(content)), 2)
+            self.assertEqual(store.source_story_indexes(), (story,))
+            store.mark_prepared(first)
+            self.assertEqual(store.latest_for_content(content).status, "prepared")
+            story.unlink()
+            self.assertEqual(store.source_story_indexes(), ())
+            self.assertEqual(len(store.jobs_for_content(content)), 2)
+
     def test_story_records_are_grouped_in_one_pass(self):
         class CountingRecords(tuple):
             iterations = 0

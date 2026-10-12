@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -719,32 +719,24 @@ class PregenerationJobStore:
             default=None,
         )
 
+    def _saved_jobs(self) -> Iterator[PregenerationJob]:
+        if self.root.is_dir():
+            for path in self.root.glob("*/job.json"):
+                try:
+                    yield self.load(path.parent.name)
+                except PregenerationSetupError:
+                    continue
+
     def jobs_for_content(self, content: GameContent) -> tuple[PregenerationJob, ...]:
-        if not self.root.is_dir():
-            return ()
-        matches: list[PregenerationJob] = []
-        for path in self.root.glob("*/job.json"):
-            try:
-                job = self.load(path.parent.name)
-            except PregenerationSetupError:
-                continue
-            if job.story_index_sha256 == content.story_index_sha256:
-                matches.append(job)
-        return tuple(matches)
+        return tuple(
+            job
+            for job in self._saved_jobs()
+            if job.story_index_sha256 == content.story_index_sha256
+        )
 
     def source_story_indexes(self) -> tuple[Path, ...]:
-        if not self.root.is_dir():
-            return ()
-        sources: list[Path] = []
-        for path in self.root.glob("*/job.json"):
-            try:
-                job = self.load(path.parent.name)
-            except PregenerationSetupError:
-                continue
-            source = Path(job.story_index).expanduser()
-            if source.is_file():
-                sources.append(source)
-        return tuple(dict.fromkeys(sources))
+        sources = (Path(job.story_index).expanduser() for job in self._saved_jobs())
+        return tuple(dict.fromkeys(source for source in sources if source.is_file()))
 
     def prepared_story_ids(self, content: GameContent) -> frozenset[str]:
         return frozenset(
