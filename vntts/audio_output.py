@@ -20,6 +20,13 @@ from vntts.playback import (
 AudioData: TypeAlias = NDArray[np.float32]
 
 
+def sanitize_playback_audio(samples: AudioData, volume: float) -> None:
+    """Sanitize, scale and clip an owned playback buffer in place."""
+    np.nan_to_num(samples, copy=False)
+    samples *= volume
+    np.clip(samples, -0.95, 0.95, out=samples)
+
+
 class StreamingAudioStream(Protocol):
     def write(self, audio: object) -> object: ...
 
@@ -513,5 +520,6 @@ __all__ = [
     "SynchronousPcmPlaybackMixin",
     "match_output_sample_rate",
     "resolve_audio_output",
+    "sanitize_playback_audio",
     "write_pcm_chunks",
 ]

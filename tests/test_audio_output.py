@@ -5,8 +5,67 @@ import numpy as np
 from sounddevice import PortAudioError
 
 from vntts.audio_lifecycle import audio_lifecycle_context
-from vntts.audio_output import match_output_sample_rate, resolve_audio_output
+from vntts.audio_output import (
+    match_output_sample_rate,
+    resolve_audio_output,
+    sanitize_playback_audio,
+)
 from vntts.support import configure_audio_lifecycle_log
+
+
+class PlaybackSanitizationTest(unittest.TestCase):
+    def test_shared_policy_preserves_backend_shapes_and_input_buffers(self):
+        from vntts.speech_backend import (
+            MossTTSVoiceRouterBackend,
+            PocketTTSVoiceRouterBackend,
+        )
+        from vntts.speech_worker import IsolatedSpeechBackend
+
+        values = np.array([np.nan, np.inf, -np.inf, -2, -0.4, 0, 0.3, 2])
+        for backend_type in (
+            PocketTTSVoiceRouterBackend,
+            MossTTSVoiceRouterBackend,
+            IsolatedSpeechBackend,
+        ):
+            backend = object.__new__(backend_type)
+            for volume in (0.0, 0.25, 1.0):
+                backend.volume = volume
+                for source in (
+                    values,
+                    values.reshape(4, 2),
+                    np.asfortranarray(values.reshape(4, 2)),
+                    values[::-2],
+                    np.empty((0, 2)),
+                    np.array(np.nan),
+                ):
+                    with self.subTest(
+                        backend=backend_type.__name__, volume=volume, shape=source.shape
+                    ):
+                        source.setflags(write=False)
+                        before = source.copy()
+                        expected = np.asarray(source, dtype=np.float32).copy()
+                        expected[np.isnan(expected)] = 0
+                        expected[np.isposinf(expected)] = np.finfo(np.float32).max
+                        expected[np.isneginf(expected)] = np.finfo(np.float32).min
+                        expected = np.clip(expected * volume, -0.95, 0.95)
+                        if backend_type is PocketTTSVoiceRouterBackend:
+                            expected = expected.reshape(-1)
+                        actual = backend._prepare_audio(source)
+                        np.testing.assert_array_equal(actual, expected)
+                        np.testing.assert_array_equal(source, before)
+                        self.assertFalse(np.shares_memory(actual, source))
+                        self.assertTrue(actual.flags.writeable)
+                        self.assertEqual(actual.dtype, np.float32)
+                        self.assertEqual(actual.shape, expected.shape)
+
+    def test_sanitization_updates_the_owned_buffer_in_place(self):
+        samples = np.array([np.nan, -2, -0.5, 0, 0.5, 2], dtype=np.float32)
+        pointer = samples.__array_interface__["data"][0]
+        self.assertIsNone(sanitize_playback_audio(samples, 0.5))
+        self.assertEqual(samples.__array_interface__["data"][0], pointer)
+        np.testing.assert_array_equal(
+            samples, np.array([0, -0.95, -0.25, 0, 0.25, 0.95], dtype=np.float32)
+        )
 
 
 class FakeStream:

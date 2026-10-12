@@ -25,7 +25,12 @@ from typing import TYPE_CHECKING, Protocol, TypeAlias, TypeGuard
 import numpy as np
 from numpy.typing import NDArray
 
-from vntts.audio_output import AudioOutput, StreamingAudioStream, resolve_audio_output
+from vntts.audio_output import (
+    AudioOutput,
+    StreamingAudioStream,
+    resolve_audio_output,
+    sanitize_playback_audio,
+)
 from vntts.cleanup import attempt_cleanup
 from vntts.json_types import is_json_object
 from vntts.moss_delay_backend import MossTTSDelayVoiceRouterBackend
@@ -1648,9 +1653,7 @@ class IsolatedSpeechBackend:
 
     def _prepare_audio(self, audio: object) -> NDArray[np.float32]:
         prepared = np.asarray(audio, dtype=np.float32).copy()
-        np.nan_to_num(prepared, copy=False)
-        prepared *= self.volume
-        np.clip(prepared, -0.95, 0.95, out=prepared)
+        sanitize_playback_audio(prepared, self.volume)
         return prepared
 
 

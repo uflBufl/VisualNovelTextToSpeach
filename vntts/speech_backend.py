@@ -21,6 +21,7 @@ from vntts.audio_output import (
     StreamingAudioStream,
     SynchronousPcmPlaybackMixin,
     resolve_audio_output,
+    sanitize_playback_audio,
 )
 from vntts.playback import (
     PlaybackOutcome,
@@ -1690,9 +1691,7 @@ class PocketTTSVoiceRouterBackend:
 
     def _prepare_audio(self, audio: object) -> AudioArray:
         prepared = np.asarray(audio, dtype=np.float32).reshape(-1).copy()
-        np.nan_to_num(prepared, copy=False)
-        prepared *= self.volume
-        np.clip(prepared, -0.95, 0.95, out=prepared)
+        sanitize_playback_audio(prepared, self.volume)
         return prepared
 
 
@@ -2612,9 +2611,7 @@ class MossTTSVoiceRouterBackend:
 
     def _prepare_audio(self, audio: AudioArray) -> AudioArray:
         prepared = np.asarray(audio, dtype=np.float32).copy()
-        np.nan_to_num(prepared, copy=False)
-        prepared *= self.volume
-        np.clip(prepared, -0.95, 0.95, out=prepared)
+        sanitize_playback_audio(prepared, self.volume)
         return prepared
 
     def _evaluate_array(self, value: object) -> None:
