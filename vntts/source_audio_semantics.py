@@ -82,10 +82,13 @@ def semantic_text_sha256(text: object) -> str:
 def load_source_audio_semantic_evidence(
     path: str | Path,
     story_index_path: str | Path | StoryIndexDocument | None = None,
+    *,
+    payload: bytes | None = None,
 ) -> SourceAudioSemanticEvidence:
     evidence_path = Path(path).expanduser().resolve()
     try:
-        payload = read_regular_bytes(evidence_path)
+        if payload is None:
+            payload = read_regular_bytes(evidence_path)
         document = decode_json(payload.decode("utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise SourceAudioSemanticEvidenceError(

@@ -3,6 +3,7 @@ import math
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from tests.story_fixtures import write_synthetic_game_pack
 from vntts.source_audio_semantics import (
@@ -14,6 +15,15 @@ from vntts.source_audio_semantics import (
 
 
 class SourceAudioSemanticEvidenceTest(unittest.TestCase):
+    def test_captured_empty_evidence_does_not_reopen_an_available_file(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "source-audio-semantic-evidence.json"
+            path.write_text("replacement must not be read", encoding="utf-8")
+            with patch("vntts.source_audio_semantics.read_regular_bytes") as read:
+                with self.assertRaises(SourceAudioSemanticEvidenceError):
+                    load_source_audio_semantic_evidence(path, payload=b"")
+            read.assert_not_called()
+
     def test_invalid_extra_values_use_domain_error_for_objects_and_files(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -32,6 +32,7 @@ from vntts.authoring.generation_state import (
 )
 from vntts.chapter_voice_preload import (
     _has_authoritative_source_audio,
+    _source_audio_evidence_payload,
     _validated_source_audio_line_ids,
 )
 from vntts.document_identity import is_sha256, sha256_file
@@ -45,7 +46,7 @@ if TYPE_CHECKING:
     from vntts.pregeneration_queue import PregenerationInput
 
 job_schema_version = 1
-story_catalog_schema_version = 6
+story_catalog_schema_version = 7
 story_catalog_minimum_bytes = 8 * 1024 * 1024
 # ponytail: assumes 12 text chars/sec and PCM16 mono 24 kHz; upgrade with measured
 # durations and the selected backend's output format if storage estimates matter.
@@ -206,7 +207,10 @@ class PregenerationJob:
 
 
 def inspect_story_index(
-    path: PathInput, *, provider_id: str = "local-story-index"
+    path: PathInput,
+    *,
+    provider_id: str = "local-story-index",
+    source_audio_evidence_payload: bytes | None = None,
 ) -> GameContent:
     started = perf_counter()
     cpu_started = process_time()
@@ -216,9 +220,12 @@ def inspect_story_index(
     try:
         size = path.stat().st_size
         checksum = sha256_file(path)
+        if source_audio_evidence_payload is None:
+            source_audio_evidence_payload = _source_audio_evidence_payload(path)
+        evidence_sha256 = hashlib.sha256(source_audio_evidence_payload).hexdigest()
         persistent_cache = size >= story_catalog_minimum_bytes
         content = (
-            _load_story_catalog(path, checksum, provider_id)
+            _load_story_catalog(path, checksum, provider_id, evidence_sha256)
             if persistent_cache
             else None
         )
@@ -228,7 +235,9 @@ def inspect_story_index(
             document = _cached_story_index_document(str(path), checksum)
             selections = _story_selections(
                 document,
-                _validated_source_audio_line_ids(path, document),
+                _validated_source_audio_line_ids(
+                    path, document, evidence_payload=source_audio_evidence_payload
+                ),
             )
             if not selections:
                 raise PregenerationSetupError(
@@ -252,7 +261,7 @@ def inspect_story_index(
                 else "miss"
             )
             if persistent_cache:
-                _save_story_catalog(content)
+                _save_story_catalog(content, evidence_sha256)
     except (OSError, StoryIndexError, ValueError) as error:
         raise PregenerationSetupError(f"Story content is invalid: {error}") from error
     from vntts.support import record_background_operation
@@ -282,7 +291,7 @@ def _story_catalog_path(checksum: str) -> Path:
 
 
 def _load_story_catalog(
-    path: Path, checksum: str, provider_id: str
+    path: Path, checksum: str, provider_id: str, evidence_sha256: str
 ) -> GameContent | None:
     catalog = _story_catalog_path(checksum)
     if not catalog.is_file():
@@ -298,11 +307,13 @@ def _load_story_catalog(
             != {
                 "schema_version",
                 "source_story_index_sha256",
+                "source_audio_semantic_evidence_sha256",
                 "game",
                 "game_version",
                 "selections",
             }
             or document["source_story_index_sha256"] != checksum
+            or document["source_audio_semantic_evidence_sha256"] != evidence_sha256
         ):
             raise ValueError("story catalog cache identity changed")
         raw_selections = document["selections"]
@@ -323,7 +334,7 @@ def _load_story_catalog(
         return None
 
 
-def _save_story_catalog(content: GameContent) -> None:
+def _save_story_catalog(content: GameContent, evidence_sha256: str) -> None:
     try:
         catalog = _story_catalog_path(content.story_index_sha256)
         catalog.parent.mkdir(parents=True, exist_ok=True)
@@ -332,6 +343,7 @@ def _save_story_catalog(content: GameContent) -> None:
             story_catalog_schema_version,
             {
                 "source_story_index_sha256": content.story_index_sha256,
+                "source_audio_semantic_evidence_sha256": evidence_sha256,
                 "game": content.game,
                 "game_version": content.game_version,
                 "selections": [asdict(value) for value in content.selections],
@@ -424,9 +436,18 @@ def load_verified_story_index_document(
 
 @lru_cache(maxsize=8)
 def _cached_story_index(
-    path: str, provider_id: str, expected_sha256: str
+    path: str, provider_id: str, expected_sha256: str, evidence_sha256: str
 ) -> GameContent:
-    content = inspect_story_index(path, provider_id=provider_id)
+    evidence_payload = _source_audio_evidence_payload(path)
+    if hashlib.sha256(evidence_payload).hexdigest() != evidence_sha256:
+        raise PregenerationSetupError(
+            "Story audio evidence changed while it was being inspected. Refresh to retry."
+        )
+    content = inspect_story_index(
+        path,
+        provider_id=provider_id,
+        source_audio_evidence_payload=evidence_payload,
+    )
     if content.story_index_sha256 != expected_sha256:
         raise PregenerationSetupError(
             "Story content changed while it was being inspected. Refresh to retry."
@@ -489,6 +510,7 @@ def discover_game_content(
                     str(path),
                     "reverse1999" if path in trusted_game_paths else provider_id,
                     sha256_file(path),
+                    hashlib.sha256(_source_audio_evidence_payload(path)).hexdigest(),
                 )
             )
         except (OSError, PregenerationSetupError) as error:

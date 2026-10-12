@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -23,9 +24,11 @@ from vntts.authoring.generation_manifest import RUNTIME_PROGRESS_MANIFEST_NAME
 from vntts.authoring.generation_state import load_generation_state
 from vntts.chapter_voice_preload import (
     _has_authoritative_source_audio,
+    _source_audio_evidence_payload,
     _validated_source_audio_line_ids,
 )
 from vntts.cleanup import cleanup_on_exit
+from vntts.document_identity import sha256_file
 from vntts.json_types import decode_json
 from vntts.path_safety import read_regular_text
 from vntts.pregeneration_contract import (
@@ -502,18 +505,36 @@ def runtime_progress_manifest_path(generation_input: PregenerationInput) -> Path
     return _generation_output(generation_input) / str(RUNTIME_PROGRESS_MANIFEST_NAME)
 
 
-@lru_cache(maxsize=16)
 def _static_ready_line_ids(
     story_index: Path, story_index_sha256: str
 ) -> tuple[str, ...]:
-    """Return immutable source/non-spoken routes that need no generated WAV."""
+    """Reuse readiness only while both story and optional evidence still match."""
     try:
-        story = load_verified_story_index_document(story_index, story_index_sha256)
+        if sha256_file(story_index) != story_index_sha256:
+            return ()
+        evidence_sha256 = hashlib.sha256(
+            _source_audio_evidence_payload(story_index)
+        ).hexdigest()
+        return _cached_static_ready_line_ids(
+            story_index, story_index_sha256, evidence_sha256
+        )
     except OSError, StoryIndexError, TypeError, ValueError:
         return ()
+
+
+@lru_cache(maxsize=16)
+def _cached_static_ready_line_ids(
+    story_index: Path, story_index_sha256: str, evidence_sha256: str
+) -> tuple[str, ...]:
+    story = load_verified_story_index_document(story_index, story_index_sha256)
+    evidence_payload = _source_audio_evidence_payload(story_index)
+    if hashlib.sha256(evidence_payload).hexdigest() != evidence_sha256:
+        raise ValueError("Story audio evidence changed while it was being read")
     completion = story.metadata.get("source_audio_completion")
     completion_contract = completion if isinstance(completion, str) else None
-    authoritative_line_ids = _validated_source_audio_line_ids(story_index, story)
+    authoritative_line_ids = _validated_source_audio_line_ids(
+        story_index, story, evidence_payload=evidence_payload
+    )
     return tuple(
         record.line_id
         for record in story.records

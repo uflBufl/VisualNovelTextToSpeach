@@ -22,7 +22,7 @@ from vntts_artifacts.story_index import (
 from vntts.cleanup import temporary_directory
 from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import decode_json
-from vntts.path_safety import copy_regular_file, open_regular_text
+from vntts.path_safety import copy_regular_file, open_regular_text, read_regular_bytes
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
     load_source_audio_semantic_evidence,
@@ -923,8 +923,21 @@ def _source_audio_extension(
     )
 
 
+def _source_audio_evidence_payload(path: str | Path) -> bytes:
+    evidence_path = Path(path).expanduser().resolve().parent / (
+        "source-audio-semantic-evidence.json"
+    )
+    try:
+        return read_regular_bytes(evidence_path)
+    except OSError:
+        return b""
+
+
 def _validated_source_audio_line_ids(
-    path: str | Path, document: StoryIndexDocument | None = None
+    path: str | Path,
+    document: StoryIndexDocument | None = None,
+    *,
+    evidence_payload: bytes | None = None,
 ) -> frozenset[str]:
     if document is None:
         return frozenset()
@@ -937,7 +950,9 @@ def _validated_source_audio_line_ids(
         "source-audio-semantic-evidence.json"
     )
     try:
-        load_source_audio_semantic_evidence(evidence_path, document)
+        load_source_audio_semantic_evidence(
+            evidence_path, document, payload=evidence_payload
+        )
     except OSError, SourceAudioSemanticEvidenceError:
         return frozenset()
     return frozenset(

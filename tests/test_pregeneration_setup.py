@@ -47,6 +47,7 @@ from vntts.pregeneration_setup import (  # noqa: E402
     ContentDiscovery,
     PregenerationJobStore,
     PregenerationSetupError,
+    _cached_story_index,
     _cached_story_index_document,
     _is_outdated_reverse1999_index,
     _story_selections,
@@ -168,6 +169,151 @@ class PregenerationSetupTest(unittest.TestCase):
             self.assertEqual(first.selections, second.selections)
             self.assertEqual(first.selections, rebuilt.selections)
             self.assertEqual(second.provider_id, "second")
+
+    def test_story_catalog_caches_follow_current_semantic_evidence(self):
+        for persistent in (False, True):
+            with self.subTest(persistent=persistent), TemporaryDirectory() as directory:
+                root = Path(directory)
+                story = write_story_index(root / "content")
+                evidence = story.parent / "source-audio-semantic-evidence.json"
+                payload = evidence.read_bytes()
+                settings = AppSettings(story_index=str(story))
+                environment = {"R1999_EXTRACTOR_DATA": str(root / "extractor")}
+                _cached_story_index.cache_clear()
+                self.addCleanup(_cached_story_index.cache_clear)
+                with (
+                    patch(
+                        "vntts.pregeneration_setup.get_local_data_directory",
+                        return_value=root / "data",
+                    ),
+                    patch(
+                        "vntts.pregeneration_setup.story_catalog_minimum_bytes",
+                        0 if persistent else 10**9,
+                    ),
+                ):
+                    for state, originals in (
+                        ("valid", 1),
+                        ("missing", 0),
+                        ("corrupt", 0),
+                        ("restored", 1),
+                    ):
+                        if state == "missing":
+                            evidence.unlink()
+                        elif state == "corrupt":
+                            evidence.write_bytes(b"invalid evidence")
+                        elif state == "restored":
+                            evidence.write_bytes(payload)
+                        discovered = discover_game_content(
+                            settings, environment=environment
+                        )
+                        self.assertEqual(discovered.errors, ())
+                        content = discovered.content[0]
+                        direct = inspect_story_index(story)
+                        for value in (content, direct):
+                            self.assertEqual(
+                                sum(
+                                    selection.original_audio_lines
+                                    for selection in value.selections
+                                ),
+                                originals,
+                            )
+                            self.assertEqual(
+                                sum(
+                                    selection.generation_lines
+                                    for selection in value.selections
+                                ),
+                                3 - originals,
+                            )
+                    other = root / "other"
+                    other.mkdir()
+                    other_story = other / story.name
+                    other_story.write_bytes(story.read_bytes())
+                    self.assertEqual(
+                        sum(
+                            selection.original_audio_lines
+                            for selection in inspect_story_index(other_story).selections
+                        ),
+                        0,
+                    )
+
+    def test_story_catalog_validates_the_evidence_bytes_it_captured(self):
+        with TemporaryDirectory() as directory:
+            story = write_story_index(Path(directory))
+            evidence = story.parent / "source-audio-semantic-evidence.json"
+            from vntts.chapter_voice_preload import _source_audio_evidence_payload
+
+            def capture_then_replace(path):
+                captured = _source_audio_evidence_payload(path)
+                evidence.write_bytes(b"replacement after acquisition")
+                return captured
+
+            with patch(
+                "vntts.pregeneration_setup._source_audio_evidence_payload",
+                side_effect=capture_then_replace,
+            ):
+                captured = inspect_story_index(story)
+            current = inspect_story_index(story)
+            self.assertEqual(
+                sum(
+                    selection.original_audio_lines for selection in captured.selections
+                ),
+                1,
+            )
+            self.assertEqual(
+                sum(selection.original_audio_lines for selection in current.selections),
+                0,
+            )
+
+    def test_discovery_retries_evidence_changed_during_a_cache_miss(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            story = write_story_index(root / "content")
+            evidence = story.parent / "source-audio-semantic-evidence.json"
+            payload = evidence.read_bytes()
+            from vntts.chapter_voice_preload import _source_audio_evidence_payload
+
+            captures = 0
+
+            def capture_then_remove(path):
+                nonlocal captures
+                captures += 1
+                captured = _source_audio_evidence_payload(path)
+                if captures == 1:
+                    evidence.unlink()
+                return captured
+
+            settings = AppSettings(story_index=str(story))
+            environment = {"R1999_EXTRACTOR_DATA": str(root / "extractor")}
+            _cached_story_index.cache_clear()
+            self.addCleanup(_cached_story_index.cache_clear)
+            with (
+                patch(
+                    "vntts.pregeneration_setup.get_local_data_directory",
+                    return_value=root / "data",
+                ),
+                patch(
+                    "vntts.pregeneration_setup._source_audio_evidence_payload",
+                    side_effect=capture_then_remove,
+                ),
+            ):
+                interrupted = discover_game_content(settings, environment=environment)
+            self.assertEqual(interrupted.content, ())
+            self.assertEqual(len(interrupted.errors), 1)
+            self.assertIn("Refresh to retry", interrupted.errors[0])
+            evidence.write_bytes(payload)
+            with patch(
+                "vntts.pregeneration_setup.get_local_data_directory",
+                return_value=root / "data",
+            ):
+                restored = discover_game_content(settings, environment=environment)
+            self.assertEqual(restored.errors, ())
+            self.assertEqual(
+                sum(
+                    selection.original_audio_lines
+                    for selection in restored.content[0].selections
+                ),
+                1,
+            )
 
     def test_discovery_keeps_other_content_when_a_source_disappears(self):
         with TemporaryDirectory() as directory:
