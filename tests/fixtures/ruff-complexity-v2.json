@@ -377,7 +377,7 @@
       "path": "vntts/live_replay_capture_recover.py",
       "scope": "_frontier_bounded_match",
       "count": 1,
-      "maximum": 13
+      "maximum": 12
     },
     {
       "code": "C901",

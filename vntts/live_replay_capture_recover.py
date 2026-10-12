@@ -541,10 +541,6 @@ def _validated_frame_payload(root: Path, frame: object) -> bytes:
         raise LiveReplayCaptureRecoveryError(
             "Capture observation frame checksum changed"
         )
-    if not isinstance(payload, bytes):
-        raise LiveReplayCaptureRecoveryError(
-            "Capture observation frame payload is invalid"
-        )
     return payload
 
 
@@ -752,8 +748,6 @@ def _frontier_bounded_match(
     tokens = observed.split()
     for dropped in range(min(8, len(tokens))):
         candidate = " ".join(tokens[dropped:])
-        if not candidate:
-            continue
         if canonical in candidate:
             return "expected-frontier-speaker-text"
         prefix_length = len(commonprefix((candidate, canonical)))
