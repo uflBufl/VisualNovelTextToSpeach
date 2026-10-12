@@ -8,7 +8,8 @@ from pathlib import Path
 
 class CoverageImportTest(unittest.TestCase):
     def test_coverage_cli_loads_without_gameplay_or_native_dependencies(self):
-        code = """
+        coverage_module = "vntts.live_replay_coverage"
+        code = f"""
 import importlib.abc
 import sys
 
@@ -22,7 +23,7 @@ class OfflineGuard(importlib.abc.MetaPathFinder):
             raise AssertionError("Offline coverage initialized " + fullname)
 
 sys.meta_path.insert(0, OfflineGuard())
-from vntts.live_replay_coverage import build_parser
+from {coverage_module} import build_parser
 options = build_parser().parse_args([
     "coverage.json", "--story-index", "story.jsonl", "--sequence-plan", "plan.json",
     "--review", "review.json",
