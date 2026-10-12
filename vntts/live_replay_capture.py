@@ -101,9 +101,12 @@ class DialogueItem(TypedDict):
     observed_text: str
     frames: list[FrameSpecification]
     group_identity: NotRequired[str]
-    story_line: NotRequired[StoryLine | None]
-    story_match: NotRequired[str]
-    boundary_reason: NotRequired[str]
+    story_line: StoryLine | None
+    story_match: str
+
+
+class FinalizedDialogueItem(DialogueItem):
+    boundary_reason: str
 
 
 class ObservationRecord(TypedDict):
@@ -192,7 +195,7 @@ class LiveReplayCaptureSession:
         self.story_index_sha256 = story_index_sha256
         self.story_chapter: str | None = None
         self.story_chapter_line_ids: tuple[str, ...] = ()
-        self.dialogue: list[DialogueItem] = []
+        self.dialogue: list[FinalizedDialogueItem] = []
         self.active: DialogueItem | None = None
         self.frame_count: int = 0
         self.recognized_observation_count: int = 0
@@ -496,6 +499,8 @@ class LiveReplayCaptureSession:
             "observed_character": character,
             "observed_text": text,
             "frames": [frame_spec],
+            "story_line": None,
+            "story_match": "story-index-unavailable",
         }
 
     def _ensure_open(self) -> None:
@@ -505,13 +510,8 @@ class LiveReplayCaptureSession:
     def _finalize_active(self, reason: str) -> None:
         if self.active is None:
             return
-        item = self.active.copy()
+        item: FinalizedDialogueItem = {**self.active, "boundary_reason": reason}
         item.pop("group_identity", None)
-        item["boundary_reason"] = reason
-        line = item.get("story_line")
-        match_result = item.get("story_match", "story-index-unavailable")
-        item["story_line"] = line
-        item["story_match"] = match_result
         self.dialogue.append(item)
         if reason == "inferred-observation-replacement":
             self.boundaries.append(
@@ -544,7 +544,7 @@ class LiveReplayCaptureSession:
         self.frame_count += 1
         return {"path": relative.as_posix(), "sha256": digest}
 
-    def _corpus_record(self, index: int, item: DialogueItem) -> CorpusRecord:
+    def _corpus_record(self, index: int, item: FinalizedDialogueItem) -> CorpusRecord:
         line = item["story_line"]
         if line is None:
             return {
