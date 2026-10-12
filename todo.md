@@ -2,6 +2,8 @@
 
 ## Continue regular-file admission through remaining integrity owners
 
+- [ ] On Windows, qualify persistent NPY1/2/3 cache reads with the pinned NumPy internal header parser: malformed declared extents must miss before allocation, valid mono/stereo/Fortran/endian entries must retain conversion, and truncation must close the source without recency changes. Qualify candidate-directory replacement/alias refusal before cleanup, active claims and normal retry with native directory identities/locking/rmtree. Mac proofs do not establish Windows behavior.
+
 - [ ] Qualify admitted SHA readers and direct/recursive/runtime copy behavior on Windows, including native metadata/alternate streams, DLL/junction handling and executable behavior. Local Mac output identities, metadata, relocated interpreter provenance and warm-cache throughput passed; cold-disk/network throughput and native model generation remain unmeasured.
 
 - [ ] On Windows, validate admitted bounded WAV/PCM decoding, PNG/JPEG/TIFF screenshot decoding and RGB/crop after source closure, cancellable MOSS model hashing, optional reference duration and native log diagnostics. Exercise registered and legacy inline MOSS references, unchanged-reference cache reuse, cancellation/retry and decoder/source cleanup using real files; Mac descriptor and loopback tests do not certify Windows virtual I/O or actual model generation.

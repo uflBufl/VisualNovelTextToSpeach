@@ -210,7 +210,7 @@ class PersistentAudioCacheTest(unittest.TestCase):
                 with (
                     patch("vntts.path_safety.os.open", side_effect=admit),
                     patch.object(Path, "open", reject_blocking_path_open),
-                    patch("vntts.audio_cache.np.lib.format.read_array") as parse,
+                    patch("vntts.audio_cache._read_cached_array") as parse,
                     patch.object(cache, "_touch_newest") as touch,
                 ):
                     self.assertIsNone(cache.get("entry"))
@@ -269,6 +269,123 @@ class PersistentAudioCacheTest(unittest.TestCase):
             expected = np.array([0.1, -0.1], dtype=np.float32)
             cache.put("corrupt", expected)
             np.testing.assert_array_equal(cache.get("corrupt"), expected)
+
+    def test_declared_npy_body_is_refused_before_array_allocation(self):
+        with TemporaryDirectory() as directory:
+            cache = PersistentAudioCache(directory)
+            path = Path(directory) / "declared.npy"
+            for version in ((1, 0), (2, 0), (3, 0)):
+                for shape, descriptor, data in (
+                    ((2**40,), "<f4", b""),
+                    ((1,), "|S10000000", b""),
+                    ((-1,), "<f4", b"\0" * 16),
+                    ((2,), "<f4", b"\0" * 4),
+                    ((1,), "|O", b""),
+                ):
+                    with self.subTest(
+                        version=version, shape=shape, descriptor=descriptor
+                    ):
+                        with path.open("wb") as output:
+                            np.lib.format.write_array_header_2_0(
+                                output,
+                                {
+                                    "descr": descriptor,
+                                    "fortran_order": False,
+                                    "shape": shape,
+                                },
+                            )
+                            output.write(data)
+                        if version != (2, 0):
+                            raw = path.read_bytes()
+                            length = struct.unpack_from("<I", raw, 8)[0]
+                            header = raw[12 : 12 + length]
+                            path.write_bytes(
+                                np.lib.format.magic(*version)
+                                + struct.pack(
+                                    "<H" if version == (1, 0) else "<I", length
+                                )
+                                + header
+                                + raw[12 + length :]
+                            )
+                        before = path.read_bytes()
+                        with (
+                            patch(
+                                "vntts.audio_cache.np.fromfile",
+                                return_value=np.empty(0, dtype=np.float32),
+                            ) as allocate,
+                            patch.object(cache, "_touch_newest") as touch,
+                        ):
+                            self.assertIsNone(cache.get("declared"))
+                            allocate.assert_not_called()
+                            touch.assert_not_called()
+                        self.assertEqual(path.read_bytes(), before)
+            expected = np.array([0.1, -0.1], dtype=np.float32)
+            cache.put("declared", expected)
+            np.testing.assert_array_equal(cache.get("declared"), expected)
+
+    def test_historical_npy_layouts_and_dtypes_keep_audio_conversion(self):
+        arrays = (
+            np.array([[1, 2], [3, 4]], dtype=">f4"),
+            np.asfortranarray(np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float64)),
+            np.arange(6, dtype=np.int16).reshape(1, 2, 3),
+            np.array(["1", "2"], dtype="U1"),
+            np.array(0.25, dtype=np.float32),
+        )
+        with TemporaryDirectory() as directory:
+            cache = PersistentAudioCache(directory)
+            path = Path(directory) / "historical.npy"
+            for version in ((1, 0), (2, 0), (3, 0)):
+                for number, expected in enumerate(arrays):
+                    with self.subTest(version=version, array=number):
+                        with path.open("wb") as output:
+                            np.lib.format.write_array(
+                                output, expected, version=version, allow_pickle=False
+                            )
+                        with path.open("rb") as source:
+                            original = np.lib.format.read_array(
+                                source, allow_pickle=False
+                            )
+                        loaded = cache.get("historical")
+                        normalized = (
+                            np.atleast_1d(original.squeeze())
+                            if original.ndim not in {1, 2}
+                            else original
+                        )
+                        np.testing.assert_array_equal(
+                            loaded, np.asarray(normalized, dtype=np.float32)
+                        )
+                        self.assertEqual(loaded.dtype, np.float32)
+                        self.assertEqual(loaded.shape, normalized.shape)
+
+    def test_body_truncated_after_extent_check_is_a_miss_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            cache = PersistentAudioCache(directory)
+            expected = np.array([0.1, -0.1], dtype=np.float32)
+            path = cache.put("truncated", expected)
+            original = path.read_bytes()
+            header = original[: -expected.nbytes]
+            native_fromfile = np.fromfile
+            sources = []
+
+            def truncate_before_loading(source, **kwargs):
+                sources.append(source)
+                path.write_bytes(header)
+                return native_fromfile(source, **kwargs)
+
+            with (
+                patch(
+                    "vntts.audio_cache.np.fromfile", side_effect=truncate_before_loading
+                ) as allocate,
+                patch.object(cache, "_touch_newest") as touch,
+            ):
+                self.assertIsNone(cache.get("truncated"))
+                allocate.assert_called_once()
+                touch.assert_not_called()
+            self.assertEqual(len(sources), 1)
+            self.assertTrue(sources[0].closed)
+            self.assertEqual(path.read_bytes(), header)
+            cache.put("truncated", expected)
+            np.testing.assert_array_equal(cache.get("truncated"), expected)
 
     def test_uncacheable_audio_preserves_the_existing_entry(self):
         with TemporaryDirectory() as directory:

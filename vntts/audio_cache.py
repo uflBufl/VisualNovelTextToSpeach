@@ -1,15 +1,18 @@
 import json
 import os
 from collections import OrderedDict
+from collections.abc import Callable
 from hashlib import blake2b
+from math import prod
 from pathlib import Path
 from stat import S_ISREG
 from threading import RLock
 from time import time_ns
 from tokenize import TokenError
-from typing import Generic, TypeAlias, TypeVar
+from typing import BinaryIO, Generic, TypeAlias, TypeVar
 
 import numpy as np
+from numpy.lib import _format_impl as npy_format
 from numpy.typing import NDArray
 from vntts_artifacts.atomic_io import atomic_output_path
 
@@ -19,6 +22,12 @@ PathInput: TypeAlias = str | os.PathLike[str]
 AudioArray: TypeAlias = NDArray[np.float32]
 CacheKey = TypeVar("CacheKey")
 CacheValue = TypeVar("CacheValue")
+
+# shortcut: NumPy lacks a public NPY3 header reader; replace when one is available.
+_read_npy_header: Callable[
+    [BinaryIO, tuple[int, int]],
+    tuple[tuple[int, ...], bool, np.dtype[np.generic]],
+] = getattr(npy_format, "_read_array_header")
 
 
 def _prepared_audio(value: object) -> AudioArray | None:
@@ -31,6 +40,23 @@ def _prepared_audio(value: object) -> AudioArray | None:
     if audio.ndim not in {1, 2} or audio.size == 0 or not np.all(np.isfinite(audio)):
         return None
     return audio
+
+
+def _read_cached_array(source: BinaryIO) -> NDArray[np.generic]:
+    version = np.lib.format.read_magic(source)
+    shape, fortran_order, dtype = _read_npy_header(source, version)
+    count = prod(shape)
+    remaining = os.fstat(source.fileno()).st_size - source.tell()
+    if (
+        dtype.hasobject
+        or any(dimension < 0 for dimension in shape)
+        or count * dtype.itemsize > remaining
+    ):
+        raise ValueError("Invalid cached array body")
+    loaded = np.fromfile(source, dtype=dtype, count=count)
+    if loaded.size != count:
+        raise ValueError("Incomplete cached array body")
+    return loaded.reshape(shape, order="F" if fortran_order else "C")
 
 
 class BoundedCache(Generic[CacheKey, CacheValue]):
@@ -98,7 +124,7 @@ class PersistentAudioCache:
             return None
         try:
             with open_regular_binary(path) as source:
-                loaded = np.lib.format.read_array(source, allow_pickle=False)
+                loaded = _read_cached_array(source)
             audio = _prepared_audio(loaded)
             if audio is None:
                 return None
