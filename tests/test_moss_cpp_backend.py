@@ -14,7 +14,7 @@ import zipfile
 from contextlib import contextmanager
 from pathlib import Path
 from tempfile import SpooledTemporaryFile, TemporaryDirectory
-from threading import Event, Lock, Thread
+from threading import TIMEOUT_MAX, Event, Lock, Thread
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -413,6 +413,35 @@ class MossCppStartupAdmissionTest(unittest.TestCase):
                     paths.assert_not_called()
                     probe.assert_not_called()
                     start.assert_not_called()
+
+    def test_unrepresentable_streaming_options_never_acquire_native_runtime(self):
+        cases = (
+            ("cached_stream_chunk_seconds", sys.float_info.max, "sample count"),
+            ("cached_stream_chunk_seconds", -sys.float_info.max, "sample count"),
+            ("playback_consumer_join_timeout", sys.float_info.max, "thread timeout"),
+            ("playback_consumer_join_timeout", TIMEOUT_MAX + 1, "thread timeout"),
+        )
+        for name, value, limit in cases:
+            with self.subTest(option=name, value=value):
+                with (
+                    patch(
+                        "vntts.moss_cpp_installation.ensure_moss_cpp",
+                        side_effect=AssertionError("installer reached"),
+                    ) as ensure,
+                    patch("vntts.moss_cpp_backend.moss_cpp_paths") as paths,
+                    patch("vntts.runtime_preparation.run_runtime_command") as probe,
+                    patch.object(MossCppVoiceRouterBackend, "_start_server") as start,
+                    self.assertRaisesRegex(
+                        TTSConfigurationError, name + " exceeds the " + limit + " range"
+                    ) as caught,
+                ):
+                    MossCppVoiceRouterBackend(CharacterVoiceRegistry(), **{name: value})
+                if name == "cached_stream_chunk_seconds":
+                    self.assertIsInstance(caught.exception.__cause__, OverflowError)
+                ensure.assert_not_called()
+                paths.assert_not_called()
+                probe.assert_not_called()
+                start.assert_not_called()
 
     def test_invalid_options_never_install_or_start_native_runtime(self):
         cases = (

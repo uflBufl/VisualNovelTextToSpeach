@@ -22,7 +22,7 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 from pathlib import Path
 from tempfile import SpooledTemporaryFile, TemporaryDirectory
-from threading import Event, Lock, Thread
+from threading import TIMEOUT_MAX, Event, Lock, Thread
 from time import monotonic
 from types import SimpleNamespace
 from typing import BinaryIO, ClassVar, Protocol, TypeAlias, TypedDict, TypeGuard
@@ -58,6 +58,7 @@ from vntts.synthesis import (
 )
 from vntts.voices import CharacterVoiceRegistry
 
+_NATIVE_SAMPLE_RATE = 48000
 NATIVE_GENERATION_CONTRACT = "nonzero-seed-stable-1.7-v2"
 _MANAGED_STARTUP_FAILURE_PREFIX = "VNTTS_STARTUP_FAILURE_JSON="
 _CREATE_SUSPENDED = 0x00000004
@@ -551,6 +552,16 @@ def _base_options(options: dict[str, object]) -> MossCppBaseOptions:
             and optional_finite_number(value) is None
         ):
             raise TTSConfigurationError(f"MOSS C++ {name} must be finite")
+    try:
+        round(_NATIVE_SAMPLE_RATE * result["cached_stream_chunk_seconds"])
+    except OverflowError as error:
+        raise TTSConfigurationError(
+            "MOSS C++ cached_stream_chunk_seconds exceeds the sample count range"
+        ) from error
+    if result["playback_consumer_join_timeout"] > TIMEOUT_MAX:
+        raise TTSConfigurationError(
+            "MOSS C++ playback_consumer_join_timeout exceeds the thread timeout range"
+        )
     if options:
         raise TypeError(f"Unexpected MOSS C++ option: {next(iter(options))}")
     return result
@@ -784,7 +795,7 @@ def _integer_setting(name: str, default: int, minimum: int, maximum: int) -> int
 def _decode_response_audio(data: bytes) -> np.ndarray:
     with wave.open(io.BytesIO(data), "rb") as output:
         if (
-            output.getframerate() != 48000
+            output.getframerate() != _NATIVE_SAMPLE_RATE
             or output.getnchannels() != 2
             or output.getsampwidth() != 2
             or output.getcomptype() != "NONE"
@@ -980,7 +991,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 registry,
                 model_name=self._native_identity(),
                 model_factory=lambda *_args, **_kwargs: SimpleNamespace(
-                    sample_rate=48000
+                    sample_rate=_NATIVE_SAMPLE_RATE
                 ),
                 **base_options,
             )
@@ -1358,7 +1369,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             if not isinstance(info, dict) or any(
                 (
                     info.get("architecture") != "moss_tts_local",
-                    info.get("sampling_rate") != 48000,
+                    info.get("sampling_rate") != _NATIVE_SAMPLE_RATE,
                     info.get("n_channels") != 2,
                     info.get("n_vq") != 12,
                     info.get("codec_loaded") is not True,
