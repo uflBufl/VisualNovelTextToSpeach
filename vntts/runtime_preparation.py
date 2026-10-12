@@ -8,9 +8,9 @@ from collections.abc import Callable, Mapping, Sequence
 from time import monotonic
 from typing import TYPE_CHECKING, Protocol, TypeAlias, runtime_checkable
 
-from vntts.cleanup import attempt_cleanup
+from vntts.cleanup import attempt_cleanup, cleanup_on_exit
 from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
-from vntts.subprocess_utils import terminate_process
+from vntts.subprocess_utils import terminate_running_process
 
 if TYPE_CHECKING:
     from vntts.runtime_ownership import RuntimeUse
@@ -74,10 +74,13 @@ def run_runtime_command(
                 primary_error=launch_error,
             )
         raise
-    deadline = monotonic() + timeout
-    try:
+    with cleanup_on_exit(
+        lambda: terminate_running_process(process),
+        description="Speech runtime process cleanup",
+    ):
         if runtime_use is not None:
             runtime_use.launched(process)
+        deadline = monotonic() + timeout
         while True:
             check_runtime_cancelled(cancellation)
             if monotonic() >= deadline:
@@ -96,6 +99,3 @@ def run_runtime_command(
             )
         check_runtime_cancelled(cancellation)
         return output + error if include_stderr else output
-    finally:
-        if process.poll() is None:
-            terminate_process(process)

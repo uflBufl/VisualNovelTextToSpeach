@@ -20,8 +20,9 @@ from vntts_artifacts.live_sequence import (
 from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
 
 from vntts.authoring.publication import staged_directory
+from vntts.cleanup import cleanup_on_exit
 from vntts.document_identity import sha256_file
-from vntts.subprocess_utils import last_output_line, terminate_process
+from vntts.subprocess_utils import last_output_line, terminate_running_process
 
 PathInput: TypeAlias = str | PathLike[str]
 PopenFactory: TypeAlias = Callable[..., subprocess.Popen[str]]
@@ -193,7 +194,10 @@ def _run(
         raise PreparedSequenceError(
             f"Unable to start live-sequence publisher: {error}"
         ) from error
-    try:
+    with cleanup_on_exit(
+        lambda: terminate_running_process(process),
+        description="Live-sequence publisher process cleanup",
+    ):
         while True:
             if (
                 cancellation is not None
@@ -206,9 +210,6 @@ def _run(
                 break
             except subprocess.TimeoutExpired:
                 continue
-    finally:
-        if process.poll() is None:
-            terminate_process(process)
     if process.returncode:
         detail = last_output_line(stderr) or last_output_line(stdout)
         suffix = f": {detail}" if detail else ""

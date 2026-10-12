@@ -25,6 +25,7 @@ from vntts.chapter_voice_preload import (
     _has_authoritative_source_audio,
     _validated_source_audio_line_ids,
 )
+from vntts.cleanup import cleanup_on_exit
 from vntts.json_types import decode_json
 from vntts.path_safety import read_regular_text
 from vntts.pregeneration_contract import (
@@ -43,7 +44,7 @@ from vntts.pregeneration_setup import (
     load_verified_story_index_document,
 )
 from vntts.pregeneration_voices import VoicePlan
-from vntts.subprocess_utils import last_output_line, terminate_process
+from vntts.subprocess_utils import last_output_line, terminate_running_process
 
 
 class _Cancellation(Protocol):
@@ -420,18 +421,20 @@ class OfflineGenerationWorker:
 
         self._process = process
         try:
-            while True:
-                try:
-                    stdout, stderr = process.communicate(timeout=0.1)
-                    break
-                except subprocess.TimeoutExpired:
-                    if cancel_event is not None and cancel_event.is_set():
-                        raise OfflineGenerationCancelled(
-                            "Offline speech generation was cancelled"
-                        ) from None
+            with cleanup_on_exit(
+                lambda: terminate_running_process(process),
+                description="Offline generation process cleanup",
+            ):
+                while True:
+                    try:
+                        stdout, stderr = process.communicate(timeout=0.1)
+                        break
+                    except subprocess.TimeoutExpired:
+                        if cancel_event is not None and cancel_event.is_set():
+                            raise OfflineGenerationCancelled(
+                                "Offline speech generation was cancelled"
+                            ) from None
         finally:
-            if process.poll() is None:
-                terminate_process(process)
             self._process = None
         if process.returncode:
             detail = last_output_line(stderr) or last_output_line(stdout)

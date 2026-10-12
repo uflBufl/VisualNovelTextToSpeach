@@ -39,7 +39,7 @@ from vntts.chapter_voice_preload import (
     _has_authoritative_source_audio,
     _validated_source_audio_line_ids,
 )
-from vntts.cleanup import attempt_cleanup
+from vntts.cleanup import attempt_cleanup, cleanup_on_exit
 from vntts.document_identity import file_sha256, is_lowercase_sha256, sha256_file
 from vntts.game_audio_decoder import Cancellation, ProgressCallback, ensure_game_decoder
 from vntts.json_types import decode_json
@@ -61,7 +61,7 @@ from vntts.source_audio_semantics import (
     load_source_audio_semantic_evidence,
 )
 from vntts.story_index_snapshot import load_story_index_snapshot
-from vntts.subprocess_utils import last_output_line, terminate_process
+from vntts.subprocess_utils import last_output_line, terminate_running_process
 from vntts.voice_candidate_cache import voice_candidate_cache_guard
 from vntts.voices import is_narrator, synthesis_character_for_line
 
@@ -1113,22 +1113,24 @@ class Reverse1999GameImporter:
             ) from error
         cancelled = False
         try:
-            while True:
-                if (
-                    cancel_event is not None
-                    and cancel_event.is_set()
-                    and process.poll() is None
-                ):
-                    cancelled = True
-                    raise GameContentImportCancelled("Game import was cancelled")
-                try:
-                    stdout, stderr = process.communicate(timeout=0.1)
-                    break
-                except subprocess.TimeoutExpired:
-                    continue
+            with cleanup_on_exit(
+                lambda: terminate_running_process(process),
+                description="Game importer process cleanup",
+            ):
+                while True:
+                    if (
+                        cancel_event is not None
+                        and cancel_event.is_set()
+                        and process.poll() is None
+                    ):
+                        cancelled = True
+                        raise GameContentImportCancelled("Game import was cancelled")
+                    try:
+                        stdout, stderr = process.communicate(timeout=0.1)
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
         finally:
-            if process.poll() is None:
-                terminate_process(process)
             if cancelled:
                 self._record(
                     "process-exit",

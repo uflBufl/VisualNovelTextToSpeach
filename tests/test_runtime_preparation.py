@@ -1,9 +1,12 @@
 import subprocess
 import sys
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from threading import Event
 from unittest.mock import Mock, patch
 
+from vntts.runtime_ownership import RuntimeUse, read_record
 from vntts.runtime_preparation import run_runtime_command
 from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
 
@@ -21,7 +24,7 @@ class RuntimePreparationTest(unittest.TestCase):
         process.communicate.side_effect = wait
         with (
             patch("vntts.runtime_preparation.subprocess.Popen", return_value=process),
-            patch("vntts.runtime_preparation.terminate_process") as terminate,
+            patch("vntts.subprocess_utils.terminate_process") as terminate,
             self.assertRaisesRegex(TTSSynthesisError, "cancelled"),
         ):
             run_runtime_command(["uv"], cancellation=cancellation)
@@ -63,7 +66,7 @@ class RuntimePreparationTest(unittest.TestCase):
         with (
             patch("vntts.runtime_preparation.subprocess.Popen", return_value=process),
             patch("vntts.runtime_preparation.monotonic", side_effect=(0, 2)),
-            patch("vntts.runtime_preparation.terminate_process") as terminate,
+            patch("vntts.subprocess_utils.terminate_process") as terminate,
             self.assertRaisesRegex(TTSConfigurationError, "timed out"),
         ):
             run_runtime_command(["tool"], cancellation=None, timeout=1, runtime_use=use)
@@ -71,6 +74,76 @@ class RuntimePreparationTest(unittest.TestCase):
         use.launched.assert_called_once_with(process)
         terminate.assert_called_once_with(process)
         process.communicate.assert_not_called()
+
+    def test_post_launch_registration_failure_keeps_primary_error_and_stops_child(self):
+        process = Mock(returncode=None)
+        process.poll.return_value = None
+        primary = OSError("child claim unavailable")
+        use = Mock()
+        use.launched.side_effect = primary
+        cleanup_error = ValueError("termination failed")
+        cleanup_error.add_note("termination context")
+        with (
+            patch("vntts.runtime_preparation.subprocess.Popen", return_value=process),
+            patch("vntts.runtime_preparation.monotonic") as clock,
+            patch(
+                "vntts.subprocess_utils.terminate_process", side_effect=cleanup_error
+            ) as terminate,
+            self.assertRaises(OSError) as raised,
+        ):
+            run_runtime_command(["tool"], cancellation=None, runtime_use=use)
+        self.assertIs(raised.exception, primary)
+        use.launched.assert_called_once_with(process)
+        clock.assert_not_called()
+        terminate.assert_called_once_with(process)
+        self.assertEqual(primary.__notes__[-1], "termination context")
+
+    def test_post_launch_clock_failure_registers_and_reaps_real_child_before_claim_closure(
+        self,
+    ):
+        native_popen = subprocess.Popen
+        children = []
+        primary = OSError("clock unavailable")
+        with TemporaryDirectory() as directory:
+            use = RuntimeUse(Path(directory))
+
+            def spawn(*args, **kwargs):
+                child = native_popen(*args, **kwargs)
+                children.append(child)
+                return child
+
+            def clock():
+                self.assertEqual(use.processes, children)
+                self.assertEqual(read_record(use.path)["children"], [children[0].pid])
+                self.assertFalse(read_record(use.path)["launching"])
+                raise primary
+
+            try:
+                with (
+                    patch(
+                        "vntts.runtime_preparation.subprocess.Popen", side_effect=spawn
+                    ),
+                    patch("vntts.runtime_preparation.monotonic", side_effect=clock),
+                    self.assertRaises(OSError) as raised,
+                ):
+                    run_runtime_command(
+                        [sys.executable, "-c", "import time; time.sleep(30)"],
+                        cancellation=None,
+                        runtime_use=use,
+                    )
+                self.assertIs(raised.exception, primary)
+                self.assertEqual(len(children), 1)
+                self.assertIsNotNone(children[0].poll())
+                self.assertTrue(children[0].stdout.closed)
+                self.assertTrue(children[0].stderr.closed)
+                use.close()
+                self.assertFalse(use.path.exists())
+            finally:
+                for child in children:
+                    if child.poll() is None:
+                        child.kill()
+                        child.communicate(timeout=5)
+                use.close()
 
     def test_failed_launch_clears_launch_marker_without_claiming_child(self):
         use = Mock()
