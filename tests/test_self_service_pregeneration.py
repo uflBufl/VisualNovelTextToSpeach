@@ -13,7 +13,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QCoreApplication, QEvent, Qt, QThreadPool  # noqa: E402
 from PySide6.QtGui import QPixmap  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QDialog, QSizePolicy  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QDialog,
+    QMessageBox,
+    QSizePolicy,
+)
 
 from tests.pregeneration_fixtures import (  # noqa: E402
     InProcessPocketGenerator,
@@ -162,6 +167,164 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertFalse(dialog.has_pending_work())
             dialog.sequence_runner.cancel()
             dialog.reject()
+
+    def test_sequence_only_native_close_finishes_after_any_terminal_result(self):
+        for outcome in (None, Path("sequence.json"), RuntimeError("cancelled")):
+            with self.subTest(outcome=outcome), TemporaryDirectory() as directory:
+                pool = ManualThreadPool()
+                dialog = OfflineAudioPreparationDialog(
+                    AppSettings(),
+                    discovery=lambda: ContentDiscovery(()),
+                    job_store=PregenerationJobStore(Path(directory) / "jobs"),
+                    thread_pool=pool,
+                )
+                self._run_tasks(pool, len(pool.tasks))
+
+                def prepare():
+                    self.assertTrue(dialog.voice_cancel_event.is_set())
+                    if isinstance(outcome, Exception):
+                        raise outcome
+                    return outcome
+
+                dialog.sequence_runner.start(prepare)
+                finished = Mock()
+                dialog.finished.connect(finished)
+                dialog.show()
+                self.assertFalse(dialog.close())
+                self.assertFalse(dialog.has_pending_work())
+                self.assertFalse(dialog.cancel_button.isEnabled())
+                self._run_tasks(pool, 1)
+
+                self.assertFalse(dialog.isVisible())
+                finished.assert_called_once_with(QDialog.DialogCode.Rejected)
+                self.assertTrue(dialog.cancel_button.isEnabled())
+                dialog.deleteLater()
+
+    def test_sequence_close_save_failure_restores_controls_before_retry(self):
+        with TemporaryDirectory() as directory:
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery(()),
+                job_store=PregenerationJobStore(Path(directory) / "jobs"),
+                thread_pool=pool,
+            )
+            self._run_tasks(pool, len(pool.tasks))
+            dialog.sequence_runner.start(lambda: None)
+            dialog.show()
+            self.assertFalse(dialog.close())
+            with (
+                patch.object(
+                    dialog, "_save_story_selection_drafts", return_value=False
+                ),
+                patch(
+                    "vntts.pregeneration_ui.QMessageBox.question",
+                    return_value=QMessageBox.StandardButton.Cancel,
+                ),
+            ):
+                self._run_tasks(pool, 1)
+            self.assertTrue(dialog.isVisible())
+            self.assertTrue(dialog.cancel_button.isEnabled())
+            self.assertTrue(dialog.game_folder_button.isEnabled())
+            dialog.cancel_button.click()
+            self.assertFalse(dialog.isVisible())
+            dialog.deleteLater()
+
+    def test_sequence_terminal_does_not_finish_foreground_cancellation(self):
+        with TemporaryDirectory() as directory:
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery(()),
+                job_store=PregenerationJobStore(Path(directory) / "jobs"),
+                thread_pool=pool,
+            )
+            self._run_tasks(pool, len(pool.tasks))
+            dialog.sequence_runner.start(lambda: None)
+            dialog.generating = True
+            dialog._set_import_controls(False)
+            dialog.show()
+            self.assertFalse(dialog.close())
+            self.assertIn("Cancelling generation", dialog.resume_status.text())
+            self._run_tasks(pool, 1)
+            self.assertTrue(dialog.isVisible())
+            self.assertTrue(dialog.has_pending_work())
+            self.assertFalse(dialog.cancel_button.isEnabled())
+            self.assertFalse(dialog.game_folder_button.isEnabled())
+            dialog._generation_finished(None, RuntimeError("cancelled"))
+            self.assertFalse(dialog.isVisible())
+            dialog.deleteLater()
+
+    def test_foreground_terminal_consumes_close_request_before_late_sequence(self):
+        for save_selection in (False, True):
+            with (
+                self.subTest(save_selection=save_selection),
+                TemporaryDirectory() as directory,
+            ):
+                pool = ManualThreadPool()
+                dialog = OfflineAudioPreparationDialog(
+                    AppSettings(),
+                    discovery=lambda: ContentDiscovery(()),
+                    job_store=PregenerationJobStore(Path(directory) / "jobs"),
+                    thread_pool=pool,
+                )
+                self._run_tasks(pool, len(pool.tasks))
+                dialog.sequence_runner.start(lambda: None)
+                dialog.generating = True
+                finished = Mock()
+                dialog.finished.connect(finished)
+                dialog.show()
+                self.assertFalse(dialog.close())
+                with (
+                    patch.object(
+                        dialog,
+                        "_save_story_selection_drafts",
+                        return_value=save_selection,
+                    ),
+                    patch(
+                        "vntts.pregeneration_ui.QMessageBox.question",
+                        return_value=QMessageBox.StandardButton.Cancel,
+                    ) as question,
+                ):
+                    dialog._generation_finished(None, RuntimeError("cancelled"))
+                    self.assertFalse(dialog._close_after_voice_cancel)
+                    self._run_tasks(pool, 1)
+                    if save_selection:
+                        finished.assert_called_once_with(QDialog.DialogCode.Rejected)
+                        question.assert_not_called()
+                        self.assertFalse(dialog.isVisible())
+                    else:
+                        finished.assert_not_called()
+                        question.assert_called_once()
+                        self.assertTrue(dialog.isVisible())
+                        self.assertTrue(dialog.cancel_button.isEnabled())
+                        self.assertTrue(dialog.game_folder_button.isEnabled())
+                if not save_selection:
+                    dialog.cancel_button.click()
+                    finished.assert_called_once_with(QDialog.DialogCode.Rejected)
+                    self.assertFalse(dialog.isVisible())
+                dialog.deleteLater()
+
+    def test_optional_sequence_does_not_delay_accept_or_reject(self):
+        for result in (QDialog.DialogCode.Accepted, QDialog.DialogCode.Rejected):
+            with self.subTest(result=result), TemporaryDirectory() as directory:
+                pool = ManualThreadPool()
+                dialog = OfflineAudioPreparationDialog(
+                    AppSettings(),
+                    discovery=lambda: ContentDiscovery(()),
+                    job_store=PregenerationJobStore(Path(directory) / "jobs"),
+                    thread_pool=pool,
+                )
+                self._run_tasks(pool, len(pool.tasks))
+                dialog.sequence_runner.start(lambda: None)
+                finished = Mock()
+                dialog.finished.connect(finished)
+                dialog.done(result)
+                finished.assert_called_once_with(result)
+                self.assertFalse(dialog.voice_cancel_event.is_set())
+                self._run_tasks(pool, 1)
+                finished.assert_called_once_with(result)
+                dialog.deleteLater()
 
     def test_generation_exception_keeps_exact_copyable_details(self):
         with TemporaryDirectory() as directory:

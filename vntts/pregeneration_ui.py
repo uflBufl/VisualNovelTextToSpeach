@@ -4303,6 +4303,9 @@ class OfflineAudioPreparationDialog(QDialog):
     def _prepared_sequence_finished(
         self, result: object, error: Exception | None
     ) -> None:
+        if self._close_after_voice_cancel and not self.has_pending_work():
+            self._finish_preparation_ui()
+            return
         if error is not None or not isinstance(result, Path):
             return
         generation_input = self._generation_input
@@ -4662,6 +4665,7 @@ class OfflineAudioPreparationDialog(QDialog):
         if self.has_pending_work():
             self._cancel_or_reject()
             return
+        self._close_after_voice_cancel = False
         if not self._confirm_selection_close():
             return
         self._stop_generation_progress()
