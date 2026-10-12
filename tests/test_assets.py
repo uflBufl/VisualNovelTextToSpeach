@@ -16,6 +16,7 @@ import vntts.assets as assets
 import vntts.authoring.advisory_lock as advisory_lock
 import vntts.model_assets as model_assets
 import vntts.voice_packs as voice_packs
+from tests.regular_file_fixtures import swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
 from vntts.assets import (
     ModelAsset,
@@ -225,34 +226,11 @@ class ModelAssetManagerTest(unittest.TestCase):
             payload = b"publisher\r\n"
             path.write_bytes(payload)
             asset = ModelAsset("test", (), expected_hash="publisher")
-            native_open, path_open = os.open, Path.open
-            descriptors = []
-
-            def swap_and_open(candidate, flags, mode=0o777, *, dir_fd=None):
-                self.assertEqual(Path(candidate), path)
-                self.assertTrue(flags & os.O_NONBLOCK)
-                path.unlink()
-                os.mkfifo(path)
-                descriptor = native_open(candidate, flags, mode, dir_fd=dir_fd)
-                descriptors.append(descriptor)
-                return descriptor
-
-            def reject_plain_open(candidate, *args, **kwargs):
-                if Path(candidate) == path:
-                    self.fail("publisher checksum must admit its opened input")
-                return path_open(candidate, *args, **kwargs)
-
             with (
-                patch("vntts.path_safety.os.open", side_effect=swap_and_open),
-                patch.object(Path, "open", reject_plain_open),
+                swap_at_acquisition(self, {"path": path, "armed": True}),
                 self.assertRaisesRegex(OSError, "regular file"),
             ):
                 ModelAssetManager._validate_upstream_hash(root, asset)
-            self.assertEqual(len(descriptors), 1)
-            with self.assertRaises(OSError):
-                os.fstat(descriptors[0])
-            path.unlink()
-            path.write_bytes(payload)
             self.assertIsNone(ModelAssetManager._validate_upstream_hash(root, asset))
             self.assertEqual(path.read_bytes(), payload)
 

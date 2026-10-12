@@ -1,12 +1,10 @@
-import builtins
 import hashlib
 import os
 import unittest
-from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
 
+from tests.regular_file_fixtures import swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
 from vntts.authoring import managed_model_installation as managed
 
@@ -36,46 +34,6 @@ class ManagedModelAdmissionTest(unittest.TestCase):
             fetch_file=lambda name: source / name,
         )
 
-    @contextmanager
-    def _swapped_file(self, path):
-        payload = path.read_bytes()
-        native_open, plain_open, path_open = os.open, builtins.open, Path.open
-        descriptors = []
-
-        def swap_and_open(candidate, flags, mode=0o777, *, dir_fd=None):
-            if Path(candidate) == path:
-                self.assertTrue(flags & os.O_NONBLOCK)
-                path.unlink()
-                os.mkfifo(path)
-            descriptor = native_open(candidate, flags, mode, dir_fd=dir_fd)
-            if Path(candidate) == path:
-                descriptors.append(descriptor)
-            return descriptor
-
-        def guard_open(candidate, *args, **kwargs):
-            if Path(candidate) == path and kwargs.get("opener") is None:
-                self.fail("input acquisition must admit the opened regular file")
-            return plain_open(candidate, *args, **kwargs)
-
-        def guard_path_open(candidate, *args, **kwargs):
-            if Path(candidate) == path:
-                self.fail("input acquisition must not use blocking Path.open")
-            return path_open(candidate, *args, **kwargs)
-
-        try:
-            with (
-                patch("vntts.path_safety.os.open", side_effect=swap_and_open),
-                patch("builtins.open", side_effect=guard_open),
-                patch.object(Path, "open", guard_path_open),
-            ):
-                yield
-            self.assertEqual(len(descriptors), 1)
-            with self.assertRaises(OSError):
-                os.fstat(descriptors[0])
-        finally:
-            path.unlink(missing_ok=True)
-            path.write_bytes(payload)
-
     @unittest.skipUnless(
         hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
     )
@@ -88,7 +46,7 @@ class ManagedModelAdmissionTest(unittest.TestCase):
                 self._install(installation, source, model, metadata, notice)
                 path = installation / filename
                 payload = path.read_bytes()
-                with self._swapped_file(path):
+                with swap_at_acquisition(self, {"path": path, "armed": True}):
                     result = managed.managed_model_status(
                         installation, model, metadata=metadata, notice=notice
                     )
@@ -142,7 +100,9 @@ class ManagedModelAdmissionTest(unittest.TestCase):
                 root = Path(directory).resolve()
                 source, model, metadata, notice = self._inputs(root)
                 installation = root / "managed" / "rev"
-                with self._swapped_file(source / "model.bin"):
+                with swap_at_acquisition(
+                    self, {"path": source / "model.bin", "armed": True}
+                ):
                     with self.assertRaisesRegex(OSError, "regular file"):
                         managed.install_managed_model(
                             installation,
