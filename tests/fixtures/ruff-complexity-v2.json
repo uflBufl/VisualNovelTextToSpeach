@@ -1389,13 +1389,6 @@
     },
     {
       "code": "PLR0915",
-      "path": "vntts/runtime_installation.py",
-      "scope": "_ensure_speech_runtime",
-      "count": 1,
-      "maximum": 57
-    },
-    {
-      "code": "PLR0915",
       "path": "vntts/settings.py",
       "scope": "AppSettings.from_mapping",
       "count": 1,

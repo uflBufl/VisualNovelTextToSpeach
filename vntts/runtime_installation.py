@@ -150,6 +150,23 @@ def _ensure_speech_runtime(
         raise TTSConfigurationError(
             "Speech runtime preparation is unavailable. Retry when ready."
         )
+    return _install_runtime_generation(
+        backend, location, project, uv, cancellation=cancellation, report=report
+    )
+
+
+def _install_runtime_generation(
+    backend: str,
+    location: Path,
+    project: Path,
+    uv: str,
+    *,
+    cancellation: Cancellation,
+    report: ProgressCallback,
+) -> RuntimePaths:
+    """Install and publish one verified generation under the recipe lock."""
+    from vntts.speech_worker import probe_speech_runtime, resolve_speech_runtime_paths
+
     try:
         with exclusive_advisory_lock(location / "installation.lock"):
             check_runtime_cancelled(cancellation)
