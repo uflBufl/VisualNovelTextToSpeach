@@ -4197,11 +4197,7 @@ class OfflineAudioPreparationDialog(QDialog):
         generate_after_input = self._generate_after_input
         self._generate_after_input = False
         self.preparing_inputs = False
-        self.cancel_button.setText("Cancel")
-        self.cancel_button.setEnabled(True)
-        self._set_import_controls(True)
-        if self._close_after_voice_cancel:
-            self.reject()
+        if self._finish_preparation_ui():
             return
         if error is None and not _is_generation_input_result(prepared):
             error = TypeError("Offline preparation returned an invalid input")
@@ -4317,11 +4313,7 @@ class OfflineAudioPreparationDialog(QDialog):
     def _generation_finished(self, result: object, error: Exception | None) -> None:
         self._stop_generation_progress()
         self.generating = False
-        self.cancel_button.setText("Cancel")
-        self.cancel_button.setEnabled(True)
-        self._set_import_controls(True)
-        if self._close_after_voice_cancel:
-            self.reject()
+        if self._finish_preparation_ui():
             return
         if error is None and not isinstance(
             result, (OfflineRecoveryResult, OfflineGenerationResult)
@@ -4382,11 +4374,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._stop_generation_progress()
         self.recovering = False
         self.progress_timer.stop()
-        self.cancel_button.setText("Cancel")
-        self.cancel_button.setEnabled(True)
-        self._set_import_controls(True)
-        if self._close_after_voice_cancel:
-            self.reject()
+        if self._finish_preparation_ui():
             return
         if error is None and not isinstance(result, OfflineRecoveryResult):
             error = TypeError("Automatic recovery returned an invalid result")
@@ -4460,11 +4448,7 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _publication_finished(self, result: object, error: Exception | None) -> None:
         self.publishing_pack = False
-        self.cancel_button.setText("Cancel")
-        self.cancel_button.setEnabled(True)
-        self._set_import_controls(True)
-        if self._close_after_voice_cancel:
-            self.reject()
+        if self._finish_preparation_ui():
             return
         if error is None and not isinstance(result, OfflinePackResult):
             error = TypeError("Offline pack save returned an invalid result")
@@ -4590,6 +4574,34 @@ class OfflineAudioPreparationDialog(QDialog):
         ):
             self._selection_changed()
 
+    def _pending_preparation_stage(
+        self, *, include_sequence: bool = False
+    ) -> str | None:
+        for active, label in (
+            (self.recovering, "automatic recovery"),
+            (self.publishing_pack, "final save"),
+            (self.generating, "generation"),
+            (self.preparing_inputs, "offline preparation"),
+            (
+                include_sequence and self.sequence_runner.active,
+                "playback sequence preparation",
+            ),
+            (self.auditioning_voices, "voice selection"),
+            (self.planning_voices, "voice matching"),
+        ):
+            if active:
+                return label
+        return None
+
+    def _finish_preparation_ui(self) -> bool:
+        self.cancel_button.setText("Cancel")
+        self.cancel_button.setEnabled(True)
+        self._set_import_controls(True)
+        if self._close_after_voice_cancel:
+            self.reject()
+            return True
+        return False
+
     def _cancel_or_reject(self) -> None:
         self._stop_generation_progress()
         if self.activating_saved:
@@ -4601,35 +4613,13 @@ class OfflineAudioPreparationDialog(QDialog):
             self.cancel_button.setEnabled(False)
             self.voice_panel.cancel()
             return
-        if (
-            self.planning_voices
-            or self.auditioning_voices
-            or self.preparing_inputs
-            or self.generating
-            or self.recovering
-            or self.publishing_pack
-            or self.sequence_runner.active
-        ):
+        stage = self._pending_preparation_stage(include_sequence=True)
+        if stage is not None:
             self._close_after_voice_cancel = True
             self.voice_cancel_event.set()
             if self.auditioning_voices:
                 self.voice_panel.cancel()
             self.cancel_button.setEnabled(False)
-            stage = (
-                "automatic recovery"
-                if self.recovering
-                else "final save"
-                if self.publishing_pack
-                else "generation"
-                if self.generating
-                else "offline preparation"
-                if self.preparing_inputs
-                else "playback sequence preparation"
-                if self.sequence_runner.active
-                else "voice selection"
-                if self.auditioning_voices
-                else "voice matching"
-            )
             self.resume_status.setText(f"Cancelling {stage}...")
             return
         if not self.importing:
@@ -4643,23 +4633,7 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._stop_generation_progress()
-        if self.activating_saved:
-            self._cancel_or_reject()
-            event.ignore()
-            return
-        if (
-            self.planning_voices
-            or self.auditioning_voices
-            or self.preparing_inputs
-            or self.generating
-            or self.recovering
-            or self.publishing_pack
-            or self.sequence_runner.active
-        ):
-            self._cancel_or_reject()
-            event.ignore()
-            return
-        if self.importing:
+        if self.has_pending_work() or self.sequence_runner.active:
             self._cancel_or_reject()
             event.ignore()
             return
@@ -4715,17 +4689,10 @@ class OfflineAudioPreparationDialog(QDialog):
         return True
 
     def has_pending_work(self) -> bool:
-        return any(
-            (
-                self.importing,
-                self.planning_voices,
-                self.auditioning_voices,
-                self.preparing_inputs,
-                self.generating,
-                self.recovering,
-                self.publishing_pack,
-                self.activating_saved,
-            )
+        return (
+            self.importing
+            or self.activating_saved
+            or self._pending_preparation_stage() is not None
         )
 
 
