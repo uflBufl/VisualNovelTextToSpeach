@@ -25,6 +25,7 @@ from vntts.audio_lifecycle import audio_lifecycle_context
 from vntts.diagnostics import macos_permission_warnings
 from vntts.document_identity import is_lowercase_sha256, sha256_file
 from vntts.json_types import decode_json
+from vntts.numeric_values import optional_finite_number
 from vntts.ocr_review import OCR_REVIEW_SCHEMA_VERSION, OCRReviewMetadata
 from vntts.onboarding import probe_audio_output, probe_tesseract
 from vntts.path_safety import open_regular_binary
@@ -343,14 +344,13 @@ class GenerationTimelineLog:
             for timeline in self.timelines.values():
                 for event in timeline["events"].values():
                     for name, (stage, field) in fields.items():
-                        value = event.get(field)
+                        value = optional_finite_number(event.get(field))
                         if (
                             event.get("stage") == stage
-                            and isinstance(value, (int, float))
-                            and not isinstance(value, bool)
+                            and value is not None
                             and value >= 0
                         ):
-                            samples[name].append(float(value))
+                            samples[name].append(value)
         return {
             name: {
                 "samples": len(values),
@@ -408,9 +408,8 @@ class GenerationTimelineLog:
             serialized.append(
                 {key: value for key, value in event.items() if key != "occurred_at"}
                 | {
-                    "elapsed_ms": round(
-                        (_timeline_occurred_at(event) - started_at) * 1000,
-                        3,
+                    "elapsed_ms": _sanitize_event_value(
+                        round((_timeline_occurred_at(event) - started_at) * 1000, 3)
                     )
                 }
             )
@@ -572,9 +571,10 @@ class PerformanceLog(RuntimeSupportLog):
     def record(
         self, operation: str, elapsed_ms: float, outcome: str, **details: object
     ) -> None:
-        if not math.isfinite(elapsed_ms):
+        number = optional_finite_number(elapsed_ms)
+        if number is None:
             return
-        if outcome == "complete" and elapsed_ms < 100:
+        if outcome == "complete" and number < 100:
             return
         self.add(
             "performance",
@@ -594,7 +594,7 @@ class PerformanceLog(RuntimeSupportLog):
             if (
                 not isinstance(operation, str)
                 or not isinstance(elapsed_ms, (int, float))
-                or isinstance(elapsed_ms, bool)
+                or optional_finite_number(elapsed_ms) is None
             ):
                 continue
             aggregate = summary.setdefault(
@@ -610,7 +610,17 @@ class PerformanceLog(RuntimeSupportLog):
                     aggregate[f"max_{name}"] = max(
                         aggregate.get(f"max_{name}", 0), value
                     )
-        return {"threshold_ms": 100, "summary": summary, "events": events}
+        return {
+            "threshold_ms": 100,
+            "summary": {
+                operation: {
+                    **aggregate,
+                    "total_ms": _sanitize_event_value(aggregate["total_ms"]),
+                }
+                for operation, aggregate in summary.items()
+            },
+            "events": events,
+        }
 
 
 performance_log = PerformanceLog()
@@ -879,7 +889,8 @@ class NativeSpeechLog(RuntimeSupportLog):
                 "dropped_events": max(0, self.total_events - len(events)),
                 "outcomes": dict(self.outcomes),
                 "request_seconds": {
-                    key: round(value, 3) for key, value in self.request_seconds.items()
+                    key: _sanitize_event_value(round(value, 3))
+                    for key, value in self.request_seconds.items()
                 },
                 "latest_runtime": self.latest_runtime,
                 "active_requests": list(self.active_requests.values()),

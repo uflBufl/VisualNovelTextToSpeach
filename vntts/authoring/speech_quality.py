@@ -15,6 +15,7 @@ from vntts_artifacts.audio import Pcm16MonoWavError, read_pcm16_mono_wav
 
 from vntts.authoring.failure_repair import safe_sentence_segments
 from vntts.authoring.generation_lease import BulkGenerationError
+from vntts.numeric_values import optional_finite_number as optional_finite_number
 
 SILENCE_DBFS = -45.0
 SILENCE_FRAME_MS = 80
@@ -26,16 +27,6 @@ NOTABLE_SILENCE_SPAN_SECONDS = 0.5
 PAUSE_DIAGNOSIS_VERSION = 1
 LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION = 1
 SPEECH_QUALITY_ANALYSIS_VERSION = 2
-
-
-def optional_finite_number(value: object) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    try:
-        number = float(value)
-    except OverflowError:
-        return None
-    return number if math.isfinite(number) else None
 
 
 class SpeechSilenceValidationError(BulkGenerationError):

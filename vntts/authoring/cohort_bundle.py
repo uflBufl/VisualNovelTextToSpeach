@@ -40,9 +40,9 @@ from vntts.authoring.cohort_review import (
 from vntts.authoring.cohort_review import (
     _validated_plan_document as _validate_plan_document,
 )
-from vntts.authoring.speech_quality import optional_finite_number
 from vntts.authoring.workbench import ReviewItem
 from vntts.json_types import decode_json, is_json_object
+from vntts.numeric_values import optional_finite_number
 from vntts.path_safety import read_regular_bytes
 
 _canonical_sha256 = canonical_document_sha256

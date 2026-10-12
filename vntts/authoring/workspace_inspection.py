@@ -64,7 +64,6 @@ from vntts.authoring.source_reference_bindings import (
 from vntts.authoring.speech_quality import (
     SPEECH_QUALITY_ANALYSIS_VERSION,
     measure_generated_speech_bytes,
-    optional_finite_number,
 )
 from vntts.authoring.workbench_contracts import (
     ActiveAttempt,
@@ -116,6 +115,7 @@ from vntts.authoring.workspace_state import (
 )
 from vntts.document_identity import canonical_document_sha256, sha256_file
 from vntts.json_types import decode_json, has_schema_version
+from vntts.numeric_values import optional_finite_number
 from vntts.path_safety import read_regular_bytes
 from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.voices import (

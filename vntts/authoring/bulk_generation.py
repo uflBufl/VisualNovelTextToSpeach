@@ -197,7 +197,6 @@ from vntts.authoring.speech_quality import (
     NOTABLE_SILENCE_SPAN_SECONDS,
     SpeechSilenceValidationError,
     inspect_generated_speech_samples,
-    optional_finite_number,
 )
 from vntts.authoring.speech_quality import (
     MAX_SILENCE_RATIO as MAX_SILENCE_RATIO,
@@ -240,6 +239,7 @@ from vntts.authoring.workspace_foundation import (
 from vntts.document_identity import file_sha256, is_lowercase_sha256, sha256_file
 from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
+from vntts.numeric_values import optional_finite_number
 from vntts.path_safety import read_regular_bytes
 from vntts.speech_presentation import speech_runtime_label
 from vntts.synthesis import (
