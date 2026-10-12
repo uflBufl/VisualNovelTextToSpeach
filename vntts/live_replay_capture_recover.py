@@ -1017,12 +1017,9 @@ def _publish_recovered_corpus(
     }
     report_document: JSONDocument = {
         "schema": "vntts.live-replay-capture-report",
-        "schema_version": 1,
         **capture_authority,
         "duplicate_fingerprints_skipped": 0,
         "uncertain_observations_skipped": 0,
-        "unresolved_observation_count": 0,
-        "observation_ledger": observation_binding,
         "boundaries": [],
         "dialogue": [
             {
