@@ -285,6 +285,41 @@ class StreamingConfigurationTest(unittest.TestCase):
                     )
                     self.assertEqual(result.streaming_first_chunk_frames, expected)
 
+    def test_derived_sample_overflow_is_refused_before_cache_construction(self):
+        for backend, names in (
+            (
+                PocketTTSVoiceRouterBackend,
+                ("cached_stream_chunk_seconds", "stream_prefill_seconds"),
+            ),
+            (MossTTSVoiceRouterBackend, ("cached_stream_chunk_seconds",)),
+            (QwenTTSVoiceRouterBackend, ("cached_stream_chunk_seconds",)),
+        ):
+            for name in names:
+                for value in (sys.float_info.max, -sys.float_info.max):
+                    with self.subTest(
+                        backend=backend.name, option=name, negative=value < 0
+                    ):
+                        factory = Mock(return_value=SimpleNamespace(sample_rate=48000))
+                        with (
+                            patch("vntts.qwen_backend.sys.platform", "win32"),
+                            patch(
+                                "vntts.speech_backend.PersistentAudioCache",
+                                side_effect=AssertionError("cache reached"),
+                            ) as cache,
+                            self.assertRaisesRegex(
+                                TTSConfigurationError,
+                                name + " exceeds the sample count range",
+                            ) as caught,
+                        ):
+                            backend(
+                                CharacterVoiceRegistry(),
+                                model_factory=factory,
+                                **{name: value},
+                            )
+                        self.assertIsInstance(caught.exception.__cause__, OverflowError)
+                        self.assertEqual(factory.call_count, 1)
+                        cache.assert_not_called()
+
     def test_thread_limit_does_not_restrict_other_streaming_durations(self):
         for backend in (MossTTSVoiceRouterBackend, QwenTTSVoiceRouterBackend):
             with (
@@ -304,3 +339,32 @@ class StreamingConfigurationTest(unittest.TestCase):
                 self.assertEqual(result.streaming_interval, sys.float_info.max)
                 self.assertEqual(result.streaming_first_chunk_frames, 4)
                 self.assertEqual(result.cached_stream_chunk_samples, 9600)
+
+    def test_representable_large_sample_count_uses_actual_low_rate(self):
+        for backend in (
+            PocketTTSVoiceRouterBackend,
+            MossTTSVoiceRouterBackend,
+            QwenTTSVoiceRouterBackend,
+        ):
+            with (
+                self.subTest(backend=backend.name),
+                TemporaryDirectory() as directory,
+                patch("vntts.qwen_backend.sys.platform", "win32"),
+                patch.dict("sys.modules", {"torch": SimpleNamespace()}),
+            ):
+                options = {"cached_stream_chunk_seconds": sys.float_info.max}
+                if backend is PocketTTSVoiceRouterBackend:
+                    options["stream_prefill_seconds"] = sys.float_info.max
+                result = backend(
+                    CharacterVoiceRegistry(),
+                    model_factory=Mock(return_value=SimpleNamespace(sample_rate=1)),
+                    persistent_audio_cache_directory=Path(directory) / "cache",
+                    **options,
+                )
+                self.assertEqual(
+                    result.cached_stream_chunk_samples, round(sys.float_info.max)
+                )
+                if backend is PocketTTSVoiceRouterBackend:
+                    self.assertEqual(
+                        result.stream_prefill_samples, round(sys.float_info.max)
+                    )

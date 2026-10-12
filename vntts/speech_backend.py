@@ -1073,6 +1073,13 @@ def _moss_streaming_options(
     return cached_seconds, first_frames, interval, join_timeout
 
 
+def _streaming_samples(sample_rate: int, seconds: float, name: str) -> int:
+    try:
+        return max(1, round(sample_rate * seconds))
+    except OverflowError as error:
+        raise TTSConfigurationError(f"{name} exceeds the sample count range") from error
+
+
 class PocketTTSVoiceRouterBackend:
     """Experimental CPU voice cloning with first-chunk streaming playback."""
 
@@ -1136,6 +1143,12 @@ class PocketTTSVoiceRouterBackend:
         self.clock = clock
         self.playback_latency = playback_latency
         self.sample_rate = int(self.model.sample_rate)
+        self.cached_stream_chunk_samples = _streaming_samples(
+            self.sample_rate, cached_stream_chunk_seconds, "cached_stream_chunk_seconds"
+        )
+        self.stream_prefill_samples = _streaming_samples(
+            self.sample_rate, stream_prefill_seconds, "stream_prefill_seconds"
+        )
         self.voice_states: dict[str, object] = {}
         self.voice_state_cache_directory = Path(
             voice_state_cache_directory
@@ -1174,12 +1187,6 @@ class PocketTTSVoiceRouterBackend:
             backend=self.name,
             model=self.model,
             sample_rate=self.sample_rate,
-        )
-        self.cached_stream_chunk_samples = max(
-            1, round(self.sample_rate * cached_stream_chunk_seconds)
-        )
-        self.stream_prefill_samples = max(
-            1, round(self.sample_rate * stream_prefill_seconds)
         )
         self.set_volume(volume)
         self.set_speed(1.0)
@@ -1819,6 +1826,9 @@ class MossTTSVoiceRouterBackend:
         self.clock = clock
         self.playback_latency = playback_latency
         self.sample_rate = int(getattr(self.model, "sample_rate", 48_000))
+        self.cached_stream_chunk_samples = _streaming_samples(
+            self.sample_rate, cached_stream_chunk_seconds, "cached_stream_chunk_seconds"
+        )
         self.prompt_audio_codes: dict[str, object] = {}
         self.prompt_cache_directory = Path(
             prompt_cache_directory
@@ -1860,9 +1870,6 @@ class MossTTSVoiceRouterBackend:
             model=self.model,
             model_identity=self.model_name,
             sample_rate=self.sample_rate,
-        )
-        self.cached_stream_chunk_samples = max(
-            1, round(self.sample_rate * cached_stream_chunk_seconds)
         )
         self.streaming_first_chunk_frames = streaming_first_chunk_frames
         self.streaming_interval = streaming_interval

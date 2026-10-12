@@ -1,10 +1,5 @@
 # TODO
 
-## Continue model-dependent streaming option admission
-
-- [ ] Qualify direct Pocket/MOSS constructor duration admission in `vntts/speech_backend.py`: cached chunks, Pocket prefill and MOSS consumer join/interval use broader `float` coercion and model-dependent sample rates. Reproduce invalid/overflowing values with counted model factories and isolated caches, inventory strings/SupportsFloat, ordinary negative floors and existing errors before choosing a shared pre-load validation owner. Do not spread the C++ strict int/float contract or fixed48kHz rate here.
-- [ ] For confirmed equivalent gaps, normalize invalid durations before loading models, compute cached/prefill sample counts from the actual model rate, reuse the platform thread bound only for Thread.join, preserve other timeout contracts and valid coercions. Run local-first/fresh-main affected selectors, actual former/current acquisition and compatibility proofs, independently review, commit and push each qualified repair; remove only completed steps.
-
 ## Continue regular-file admission through remaining integrity owners
 
 - [ ] On Windows, qualify persistent NPY1/2/3 cache reads with the pinned NumPy internal header parser: malformed declared extents must miss before allocation, valid mono/stereo/Fortran/endian entries must retain conversion, and truncation must close the source without recency changes. Qualify candidate-directory replacement/alias refusal before cleanup, active claims and normal retry with native directory identities/locking/rmtree. Mac proofs do not establish Windows behavior.
