@@ -271,8 +271,6 @@ class IncrementalDialogTracker:
         self.history.extend(candidate_history)
         stable_text = os.path.commonprefix(candidate_history)
         self.stable_text = stable_text
-        self.last_stable_change_at = now
-        self._clear_pending_dialog()
         return self._emit(stable_text, flush=False)
 
     def _matches_pending_dialog(self, character: str, text: str) -> bool:
@@ -299,21 +297,12 @@ class IncrementalDialogTracker:
         )
 
     def _start_dialog(self, character: str, text: str, now: float) -> None:
-        self.generation += 1
+        self._clear_dialog()
         self.character = character
         self.latest_text = text
-        self.committed_text = ""
-        self.conflicting_observation = False
-        self.transition_expected = False
         self.last_change_at = now
-        self.stable_text = ""
         self.last_stable_change_at = now
-        self.history.clear()
         self.history.append(text)
-        self.next_chunk_ordinal = 1
-        self.silent_event_id = None
-        self.canonical_line_id = None
-        self._clear_pending_dialog()
 
     def _clear_dialog(self) -> None:
         self.generation += 1

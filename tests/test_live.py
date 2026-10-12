@@ -1034,6 +1034,36 @@ class IncrementalDialogTrackerTest(unittest.TestCase):
             [SpeechChunk(2, "Bea", "Fallback reply.")],
         )
 
+    def test_pending_dialog_reset_discards_conflicting_and_canonical_state(self):
+        tracker = self.create_tracker()
+        tracker.observe_canonical("Ada", "Original line.", "original")
+        tracker.expect_new_dialog()
+        self.clock.advance(0.3)
+        self.assertEqual(tracker.observe("Bea", "Next line."), [])
+        self.assertEqual(tracker.pending_character, "Bea")
+        self.assertEqual(tracker.generation, 1)
+        self.assertEqual(
+            tracker.observe("Bea", "Next line."), [SpeechChunk(2, "Bea", "Next line.")]
+        )
+        self.assertIsNone(tracker.canonical_line_id)
+        self.assertIsNone(tracker.silent_event_id)
+        self.assertFalse(tracker.transition_expected)
+        self.assertFalse(tracker.conflicting_observation)
+        self.assertEqual(tracker.pending_character, None)
+        self.assertEqual(tuple(tracker.pending_history), ())
+        self.assertEqual(tracker.last_change_at, self.clock())
+        self.assertEqual(tracker.last_stable_change_at, self.clock())
+        self.assertEqual(tracker.observe("Bea", ""), [])
+        self.assertEqual(tracker.generation, 3)
+        self.assertEqual(tracker.history.maxlen, 2)
+        self.assertEqual(tuple(tracker.history), ())
+        self.assertIsNone(tracker.last_stable_change_at)
+        self.assertEqual(tracker.next_chunk_ordinal, 1)
+        self.assertTrue(tracker.observe_silent("silent"))
+        self.assertEqual(tracker.generation, 4)
+        self.assertTrue(tracker.is_idle_complete())
+
+
     def create_tracker(self, **options):
         self.clock = FakeClock()
         return IncrementalDialogTracker(clock=self.clock, **options)
