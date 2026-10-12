@@ -12,13 +12,14 @@ from typing import TypedDict
 from vntts.authoring.authority import write_json_document_no_replace
 from vntts.cleanup import temporary_directory
 from vntts.cli import cli_error, cli_messages
-from vntts.live_replay_sequence_seal import (
-    _decode_json,
+from vntts.json_types import is_json_object
+from vntts.live_replay_evidence import _decode_json, _read_regular_file
+from vntts.live_sequence import (
+    LiveSequenceEvent,
+    LiveSequencePlan,
     _next_visible_events,
     _ordered_visible_events,
-    _read_regular_file,
 )
-from vntts.live_sequence import LiveSequenceEvent, LiveSequencePlan
 
 
 class CoverageAuthority(TypedDict):
@@ -157,7 +158,7 @@ def _load_coverage_source(
             f"Review is not successful sealed replay evidence: {review_path}"
         )
     authority = review_document.get("authority")
-    if not isinstance(authority, dict):
+    if not is_json_object(authority):
         raise LiveReplayCoverageError(f"Review authority is missing: {review_path}")
     if authority.get("story_index_sha256") != story_sha256:
         raise LiveReplayCoverageError(
@@ -197,7 +198,7 @@ def _review_mappings(
     event_ids: list[str] = []
     source_review_required: list[str] = []
     for mapping in mappings:
-        if not isinstance(mapping, dict):
+        if not is_json_object(mapping):
             raise LiveReplayCoverageError(f"Review mapping is invalid: {review_path}")
         event_id = str(mapping.get("event_id") or "")
         if event_id not in plan.events or event_id not in event_positions:

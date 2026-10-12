@@ -30,21 +30,26 @@ from vntts.dialog_capture import (
     is_standalone_ellipsis_text,
 )
 from vntts.document_identity import sha256_file
-from vntts.live_replay_sequence_seal import (
-    _CAPTURE_OBSERVATION_STATUSES,
+from vntts.live_replay_evidence import (
     SequenceReplaySealError,
     _decode_json,
-    _next_visible_events,
-    _ordered_visible_events,
-    _read_contained,
     _read_regular_file,
+)
+from vntts.live_replay_sequence_seal import (
+    _CAPTURE_OBSERVATION_STATUSES,
+    _read_contained,
     _required_sha256,
     _validate_capture_report,
     _validate_recovery_plan_binding,
     _write_bytes,
     _write_json,
 )
-from vntts.live_sequence import LiveSequenceEvent, LiveSequencePlan
+from vntts.live_sequence import (
+    LiveSequenceEvent,
+    LiveSequencePlan,
+    _next_visible_events,
+    _ordered_visible_events,
+)
 from vntts.settings import load_app_settings
 
 CAPTURE_RECOVERY_VERSION = 1

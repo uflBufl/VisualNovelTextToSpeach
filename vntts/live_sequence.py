@@ -14,9 +14,12 @@ from vntts_artifacts.live_sequence import (
     LiveSequenceEvent,
     LiveSequencePlan,
     LiveSequencePlanError,
-    load_live_sequence_plan,
     write_live_sequence_plan,
 )
+from vntts_artifacts.live_sequence import (
+    load_live_sequence_plan,
+)
+
 
 __all__ = [
     "LIVE_SEQUENCE_SCHEMA",
@@ -32,6 +35,40 @@ __all__ = [
     "load_live_sequence_plan",
     "write_live_sequence_plan",
 ]
+
+
+def _ordered_visible_events(plan: LiveSequencePlan) -> tuple[LiveSequenceEvent, ...]:
+    return tuple(
+        sorted(
+            (
+                event
+                for event in plan.events.values()
+                if event.kind in {"speech", "silent"}
+            ),
+            key=lambda event: (str(event.chapter), event.sequence, event.event_id),
+        )
+    )
+
+
+def _next_visible_events(
+    plan: LiveSequencePlan, event: LiveSequenceEvent
+) -> tuple[LiveSequenceEvent, ...]:
+    pending = deque(event.successors)
+    visited: set[str] = set()
+    visible: list[LiveSequenceEvent] = []
+    while pending:
+        event_id = pending.popleft()
+        if event_id in visited:
+            continue
+        visited.add(event_id)
+        candidate = plan.events[event_id]
+        if candidate.kind in {"speech", "silent"}:
+            visible.append(candidate)
+            continue
+        if candidate.kind == "wait" or candidate.control == "manual":
+            continue
+        pending.extend(candidate.successors)
+    return tuple(visible)
 
 
 class StoryCursorError(RuntimeError):

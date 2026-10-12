@@ -12,7 +12,6 @@ from vntts.live_replay_coverage import (
     LiveReplayCoverageError,
     audit_live_replay_coverage,
 )
-from vntts.live_sequence import LiveSequencePlan
 
 
 class LiveReplayCoverageTest(unittest.TestCase):
@@ -349,19 +348,18 @@ class LiveReplayCoverageTest(unittest.TestCase):
             root = Path(directory).resolve()
             story, plan, first, second = self._fixture(root)
             original_story = story.read_bytes()
-            real_load = LiveSequencePlan.load
-            mutated = False
+            import vntts_artifacts.live_sequence as artifacts
 
-            def load_after_mutation(plan_path, story_path):
-                nonlocal mutated
-                if not mutated and story_path == story:
-                    story.write_bytes(b"mutated after snapshot")
-                    mutated = True
-                return real_load(plan_path, story_path)
+            real_load = artifacts._load_story_lines
+            parsed_paths = []
 
-            with patch(
-                "vntts.live_replay_coverage.LiveSequencePlan.load",
-                side_effect=load_after_mutation,
+            def load_after_mutation(story_path):
+                story.write_bytes(b"mutated after snapshot")
+                parsed_paths.append(Path(story_path))
+                return real_load(story_path)
+
+            with patch.object(
+                artifacts, "_load_story_lines", side_effect=load_after_mutation
             ):
                 _path, report = audit_live_replay_coverage(
                     root / "mutation-safe.json",
@@ -370,7 +368,13 @@ class LiveReplayCoverageTest(unittest.TestCase):
                     reviews=(first, second),
                 )
             self.assertTrue(report["technical_coverage_complete"])
-            self.assertFalse(mutated)
+            self.assertEqual(len(parsed_paths), 1)
+            self.assertNotEqual(parsed_paths[0], story)
+            self.assertFalse(parsed_paths[0].exists())
+            self.assertEqual(
+                report["authority"]["story_index_sha256"],
+                hashlib.sha256(original_story).hexdigest(),
+            )
             story.write_bytes(original_story)
 
 
