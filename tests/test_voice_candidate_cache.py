@@ -26,6 +26,121 @@ class VoiceCandidateCacheTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
+    def test_directory_replacement_during_inspection_defers_all_deletions(self) -> None:
+        for phase in ("tree", "references"):
+            with self.subTest(phase=phase):
+                old = self._candidate("old").resolve()
+                changed = self._candidate("changed").resolve()
+                cache.os.utime(old, ns=(1, 1))
+                cache.os.utime(changed, ns=(2, 2))
+                original = self.root.parent / "inspected-original"
+                foreign = b"uninspected replacement"
+                native_tree = cache._safe_candidate_tree
+                native_references = cache._candidate_references
+
+                def replace():
+                    changed.rename(original)
+                    changed.mkdir()
+                    (changed / "manifest.json").write_bytes(b"{}")
+                    (changed / "foreign.wav").write_bytes(foreign)
+
+                def inspect_tree(directory):
+                    result = native_tree(directory)
+                    if directory == changed and phase == "tree":
+                        replace()
+                    return result
+
+                def inspect_references(*args, **kwargs):
+                    result = native_references(*args, **kwargs)
+                    if phase == "references":
+                        replace()
+                    return result
+
+                with (
+                    patch.object(
+                        cache, "_safe_candidate_tree", side_effect=inspect_tree
+                    ),
+                    patch.object(
+                        cache, "_candidate_references", side_effect=inspect_references
+                    ),
+                    patch.object(cache.shutil, "rmtree") as delete,
+                ):
+                    self.assertEqual(
+                        prune_obsolete_voice_candidate_caches(self.root, self.jobs), ()
+                    )
+                delete.assert_not_called()
+                self.assertTrue(old.exists())
+                self.assertEqual((changed / "foreign.wav").read_bytes(), foreign)
+                self.assertEqual((original / "manifest.json").read_bytes(), b"{}")
+                changed.rename(self.root.parent / f"foreign-{phase}")
+                original.rename(changed)
+                self.assertEqual(
+                    prune_obsolete_voice_candidate_caches(self.root, self.jobs),
+                    (old, changed),
+                )
+
+    def test_changed_identity_before_deletion_preserves_directory_and_recovers(
+        self,
+    ) -> None:
+        for change in ("replacement", "metadata", "alias"):
+            with self.subTest(change=change):
+                directory = self._candidate("old").resolve()
+                native_remove = cache._remove_candidate
+                original = self.root.parent / "inspected-original"
+                observed = []
+
+                def replace_before_remove(candidate, *args):
+                    observed.append(candidate)
+                    if change == "metadata":
+                        status = directory.stat()
+                        (directory / "foreign.wav").write_bytes(b"new content")
+                        cache.os.utime(
+                            directory,
+                            ns=(status.st_atime_ns, status.st_mtime_ns + 1_000_000),
+                        )
+                    else:
+                        directory.rename(original)
+                        if change == "alias":
+                            symlink_or_skip(
+                                directory, original, target_is_directory=True
+                            )
+                        else:
+                            directory.mkdir()
+                            (directory / "manifest.json").write_bytes(b"{}")
+                            (directory / "foreign.wav").write_bytes(b"new content")
+                    return native_remove(candidate, *args)
+
+                with (
+                    patch.object(
+                        cache, "_remove_candidate", side_effect=replace_before_remove
+                    ),
+                    patch.object(cache.shutil, "rmtree") as delete,
+                ):
+                    self.assertEqual(
+                        prune_obsolete_voice_candidate_caches(self.root, self.jobs), ()
+                    )
+                self.assertEqual(observed, [directory])
+                delete.assert_not_called()
+                self.assertTrue(directory.exists())
+                if change == "metadata":
+                    self.assertEqual(
+                        (directory / "foreign.wav").read_bytes(), b"new content"
+                    )
+                else:
+                    self.assertEqual((original / "manifest.json").read_bytes(), b"{}")
+                    if change == "alias":
+                        directory.unlink()
+                    else:
+                        self.assertEqual(
+                            (directory / "foreign.wav").read_bytes(), b"new content"
+                        )
+                        directory.rename(self.root.parent / "foreign-replacement")
+                    original.rename(directory)
+                self.assertEqual(
+                    prune_obsolete_voice_candidate_caches(self.root, self.jobs),
+                    (directory,),
+                )
+
     def test_oversized_directory_scan_stops_and_closes_without_deleting(self) -> None:
         old = self._candidate("old")
         job = self.jobs / ("a" * 24)

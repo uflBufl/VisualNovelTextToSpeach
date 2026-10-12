@@ -89,17 +89,23 @@ def prune_obsolete_voice_candidate_caches(
             candidates = _candidate_directories(root)
             if not candidates:
                 return ()
+            signatures = {directory: _signature(directory) for directory in candidates}
+            if any(signature is None for signature in signatures.values()):
+                return ()
             if not all(_safe_candidate_tree(directory) for directory in candidates):
                 return ()
             referenced = _candidate_references(root, jobs, candidates, protected_paths)
-            if referenced is None:
+            if referenced is None or any(
+                _signature(directory) != signatures[directory]
+                for directory in candidates
+            ):
                 return ()
 
             removed: list[Path] = []
             for directory in candidates:
                 if directory.name in referenced or len(removed) == _MAX_DELETIONS:
                     continue
-                if not _remove_candidate(directory):
+                if not _remove_candidate(directory, signatures[directory]):
                     return tuple(removed)
                 removed.append(directory)
             return tuple(removed)
@@ -123,8 +129,7 @@ def _candidate_references(
     return referenced | active | references
 
 
-def _remove_candidate(directory: Path) -> bool:
-    signature = _signature(directory)
+def _remove_candidate(directory: Path, signature: tuple[int, int, int] | None) -> bool:
     if signature is None or _signature(directory) != signature:
         return False
     try:
@@ -366,8 +371,12 @@ def _safe_candidate_tree(directory: Path) -> bool:
 
 def _signature(path: Path) -> tuple[int, int, int] | None:
     try:
-        status = path.stat()
+        if _unsafe(path):
+            return None
+        status = path.stat(follow_symlinks=False)
     except OSError:
+        return None
+    if not S_ISDIR(status.st_mode):
         return None
     return status.st_dev, status.st_ino, status.st_mtime_ns
 
