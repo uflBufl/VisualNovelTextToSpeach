@@ -19,6 +19,14 @@ def _punctuation_boundaries(text: str, punctuation: str) -> Iterator[int]:
             yield following
 
 
+def _related_ocr_text(previous: str, text: str, prefix_length: int) -> bool:
+    meaningful_prefix = min(8, max(1, len(previous) // 3))
+    return (
+        prefix_length >= meaningful_prefix
+        or SequenceMatcher(None, previous, text).ratio() >= 0.5
+    )
+
+
 @dataclass(frozen=True)
 class SpeechChunk:
     generation: int
@@ -239,13 +247,10 @@ class IncrementalDialogTracker:
         if text == self.latest_text or text.startswith(self.latest_text):
             return False
 
-        common_prefix = os.path.commonprefix([self.latest_text, text])
-        if len(text) < self.committed_position and len(common_prefix) < len(text):
+        prefix_length = len(os.path.commonprefix([self.latest_text, text]))
+        if len(text) < self.committed_position and prefix_length < len(text):
             return True
-
-        similarity = SequenceMatcher(None, self.latest_text, text).ratio()
-        meaningful_prefix = min(8, max(1, len(self.latest_text) // 3))
-        return len(common_prefix) < meaningful_prefix and similarity < 0.5
+        return not _related_ocr_text(self.latest_text, text, prefix_length)
 
     def _is_speaker_noise_over_committed_text(self, character: str, text: str) -> bool:
         """Ignore a speaker wobble that still contains the spoken dialogue.
@@ -288,10 +293,9 @@ class IncrementalDialogTracker:
         previous = self.pending_history[-1]
         if text == previous or text.startswith(previous) or previous.startswith(text):
             return True
-        common_prefix = os.path.commonprefix([previous, text])
-        meaningful_prefix = min(8, max(1, len(previous) // 3))
-        similarity = SequenceMatcher(None, previous, text).ratio()
-        return len(common_prefix) >= meaningful_prefix or similarity >= 0.5
+        return _related_ocr_text(
+            previous, text, len(os.path.commonprefix([previous, text]))
+        )
 
     def _clear_pending_dialog(self) -> None:
         self.pending_character = None
