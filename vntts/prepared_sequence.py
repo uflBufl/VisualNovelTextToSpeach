@@ -226,9 +226,8 @@ def _required_file(value: PathInput, label: str) -> Path:
 
 
 def _chapters(chapters: Sequence[object]) -> tuple[str, ...]:
-    selected = tuple(
-        sorted({str(chapter).strip() for chapter in chapters if str(chapter).strip()})
-    )
+    normalized = (str(chapter).strip() for chapter in chapters)
+    selected = tuple(sorted({chapter for chapter in normalized if chapter}))
     if not selected:
         raise PreparedSequenceError("At least one story chapter is required.")
     return selected

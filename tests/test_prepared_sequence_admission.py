@@ -192,6 +192,33 @@ class PreparedSequenceAdmissionTest(unittest.TestCase):
                     recovered.live_sequence_plan.story_index_path, self.story
                 )
 
+    def test_chapter_objects_are_normalized_once_before_cached_plan_reuse(self):
+        class ChapterOnce:
+            calls = 0
+
+            def __str__(self):
+                self.calls += 1
+                if self.calls != 1:
+                    raise AssertionError("chapter converted twice")
+                return " 314501 "
+
+        fixtures.write_plan(self.output, self.story, self.bundle)
+        first, second = ChapterOnce(), ChapterOnce()
+        publisher = Mock()
+        plan = prepare_reverse1999_sequence(
+            self.story,
+            self.bundle,
+            (first, second, "", "314501"),
+            self.output,
+            command=("publisher",),
+            popen_factory=publisher,
+        )
+        self.assertEqual((first.calls, second.calls), (1, 1))
+        self.assertEqual(
+            tuple(chapter.chapter for chapter in plan.chapters), ("314501",)
+        )
+        publisher.assert_not_called()
+
     @unittest.skipUnless(
         hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "native FIFO"
     )
