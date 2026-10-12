@@ -1,3 +1,4 @@
+import sys
 import unittest
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
@@ -1034,6 +1035,36 @@ class IncrementalDialogTrackerTest(unittest.TestCase):
             [SpeechChunk(2, "Bea", "Fallback reply.")],
         )
 
+    def test_canonical_event_keeps_actual_history_without_prefilling_stability(self):
+        for stability_frames in (2, sys.maxsize):
+            with self.subTest(stability_frames=stability_frames):
+                tracker = self.create_tracker(stability_frames=stability_frames)
+                chunks = tracker.observe_canonical("Ada", "Canonical line.", "line-1")
+                self.assertEqual(len(chunks), 1)
+                self.assertEqual(
+                    (chunks[0].generation, chunks[0].ordinal, chunks[0].line_id),
+                    (1, 1, "line-1"),
+                )
+                self.assertEqual(tuple(tracker.history), ("Canonical line.",))
+                self.assertEqual(tracker.history.maxlen, stability_frames)
+                self.assertTrue(tracker.is_idle_complete())
+                self.assertEqual(
+                    tracker.observe_canonical("Ada", "Canonical line.", "line-1"), []
+                )
+                self.assertEqual(tracker.observe("Ada", "Canonical line. noise"), [])
+                self.assertEqual(tracker.flush(), [])
+                self.assertEqual(tracker.generation, 1)
+        tracker = self.create_tracker()
+        tracker.observe_canonical("Ada", "Canonical line.", "line-1")
+        tracker.expect_new_dialog()
+        self.assertEqual(tracker.observe("Bea", "A new reply."), [])
+        self.assertEqual(
+            tracker.observe("Bea", "A new reply."),
+            [SpeechChunk(2, "Bea", "A new reply.")],
+        )
+        self.assertEqual(tuple(tracker.pending_history), ())
+        self.assertEqual(tracker.next_chunk_ordinal, 2)
+
     def test_pending_dialog_reset_discards_conflicting_and_canonical_state(self):
         tracker = self.create_tracker()
         tracker.observe_canonical("Ada", "Original line.", "original")
@@ -1063,7 +1094,6 @@ class IncrementalDialogTrackerTest(unittest.TestCase):
         self.assertEqual(tracker.generation, 4)
         self.assertTrue(tracker.is_idle_complete())
 
-
     def test_punctuation_boundaries_preserve_decimals_ellipsis_and_clauses(self):
         for text, sentences in (
             (
@@ -1088,7 +1118,6 @@ class IncrementalDialogTrackerTest(unittest.TestCase):
         chunks = tracker.observe("Ada", "One, two; three: tail")
         self.assertEqual([chunk.text for chunk in chunks], ["One, two; three:"])
         self.assertEqual([chunk.text for chunk in tracker.flush()], ["tail"])
-
 
     def create_tracker(self, **options):
         self.clock = FakeClock()

@@ -195,8 +195,6 @@ class IncrementalDialogTracker:
         self._start_dialog(character, text, now)
         self.committed_text = text
         self.stable_text = text
-        self.history.clear()
-        self.history.extend([text] * self.stability_frames)
         self.next_chunk_ordinal = 2
         self.canonical_line_id = line_id
         return [
