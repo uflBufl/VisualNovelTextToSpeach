@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import io
-import math
 import os
 import shutil
 import stat
@@ -17,7 +16,7 @@ from dataclasses import asdict, dataclass
 from functools import partial
 from pathlib import Path, PurePosixPath
 from tempfile import mkdtemp
-from threading import Condition, Event, Lock, RLock, Thread
+from threading import TIMEOUT_MAX, Condition, Event, Lock, RLock, Thread
 from time import monotonic
 from typing import NotRequired, Protocol, TypeAlias, TypedDict
 
@@ -58,6 +57,7 @@ from vntts.live import (
     StableFrameRoute,
 )
 from vntts.live_sequence import LiveSequenceEvent, LiveSequencePlan, StoryCursor
+from vntts.numeric_values import optional_finite_number
 from vntts.ocr import DialogRegion
 from vntts.path_safety import open_regular_candidate
 from vntts.playback import PlaybackOutcome, PreparedPlayback, outcome_for_prepared
@@ -66,6 +66,8 @@ from vntts.speech_backend import SpeechBackendCapabilities
 from vntts.support import GenerationTimelineLog, generation_timeline_stages
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 from vntts.window_capture import WindowGeometry
+
+_REPLAY_TERMINAL_TIMEOUT_SECONDS = 10.0
 
 LIVE_REPLAY_CORPUS_VERSION = 2
 LIVE_REPLAY_CORPUS_VERSIONS = frozenset({1, LIVE_REPLAY_CORPUS_VERSION})
@@ -759,6 +761,34 @@ def _shutdown_legacy_replay(
         stops_succeeded = True
 
 
+def _positive_replay_seconds(value: float, name: str) -> float:
+    message = f"Live replay {name} must be finite and positive"
+    try:
+        seconds = optional_finite_number(float(value))
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError(message) from error
+    if seconds is None or seconds <= 0:
+        raise ValueError(message)
+    return seconds
+
+
+def _replay_timeout_seconds(value: float) -> float:
+    seconds = _positive_replay_seconds(value, "timeout")
+    if seconds > TIMEOUT_MAX:
+        raise ValueError("Live replay timeout exceeds the thread timeout range")
+    return seconds
+
+
+def _replay_confirmation_seconds(interval_seconds: float) -> float:
+    interval = _positive_replay_seconds(interval_seconds, "interval")
+    confirmation = max(5.0, interval * 10)
+    if confirmation >= _REPLAY_TERMINAL_TIMEOUT_SECONDS:
+        raise ValueError(
+            "Live replay interval must keep confirmation before terminal timeout"
+        )
+    return confirmation
+
+
 class LiveReplayRunner:
     def __init__(
         self,
@@ -774,15 +804,14 @@ class LiveReplayRunner:
         self.corpus = corpus
         self.uses_default_recognizer = recognizer is None
         self.recognizer = recognizer or _recognize_replay_frame
-        self.interval_seconds = float(interval_seconds)
-        self.timeout_seconds = float(timeout_seconds)
-        if not math.isfinite(self.interval_seconds) or self.interval_seconds <= 0:
-            raise ValueError("Live replay interval must be finite and positive")
-        if not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
-            raise ValueError("Live replay timeout must be finite and positive")
+        self.interval_seconds = _positive_replay_seconds(interval_seconds, "interval")
+        self.timeout_seconds = _replay_timeout_seconds(timeout_seconds)
+        _replay_confirmation_seconds(self.interval_seconds)
         self.audio_source_policy = audio_source_policy
 
     def run(self) -> ReplayReport:
+        _replay_confirmation_seconds(self.interval_seconds)
+        _replay_timeout_seconds(self.timeout_seconds)
         snapshots = _ReplaySnapshots()
         with cleanup_on_exit(snapshots.close, description="Replay snapshot cleanup"):
             with (
@@ -1009,10 +1038,10 @@ class LiveReplayRunner:
             },
             auto_advance=frame_source.advance,
             auto_advance_delay_seconds=self.interval_seconds,
-            auto_advance_confirmation_timeout_seconds=max(
-                5.0,
-                self.interval_seconds * 10,
+            auto_advance_confirmation_timeout_seconds=_replay_confirmation_seconds(
+                self.interval_seconds
             ),
+            auto_advance_terminal_timeout_seconds=_REPLAY_TERMINAL_TIMEOUT_SECONDS,
             auto_advance_state_changed=lambda state, generation, attempt: (
                 advance_states.append(
                     {
@@ -1344,10 +1373,10 @@ class LiveReplayRunner:
             auto_advance=controller._live_auto_advance_callback(),
             require_visible_auto_advance=mode == "audio-auto",
             auto_advance_delay_seconds=self.interval_seconds,
-            auto_advance_confirmation_timeout_seconds=max(
-                5.0,
-                self.interval_seconds * 10,
+            auto_advance_confirmation_timeout_seconds=_replay_confirmation_seconds(
+                self.interval_seconds
             ),
+            auto_advance_terminal_timeout_seconds=_REPLAY_TERMINAL_TIMEOUT_SECONDS,
             auto_advance_state_changed=auto_advance_state_changed,
             pipeline_event_handler=pipeline.record,
             max_speech_jobs=1,
@@ -2428,10 +2457,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     try:
+        timeout_seconds = _replay_timeout_seconds(arguments.timeout)
         corpus = load_live_replay_corpus(arguments.corpus)
         report = LiveReplayRunner(
             corpus,
-            timeout_seconds=arguments.timeout,
+            timeout_seconds=timeout_seconds,
             audio_source_policy=arguments.audio_source_policy,
         ).run()
         output = arguments.output or arguments.corpus.with_suffix(".report.json")
