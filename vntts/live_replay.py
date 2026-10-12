@@ -248,8 +248,8 @@ class ReplayAudioOutput:
             }
         )
 
-    def wait(self) -> object:
-        return type("ReplayStatus", (), {"output_underflow": False})()
+    def wait(self) -> None:
+        return None
 
     def stop(self) -> None:
         return None
@@ -1316,14 +1316,6 @@ class LiveReplayRunner:
                 return None
             return controller._live_sequence_line_id(character, text)
 
-        def record_pipeline_event(
-            stage: str,
-            generation: int,
-            occurred_at: float,
-            **details: object,
-        ) -> None:
-            pipeline.record(stage, generation, occurred_at, **details)
-
         reader = LiveDialogReader(
             capture_executor=executors[0],
             ocr_executor=executors[1],
@@ -1357,7 +1349,7 @@ class LiveReplayRunner:
                 self.interval_seconds * 10,
             ),
             auto_advance_state_changed=auto_advance_state_changed,
-            pipeline_event_handler=record_pipeline_event,
+            pipeline_event_handler=pipeline.record,
             max_speech_jobs=1,
             first_pcm_on_prepare=False,
             interval_seconds=live_configuration["interval_seconds"],
@@ -1486,10 +1478,7 @@ class LiveReplayRunner:
 
 
 def load_live_replay_corpus(path: str | Path) -> LiveReplayCorpus:
-    path, payload, document = _read_replay_document(path)
-    schema_version = document["schema_version"]
-    if isinstance(schema_version, bool) or not isinstance(schema_version, int):
-        raise ValueError("Live replay schema_version must be an integer")
+    path, payload, document, schema_version = _read_replay_document(path)
     name = _replay_string(document.get("name"), "Live replay name", path.stem)
     fixture_kind = _replay_string(
         document.get("fixture_kind"),
@@ -1771,7 +1760,7 @@ def _fingerprint_replay_frame(
     return fingerprint, observation, identity
 
 
-def _read_replay_document(value: str | Path) -> tuple[Path, bytes, JsonObject]:
+def _read_replay_document(value: str | Path) -> tuple[Path, bytes, JsonObject, int]:
     selected_path = Path(value).expanduser()
     if selected_path.is_symlink():
         raise ValueError(f"Live replay corpus must not be a symlink: {selected_path}")
@@ -1788,7 +1777,7 @@ def _read_replay_document(value: str | Path) -> tuple[Path, bytes, JsonObject]:
         or version not in LIVE_REPLAY_CORPUS_VERSIONS
     ):
         raise ValueError(f"unsupported live replay corpus schema version: {version}")
-    return path, payload, document
+    return path, payload, document, version
 
 
 def _decode_json_object(payload: bytes, document_name: str) -> JsonObject:

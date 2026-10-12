@@ -399,8 +399,7 @@ class LiveReplayCaptureSession:
 
     def finish(self) -> CapturedReplayResult:
         """Validate captured bytes and publish a replay corpus plus review report."""
-        if self.finished:
-            raise LiveReplayCaptureError("Replay capture is already finished")
+        self._ensure_open()
         self._finalize_active("capture-finished")
         if not self.dialogue:
             raise LiveReplayCaptureError("Replay capture contains no accepted dialogue")
@@ -441,12 +440,9 @@ class LiveReplayCaptureSession:
         }
         report_document = {
             "schema": "vntts.live-replay-capture-report",
-            "schema_version": LIVE_REPLAY_CAPTURE_VERSION,
             **capture,
             "duplicate_fingerprints_skipped": self.duplicate_fingerprints,
             "uncertain_observations_skipped": self.uncertain_observations,
-            "unresolved_observation_count": self.unresolved_observations,
-            "observation_ledger": ledger_binding,
             "boundaries": self.boundaries,
             "dialogue": [
                 {
@@ -514,10 +510,6 @@ class LiveReplayCaptureSession:
         item["boundary_reason"] = reason
         line = item.get("story_line")
         match_result = item.get("story_match", "story-index-unavailable")
-        if self.story_resolver is not None and "story_line" not in item:
-            line, match_result = self.story_resolver.resolve_exact_with_result(
-                item["observed_character"], item["observed_text"]
-            )
         item["story_line"] = line
         item["story_match"] = match_result
         self.dialogue.append(item)

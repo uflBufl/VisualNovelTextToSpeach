@@ -342,7 +342,7 @@
       "path": "vntts/live_replay.py",
       "scope": "LiveReplayRunner._run_sequence",
       "count": 1,
-      "maximum": 25
+      "maximum": 24
     },
     {
       "code": "C901",
@@ -363,7 +363,7 @@
       "path": "vntts/live_replay.py",
       "scope": "load_live_replay_corpus",
       "count": 1,
-      "maximum": 16
+      "maximum": 15
     },
     {
       "code": "C901",
@@ -832,7 +832,7 @@
       "path": "vntts/live_replay.py",
       "scope": "load_live_replay_corpus",
       "count": 1,
-      "maximum": 16
+      "maximum": 15
     },
     {
       "code": "PLR0912",
@@ -1308,14 +1308,14 @@
       "path": "vntts/live_replay.py",
       "scope": "LiveReplayRunner._run_sequence",
       "count": 1,
-      "maximum": 109
+      "maximum": 107
     },
     {
       "code": "PLR0915",
       "path": "vntts/live_replay.py",
       "scope": "load_live_replay_corpus",
       "count": 1,
-      "maximum": 58
+      "maximum": 55
     },
     {
       "code": "PLR0915",
