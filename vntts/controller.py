@@ -1043,7 +1043,7 @@ class AppController:
             self._refresh_diagnostic_metrics()
         return choice.label, text
 
-    def _speak_with_live_backend(self, character: str, text: str) -> object:
+    def _speak_with_live_backend(self, character: str, text: str) -> bool:
         live_backend: object = self.speech_backend
         if isinstance(live_backend, GeneratedAudioFallbackBackend):
             live_backend = live_backend.live_backend

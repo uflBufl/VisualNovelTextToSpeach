@@ -1,8 +1,9 @@
 """Typed preparation and playback results shared by live speech backends."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 from numpy.typing import NDArray
@@ -62,6 +63,18 @@ class PlaybackOutcome:
             PlaybackStatus.COMPLETED,
             PlaybackStatus.PASSTHROUGH_UNOBSERVED,
         }
+
+
+@runtime_checkable
+class TypedPlaybackBackend(Protocol):
+    def prepare_playback(self, character: str, text: str) -> PreparedPlayback: ...
+
+    def play_prepared(
+        self,
+        prepared: PreparedPlayback,
+        *,
+        playback_guard: Callable[[], bool] | None = None,
+    ) -> PlaybackOutcome: ...
 
 
 class PreparedPlaybackBackend(Protocol):

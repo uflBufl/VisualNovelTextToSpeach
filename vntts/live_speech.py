@@ -1,25 +1,14 @@
 """Typed preparation/playback helpers shared by live speech entry points."""
 
 from collections.abc import Callable
-from typing import Protocol
 
 from vntts.playback import PlaybackOutcome, PlaybackStatus, PreparedPlayback
+from vntts.playback import TypedPlaybackBackend as TypedPlaybackBackend
 from vntts.services.tts_engine import (
     AudioPlaybackError,
     TTSConfigurationError,
     TTSSynthesisError,
 )
-
-
-class TypedPlaybackBackend(Protocol):
-    def prepare_playback(self, character: str, text: str) -> PreparedPlayback: ...
-
-    def play_prepared(
-        self,
-        prepared: PreparedPlayback,
-        *,
-        playback_guard: Callable[[], bool] | None = None,
-    ) -> PlaybackOutcome: ...
 
 
 def play_typed_text(

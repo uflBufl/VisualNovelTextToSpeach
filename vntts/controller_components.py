@@ -37,6 +37,7 @@ from vntts.live import IncrementalDialogTracker, LivePipelineMetrics
 from vntts.live_snapshot import read_live_snapshot
 from vntts.live_speech import play_typed_text
 from vntts.playback import PlaybackOutcome, PreparedPlayback
+from vntts.playback import TypedPlaybackBackend as _TypedPlaybackBackend
 from vntts.runtime_config import (
     get_auto_advance_delay_seconds,
     get_tts_configuration,
@@ -72,18 +73,6 @@ class _SpeechChunk(Protocol):
 class _Cancellation(Protocol):
     def is_set(self) -> bool: ...
     def set(self) -> None: ...
-
-
-@runtime_checkable
-class _TypedPlaybackBackend(Protocol):
-    def prepare_playback(self, character: str, text: str) -> PreparedPlayback: ...
-
-    def play_prepared(
-        self,
-        prepared: PreparedPlayback,
-        *,
-        playback_guard: Callable[[], bool] | None = None,
-    ) -> PlaybackOutcome: ...
 
 
 @runtime_checkable
@@ -184,7 +173,7 @@ def speak_live_chunk(
     voice_router: _TypedPlaybackBackend,
     chunk: _SpeechChunk,
     playback_guard: Callable[[], bool] | None = None,
-) -> object:
+) -> bool | None:
     print(f"{chunk.character} is speaking now (live)")
     print(chunk.text)
     if is_empty(chunk.text):

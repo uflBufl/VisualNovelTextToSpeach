@@ -1,6 +1,9 @@
 import ast
 import unittest
 from pathlib import Path
+from typing import get_protocol_members
+
+from vntts.speech_backend_contract import SpeechBackend
 
 
 class SpeechBackendAPIBoundaryTest(unittest.TestCase):
@@ -53,19 +56,10 @@ class SpeechBackendAPIBoundaryTest(unittest.TestCase):
             self.assertNotIn("speak", called, name)
 
     def test_runtime_protocol_exposes_only_typed_playback_operations(self):
-        tree = self._tree("vntts/speech_backend_contract.py")
-        protocol = next(
-            node
-            for node in tree.body
-            if isinstance(node, ast.ClassDef) and node.name == "SpeechBackend"
+        self.assertEqual(
+            get_protocol_members(SpeechBackend),
+            {"name", "capabilities", "prepare_playback", "play_prepared", "stop"},
         )
-        methods = {
-            node.name
-            for node in protocol.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        }
-
-        self.assertEqual(methods, {"prepare_playback", "play_prepared", "stop"})
 
 
 if __name__ == "__main__":
