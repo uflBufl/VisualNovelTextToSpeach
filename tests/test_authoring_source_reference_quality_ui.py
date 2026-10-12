@@ -16,12 +16,13 @@ from vntts.authoring.source_reference_quality import (
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
+    from PySide6.QtCore import QEvent, QPoint, Qt, QThreadPool, QTimer
     from PySide6.QtGui import QCloseEvent
     from PySide6.QtMultimedia import QMediaPlayer
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
 
+    from tests.qt_task_fixtures import release_and_wait_for_pool
     from vntts.authoring.source_reference_quality_ui import (
         SourceReferenceQualityDialog,
     )
@@ -471,11 +472,28 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             dialog.close()
 
     def test_slow_decision_keeps_qt_responsive_and_defers_close(self):
-        with TemporaryDirectory() as directory:
+        release = Event()
+        pool = QThreadPool()
+        dialog = None
+        with (
+            TemporaryDirectory() as directory,
+            release_and_wait_for_pool(
+                pool,
+                release,
+                finish=lambda: self.wait_for(
+                    lambda: (
+                        dialog is None
+                        or (
+                            not dialog._decision_active
+                            and not dialog.playback_runner.active
+                        )
+                    )
+                ),
+            ),
+        ):
             root = Path(directory)
             session = write_quality_session(root)
             started = Event()
-            release = Event()
 
             def slow_recorder(*args):
                 started.set()
@@ -489,6 +507,7 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             dialog = SourceReferenceQualityDialog(
                 session,
                 decision_recorder=slow_recorder,
+                thread_pool=pool,
                 confirmer=lambda _decision: True,
             )
             self.authorize_accept(dialog)
@@ -500,31 +519,29 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             elapsed = time.monotonic() - before
             self.wait_for(lambda: started.is_set() and bool(heartbeat))
 
-            try:
-                self.assertLess(elapsed, 0.1)
-                self.assertTrue(dialog._decision_active)
-                self.assertFalse(dialog.accept_button.isEnabled())
-                self.assertTrue(dialog.play_reference.isEnabled())
-                self.assertIn("Saving the exact", dialog.status.text())
-                self.finish_audio(dialog, "reference")
-                for button in (
-                    dialog.accept_button,
-                    dialog.reject_reference,
-                    dialog.needs_sample,
-                ):
-                    self.assertFalse(button.isEnabled())
-                    self.assertIn("Unavailable", button.accessibleDescription())
-                    self.assertIn("Saving the exact", button.accessibleDescription())
-                close_event = QCloseEvent()
-                dialog.closeEvent(close_event)
-                self.assertFalse(close_event.isAccepted())
-                dialog.reject()
-                self.assertTrue(dialog._close_pending)
-                self.assertIn("Close is deferred", dialog.status.text())
+            self.assertLess(elapsed, 0.1)
+            self.assertTrue(dialog._decision_active)
+            self.assertFalse(dialog.accept_button.isEnabled())
+            self.assertTrue(dialog.play_reference.isEnabled())
+            self.assertIn("Saving the exact", dialog.status.text())
+            self.finish_audio(dialog, "reference")
+            for button in (
+                dialog.accept_button,
+                dialog.reject_reference,
+                dialog.needs_sample,
+            ):
+                self.assertFalse(button.isEnabled())
+                self.assertIn("Unavailable", button.accessibleDescription())
+                self.assertIn("Saving the exact", button.accessibleDescription())
+            close_event = QCloseEvent()
+            dialog.closeEvent(close_event)
+            self.assertFalse(close_event.isAccepted())
+            dialog.reject()
+            self.assertTrue(dialog._close_pending)
+            self.assertIn("Close is deferred", dialog.status.text())
 
-            finally:
-                release.set()
-                self.wait_for(lambda: not dialog._decision_active)
+            release.set()
+            self.wait_for(lambda: not dialog._decision_active)
             result = load_source_reference_quality_review(session)
             self.assertEqual(result["completed_count"], 1)
 

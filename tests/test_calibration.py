@@ -15,6 +15,7 @@ from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog, QTextEdit  # noqa: E402
 from pytesseract import pytesseract as pytesseract_runtime  # noqa: E402
 
+from tests.qt_task_fixtures import release_and_wait_for_pool  # noqa: E402
 from vntts.calibration import (  # noqa: E402
     CalibrationReviewDialog,
     DialogRegionOverlay,
@@ -225,23 +226,26 @@ class DialogRegionOverlayTest(unittest.TestCase):
         heartbeat = []
         QTimer.singleShot(0, lambda: heartbeat.append("painted"))
         before = time.monotonic()
-        dialog = CalibrationReviewDialog(
-            Image.new("RGB", (640, 180), "black"),
-            recognizer=slow_recognizer,
-        )
-        elapsed = time.monotonic() - before
-        self.wait_for(lambda: started.is_set() and bool(heartbeat))
+        pool = QThreadPool()
+        with release_and_wait_for_pool(pool, release):
+            dialog = CalibrationReviewDialog(
+                Image.new("RGB", (640, 180), "black"),
+                recognizer=slow_recognizer,
+                thread_pool=pool,
+            )
+            elapsed = time.monotonic() - before
+            self.wait_for(lambda: started.is_set() and bool(heartbeat))
 
-        self.assertLess(elapsed, 0.1)
-        self.assertTrue(dialog.runner.active)
-        self.assertFalse(dialog.save_button.isEnabled())
-        self.assertIn("Recognizing", dialog.result_text.toPlainText())
+            self.assertLess(elapsed, 0.1)
+            self.assertTrue(dialog.runner.active)
+            self.assertFalse(dialog.save_button.isEnabled())
+            self.assertIn("Recognizing", dialog.result_text.toPlainText())
 
-        release.set()
-        self.wait_for(lambda: not dialog.runner.active)
-        self.assertTrue(dialog.save_button.isEnabled())
-        self.assertIn("Selone", dialog.result_text.toPlainText())
-        dialog.deleteLater()
+            release.set()
+            self.wait_for(lambda: not dialog.runner.active)
+            self.assertTrue(dialog.save_button.isEnabled())
+            self.assertIn("Selone", dialog.result_text.toPlainText())
+            dialog.deleteLater()
 
     def test_cancel_and_draw_again_invalidate_pending_ocr(self):
         for outcome in ("cancel", "draw-again"):
@@ -254,21 +258,24 @@ class DialogRegionOverlayTest(unittest.TestCase):
                     release.wait(3)
                     return OCRResult("Selone", "Late text", 94.5, "gray", 1)
 
-                dialog = CalibrationReviewDialog(
-                    Image.new("RGB", (640, 180), "black"),
-                    recognizer=slow_recognizer,
-                )
-                self.wait_for(started.is_set)
-                if outcome == "cancel":
-                    dialog.reject()
-                else:
-                    dialog.done(CalibrationReviewDialog.DrawAgain)
-                self.assertFalse(dialog.runner.active)
-                release.set()
-                self.assertTrue(dialog.runner.thread_pool.waitForDone(3_000))
-                self.application.processEvents()
-                self.assertNotIn("Late text", dialog.result_text.toPlainText())
-                dialog.deleteLater()
+                pool = QThreadPool()
+                with release_and_wait_for_pool(pool, release):
+                    dialog = CalibrationReviewDialog(
+                        Image.new("RGB", (640, 180), "black"),
+                        recognizer=slow_recognizer,
+                        thread_pool=pool,
+                    )
+                    self.wait_for(started.is_set)
+                    if outcome == "cancel":
+                        dialog.reject()
+                    else:
+                        dialog.done(CalibrationReviewDialog.DrawAgain)
+                    self.assertFalse(dialog.runner.active)
+                    release.set()
+                    self.assertTrue(dialog.runner.thread_pool.waitForDone(3_000))
+                    self.application.processEvents()
+                    self.assertNotIn("Late text", dialog.result_text.toPlainText())
+                    dialog.deleteLater()
 
     @unittest.skipIf(os.name == "nt", "Requires a POSIX OCR executable fixture")
     def test_cancelled_review_releases_stalled_ocr_subprocess(self):
@@ -314,25 +321,29 @@ class DialogRegionOverlayTest(unittest.TestCase):
                     release.wait(3)
                     return OCRResult("Selone", "Late text", 94.5, "gray", 1)
 
-                dialog = CalibrationReviewDialog(
-                    Image.new("RGB", (640, 180)), recognizer=slow_recognizer
-                )
-                self.addCleanup(dialog.deleteLater)
-                self.addCleanup(dialog.close)
-                self.addCleanup(release.set)
-                dialog.show()
-                self.wait_for(started.is_set)
-                if outcome == "escape":
-                    QTest.keyClick(dialog, Qt.Key.Key_Escape)
-                else:
-                    getattr(dialog, outcome)()
+                pool = QThreadPool()
+                with release_and_wait_for_pool(pool, release):
+                    dialog = CalibrationReviewDialog(
+                        Image.new("RGB", (640, 180)),
+                        recognizer=slow_recognizer,
+                        thread_pool=pool,
+                    )
+                    self.addCleanup(dialog.deleteLater)
+                    self.addCleanup(dialog.close)
+                    self.addCleanup(release.set)
+                    dialog.show()
+                    self.wait_for(started.is_set)
+                    if outcome == "escape":
+                        QTest.keyClick(dialog, Qt.Key.Key_Escape)
+                    else:
+                        getattr(dialog, outcome)()
 
-                self.assertTrue(dialog._ocr_cancelled.is_set())
-                self.assertFalse(dialog.runner.active)
-                release.set()
-                self.assertTrue(dialog.runner.thread_pool.waitForDone(3_000))
-                self.application.processEvents()
-                self.assertNotIn("Late text", dialog.result_text.toPlainText())
+                    self.assertTrue(dialog._ocr_cancelled.is_set())
+                    self.assertFalse(dialog.runner.active)
+                    release.set()
+                    self.assertTrue(dialog.runner.thread_pool.waitForDone(3_000))
+                    self.application.processEvents()
+                    self.assertNotIn("Late text", dialog.result_text.toPlainText())
 
     def test_failed_ocr_requires_explicit_capture_only_save(self):
         dialog = CalibrationReviewDialog(

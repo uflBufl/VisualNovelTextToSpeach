@@ -116,13 +116,24 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
             finished.set()
             return result
 
-        with TemporaryDirectory() as directory:
+        pool = QThreadPool()
+        dialog = None
+        with (
+            TemporaryDirectory() as directory,
+            release_and_wait_for_pool(
+                pool,
+                release,
+                finish=lambda: self.wait_for(
+                    lambda: dialog is None or not dialog.load_runner.active
+                ),
+            ),
+        ):
             review = self.create_review(Path(directory))
             with patch(
                 "vntts.authoring.terminal_conflict_review_ui.load_terminal_conflict_review_session",
                 side_effect=slow_loader,
             ):
-                dialog = TerminalConflictReviewDialog(review)
+                dialog = TerminalConflictReviewDialog(review, thread_pool=pool)
                 dialog.show()
                 try:
                     for refresh in (False, True):
