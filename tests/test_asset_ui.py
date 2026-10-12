@@ -80,6 +80,46 @@ class AssetManagerDialogTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
+    def _owned_pool(self) -> QThreadPool:
+        pool = QThreadPool()
+        self.addCleanup(lambda: self.assertTrue(pool.waitForDone(3000)))
+        return pool
+
+    def test_failed_assertions_release_and_drain_asset_workers(self):
+        for method in (
+            "test_download_cancellation_waits_for_the_cooperative_worker",
+            "test_voice_pack_import_is_nonblocking_and_close_safe",
+            "test_save_waits_for_exact_manifest_validation_then_accepts",
+        ):
+            with self.subTest(method=method):
+                case = AssetManagerDialogTest(method)
+                wait_for = case.wait_for
+                owned_pool = case._owned_pool
+                pools = []
+
+                def record_pool():
+                    pool = owned_pool()
+                    pools.append(pool)
+                    return pool
+
+                def fail_after_worker_starts(predicate, *args, **kwargs):
+                    wait_for(predicate, *args, **kwargs)
+                    raise AssertionError(
+                        "injected failure after asset worker acquisition"
+                    )
+
+                case._owned_pool = record_pool
+                case.wait_for = fail_after_worker_starts
+                result = unittest.TestResult()
+                case.run(result)
+
+                self.assertEqual(len(result.failures), 1)
+                self.assertIn("injected failure", result.failures[0][1])
+                self.assertEqual(result.errors, [])
+                self.assertEqual(len(pools), 1)
+                self.assertEqual(pools[0].activeThreadCount(), 0)
+                self.assertTrue(pools[0].waitForDone(0))
+
     def wait_for(self, predicate, timeout=3.0):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -207,8 +247,7 @@ class AssetManagerDialogTest(unittest.TestCase):
     def test_model_verification_can_finish_after_close_without_updating_ui(self):
         started = Event()
         release = Event()
-        pool = QThreadPool()
-        self.addCleanup(pool.waitForDone, 3000)
+        pool = self._owned_pool()
         self.addCleanup(release.set)
         model_manager = Mock()
         model_manager.model_path.return_value = Path("managed/model")
@@ -330,6 +369,7 @@ class AssetManagerDialogTest(unittest.TestCase):
         self.assertTrue(dialog.cancel_event.is_set())
 
     def test_download_cancellation_waits_for_the_cooperative_worker(self):
+        pool = self._owned_pool()
         started = Event()
         model_manager = Mock()
         model_manager.model_path.return_value = Path("managed/model")
@@ -345,7 +385,9 @@ class AssetManagerDialogTest(unittest.TestCase):
             AppSettings(speech_backend="coqui-xtts", xtts_terms_accepted=True),
             model_manager=model_manager,
             voice_manager=Mock(),
+            thread_pool=pool,
         )
+        self.addCleanup(dialog.cancel_download)
         dialog.download_model()
         self.wait_for(started.is_set)
         self.assertFalse(dialog.download_button.isEnabled())
@@ -366,8 +408,10 @@ class AssetManagerDialogTest(unittest.TestCase):
             source = root / "voices.json"
             source.write_text("{}", encoding="utf-8")
             manifest = root / "managed" / "manifest.json"
+            pool = self._owned_pool()
             started = Event()
             release = Event()
+            self.addCleanup(release.set)
             voice_manager = Mock()
 
             def import_pack(path):
@@ -383,6 +427,7 @@ class AssetManagerDialogTest(unittest.TestCase):
                 AppSettings(),
                 model_manager=model_manager,
                 voice_manager=voice_manager,
+                thread_pool=pool,
             )
             heartbeat = []
             QTimer.singleShot(0, lambda: heartbeat.append("painted"))
@@ -623,8 +668,7 @@ class AssetManagerDialogTest(unittest.TestCase):
             second.write_text("{}", encoding="utf-8")
             started = Event()
             release = Event()
-            pool = QThreadPool()
-            self.addCleanup(pool.waitForDone, 3000)
+            pool = self._owned_pool()
             self.addCleanup(release.set)
             voice_manager = Mock()
 
@@ -677,8 +721,10 @@ class AssetManagerDialogTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             manifest = Path(directory) / "manifest.json"
             manifest.write_text("{}", encoding="utf-8")
+            pool = self._owned_pool()
             started = Event()
             release = Event()
+            self.addCleanup(release.set)
             voice_manager = Mock()
 
             def validate(path):
@@ -693,6 +739,7 @@ class AssetManagerDialogTest(unittest.TestCase):
                 AppSettings(voice_manifest=str(manifest)),
                 model_manager=model_manager,
                 voice_manager=voice_manager,
+                thread_pool=pool,
             )
 
             dialog.accept_settings()
