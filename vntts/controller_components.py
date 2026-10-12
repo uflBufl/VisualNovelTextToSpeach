@@ -37,7 +37,10 @@ from vntts.live import IncrementalDialogTracker, LivePipelineMetrics
 from vntts.live_snapshot import read_live_snapshot
 from vntts.live_speech import play_typed_text
 from vntts.playback import PlaybackOutcome, PreparedPlayback
-from vntts.runtime_config import get_tts_configuration
+from vntts.runtime_config import (
+    get_auto_advance_delay_seconds,
+    get_tts_configuration,
+)
 from vntts.settings import AppSettings, preserve_loaded_runtime_settings
 from vntts.speech_backend import XTTSVoiceRouterBackend
 from vntts.speech_backend_contract import SpeechBackendCapabilities
@@ -501,8 +504,8 @@ class RuntimeLifecycleComponent:
             tracker_factory=IncrementalDialogTracker,
             auto_advance=controller._live_auto_advance_callback(),
             require_visible_auto_advance=controller._live_sequence_audio_active(),
-            auto_advance_delay_seconds=(
-                controller.settings.auto_advance_delay_ms / 1000
+            auto_advance_delay_seconds=get_auto_advance_delay_seconds(
+                controller.settings
             ),
             auto_advance_state_changed=controller._auto_advance_state_changed,
             pipeline_event_handler=partial(
@@ -628,8 +631,8 @@ class RuntimeLifecycleComponent:
         reader.tracker_options = dict(tracker_options)
         reader.require_visible_auto_advance = controller._live_sequence_audio_active()
         reader.set_auto_advance(controller._live_auto_advance_callback())
-        reader.auto_advance_delay_seconds = (
-            controller.settings.auto_advance_delay_ms / 1000
+        reader.auto_advance_delay_seconds = get_auto_advance_delay_seconds(
+            controller.settings
         )
         return self._configure_dialog_read(screenshot_directory)
 

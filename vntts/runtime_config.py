@@ -3,18 +3,20 @@
 import os
 import sys
 from collections.abc import Callable
+from threading import TIMEOUT_MAX
 from typing import NotRequired, TypedDict, TypeVar, overload
 
 from pynput import keyboard
 
 from vntts.hotkeys import default_hotkey as default_hotkey_for_key
 from vntts.live_tracking import TrackerProbe, TrackerResolver
+from vntts.numeric_values import optional_milliseconds_seconds
 from vntts.services.tts_engine import (
     TTSEngine,
     default_tts_profile,
     get_tts_profile,
 )
-from vntts.settings import AppSettings
+from vntts.settings import AppSettings, valid_numeric_setting
 from vntts.voice_library import VoiceLibrary, VoiceLibraryError
 from vntts.voices import (
     CharacterVoiceRegistry,
@@ -79,6 +81,7 @@ default_live_interval_ms = 200
 default_live_stability_frames = 2
 default_live_idle_flush_ms = 400
 default_live_min_chunk_characters = 20
+default_auto_advance_delay_ms = 350
 tts_environment_variables: dict[str, str] = {
     "model_name": "VNTTS_TTS_MODEL",
     "speaker": "VNTTS_TTS_SPEAKER",
@@ -138,7 +141,12 @@ def validate_hotkey(hotkey: str, default: str, label: str) -> str:
 
 
 def get_numeric_environment_variable(
-    environment_variable: str, default: int, *, minimum: int
+    environment_variable: str,
+    default: int,
+    *,
+    minimum: int,
+    maximum: int | None = None,
+    setting_name: str = "",
 ) -> int:
     configured_value = os.environ.get(environment_variable)
     if not configured_value:
@@ -149,13 +157,41 @@ def get_numeric_environment_variable(
     except ValueError:
         value = None
 
-    if value is None or value < minimum:
+    if value is None or not valid_numeric_setting(
+        setting_name, value, minimum, maximum
+    ):
         print(
             f"Invalid {environment_variable} {configured_value!r}; "
             f"using default {default}"
         )
         return default
     return value
+
+
+def _configured_seconds(
+    milliseconds: object,
+    default_ms: int,
+    *,
+    minimum_ms: int,
+    maximum_seconds: float | None = None,
+) -> float:
+    seconds = optional_milliseconds_seconds(milliseconds)
+    if (
+        seconds is None
+        or seconds < minimum_ms / 1000
+        or (maximum_seconds is not None and seconds > maximum_seconds)
+    ):
+        return default_ms / 1000
+    return seconds
+
+
+def get_auto_advance_delay_seconds(settings: AppSettings) -> float:
+    return _configured_seconds(
+        settings.auto_advance_delay_ms,
+        default_auto_advance_delay_ms,
+        minimum_ms=0,
+        maximum_seconds=TIMEOUT_MAX,
+    )
 
 
 def get_live_configuration(
@@ -171,27 +207,45 @@ def get_live_configuration(
             "VNTTS_LIVE_INTERVAL_MS",
             default_live_interval_ms,
             minimum=1,
+            setting_name="live_interval_ms",
         )
         idle_flush_ms = get_numeric_environment_variable(
             "VNTTS_LIVE_IDLE_FLUSH_MS",
             default_live_idle_flush_ms,
             minimum=1,
+            setting_name="live_idle_flush_ms",
         )
         stability_frames = get_numeric_environment_variable(
             "VNTTS_LIVE_STABILITY_FRAMES",
             default_live_stability_frames,
             minimum=2,
+            maximum=sys.maxsize,
+            setting_name="live_stability_frames",
         )
         min_chunk_characters = get_numeric_environment_variable(
             "VNTTS_LIVE_MIN_CHUNK_CHARACTERS",
             default_live_min_chunk_characters,
             minimum=1,
+            setting_name="live_min_chunk_characters",
         )
     return {
-        "interval_seconds": interval_ms / 1000,
+        "interval_seconds": _configured_seconds(
+            interval_ms,
+            default_live_interval_ms,
+            minimum_ms=1,
+            maximum_seconds=TIMEOUT_MAX,
+        ),
         "tracker_options": {
-            "stability_frames": stability_frames,
-            "idle_flush_seconds": idle_flush_ms / 1000,
+            "stability_frames": (
+                stability_frames
+                if valid_numeric_setting(
+                    "live_stability_frames", stability_frames, 2, sys.maxsize
+                )
+                else default_live_stability_frames
+            ),
+            "idle_flush_seconds": _configured_seconds(
+                idle_flush_ms, default_live_idle_flush_ms, minimum_ms=1
+            ),
             "min_chunk_characters": min_chunk_characters,
         },
     }

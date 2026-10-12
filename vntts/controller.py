@@ -600,7 +600,9 @@ class AppController:
         self.last_diagnostic = None
         self.last_audio_source_description = "Not selected"
         self.last_audio_route_trace = None
-        self.capture_interval_ms = float(self.settings.live_interval_ms)
+        self.capture_interval_ms = (
+            get_live_configuration(self.settings)["interval_seconds"] * 1000
+        )
         self.game_focused = True
         self.diagnostic_lock = Lock()
         self.voice_prime_lock = Lock()

@@ -3,6 +3,7 @@ import sys
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
+from threading import TIMEOUT_MAX
 from typing import Self, TypeAlias, TypedDict, Unpack
 
 from pynput import keyboard
@@ -12,6 +13,7 @@ from vntts.application_directories import (
 )
 from vntts.application_directories import get_config_directory, get_local_data_directory
 from vntts.hotkeys import default_hotkey
+from vntts.numeric_values import optional_milliseconds_seconds
 from vntts.versioned_json import load_versioned_json, write_versioned_json
 
 settings_schema_version = 31
@@ -37,6 +39,28 @@ live_sequence_modes = {"off", "shadow", *live_sequence_audio_modes}
 PathInput: TypeAlias = str | Path
 Environment: TypeAlias = Mapping[str, str]
 WarningHandler: TypeAlias = Callable[[str], None]
+
+
+def valid_numeric_setting(
+    name: str, value: object, minimum: int, maximum: int | None
+) -> bool:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < minimum
+        or (maximum is not None and value > maximum)
+    ):
+        return False
+    if name not in (
+        "live_interval_ms",
+        "live_idle_flush_ms",
+        "auto_advance_delay_ms",
+    ):
+        return True
+    seconds = optional_milliseconds_seconds(value)
+    return seconds is not None and (
+        name == "live_idle_flush_ms" or seconds <= TIMEOUT_MAX
+    )
 
 
 class AppSettingsChanges(TypedDict, total=False):
@@ -279,7 +303,7 @@ class AppSettings:
         )
         numeric_fields = {
             "live_interval_ms": (1, None),
-            "live_stability_frames": (2, None),
+            "live_stability_frames": (2, sys.maxsize),
             "live_idle_flush_ms": (1, None),
             "live_min_chunk_characters": (1, None),
             "auto_advance_delay_ms": (0, None),
@@ -321,12 +345,7 @@ class AppSettings:
 
         for name, (minimum, maximum) in numeric_fields.items():
             value = values.get(name, getattr(defaults, name))
-            if (
-                isinstance(value, int)
-                and not isinstance(value, bool)
-                and value >= minimum
-                and (maximum is None or value <= maximum)
-            ):
+            if valid_numeric_setting(name, value, minimum, maximum):
                 parsed[name] = value
             else:
                 report(f"Invalid {name!r} setting; using its default")

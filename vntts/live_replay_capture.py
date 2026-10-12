@@ -30,6 +30,7 @@ from vntts.dialog_capture import (
     recognize_screenshot_result,
 )
 from vntts.document_identity import sha256_file
+from vntts.numeric_values import optional_milliseconds_seconds
 from vntts.ocr import get_dialog_region
 from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.path_safety import read_regular_bytes
@@ -773,10 +774,17 @@ def _load_capture_story(story_path: Path) -> tuple[StoryResolver, str]:
     return resolver, digest
 
 
+def _capture_interval_seconds(milliseconds: int) -> float:
+    if milliseconds < 1:
+        raise LiveReplayCaptureError("interval-ms must be positive")
+    seconds = optional_milliseconds_seconds(milliseconds)
+    if seconds is None:
+        raise LiveReplayCaptureError("interval-ms cannot be represented in seconds")
+    return seconds
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
-    if arguments.interval_ms is not None and arguments.interval_ms < 1:
-        return cli_error("interval-ms must be positive")
     if arguments.duration_seconds is not None and (
         not math.isfinite(arguments.duration_seconds) or arguments.duration_seconds <= 0
     ):
@@ -784,6 +792,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.max_accepted_frames is not None and arguments.max_accepted_frames < 1:
         return cli_error("max-accepted-frames must be positive")
     settings = load_app_settings()
+    try:
+        interval_seconds = _capture_interval_seconds(
+            settings.live_interval_ms
+            if arguments.interval_ms is None
+            else arguments.interval_ms
+        )
+    except LiveReplayCaptureError as error:
+        return cli_error(error)
     profile = GameProfileStore.load().get(settings.active_profile_id)
     region = get_dialog_region(profile.dialog_region if profile is not None else None)
     story_index = arguments.story_index or settings.story_index
@@ -844,8 +860,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     get_screenshot_directory(settings), capture_target, region=region
                 ),
                 recognize_frame=recognize,
-                interval_seconds=(arguments.interval_ms or settings.live_interval_ms)
-                / 1000,
+                interval_seconds=interval_seconds,
                 maximum_frames=arguments.max_accepted_frames,
                 duration_seconds=arguments.duration_seconds,
                 focused=(

@@ -4,14 +4,17 @@ import sys
 import unittest
 from concurrent.futures import Future, TimeoutError
 from threading import TIMEOUT_MAX
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from tests.test_live import AutoAdvanceFakeFrameHarness
+from vntts.controller import AppController
 from vntts.live import (
     AdaptiveCapturePolicy,
     AdaptiveSpeechBackpressure,
     LiveDialogReader,
 )
+from vntts.live_replay_capture import main as capture_main
+from vntts.settings import AppSettings
 
 
 def make_reader(**overrides):
@@ -31,6 +34,28 @@ def make_reader(**overrides):
 
 
 class LiveConfigurationTest(unittest.TestCase):
+    def test_capture_cli_rejects_unrepresentable_interval_before_acquisition(self):
+        with (
+            patch(
+                "vntts.live_replay_capture.load_app_settings",
+                return_value=AppSettings(),
+            ),
+            patch("vntts.live_replay_capture.GameProfileStore.load") as profiles,
+            patch("vntts.live_replay_capture.capture_replay_session") as capture,
+            patch("vntts.live_replay_capture.cli_error", return_value=1) as report,
+        ):
+            for value, message in (
+                (0, "interval-ms must be positive"),
+                (10**400, "interval-ms cannot be represented in seconds"),
+            ):
+                with self.subTest(value=value):
+                    self.assertEqual(
+                        capture_main(["unused-output", "--interval-ms", str(value)]), 1
+                    )
+                    self.assertEqual(str(report.call_args.args[0]), message)
+            profiles.assert_not_called()
+            capture.assert_not_called()
+
     def test_nonfinite_timings_are_rejected_by_each_owner(self):
         owners = (
             (AdaptiveSpeechBackpressure, ("cooldown_seconds",)),
@@ -227,6 +252,18 @@ class LiveConfigurationTest(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "must be positive"),
             ):
                 factory(**{name: False})
+
+    def test_controller_uses_admitted_cadence_for_initial_diagnostics(self):
+        controller = AppController(
+            AppSettings(live_interval_ms=10**400),
+            profile_store=Mock(),
+            voice_library=Mock(),
+            correction_store=Mock(),
+            history=Mock(),
+            chapter_voice_preloader=Mock(),
+            model_asset_manager_factory=Mock(),
+        )
+        self.assertEqual(controller.capture_interval_ms, 200)
 
     def test_default_and_equal_capture_cadences_keep_existing_policy(self):
         policy = AdaptiveCapturePolicy(base_interval=0.001)
