@@ -22,12 +22,13 @@ from PySide6.QtWidgets import (  # noqa: E402
 from vntts_artifacts.file_integrity import sha256_file  # noqa: E402
 
 from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
+from vntts.asset_integrity import ModelIntegrityError  # noqa: E402
 from vntts.asset_ui import (  # noqa: E402
     AssetManagerDialog,
     VoiceImportDialog,
     default_model,
 )
-from vntts.assets import ModelDownloadCancelled, ModelIntegrityError  # noqa: E402
+from vntts.model_assets import ModelDownloadCancelled  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
 
 

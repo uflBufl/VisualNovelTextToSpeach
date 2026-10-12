@@ -55,7 +55,6 @@ from PySide6.QtWidgets import (
 )
 
 from vntts.asset_ui import AssetManagerDialog
-from vntts.assets import ModelDownloadCancelled
 from vntts.async_ui import LatestTaskRunner
 from vntts.auto_advance_policy import (
     auto_advance_control_state,
@@ -96,6 +95,7 @@ from vntts.macos import (
     get_macos_permission_status,
 )
 from vntts.macos_ui import MacOSPermissionsDialog
+from vntts.model_assets import ModelDownloadCancelled
 from vntts.moss_runtime import RetainedMossRuntime
 from vntts.ocr import DialogRegion, get_dialog_region_file, save_dialog_region
 from vntts.ocr_corrections import OCRCorrectionStore

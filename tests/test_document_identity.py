@@ -9,7 +9,13 @@ from unittest.mock import patch
 
 from tests.pregeneration_fixtures import clean_wav_bytes
 from tests.symlink_support import symlink_or_skip
-from vntts import assets, document_identity, speech_backend_runtime
+from vntts import (
+    asset_integrity,
+    document_identity,
+    model_assets,
+    speech_backend_runtime,
+    voice_packs,
+)
 from vntts.authoring import bulk_generation, publication
 from vntts.authoring import managed_model_installation as managed
 from vntts.authoring.generation_lease import GenerationLease
@@ -283,14 +289,14 @@ class ChecksumAdmissionTest(unittest.TestCase):
                     }[owner]
                     invoke = partial(checksum, path)
                 elif owner == "model asset":
-                    manager = assets.ModelAssetManager(root / "models")
+                    manager = model_assets.ModelAssetManager(root / "models")
                     invoke = partial(
                         manager._validate_model_file,
                         path,
                         path.name,
                         {"size": len(payload), "sha256": digest},
                     )
-                    error_type = assets.ModelIntegrityError
+                    error_type = asset_integrity.ModelIntegrityError
                 elif owner == "managed file":
                     invoke = partial(managed._verify, root, model)
                     error_type = OSError
@@ -326,16 +332,22 @@ class ChecksumAdmissionTest(unittest.TestCase):
     )
     def test_model_adoption_rejects_hash_swap_before_manifest_publication(self):
         with TemporaryDirectory() as directory:
-            manager = assets.ModelAssetManager(Path(directory).resolve() / "models")
-            asset = assets.ModelAsset("test", ("https://models.invalid/model.bin",))
+            manager = model_assets.ModelAssetManager(
+                Path(directory).resolve() / "models"
+            )
+            asset = model_assets.ModelAsset(
+                "test", ("https://models.invalid/model.bin",)
+            )
             model = manager.model_path(asset.name)
             model.mkdir(parents=True)
             path = model / "model.bin"
             payload = b"adopted model"
             path.write_bytes(payload)
             invoke = partial(manager.validate, asset.name, asset=asset)
-            self._assert_fifo_admission(path, invoke, assets.ModelIntegrityError)
-            manifest = model / assets.asset_manifest_name
+            self._assert_fifo_admission(
+                path, invoke, asset_integrity.ModelIntegrityError
+            )
+            manifest = model / asset_integrity.asset_manifest_name
             self.assertFalse(manifest.exists())
             self.assertEqual(invoke(), model)
             self.assertEqual(
@@ -361,18 +373,20 @@ class ChecksumAdmissionTest(unittest.TestCase):
                 root = Path(directory).resolve()
                 source = root / "source.wav"
                 source.write_bytes(clean_wav_bytes())
-                manager = assets.VoicePackManager(root / "packs")
+                manager = voice_packs.VoicePackManager(root / "packs")
                 manifest = manager.import_voice("Ada", [source])
                 pack = manifest.parent
                 registry = CharacterVoiceRegistry.from_file(manifest)
                 reference = registry.unique_voices()[0].references[0]
-                checksum = pack / assets.asset_manifest_name
+                checksum = pack / asset_integrity.asset_manifest_name
                 previous = checksum.read_bytes()
                 path = manifest if target == "manifest" else reference
                 invoke = partial(
                     manager._write_voice_checksums, pack, manifest, registry
                 )
-                self._assert_fifo_admission(path, invoke, assets.ModelIntegrityError)
+                self._assert_fifo_admission(
+                    path, invoke, asset_integrity.ModelIntegrityError
+                )
                 self.assertEqual(checksum.read_bytes(), previous)
                 invoke()
                 self.assertEqual(
@@ -389,10 +403,12 @@ class ChecksumAdmissionTest(unittest.TestCase):
                 root = Path(directory).resolve()
                 source = root / "source.wav"
                 source.write_bytes(clean_wav_bytes())
-                manager = assets.VoicePackManager(root / "packs")
+                manager = voice_packs.VoicePackManager(root / "packs")
                 manifest = manager.import_voice("Ada", [source])
                 reference = next((manifest.parent / "references").iterdir())
                 path = manifest if target == "manifest" else reference
                 invoke = partial(manager.validate, manifest)
-                self._assert_fifo_admission(path, invoke, assets.ModelIntegrityError)
+                self._assert_fifo_admission(
+                    path, invoke, asset_integrity.ModelIntegrityError
+                )
                 self.assertEqual(invoke(), manifest)

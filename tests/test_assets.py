@@ -11,8 +11,11 @@ from threading import Event, Thread
 from unittest.mock import patch
 from urllib.error import HTTPError
 
+import vntts.asset_integrity as asset_integrity
 import vntts.assets as assets
 import vntts.authoring.advisory_lock as advisory_lock
+import vntts.model_assets as model_assets
+import vntts.voice_packs as voice_packs
 from tests.symlink_support import symlink_or_skip
 from vntts.assets import (
     ModelAsset,
@@ -22,6 +25,43 @@ from vntts.assets import (
     VoicePackManager,
 )
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
+
+
+class AssetCompatibilityTest(unittest.TestCase):
+    def test_facade_reexports_canonical_objects(self):
+        owners = (
+            (
+                asset_integrity,
+                ("AssetError", "ModelIntegrityError", "asset_manifest_name"),
+            ),
+            (
+                model_assets,
+                (
+                    "ModelAsset",
+                    "ModelAssetManager",
+                    "ModelDownloadCancelled",
+                    "UnsupportedModelError",
+                    "load_coqui_model_asset",
+                ),
+            ),
+            (
+                voice_packs,
+                ("VoicePackManager", "read_json", "supported_audio_extensions"),
+            ),
+        )
+        exports = [(owner, name) for owner, names in owners for name in names]
+        self.assertEqual(len(exports), 11)
+        for owner, name in exports:
+            with self.subTest(name=name):
+                self.assertIs(getattr(assets, name), getattr(owner, name))
+        for error in (
+            assets.ModelIntegrityError,
+            assets.ModelDownloadCancelled,
+            assets.UnsupportedModelError,
+        ):
+            with self.subTest(error=error):
+                self.assertEqual(error.__bases__, (assets.AssetError,))
+        self.assertEqual(assets.AssetError.__bases__, (RuntimeError,))
 
 
 class MemoryResponse:
@@ -515,7 +555,7 @@ class ModelAssetManagerTest(unittest.TestCase):
                     return MemoryResponse(b"", headers={"Content-Length": "100"})
 
                 with patch(
-                    "vntts.assets.load_coqui_model_asset", return_value=asset
+                    "vntts.model_assets.load_coqui_model_asset", return_value=asset
                 ) as catalog:
                     manager = ModelAssetManager(directory, opener=opener)
                     with self.assertRaises(ModelDownloadCancelled):
@@ -1115,7 +1155,7 @@ class VoicePackManagerTest(unittest.TestCase):
 
             with (
                 patch(
-                    "vntts.assets.VoicePackManager._copy_reference",
+                    "vntts.voice_packs.VoicePackManager._copy_reference",
                     side_effect=fail_after_partial_copy,
                 ),
                 self.assertRaisesRegex(OSError, "copy failed"),
@@ -1299,7 +1339,7 @@ class VoicePackManagerTest(unittest.TestCase):
 
             with (
                 patch(
-                    "vntts.assets.VoicePackManager._copy_reference",
+                    "vntts.voice_packs.VoicePackManager._copy_reference",
                     side_effect=fail_on_second_copy,
                 ),
                 self.assertRaisesRegex(OSError, "copy failed"),
@@ -1397,7 +1437,7 @@ class VoicePackManagerTest(unittest.TestCase):
                     patch.object(
                         manager, "_write_voice_checksums", side_effect=primary
                     ),
-                    patch("vntts.assets.os.replace", side_effect=fail_one_restore),
+                    patch("vntts.voice_packs.os.replace", side_effect=fail_one_restore),
                     self.assertRaises(OSError) as raised,
                 ):
                     manager.import_voice("Ada", [new])
@@ -1438,7 +1478,8 @@ class VoicePackManagerTest(unittest.TestCase):
 
             with (
                 patch(
-                    "vntts.assets.VoicePackManager._copy_reference", side_effect=primary
+                    "vntts.voice_packs.VoicePackManager._copy_reference",
+                    side_effect=primary,
                 ),
                 patch.object(
                     type(root),
@@ -1493,7 +1534,9 @@ class VoicePackManagerTest(unittest.TestCase):
                         return original_unlink(path, *args, **kwargs)
 
                     with (
-                        patch("vntts.assets.shutil.rmtree", side_effect=remove_backup),
+                        patch(
+                            "vntts.voice_packs.shutil.rmtree", side_effect=remove_backup
+                        ),
                         patch.object(
                             type(root),
                             "unlink",
@@ -1554,9 +1597,9 @@ class VoicePackManagerTest(unittest.TestCase):
                         ).import_voice("Ada", [source])
                         failure = error_type("cleanup interrupted")
                         target = (
-                            "vntts.assets.shutil.rmtree"
+                            "vntts.voice_packs.shutil.rmtree"
                             if failed_phase == "backup"
-                            else "vntts.assets.VoicePackManager._remove_unreferenced_files"
+                            else "vntts.voice_packs.VoicePackManager._remove_unreferenced_files"
                         )
                         with (
                             patch(target, side_effect=failure),
@@ -1646,7 +1689,7 @@ class VoicePackManagerTest(unittest.TestCase):
             voice_manifest_read = Event()
             errors = []
             original_copy_reference = VoicePackManager._copy_reference
-            original_read_json = assets.read_json
+            original_read_json = voice_packs.read_json
 
             def blocking_copy_reference(source, destination, *args, **kwargs):
                 if Path(source).resolve() == source_reference.resolve():
@@ -1667,10 +1710,10 @@ class VoicePackManagerTest(unittest.TestCase):
 
             with (
                 patch(
-                    "vntts.assets.VoicePackManager._copy_reference",
+                    "vntts.voice_packs.VoicePackManager._copy_reference",
                     side_effect=blocking_copy_reference,
                 ),
-                patch("vntts.assets.read_json", side_effect=observing_read_json),
+                patch("vntts.voice_packs.read_json", side_effect=observing_read_json),
             ):
                 pack_import = Thread(
                     target=lambda: run(

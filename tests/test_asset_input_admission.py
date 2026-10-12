@@ -8,11 +8,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import vntts.assets as assets_module
+import vntts.voice_packs as voice_packs
 from tests.authoring_fixtures import tree_hashes
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
-from vntts.assets import VoicePackManager
+from vntts.voice_packs import VoicePackManager
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
 
 
@@ -96,7 +96,7 @@ class AssetInputAdmissionTest(unittest.TestCase):
                         )
                     selected = manifest.with_name(name)
                     before = tree_hashes(root)
-                    original_copy = assets_module.copy_regular_file
+                    original_copy = voice_packs.copy_regular_file
                     refused = []
 
                     def copy(original, target, **kwargs):
@@ -113,7 +113,7 @@ class AssetInputAdmissionTest(unittest.TestCase):
                         raise caught.exception
 
                     with (
-                        patch.object(assets_module, "copy_regular_file", copy),
+                        patch.object(voice_packs, "copy_regular_file", copy),
                         self.assertRaisesRegex(OSError, "regular file") as caught,
                     ):
                         invoke()
@@ -145,7 +145,7 @@ class AssetInputAdmissionTest(unittest.TestCase):
             manifest = manager.import_voice("Old", [old])
             checksum = manifest.with_name("vntts-asset.json")
             before = tree_hashes(root)
-            original_copy = assets_module.copy_regular_file
+            original_copy = voice_packs.copy_regular_file
             primary = PermissionError("backup stream failed")
             streams = []
 
@@ -166,7 +166,7 @@ class AssetInputAdmissionTest(unittest.TestCase):
                         )
 
             with (
-                patch.object(assets_module, "copy_regular_file", copy),
+                patch.object(voice_packs, "copy_regular_file", copy),
                 self.assertRaises(PermissionError) as caught,
             ):
                 manager.import_voice("New", [new])
@@ -221,7 +221,7 @@ class AssetInputAdmissionTest(unittest.TestCase):
 
                 name = "copyfileobj" if phase == "stream" else "copystat"
                 failure = fail_stream if phase == "stream" else primary
-                with patch(f"vntts.assets.shutil.{name}", side_effect=failure):
+                with patch(f"vntts.voice_packs.shutil.{name}", side_effect=failure):
                     with self.assertRaises(OSError) as raised:
                         manager.import_voice("Ada", [source])
                 self.assertIs(raised.exception, primary)

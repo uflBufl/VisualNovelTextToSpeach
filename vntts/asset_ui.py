@@ -23,15 +23,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vntts.assets import (
-    ModelAssetManager,
-    ModelDownloadCancelled,
-    ModelIntegrityError,
-    VoicePackManager,
-)
+from vntts.asset_integrity import ModelIntegrityError
 from vntts.async_ui import LatestTaskRunner
 from vntts.document_identity import file_sha256
+from vntts.model_assets import ModelAssetManager, ModelDownloadCancelled
 from vntts.settings import AppSettings
+from vntts.voice_packs import VoicePackManager
 
 default_model = "tts_models/multilingual/multi-dataset/xtts_v2"
 

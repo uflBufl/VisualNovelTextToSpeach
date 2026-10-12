@@ -11,7 +11,6 @@ from threading import Event, Lock, RLock
 from time import monotonic
 from typing import Protocol, TypeGuard, runtime_checkable
 
-from vntts.assets import ModelAssetManager
 from vntts.audio_lifecycle import audio_lifecycle_context
 from vntts.auto_advance import DialogueAdvancer
 from vntts.auto_advance_policy import auto_advance_allowed
@@ -74,6 +73,7 @@ from vntts.live_sequence import (
 from vntts.live_snapshot import read_live_snapshot as read_live_snapshot
 from vntts.live_speaker_corpus import LiveSpeakerCorpus
 from vntts.live_speech import TypedPlaybackBackend, play_typed_text
+from vntts.model_assets import ModelAssetManager
 from vntts.ocr import (
     DialogRegion,
     OCRResult,

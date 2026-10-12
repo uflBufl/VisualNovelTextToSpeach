@@ -5,10 +5,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypeGuard
 
-from vntts.assets import ModelAssetManager
 from vntts.auto_advance_policy import auto_advance_allowed
 from vntts.hotkeys import HotkeyValidationError, validate_hotkey_assignments
 from vntts.macos import get_macos_permission_status
+from vntts.model_assets import ModelAssetManager
 from vntts.release_backends import packaged_speech_backend_available
 from vntts.runtime_preparation import (
     Cancellation,

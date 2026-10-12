@@ -15,10 +15,11 @@ from tests.pregeneration_fixtures import ambiguous_fixture
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
 from vntts import (
-    assets,
+    asset_integrity,
     chapter_voice_preload,
     game_audio_decoder,
     game_content_importer,
+    model_assets,
     ocr_benchmark,
     pregeneration_audition,
     pregeneration_audition_ui,
@@ -26,6 +27,7 @@ from vntts import (
     support,
     versioned_json,
     voice_candidate_cache,
+    voice_packs,
 )
 from vntts.authoring import (
     authority,
@@ -548,14 +550,16 @@ class BoundedDocumentAdmissionTest(unittest.TestCase):
                 ),
                 (
                     "voice manifest",
-                    lambda: assets.read_json(reference, default),
+                    lambda: voice_packs.read_json(reference, default),
                     None,
                     default,
                 ),
                 (
                     "model checksum",
-                    lambda: assets.ModelAssetManager._read_checksum_manifest(reference),
-                    assets.ModelIntegrityError,
+                    lambda: model_assets.ModelAssetManager._read_checksum_manifest(
+                        reference
+                    ),
+                    asset_integrity.ModelIntegrityError,
                     None,
                 ),
                 (
