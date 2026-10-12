@@ -353,6 +353,67 @@ class WindowsOwnedServerTest(unittest.TestCase):
 
 
 class MossCppStartupAdmissionTest(unittest.TestCase):
+    def test_overflowing_numeric_options_never_acquire_native_runtime(self):
+        for name in (
+            "startup_timeout",
+            "request_timeout",
+            "volume",
+            "cached_stream_chunk_seconds",
+            "streaming_interval",
+            "playback_consumer_join_timeout",
+        ):
+            for value in (10**400, -(10**400)):
+                with self.subTest(option=name, negative=value < 0):
+                    with (
+                        patch("vntts.moss_cpp_installation.ensure_moss_cpp") as ensure,
+                        patch("vntts.moss_cpp_backend.moss_cpp_paths") as paths,
+                        patch("vntts.runtime_preparation.run_runtime_command") as probe,
+                        patch.object(
+                            MossCppVoiceRouterBackend, "_start_server"
+                        ) as start,
+                        self.assertRaisesRegex(
+                            TTSConfigurationError, name + " must be finite"
+                        ) as caught,
+                    ):
+                        MossCppVoiceRouterBackend(
+                            CharacterVoiceRegistry(), **{name: value}
+                        )
+                    self.assertIsInstance(caught.exception.__cause__, OverflowError)
+                    ensure.assert_not_called()
+                    paths.assert_not_called()
+                    probe.assert_not_called()
+                    start.assert_not_called()
+
+    def test_nonfinite_streaming_options_never_acquire_native_runtime(self):
+        for name in (
+            "cached_stream_chunk_seconds",
+            "streaming_interval",
+            "playback_consumer_join_timeout",
+        ):
+            for value in (float("nan"), float("inf"), -float("inf")):
+                with self.subTest(option=name, value=value):
+                    with (
+                        patch(
+                            "vntts.moss_cpp_installation.ensure_moss_cpp",
+                            side_effect=AssertionError("installer reached"),
+                        ) as ensure,
+                        patch("vntts.moss_cpp_backend.moss_cpp_paths") as paths,
+                        patch("vntts.runtime_preparation.run_runtime_command") as probe,
+                        patch.object(
+                            MossCppVoiceRouterBackend, "_start_server"
+                        ) as start,
+                        self.assertRaisesRegex(
+                            TTSConfigurationError, name + " must be finite"
+                        ),
+                    ):
+                        MossCppVoiceRouterBackend(
+                            CharacterVoiceRegistry(), **{name: value}
+                        )
+                    ensure.assert_not_called()
+                    paths.assert_not_called()
+                    probe.assert_not_called()
+                    start.assert_not_called()
+
     def test_invalid_options_never_install_or_start_native_runtime(self):
         cases = (
             [

@@ -33,6 +33,7 @@ import soundfile as sf
 from vntts.audio_output import AudioOutput
 from vntts.cleanup import attempt_cleanup, cleanup_on_exit
 from vntts.native_resources import NativeResourceSampler, NativeResourceSnapshot
+from vntts.numeric_values import optional_finite_number
 from vntts.path_safety import open_regular_binary
 from vntts.playback import PreparedPlayback
 from vntts.services.tts_engine import (
@@ -368,7 +369,10 @@ def _option_path(value: object, name: str) -> str | Path | None:
 def _option_number(value: object, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TTSConfigurationError(f"MOSS C++ {name} must be numeric")
-    return float(value)
+    try:
+        return float(value)
+    except OverflowError as error:
+        raise TTSConfigurationError(f"MOSS C++ {name} must be finite") from error
 
 
 def _option_integer(value: object, name: str) -> int | None:
@@ -536,6 +540,17 @@ def _base_options(options: dict[str, object]) -> MossCppBaseOptions:
             "playback_consumer_join_timeout",
         ),
     }
+    for name, value in result.items():
+        if (
+            name
+            in (
+                "cached_stream_chunk_seconds",
+                "streaming_interval",
+                "playback_consumer_join_timeout",
+            )
+            and optional_finite_number(value) is None
+        ):
+            raise TTSConfigurationError(f"MOSS C++ {name} must be finite")
     if options:
         raise TypeError(f"Unexpected MOSS C++ option: {next(iter(options))}")
     return result
