@@ -279,7 +279,11 @@ def validate_reference_selection_provenance(
                 f"Voice reference-selection candidate changed: {relative}"
             )
         hashes[relative] = digest
-    if len(candidates) != len(hashes) or set(hashes) != set(entry.references):
+    if (
+        len(candidates) != len(hashes)
+        or len(entry.references) != len(hashes)
+        or set(hashes) != set(entry.references)
+    ):
         raise ReferenceSelectionError(
             "Voice reference-selection candidate inventory conflicts with the manifest"
         )

@@ -305,6 +305,73 @@ class AuthoringReferenceSelectionTest(unittest.TestCase):
             self.assertFalse(output.exists())
             self.assertEqual(tree_hashes(root), before)
 
+    def test_provenance_refuses_duplicate_manifest_references_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = write_manifest(root)
+            write_reference(root / "references/hero-3.wav", 440)
+            document = json.loads(manifest.read_text(encoding="utf-8"))
+            document["voices"][0]["references"].append("references/hero-3.wav")
+            manifest.write_text(json.dumps(document), encoding="utf-8")
+            output = root / "selected.json"
+            select_voice_reference(manifest, "Hero", 2, output)
+            selected = json.loads(output.read_text(encoding="utf-8"))
+            references = selected["voices"][0]["references"]
+            references[1:] = reversed(references[1:])
+            before = tree_hashes(root)
+            validate_reference_selection_provenance(output, selected)
+            references.append(references[-1])
+            with self.assertRaisesRegex(ReferenceSelectionError, "inventory conflicts"):
+                validate_reference_selection_provenance(output, selected)
+            self.assertEqual(tree_hashes(root), before)
+            references.pop()
+            validate_reference_selection_provenance(output, selected)
+
+    def test_workspace_refuses_duplicate_selection_references_and_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, _workspace = create_test_workspace(root)
+            manifest = Path(fixture["job"]["voice_manifest"])
+            write_reference(manifest.parent / "rhiannon.wav", 220)
+            write_reference(manifest.parent / "rhiannon-2.wav", 330)
+            output = manifest.with_name("selected.json")
+            select_voice_reference(manifest, "Rhiannon", 2, output)
+            original = output.read_bytes()
+            selected = json.loads(original)
+            references = selected["voices"][0]["references"]
+            references.append(references[-1])
+            output.write_text(json.dumps(selected), encoding="utf-8")
+            workspaces = root / "selected-workspaces"
+            workspaces.mkdir()
+            before = tree_hashes(root)
+            with self.assertRaisesRegex(AuthoringWorkbenchError, "inventory conflicts"):
+                create_resume_workspace(
+                    imported,
+                    workspaces,
+                    story_index=fixture["job"]["story_index"],
+                    voice_manifest=output,
+                    backend="moss-tts",
+                    model="model",
+                    generation_profile="stable",
+                    narrator_character="Rhiannon",
+                )
+            self.assertEqual(list(workspaces.iterdir()), [])
+            self.assertEqual(tree_hashes(root), before)
+            output.write_bytes(original)
+            recovered = create_resume_workspace(
+                imported,
+                workspaces,
+                story_index=fixture["job"]["story_index"],
+                voice_manifest=output,
+                backend="moss-tts",
+                model="model",
+                generation_profile="stable",
+                narrator_character="Rhiannon",
+            )
+            copied = recovered.directory / "inputs/voice/manifest.json"
+            self.assertEqual(copied.read_bytes(), original)
+            validate_reference_selection_provenance(copied, json.loads(original))
+
     def test_legacy_manifest_still_reports_and_publishes_selection(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
