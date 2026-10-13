@@ -11,7 +11,10 @@ from typing import TypeAlias, TypedDict, TypeIs
 
 from vntts_artifacts.voice_manifest import VoiceManifestError, normalize_character_name
 
-from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.authority import (
+    canonical_document_sha256,
+    write_json_document_no_replace,
+)
 from vntts.authoring.bulk_generation import BulkGenerationError, sha256_control_path
 from vntts.authoring.cohort_review import (
     CohortReviewDecision,
@@ -24,7 +27,6 @@ from vntts.authoring.cohort_review import (
     _validated_decision_document,
     _validated_document_assessments,
     _validated_plan_document,
-    _write_document_no_replace,
     build_cohort_review_plan,
     load_cohort_review_decision,
     load_cohort_review_plan,
@@ -200,12 +202,12 @@ def write_voice_quality_gate(
 ) -> Path:
     """Publish a validated gate without replacing existing evidence."""
     document = _validated_gate_document(gate)
-    try:
-        return Path(
-            _write_document_no_replace(output_path, document, "voice-quality gate")
-        )
-    except CohortReviewError as error:
-        raise VoiceQualityGateError(str(error)) from error
+    return write_json_document_no_replace(
+        output_path,
+        document,
+        "voice-quality gate",
+        error_type=VoiceQualityGateError,
+    )
 
 
 def load_voice_quality_gate(path: str | Path) -> VoiceQualityGate:

@@ -34,12 +34,12 @@ from vntts.authoring.authority import (
     assert_authority_snapshot,
     canonical_document_sha256,
     capture_authority_file,
+    write_json_document_no_replace,
 )
 from vntts.authoring.bulk_generation import is_spoken_queue_item
 from vntts.authoring.cohort_review import (
     CohortReviewError,
     _load_document,
-    _write_document_no_replace,
 )
 from vntts.authoring.config_rebase import rebase_workspace_config
 from vntts.authoring.failed_control_carry import (
@@ -558,12 +558,12 @@ def write_missing_voice_reuse_plan(
     plan: MissingVoiceReusePlan | JsonObject, output_path: str | Path
 ) -> Path:
     document = _validate_plan(plan)
-    try:
-        return _write_document_no_replace(
-            output_path, document, "missing-voice reuse plan"
-        )
-    except CohortReviewError as error:
-        raise MissingVoiceReuseError(str(error)) from error
+    return write_json_document_no_replace(
+        output_path,
+        document,
+        "missing-voice reuse plan",
+        error_type=MissingVoiceReuseError,
+    )
 
 
 def load_missing_voice_reuse_plan(path: str | Path) -> MissingVoiceReusePlan:

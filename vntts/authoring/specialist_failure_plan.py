@@ -9,11 +9,13 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.authority import (
+    canonical_document_sha256,
+    write_json_document_no_replace,
+)
 from vntts.authoring.cohort_review import (
     CohortReviewError,
     _load_document,
-    _write_document_no_replace,
 )
 from vntts.authoring.failure_repair import (
     INLINE_PAUSE_MARKER,
@@ -233,8 +235,11 @@ def write_specialist_failure_plan(
     plan: SpecialistFailurePlan | object, output_path: str | Path
 ) -> Path:
     document = _validated(plan)
-    return Path(
-        _write_document_no_replace(output_path, document, "specialist failure plan")
+    return write_json_document_no_replace(
+        output_path,
+        document,
+        "specialist failure plan",
+        error_type=CohortReviewError,
     )
 
 

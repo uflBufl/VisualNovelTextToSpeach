@@ -19,12 +19,14 @@ from vntts_artifacts.voice_manifest import (
     normalize_character_name,
 )
 
-from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.authority import (
+    canonical_document_sha256,
+    write_json_document_no_replace,
+)
 from vntts.authoring.bulk_generation import sha256_control_path
 from vntts.authoring.cohort_review import (
     CohortReviewError,
     _load_document,
-    _write_document_no_replace,
 )
 from vntts.authoring.publication import (
     AtomicPublicationError,
@@ -399,14 +401,12 @@ def write_voice_repair_comparison_plan(
     plan: VoiceRepairComparisonPlan, output_path: str | Path
 ) -> Path:
     document = _validate_plan(plan)
-    try:
-        return Path(
-            _write_document_no_replace(
-                output_path, document, "voice repair comparison plan"
-            )
-        )
-    except CohortReviewError as error:
-        raise VoiceRepairComparisonError(str(error)) from error
+    return write_json_document_no_replace(
+        output_path,
+        document,
+        "voice repair comparison plan",
+        error_type=VoiceRepairComparisonError,
+    )
 
 
 def load_voice_repair_comparison_plan(path: str | Path) -> VoiceRepairComparisonPlan:

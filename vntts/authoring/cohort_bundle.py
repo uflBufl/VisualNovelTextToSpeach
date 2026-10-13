@@ -13,7 +13,10 @@ from typing import NotRequired, TypeAlias, TypedDict, TypeIs
 
 from durable_file import atomic_write_json
 
-from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.authority import (
+    canonical_document_sha256,
+    write_json_document_no_replace,
+)
 from vntts.authoring.cohort_review import (
     COHORT_REVIEW_DEFECT_REASONS,
     DEFAULT_CLEAN_SAMPLES_PER_BUCKET,
@@ -28,7 +31,6 @@ from vntts.authoring.cohort_review import (
     _validate_bound_workspace_identity,
     _validate_decision_against_plan,
     _validate_plan_source_workspace,
-    _write_document_no_replace,
     build_cohort_review_decision,
     build_cohort_review_plan,
     execute_cohort_review_decision,
@@ -587,8 +589,11 @@ def write_cohort_review_bundle(
 ) -> Path:
     """Publish a validated bundle without replacing an existing file."""
     document = _validated_bundle_document(bundle)
-    return Path(
-        _write_document_no_replace(output_path, document, "cohort review bundle")
+    return write_json_document_no_replace(
+        output_path,
+        document,
+        "cohort review bundle",
+        error_type=CohortReviewError,
     )
 
 

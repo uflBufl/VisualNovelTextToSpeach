@@ -13,11 +13,13 @@ from typing import TypeAlias, TypedDict
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage
 
-from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.authority import (
+    canonical_document_sha256,
+    write_json_document_no_replace,
+)
 from vntts.authoring.cohort_review import (
     CohortReviewError,
     _load_document,
-    _write_document_no_replace,
 )
 from vntts.authoring.source_reference_quality import (
     SourceReferenceQualityError,
@@ -247,12 +249,9 @@ def _portrait_alias_suggestion(
 def write_portrait_alias_plan(plan: PortraitAliasPlan, output: str | Path) -> Path:
     if not isinstance(plan, PortraitAliasPlan):
         raise PortraitAliasError("Portrait alias plan is invalid")
-    try:
-        return Path(
-            _write_document_no_replace(output, plan.document, "portrait alias plan")
-        )
-    except CohortReviewError as error:
-        raise PortraitAliasError(str(error)) from error
+    return write_json_document_no_replace(
+        output, plan.document, "portrait alias plan", error_type=PortraitAliasError
+    )
 
 
 def load_portrait_alias_plan(path: str | Path) -> PortraitAliasPlan:
@@ -310,14 +309,12 @@ def write_portrait_alias_decision(
 ) -> Path:
     if not isinstance(decision, PortraitAliasDecision):
         raise PortraitAliasError("Portrait alias decision is invalid")
-    try:
-        return Path(
-            _write_document_no_replace(
-                output, decision.document, "portrait alias decision"
-            )
-        )
-    except CohortReviewError as error:
-        raise PortraitAliasError(str(error)) from error
+    return write_json_document_no_replace(
+        output,
+        decision.document,
+        "portrait alias decision",
+        error_type=PortraitAliasError,
+    )
 
 
 def load_portrait_alias_decision(
