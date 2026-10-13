@@ -371,6 +371,10 @@ def _collect_model_report_samples(
             "reports": [],
         },
     )
+    if any(metadata[field] != report[field] for field in ("provider", "model")):
+        raise ModelListeningError(
+            f"Model {model_id!r} has conflicting report metadata: {snapshot.path}"
+        )
     report_name = str(snapshot.path)
     if report_name not in metadata["reports"]:
         metadata["reports"].append(report_name)

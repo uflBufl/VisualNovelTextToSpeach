@@ -335,6 +335,36 @@ class AuthoringListeningTest(unittest.TestCase):
                             trial["queue_id"].startswith(f"corpus:{sample_id}:")
                         )
 
+    def test_reports_for_one_model_require_consistent_metadata(self):
+        for field in (None, "provider", "model"):
+            with self.subTest(field=field), TemporaryDirectory() as directory:
+                root = Path(directory)
+                reports = write_model_reports(root, item_count=2)
+                original = json.loads(reports[0].read_text())
+                additional = {**original, "samples": original["samples"][1:]}
+                if field is not None:
+                    additional[field] = "conflicting-value"
+                extra = root / "additional.json"
+                extra.write_text(json.dumps(additional), encoding="utf-8")
+                original["samples"] = original["samples"][:1]
+                reports[0].write_text(json.dumps(original), encoding="utf-8")
+                reports.append(extra)
+                output = root / "session"
+                if field is not None:
+                    with self.assertRaisesRegex(
+                        ModelListeningError, "conflicting report metadata"
+                    ):
+                        create_listening_session_from_reports(reports, output)
+                    self.assertFalse(output.exists())
+                else:
+                    path = create_listening_session_from_reports(reports, output)
+                    self.assertEqual(len(load_listening_session(path)["trials"]), 2)
+                    key = json.loads(path.with_name(".blind-key.json").read_text())
+                    self.assertEqual(
+                        key["models"][0]["reports"],
+                        [str(reports[0].resolve()), str(extra.resolve())],
+                    )
+
     def test_hidden_key_and_report_keep_explicit_model_metadata(self):
         for explicit in (False, True):
             with self.subTest(explicit=explicit), TemporaryDirectory() as directory:
