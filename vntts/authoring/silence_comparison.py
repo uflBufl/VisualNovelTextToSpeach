@@ -42,7 +42,7 @@ from vntts.authoring.publication import (
 )
 from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.document_identity import is_lowercase_sha256, sha256_file
-from vntts.json_types import decode_json
+from vntts.json_types import decode_json, has_schema_version
 from vntts.numeric_values import optional_finite_number
 from vntts.path_safety import read_regular_bytes
 
@@ -119,11 +119,8 @@ def _validate_silence_comparison_input_document(document: object) -> list[object
         "samples",
     }:
         raise SilenceComparisonError("Silence comparison input plan is malformed")
-    if (
-        document["schema"] != SILENCE_COMPARISON_INPUT_SCHEMA
-        or not isinstance(document["schema_version"], int)
-        or isinstance(document["schema_version"], bool)
-        or document["schema_version"] != SILENCE_COMPARISON_INPUT_VERSION
+    if document["schema"] != SILENCE_COMPARISON_INPUT_SCHEMA or not has_schema_version(
+        document, SILENCE_COMPARISON_INPUT_VERSION
     ):
         raise SilenceComparisonError("Unsupported silence comparison input schema")
     records = document["samples"]
@@ -561,11 +558,8 @@ def _validate_silence_comparison_document(
         raise SilenceComparisonError(
             "Silence comparison input plan checksum is invalid"
         )
-    if (
-        document["schema"] != SILENCE_COMPARISON_SCHEMA
-        or not isinstance(document["schema_version"], int)
-        or isinstance(document["schema_version"], bool)
-        or document["schema_version"] != SILENCE_COMPARISON_VERSION
+    if document["schema"] != SILENCE_COMPARISON_SCHEMA or not has_schema_version(
+        document, SILENCE_COMPARISON_VERSION
     ):
         raise SilenceComparisonError("Unsupported silence comparison schema")
     _silence_comparison_created_at(document["created_at"])
@@ -891,9 +885,7 @@ def _comparison_report_records(
             "samples",
         }
         or report["schema"] != "vntts.voice-model-report"
-        or not isinstance(report["schema_version"], int)
-        or isinstance(report["schema_version"], bool)
-        or report["schema_version"] != 1
+        or not has_schema_version(report, 1)
         or report["model_id"] != model_id
         or report["provider"] != "derived-comparison"
         or report["backend"] != "derived-comparison"

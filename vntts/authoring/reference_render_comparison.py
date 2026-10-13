@@ -217,11 +217,8 @@ def _read_reference_render_plan(
         "arms",
     }:
         raise ReferenceRenderComparisonError("Reference render plan is malformed")
-    if (
-        document["schema"] != REFERENCE_RENDER_INPUT_SCHEMA
-        or not isinstance(document["schema_version"], int)
-        or isinstance(document["schema_version"], bool)
-        or document["schema_version"] != REFERENCE_RENDER_INPUT_VERSION
+    if document["schema"] != REFERENCE_RENDER_INPUT_SCHEMA or not has_schema_version(
+        document, REFERENCE_RENDER_INPUT_VERSION
     ):
         raise ReferenceRenderComparisonError("Unsupported reference render plan schema")
     return source, payload, document

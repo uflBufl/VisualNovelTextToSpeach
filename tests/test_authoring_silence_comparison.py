@@ -396,6 +396,64 @@ class AuthoringSilenceComparisonTest(unittest.TestCase):
             ):
                 load_silence_comparison(result.directory)
 
+    def test_parsed_schema_versions_require_json_integers(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sample = write_silence_comparison_sample(root)
+            plan_path = write_silence_comparison_input_plan(root, sample)
+            result = publish_silence_comparison((sample,), root / "comparison")
+            comparison_path = result.directory / "comparison.json"
+            report_path = result.report_paths[0]
+            originals = {
+                path: path.read_bytes()
+                for path in (plan_path, comparison_path, report_path)
+            }
+            input_document = json.loads(originals[plan_path])
+            comparison_document = json.loads(originals[comparison_path])
+            report_document = json.loads(originals[report_path])
+            for source, document, read, message in (
+                (
+                    plan_path,
+                    input_document,
+                    lambda: load_silence_comparison_input_plan(plan_path),
+                    "Unsupported silence comparison input schema",
+                ),
+                (
+                    comparison_path,
+                    comparison_document,
+                    lambda: load_silence_comparison(result.directory),
+                    "Unsupported silence comparison schema",
+                ),
+                (
+                    report_path,
+                    report_document,
+                    lambda: load_silence_comparison(result.directory),
+                    "report is malformed",
+                ),
+            ):
+                for version in (True, 1.0):
+                    with self.subTest(source=source.name, version=version):
+                        source.write_text(
+                            json.dumps({**document, "schema_version": version}),
+                            encoding="utf-8",
+                        )
+                        if source == report_path:
+                            changed = json.loads(json.dumps(comparison_document))
+                            for artifact in changed["artifacts"]:
+                                if (
+                                    artifact["path"]
+                                    == "reports/sentence-segmentation.json"
+                                ):
+                                    artifact["sha256"] = sha256_file(report_path)
+                            comparison_path.write_text(
+                                json.dumps(changed), encoding="utf-8"
+                            )
+                        with self.assertRaisesRegex(SilenceComparisonError, message):
+                            read()
+                        source.write_bytes(originals[source])
+                        comparison_path.write_bytes(originals[comparison_path])
+                read()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -316,6 +316,28 @@ class ReferenceRenderListeningContractTest(unittest.TestCase):
 
         self._assert_handoff_change_rejected(mutate)
 
+    def test_plan_rejects_noninteger_and_unsupported_schema_versions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            plan_path = Path(temporary) / "plan.json"
+            for version in (True, False, 1.0, "1", None, 0, 2):
+                with self.subTest(version=version):
+                    plan_path.write_text(
+                        json.dumps(
+                            {
+                                "schema": REFERENCE_RENDER_INPUT_SCHEMA,
+                                "schema_version": version,
+                                "audit": "unused",
+                                "audit_id": "a" * 64,
+                                "arms": [],
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    with self.assertRaisesRegex(
+                        ReferenceRenderComparisonError, "Unsupported.*schema"
+                    ):
+                        load_reference_render_plan(plan_path)
+
 
 if __name__ == "__main__":
     unittest.main()
