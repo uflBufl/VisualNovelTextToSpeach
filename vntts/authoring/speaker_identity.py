@@ -28,6 +28,7 @@ from vntts.authoring.speaker_identity_model import (
     managed_speaker_identity_status,
 )
 from vntts.json_types import decode_json, has_schema_version
+from vntts.numeric_values import optional_finite_number
 from vntts.path_safety import read_regular_text
 from vntts.voices import CharacterVoiceRegistry, read_voice_reference_bytes
 
@@ -532,8 +533,8 @@ def _validate_inventory_shape(document: Mapping[str, object]) -> None:
     if (
         document.get("schema") != INVENTORY_SCHEMA
         or not has_schema_version(document, SCHEMA_VERSION)
-        or not isinstance(document.get("voice_manifest"), str)
         or not isinstance(references, list)
+        or type(document.get("reference_count")) is not int
         or document.get("reference_count") != len(references)
         or document.get("inventory_id")
         != _document_sha256(
@@ -541,24 +542,26 @@ def _validate_inventory_shape(document: Mapping[str, object]) -> None:
         )
     ):
         raise SpeakerIdentityError("Unsupported or inconsistent reference inventory")
-    required = {
-        "reference_id",
-        "character",
-        "speaker",
-        "path",
-        "sha256",
-        "sample_rate_hz",
-        "channels",
-        "frames",
-        "duration_seconds",
-    }
-    identities: list[str] = []
-    for item in references:
-        if not isinstance(item, dict) or not required <= item.keys():
-            raise SpeakerIdentityError("Reference inventory contains an invalid entry")
-        identities.append(_required_text(item.get("reference_id"), "reference ID"))
+    _required_text(document.get("voice_manifest"), "voice manifest")
+    _required_text(document.get("voice_manifest_sha256"), "voice manifest checksum")
+    identities = [_validate_reference_shape(item) for item in references]
     if len(set(identities)) != len(identities):
         raise SpeakerIdentityError("Reference inventory repeats an identity")
+
+
+def _validate_reference_shape(item: object) -> str:
+    if not isinstance(item, dict):
+        raise SpeakerIdentityError("Reference inventory contains an invalid entry")
+    for field in ("character", "speaker", "path", "sha256"):
+        _required_text(item.get(field), field)
+    for field, minimum in (("sample_rate_hz", 1), ("channels", 1), ("frames", 0)):
+        value = item.get(field)
+        if type(value) is not int or value < minimum:
+            raise SpeakerIdentityError(f"Reference inventory has invalid {field}")
+    duration = optional_finite_number(item.get("duration_seconds"))
+    if duration is None or duration < 0:
+        raise SpeakerIdentityError("Reference inventory has invalid duration_seconds")
+    return _required_text(item.get("reference_id"), "reference ID")
 
 
 def _validate_labels_shape(document: Mapping[str, object]) -> None:

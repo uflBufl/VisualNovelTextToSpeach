@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import json
 import math
@@ -466,6 +467,85 @@ class SpeakerIdentityTest(unittest.TestCase):
             self.assertEqual(report["threshold"], math.nextafter(1.0, 0.0))
             self.assertTrue(report["threshold_eligible"])
             self.assertEqual(report["held_out"]["boundary_violation_count"], 0)
+
+    def test_inventory_admission_rejects_rehashed_invalid_types_before_use(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            inventory = build_reference_inventory(_fixture(root))
+            ids = [item["reference_id"] for item in inventory["references"]]
+            pairs = [
+                {
+                    "left_reference_id": ids[0],
+                    "right_reference_id": ids[1],
+                    "partition": "fit",
+                    "relationship": "same-speaker",
+                }
+            ]
+            labels = build_labelled_pairs(inventory, pairs)
+            mutations = [
+                ("reference", field, value)
+                for field, value in (
+                    ("reference_id", []),
+                    ("character", None),
+                    ("speaker", False),
+                    ("path", []),
+                    ("sha256", []),
+                    ("sha256", ""),
+                    ("sample_rate_hz", True),
+                    ("sample_rate_hz", 0),
+                    ("channels", 1.0),
+                    ("frames", -1),
+                    ("frames", None),
+                    ("duration_seconds", True),
+                    ("duration_seconds", "0.1"),
+                    ("duration_seconds", -1),
+                    ("duration_seconds", 10**400),
+                )
+            ] + [
+                ("inventory", "reference_count", 6.0),
+                ("inventory", "reference_count", True),
+                ("inventory", "reference_count", False),
+                ("inventory", "voice_manifest", ""),
+                ("inventory", "voice_manifest_sha256", []),
+            ]
+            for scope, field, value in mutations:
+                with self.subTest(scope=scope, field=field, value=value):
+                    invalid = copy.deepcopy(inventory)
+                    if scope == "reference":
+                        invalid["references"][0][field] = value
+                    else:
+                        invalid[field] = value
+                        if field == "reference_count" and isinstance(value, bool):
+                            invalid["references"] = invalid["references"][: int(value)]
+                    invalid["inventory_id"] = speaker_identity._document_sha256(
+                        {
+                            key: value
+                            for key, value in invalid.items()
+                            if key != "inventory_id"
+                        }
+                    )
+                    bound_labels = {**labels, "inventory_id": invalid["inventory_id"]}
+                    bound_labels["labels_id"] = speaker_identity._document_sha256(
+                        {
+                            key: value
+                            for key, value in bound_labels.items()
+                            if key != "labels_id"
+                        }
+                    )
+                    embed = Mock()
+                    output = root / "output.json"
+                    with self.assertRaises(SpeakerIdentityError):
+                        build_labelled_pairs(invalid, pairs)
+                    with self.assertRaises(SpeakerIdentityError):
+                        build_speaker_identity_report(invalid, bound_labels, embed, {})
+                    embed.assert_not_called()
+                    with self.assertRaises(SpeakerIdentityError):
+                        speaker_identity.write_reference_inventory(invalid, output)
+                    self.assertFalse(output.exists())
+                    source = root / "invalid.json"
+                    source.write_text(json.dumps(invalid), "utf-8")
+                    with self.assertRaises(SpeakerIdentityError):
+                        load_reference_inventory(source)
 
     def test_invalid_model_embeddings_use_the_domain_error(self):
         with TemporaryDirectory() as directory:
