@@ -419,8 +419,11 @@ def _synthesis_character_overrides(
     missing_policy: MissingVoicePolicy,
 ) -> dict[str, str]:
     overrides = {}
-    for item in policy_queue.items:
-        requested = synthesis_character_for_line(item.speaker, item.voice_character)
+    requested_characters = dict.fromkeys(
+        synthesis_character_for_line(item.speaker, item.voice_character)
+        for item in policy_queue.items
+    )
+    for requested in requested_characters:
         voice = registry.resolve(requested)
         if (
             requested != "Narrator"

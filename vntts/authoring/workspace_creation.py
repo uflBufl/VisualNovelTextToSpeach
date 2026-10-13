@@ -2493,8 +2493,11 @@ def _narrator_fallback_overrides(
         and all(reference.is_file() for reference in narrator_voice.references)
     )
     overrides: dict[str, str] = {}
-    for item in queue.items:
-        requested = synthesis_character_for_line(item.speaker, item.voice_character)
+    requested_characters = dict.fromkeys(
+        synthesis_character_for_line(item.speaker, item.voice_character)
+        for item in queue.items
+    )
+    for requested in requested_characters:
         voice = registry.resolve(requested)
         missing = (
             voice is None

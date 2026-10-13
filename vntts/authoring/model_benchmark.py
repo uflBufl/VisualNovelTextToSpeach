@@ -949,15 +949,11 @@ def _validate_benchmark_variant(
     if variant.backend not in {"moss-tts", "moss-tts-delay", "coqui-xtts"}:
         return
     unresolved = sorted(
-        {
-            variant.voice or _required_text(sample.get("character"), "sample character")
-            for sample in samples
-            if registry.resolve(
-                variant.voice
-                or _required_text(sample.get("character"), "sample character")
-            )
-            is None
-        },
+        (
+            character
+            for character in _benchmark_voice_characters(variant, samples)
+            if registry.resolve(character) is None
+        ),
         key=str.casefold,
     )
     if unresolved:
@@ -1034,7 +1030,7 @@ def _write_benchmark_staging(
 
 
 def _benchmark_voice_controls(
-    variants: Sequence[ModelVariant],
+    variants: Iterable[ModelVariant],
     samples: Sequence[JsonDocument],
     registry: CharacterVoiceRegistry,
     staging_root: Path,
@@ -1048,9 +1044,9 @@ def _benchmark_voice_controls(
     if not voice_variants:
         return registry, []
     used_characters = {
-        variant.voice or _required_text(sample.get("character"), "sample character")
+        character
         for variant in voice_variants
-        for sample in samples
+        for character in _benchmark_voice_characters(variant, samples)
     }
     return _snapshot_voice_registry(
         registry,
@@ -1058,6 +1054,15 @@ def _benchmark_voice_controls(
         staging_root / "voice-controls",
         output_directory / "voice-controls",
     )
+
+
+def _benchmark_voice_characters(
+    variant: ModelVariant, samples: Sequence[JsonDocument]
+) -> set[str]:
+    return {
+        variant.voice or _required_text(sample.get("character"), "sample character")
+        for sample in samples
+    }
 
 
 def _voice_control_content(control: JsonDocument) -> JsonDocument:

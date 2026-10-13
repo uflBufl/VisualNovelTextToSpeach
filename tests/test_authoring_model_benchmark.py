@@ -148,6 +148,38 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
         )
         return corpus
 
+    def test_voice_preflight_resolves_distinct_requested_characters(self):
+        for override in (None, "Override"):
+            with self.subTest(override=override), TemporaryDirectory() as directory:
+                root = Path(directory)
+                corpus = self._write_strict_corpus(root)
+                document = json.loads(corpus.read_text())
+                sample = document["samples"][0]
+                document["samples"] = [
+                    {**sample, "id": f"sample-{index}", "character": character}
+                    for index, character in enumerate(["Zeta", "Alpha"] * 100)
+                ]
+                corpus.write_text(json.dumps(document), encoding="utf-8")
+                registry = CharacterVoiceRegistry()
+                expected = [override] if override else ["Alpha", "Zeta"]
+                with patch.object(registry, "resolve", return_value=None) as resolve:
+                    with self.assertRaisesRegex(
+                        ModelBenchmarkError, ", ".join(expected)
+                    ):
+                        benchmark_model_variants(
+                            corpus,
+                            (ModelVariant("model", "moss-tts", voice=override),),
+                            registry,
+                            root / "output",
+                            backend_factory=lambda *a, **k: self.fail(
+                                "Backend started"
+                            ),
+                        )
+                self.assertCountEqual(
+                    [call.args[0] for call in resolve.call_args_list], expected
+                )
+                self.assertFalse((root / "output").exists())
+
     def test_corpus_versions_are_exact_integers_before_backend_startup(self):
         for version in (True, 1.0, "1", [], {}):
             with self.subTest(version=version), TemporaryDirectory() as directory:
