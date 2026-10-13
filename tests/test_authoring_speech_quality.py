@@ -135,6 +135,40 @@ class AuthoringSpeechQualityTest(unittest.TestCase):
                         (SpeechSilenceSpan("all_silent", 0.0, 1.28, 1.28),),
                     )
 
+    def test_accepted_inspections_skip_unused_diagnostic_spans(self):
+        samples = np.concatenate((np.zeros(70), np.full(200, 1000), np.zeros(70)))
+        duration = len(samples) / 125
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "accepted.wav"
+            path.write_bytes(wav_bytes(samples))
+            for version in (1, 2):
+                with self.subTest(version=version):
+                    expected, spans = analyze_generated_speech_samples(
+                        samples,
+                        sample_rate=125,
+                        duration_seconds=duration,
+                        analysis_version=version,
+                    )
+                    self.assertEqual(len(spans), 2)
+                    with patch(
+                        "vntts.authoring.speech_quality.SpeechSilenceSpan",
+                        wraps=SpeechSilenceSpan,
+                    ) as create_span:
+                        self.assertEqual(
+                            inspect_generated_speech(path, analysis_version=version),
+                            expected,
+                        )
+                        self.assertEqual(
+                            inspect_generated_speech_samples(
+                                samples,
+                                sample_rate=125,
+                                duration_seconds=duration,
+                                analysis_version=version,
+                            ),
+                            expected,
+                        )
+                        create_span.assert_not_called()
+
     def test_versions_retain_threshold_and_partial_frame_metrics(self):
         # At 125 Hz each analysis frame is ten samples. 184 PCM16 units
         # falls below -45 dBFS, while 185 falls above it.

@@ -352,11 +352,11 @@ def inspect_generated_speech_samples(
     text: str = "",
 ) -> SpeechQuality:
     """Apply the speech-silence gate to already-decoded PCM16 samples."""
-    quality, spans = analyze_generated_speech_samples(
-        samples,
-        sample_rate=sample_rate,
-        duration_seconds=duration_seconds,
-        analysis_version=analysis_version,
+    silent, active_indices, frame_seconds = _analyze_speech_frames(
+        samples, sample_rate, duration_seconds, analysis_version
+    )
+    quality = _frame_quality(
+        silent, active_indices, frame_seconds, duration_seconds, analysis_version
     )
     failures = []
     if quality.leading_silence_seconds > MAX_LEADING_SILENCE_SECONDS:
@@ -370,6 +370,7 @@ def inspect_generated_speech_samples(
     if quality.silence_ratio > MAX_SILENCE_RATIO:
         failures.append(f"{quality.silence_ratio:.0%} silent frames")
     if failures:
+        spans = _silence_spans(silent, active_indices, frame_seconds, duration_seconds)
         raise SpeechSilenceValidationError(
             quality,
             failures,
