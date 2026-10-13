@@ -23,7 +23,7 @@ from vntts.authoring.authority import (
     write_json_document_no_replace,
 )
 from vntts.authoring.bulk_generation import BulkGenerationError, sha256_control_path
-from vntts.authoring.publication import no_replace_destination
+from vntts.authoring.publication import no_replace_destination, publication_errors
 from vntts.authoring.robustness_corpus import (
     SpeechRobustnessCorpusError,
     _read_pcm16,
@@ -550,6 +550,7 @@ def _transcribe_batch(
     return records
 
 
+@publication_errors(SpeechRobustnessAsrError)
 def build_speech_robustness_asr_report(
     corpus_directory: str | Path,
     model_directory: str | Path,
@@ -644,6 +645,7 @@ def build_speech_robustness_asr_report(
     )
 
 
+@publication_errors(SpeechRobustnessAsrError)
 def write_speech_robustness_asr_report(
     report: SpeechRobustnessAsrReport, output_path: str | Path
 ) -> Path:

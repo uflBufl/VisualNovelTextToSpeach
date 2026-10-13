@@ -36,8 +36,8 @@ from vntts.authoring.robustness_corpus import (
 )
 
 
-def _pending_workspace(root):
-    _fixture, _imported, created = create_test_workspace(root)
+def _pending_workspace(root, *, text=None):
+    _fixture, _imported, created = create_test_workspace(root, text=text)
     state_path = created.directory / "generated-audio/generation-state.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
     queue_id, item = next(iter(state["items"].items()))
@@ -368,6 +368,75 @@ class AuthoringRobustnessCorpusTest(unittest.TestCase):
                         )
                     self.assertFalse(output.exists())
 
+    def test_asr_progress_save_errors_preserve_checkpoint_and_allow_retry(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            decisions = []
+            for index in range(2):
+                workspace, _state, queue_id = _pending_workspace(
+                    root / f"reviewed-{index}", text=f"Sample number {index}"
+                )
+                _decision(workspace, queue_id)
+                decisions.append(workspace / "cohort-reviews")
+            corpus = root / "corpus"
+            publish_speech_robustness_corpus(decisions, [], corpus)
+            model = root / "model"
+            model.mkdir()
+            (model / "weights.bin").write_bytes(b"model")
+            progress = root / "progress.json"
+
+            def interrupt_after_checkpoint(_payload):
+                if progress.exists():
+                    raise SpeechRobustnessAsrError("interrupted after checkpoint")
+                return "saved transcript"
+
+            with self.assertRaisesRegex(SpeechRobustnessAsrError, "interrupted"):
+                build_speech_robustness_asr_report(
+                    corpus,
+                    model,
+                    transcriber=interrupt_after_checkpoint,
+                    progress_path=progress,
+                )
+            checkpoint = progress.read_bytes()
+            saved_records = json.loads(checkpoint)["records"]
+            self.assertEqual(len(saved_records), 1)
+            for target in (
+                "pathlib.Path.mkdir",
+                "vntts.authoring.robustness_asr.atomic_write_json",
+            ):
+                failure = PermissionError("checkpoint is unwritable")
+                with (
+                    self.subTest(target=target),
+                    patch(target, side_effect=failure),
+                    self.assertRaisesRegex(
+                        SpeechRobustnessAsrError, "checkpoint is unwritable"
+                    ) as raised,
+                ):
+                    build_speech_robustness_asr_report(
+                        corpus,
+                        model,
+                        transcriber=lambda _: "retried transcript",
+                        progress_path=progress,
+                    )
+                self.assertIs(raised.exception.__cause__, failure)
+                self.assertEqual(progress.read_bytes(), checkpoint)
+
+            retried = []
+
+            def transcribe_remaining(payload):
+                retried.append(payload)
+                return "retried transcript"
+
+            report = build_speech_robustness_asr_report(
+                corpus,
+                model,
+                transcriber=transcribe_remaining,
+                progress_path=progress,
+            )
+            self.assertEqual(len(retried), 1)
+            self.assertEqual(report.document["records"][0], saved_records[0])
+            self.assertEqual(len(json.loads(progress.read_bytes())["records"]), 2)
+
     def test_asr_batch_results_match_single_results_and_reject_a_string(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -651,6 +720,16 @@ class AuthoringRobustnessCorpusTest(unittest.TestCase):
                 SpeechRobustnessAsrError, "validated corpus authority"
             ):
                 write_speech_robustness_asr_report(report.to_dict(), root / "raw.json")
+            failure = PermissionError("report destination is inaccessible")
+            with (
+                patch.object(asr_module, "no_replace_destination", side_effect=failure),
+                self.assertRaisesRegex(
+                    SpeechRobustnessAsrError, "report destination is inaccessible"
+                ) as raised,
+            ):
+                write_speech_robustness_asr_report(report, root / "unwritten.json")
+            self.assertIs(raised.exception.__cause__, failure)
+            self.assertFalse((root / "unwritten.json").exists())
 
 
 if __name__ == "__main__":
