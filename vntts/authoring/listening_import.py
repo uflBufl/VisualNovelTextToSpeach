@@ -107,8 +107,9 @@ def inspect_listening_session(
     source_controls = _validate_key(
         session, key, key_path, key_sha256, trials, audio_sha256
     )
+    report_present = report_path.is_file()
     report_sha256 = None
-    if report_path.is_file():
+    if report_present:
         report, report_sha256 = _load_schema_snapshot(
             report_path, REPORT_SCHEMA, "listening report"
         )
@@ -128,9 +129,7 @@ def inspect_listening_session(
             key_sha256,
         ),
     ]
-    if report_path.is_file():
-        if report_sha256 is None:
-            raise ListeningImportError("Listening report checksum is unavailable")
+    if report_sha256 is not None:
         artifacts.append(
             (
                 "listening_report",
@@ -166,7 +165,7 @@ def inspect_listening_session(
         trial_count=len(trials),
         completed_count=_int_field(session, "completed_count"),
         audio_count=len(audio),
-        report_present=report_path.is_file(),
+        report_present=report_present,
         artifacts=tuple(artifacts),
         source_controls=source_controls,
         key_mode=key_mode,
@@ -419,16 +418,12 @@ def _validate_key_assignments(
     audio_sha256: Mapping[Path, str],
     source_controls: dict[Path, str],
 ) -> None:
-    expected_ids = {
-        trial_id
-        for trial in trials
-        if isinstance(trial_id := trial.get("trial_id"), str)
-    }
     trial_by_id = {
         trial_id: trial
         for trial in trials
         if isinstance(trial_id := trial.get("trial_id"), str)
     }
+    expected_ids = set(trial_by_id)
     seen: set[str] = set()
     for assignment in assignments:
         trial_id = _validate_assignment_header(assignment, expected_ids, seen)
@@ -677,8 +672,6 @@ def _validate_existing(
             f"Existing listening import manifest was modified: {manifest_path}"
         )
     for artifact in _object_list(manifest.get("artifacts"), "imported artifacts"):
-        if not _is_json_object(artifact):
-            raise ListeningImportError(f"Malformed listening import: {manifest_path}")
         relative = _safe_relative(artifact.get("path"), "imported listening artifact")
         path = _within(destination, relative, "imported listening artifact")
         if not path.is_file() or sha256_file(path) != artifact.get("sha256"):
@@ -693,6 +686,12 @@ def _validate_existing(
 
 @publication_errors(ListeningImportError)
 def _verify_controls_unchanged(inspection: ListeningImportInspection) -> None:
+    report_path = inspection.session_directory / "report.json"
+    if report_path.is_file() != inspection.report_present:
+        raise ListeningImportError(
+            "Listening report presence changed during import; retry when idle. "
+            "No application data was published."
+        )
     for role, source, _relative, digest in inspection.artifacts:
         if not source.is_file() or sha256_file(source) != digest:
             raise ListeningImportError(

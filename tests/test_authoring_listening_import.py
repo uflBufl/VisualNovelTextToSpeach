@@ -227,6 +227,97 @@ class ListeningImportTest(unittest.TestCase):
                 self.assertIn(str(failure), listening[0].compatibility_error)
             self.assertEqual(tree_hashes(root), before)
 
+    def test_admitted_report_disappearance_aborts_before_publish(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = write_listening_fixture(root)
+            report_path = source / "report.json"
+            report_bytes = report_path.read_bytes()
+            original_validate = listening_import_module._validate_report
+
+            def remove_validated_report(*args):
+                original_validate(*args)
+                report_path.unlink()
+
+            with (
+                patch.object(
+                    listening_import_module,
+                    "_validate_report",
+                    side_effect=remove_validated_report,
+                ),
+                self.assertRaisesRegex(ListeningImportError, "presence changed"),
+            ):
+                import_listening_session(source, root / "app-data")
+            self.assertFalse((root / "app-data").exists())
+            report_path.write_bytes(report_bytes)
+            self.assertTrue(import_listening_session(source, root / "app-data").created)
+
+    def test_late_report_appearance_cleans_staging_and_reportless_import_recovers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = write_listening_fixture(root)
+            report_path = source / "report.json"
+            report_bytes = report_path.read_bytes()
+            report_path.unlink()
+            inspection = inspect_listening_session(source)
+            self.assertFalse(inspection.report_present)
+            self.assertNotIn(
+                "listening_report", [role for role, *_ in inspection.artifacts]
+            )
+            original_copy = listening_import_module.copy_regular_file
+
+            def create_report_during_copy(source_path, destination, **kwargs):
+                original_copy(source_path, destination, **kwargs)
+                if Path(source_path).name == "session.json":
+                    report_path.write_bytes(report_bytes)
+
+            with (
+                patch.object(
+                    listening_import_module,
+                    "copy_regular_file",
+                    side_effect=create_report_during_copy,
+                ),
+                self.assertRaisesRegex(ListeningImportError, "presence changed"),
+            ):
+                import_listening_session(source, root / "app-data")
+            self.assertEqual(list((root / "app-data").iterdir()), [])
+            report_path.unlink()
+            recovered = import_listening_session(source, root / "app-data")
+            self.assertTrue(recovered.created)
+            self.assertFalse(recovered.manifest["summary"]["report_present"])
+            self.assertFalse((recovered.destination / "report.json").exists())
+            self.assertFalse(
+                import_listening_session(source, root / "app-data").created
+            )
+
+    def test_reimport_rejects_report_appearance_after_inspection(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = write_listening_fixture(root)
+            report_path = source / "report.json"
+            report_bytes = report_path.read_bytes()
+            report_path.unlink()
+            destination = import_listening_session(
+                source, root / "app-data"
+            ).destination
+            before = tree_hashes(destination)
+
+            def create_report_after_inspection(session_directory):
+                inspection = inspect_listening_session(session_directory)
+                report_path.write_bytes(report_bytes)
+                return inspection
+
+            with (
+                patch.object(
+                    listening_import_module,
+                    "inspect_listening_session",
+                    side_effect=create_report_after_inspection,
+                ),
+                self.assertRaisesRegex(ListeningImportError, "presence changed"),
+            ):
+                import_listening_session(source, root / "app-data")
+            self.assertEqual(tree_hashes(destination), before)
+
     def test_atomic_publication_failure_is_translated_and_cleans_staging(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
