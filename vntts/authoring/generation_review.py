@@ -383,7 +383,7 @@ def review_generation_item(
     expected_authority: object = None,
     queue_path: str | Path | None = None,
 ) -> ReviewCommit | JsonDocument:
-    """Persist approval/rejection, then rebuild the derived manifest."""
+    """Commit review with manifest revocation before rejected state."""
     if decision not in {"approved", "rejected"}:
         raise BulkGenerationError("Review decision must be approved or rejected")
     state_path = Path(state_path).expanduser().resolve()
@@ -681,8 +681,13 @@ def _publish_cohort_review(
             lease,
         )
     elif next(iter(decisions.values())) == "rejected":
-        _publish_rejected_cohort_review(
-            staged_manifest, staged_state, manifest_path, state_path, lease
+        _publish_rejected_review(
+            staged_manifest,
+            staged_state,
+            manifest_path,
+            state_path,
+            lease,
+            context="Cohort",
         )
     else:
         _publish_approved_cohort_review(
@@ -746,20 +751,23 @@ def _publish_mixed_cohort_review(
         ) from error
 
 
-def _publish_rejected_cohort_review(
+def _publish_rejected_review(
     staged_manifest: Path,
     staged_state: Path,
     manifest_path: Path,
     state_path: Path,
-    lease: GenerationLease,
+    lease: GenerationLease | None,
+    *,
+    context: str,
 ) -> None:
     try:
         os.replace(staged_manifest, manifest_path)
-        lease.assert_owned()
+        if lease is not None:
+            lease.assert_owned()
         os.replace(staged_state, state_path)
     except OSError as error:
         raise BulkGenerationError(
-            "Cohort rejection did not fully commit; the published manifest remains fail-closed: "
+            f"{context} rejection did not fully commit; the published manifest remains fail-closed: "
             f"{error}"
         ) from error
 
@@ -906,6 +914,7 @@ def _commit_review_item_decision(
         proposed,
         entries,
         queue_id,
+        decision,
         expected_authority,
         queue_path,
         lease,
@@ -923,6 +932,7 @@ def _write_review_item_transaction(
     proposed: JsonDocument,
     entries: list[dict[str, object]],
     queue_id: str,
+    decision: str,
     authority: ReviewAuthority | None,
     queue_path: str | Path | None,
     lease: GenerationLease | None,
@@ -940,8 +950,18 @@ def _write_review_item_transaction(
             _assert_review_authority(state_path, queue_id, authority, queue_path)
         if lease is not None:
             lease.assert_owned()
-        _replace_review_state(staged_state, state_path)
-        _replace_review_manifest(staged_manifest, manifest_path, lease)
+        if decision == "rejected":
+            _publish_rejected_review(
+                staged_manifest,
+                staged_state,
+                manifest_path,
+                state_path,
+                lease,
+                context="Review",
+            )
+        else:
+            _replace_review_state(staged_state, state_path)
+            _replace_review_manifest(staged_manifest, manifest_path, lease)
     finally:
         for staged in (staged_state, staged_manifest):
             try:

@@ -570,6 +570,99 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertEqual(decision["evidence"]["base_result"]["provider"], "moss-tts")
         self.assertEqual(stored["status"], "live_fallback")
 
+    def test_interrupted_single_rejection_never_exposes_rejected_wav(self):
+        from vntts.generated_audio import GeneratedAudioLibrary
+
+        for exact in (False, True):
+            with self.subTest(exact=exact), TemporaryDirectory() as directory:
+                root = Path(directory)
+                item = queue_item()
+                queue = write_queue(root / "queue.jsonl", [item])
+                result = self.run_generation(
+                    queue, root / "output", SyntheticRenderer()
+                )
+                review_generation_item(result.state, item["queue_id"], "approved")
+                authority = generation_review_authority(result.state, item["queue_id"])
+                library = GeneratedAudioLibrary.load_optional(result.manifest)
+                self.assertIsNotNone(library.find(item["line_id"], item["text_sha256"]))
+                original = os.replace
+
+                def interrupt_after_commit(source, destination):
+                    original(source, destination)
+                    if Path(destination).resolve() == result.state.resolve():
+                        raise OSError("interrupted after rejection state commit")
+
+                with (
+                    patch.object(
+                        review_module.os, "replace", side_effect=interrupt_after_commit
+                    ),
+                    self.assertRaises(BulkGenerationError),
+                ):
+                    review_generation_item(
+                        result.state,
+                        item["queue_id"],
+                        "rejected",
+                        expected_authority=authority if exact else None,
+                        queue_path=queue if exact else None,
+                    )
+                state = load_generation_state(result.state, queue)
+                self.assertEqual(
+                    state["items"][item["queue_id"]]["review_status"], "rejected"
+                )
+                library = GeneratedAudioLibrary.load_optional(result.manifest)
+                self.assertIsNone(library.find(item["line_id"], item["text_sha256"]))
+                self.assertEqual(list(result.state.parent.glob(".*.tmp")), [])
+
+    def test_single_rejection_lease_takeover_keeps_manifest_revoked(self):
+        from vntts.generated_audio import GeneratedAudioLibrary
+
+        for exact in (False, True):
+            with self.subTest(exact=exact), TemporaryDirectory() as directory:
+                root = Path(directory)
+                item = queue_item()
+                queue = write_queue(root / "queue.jsonl", [item])
+                result = self.run_generation(
+                    queue, root / "output", SyntheticRenderer()
+                )
+                review_generation_item(result.state, item["queue_id"], "approved")
+                authority = generation_review_authority(result.state, item["queue_id"])
+                state_before = result.state.read_bytes()
+                lease_path = result.state.parent / ".generation-lease.json"
+                original = os.replace
+
+                def steal_after_manifest_replace(source, destination):
+                    original(source, destination)
+                    if Path(destination).resolve() == result.manifest.resolve():
+                        lease = json.loads(lease_path.read_text(encoding="utf-8"))
+                        lease["lease_id"] = "successor-after-rejection-manifest"
+                        atomic_write_json(lease_path, lease, sort_keys=True)
+
+                with (
+                    patch.object(
+                        review_module.os,
+                        "replace",
+                        side_effect=steal_after_manifest_replace,
+                    ),
+                    self.assertRaisesRegex(
+                        BulkGenerationError, "lease ownership changed"
+                    ),
+                ):
+                    review_generation_item(
+                        result.state,
+                        item["queue_id"],
+                        "rejected",
+                        expected_authority=authority if exact else None,
+                        queue_path=queue if exact else None,
+                    )
+                self.assertEqual(result.state.read_bytes(), state_before)
+                library = GeneratedAudioLibrary.load_optional(result.manifest)
+                self.assertIsNone(library.find(item["line_id"], item["text_sha256"]))
+                successor = json.loads(lease_path.read_text(encoding="utf-8"))
+                self.assertEqual(
+                    successor["lease_id"], "successor-after-rejection-manifest"
+                )
+                self.assertEqual(list(result.state.parent.glob(".*.tmp")), [])
+
     def test_review_authority_final_read_error_preserves_cause_and_sources(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

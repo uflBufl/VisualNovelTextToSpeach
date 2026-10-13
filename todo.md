@@ -1,9 +1,9 @@
 # TODO
 
-## Separate authoring review and fallback transaction ownership
+## Active - Separate authoring outcome planning and fallback transactions
 
-- [ ] Move exact review snapshots, `ReviewAuthority`/`ReviewCommit`, single-item and cohort decisions from `bulk_generation` to one review owner; switch workbench, cohort, terminal review and workspace inspection to direct imports. Preserve compatible exports and shared error identity through the existing leaf `generation_lease`, exact state/queue/item/WAV authority, lease refusal and distinct rejection/approval/mixed-cohort publication order. Verify import graph, review/UI, changed-WAV, failed staging and conservative-manifest gates before completion.
-- [ ] Before moving live-fallback transactions, give read-only outcome reporting/repair selection one owner used by recovery, failure regeneration, reference audit and automatic fallback evidence. Then move evidence/proposed-state/leased fallback commit without a backward import of `bulk_generation` or a duplicated repair selector. Preserve schema/legacy loads, generation retry/cancellation/resume, source-change refusal and exact digest bindings; use affected selectors after each part. Execution context and per-item execution already have separate owners and need no wholesale relocation.
+- [ ] Give read-only outcome reporting/repair selection one owner used by `pregeneration_recovery`, failure regeneration, reference audit, CLI reporting and automatic fallback evidence. Include shared failure normalization and sentence/inline-pause predicates consumed by workspace creation/inspection and robustness corpus; preserve stable state/queue digest bindings, deterministic cohorts/actions, legacy state and provider/repair budgets. Reuse shared state admission and lease errors, keep compatible exports, and prevent a backward import of `bulk_generation` or a duplicated repair selector. Run the local selector first, independent review and fresh-main branch validation before completing this stage.
+- [ ] After the common read-only planner is in place, move live-fallback evidence/proposed-state/leased commit to its own owner. Preserve source-change refusal, exact evidence/result/control digests, generation retry/cancellation/resume, manifest publication order and cleanup. Execution context and per-item execution already have separate owners and need no wholesale relocation. Validate affected callers and failure gates, commit separately, then normal main push.
 
 ## Continue regular-file admission through remaining integrity owners
 
