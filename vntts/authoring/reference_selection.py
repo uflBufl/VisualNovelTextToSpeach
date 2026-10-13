@@ -236,7 +236,7 @@ def validate_reference_selection_provenance(
         raise ReferenceSelectionError(
             "Voice reference-selection candidate inventory is malformed"
         )
-    candidate_paths: list[str] = []
+    reference_root = Path(manifest_path).resolve().parent
     hashes: dict[str, str] = {}
     for candidate in candidates:
         if not isinstance(candidate, dict) or set(candidate) != {"path", "sha256"}:
@@ -248,17 +248,14 @@ def validate_reference_selection_provenance(
             raise ReferenceSelectionError(
                 "Voice reference-selection candidate path is malformed"
             )
-        path = _contained_reference(Path(manifest_path).resolve().parent, relative)
+        path = _contained_reference(reference_root, relative)
         digest = sha256_file(path)
         if digest != candidate.get("sha256"):
             raise ReferenceSelectionError(
                 f"Voice reference-selection candidate changed: {relative}"
             )
-        candidate_paths.append(relative)
         hashes[relative] = digest
-    if len(candidate_paths) != len(set(candidate_paths)) or set(candidate_paths) != set(
-        entry.references
-    ):
+    if len(candidates) != len(hashes) or set(hashes) != set(entry.references):
         raise ReferenceSelectionError(
             "Voice reference-selection candidate inventory conflicts with the manifest"
         )
