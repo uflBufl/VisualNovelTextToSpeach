@@ -23,8 +23,8 @@ from vntts.authoring.voice_repair_comparison import (
 
 
 class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
-    def create_rejected_workspace(self, root):
-        fixture, _imported, workspace = create_test_workspace(root)
+    def create_rejected_workspace(self, root, *, text=None):
+        fixture, _imported, workspace = create_test_workspace(root, text=text)
         state_path = workspace.directory / "generated-audio/generation-state.json"
         state = json.loads(state_path.read_text(encoding="utf-8"))
         state["active"] = None
@@ -53,6 +53,49 @@ class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
                         build_voice_repair_comparison_plan(
                             workspace, "Rhiannon", generation_profiles=iter(profiles)
                         )
+
+    def test_rehashed_plan_rejects_malformed_samples_states_and_controls(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, workspace, _ = self.create_rejected_workspace(root, text="Hello")
+            plan = build_voice_repair_comparison_plan(workspace, "Rhiannon")
+            output = root / "malformed-plan.json"
+            for field, value, message in (
+                ("comparison_sample_queue_ids", [{}], "sample ID"),
+                ("comparison_sample_queue_ids", [[]], "sample ID"),
+                ("status", [], "unresolved item state"),
+                ("review_status", {}, "unresolved item state"),
+                ("word_count", True, "word count"),
+                ("word_count", 1.0, "word count"),
+                ("kind", [], "model control"),
+                ("kind", {}, "model control"),
+            ):
+                with self.subTest(field=field, value=value):
+                    document = plan.to_dict()
+                    if field == "comparison_sample_queue_ids":
+                        document[field] = value
+                    elif field == "kind":
+                        candidate = document["candidates"][0]
+                        candidate["model_control"][field] = value
+                        candidate["candidate_id"] = _canonical_sha256(
+                            {
+                                key: item
+                                for key, item in candidate.items()
+                                if key != "candidate_id"
+                            }
+                        )
+                    else:
+                        document["targets"][0][field] = value
+                    document["plan_id"] = _canonical_sha256(
+                        {
+                            key: item
+                            for key, item in document.items()
+                            if key != "plan_id"
+                        }
+                    )
+                    output.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaisesRegex(VoiceRepairComparisonError, message):
+                        load_voice_repair_comparison_plan(output)
 
     def test_reference_paths_share_canonical_admission(self):
         variant = {

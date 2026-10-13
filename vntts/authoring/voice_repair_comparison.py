@@ -136,7 +136,7 @@ class _PlanSections:
     targets: list[JsonObject]
     variants: list[JsonObject]
     candidates: list[JsonObject]
-    samples: JsonList
+    samples: list[str]
 
 
 def build_voice_repair_comparison_plan(
@@ -1047,11 +1047,11 @@ def _require_unresolved_result(queue_id: str, result: JsonObject | None) -> None
     if result is None:
         return
     combination = (result.get("status"), result.get("review_status"))
-    if combination not in {
+    if combination not in (
         ("generated", "pending_review"),
         ("generated", "rejected"),
         ("failed", None),
-    }:
+    ):
         raise VoiceRepairComparisonError(
             f"Comparison item has an unsupported authority state: {queue_id} {combination}"
         )
@@ -1179,9 +1179,12 @@ def _plan_sections(document: JsonObject) -> _PlanSections:
     targets = _object_list(document.get("targets"), "Comparison targets")
     variants = _object_list(document.get("variants"), "Comparison variants")
     candidates = _object_list(document.get("candidates"), "Comparison candidates")
-    samples = _required_list(
+    raw_samples = _required_list(
         document.get("comparison_sample_queue_ids"), "Comparison samples"
     )
+    samples = [_required_text(value, "Comparison sample ID") for value in raw_samples]
+    if raw_samples != samples:
+        raise VoiceRepairComparisonError("Comparison samples are not deterministic")
     return _PlanSections(approved, targets, variants, candidates, samples)
 
 
@@ -1316,7 +1319,7 @@ def _validate_candidates(
         if (
             not isinstance(model_control, dict)
             or set(model_control) != {"kind", "sha256"}
-            or model_control.get("kind") not in {"path", "identifier"}
+            or model_control.get("kind") not in ("path", "identifier")
         ):
             raise VoiceRepairComparisonError("Comparison model control is malformed")
         _required_sha256(
@@ -1381,7 +1384,7 @@ def _validate_item_identity(value: JsonObject) -> None:
         raise VoiceRepairComparisonError("Comparison item text identity is invalid")
     word_count = value.get("word_count")
     expected_words = len(re.findall(r"[\w’'-]+", text, flags=re.UNICODE))
-    if word_count != expected_words:
+    if type(word_count) is not int or word_count != expected_words:
         raise VoiceRepairComparisonError("Comparison item word count is invalid")
     expected_bucket = (
         "short" if word_count <= 6 else "medium" if word_count <= 14 else "long"
@@ -1432,10 +1435,10 @@ def _validate_target_item(value: JsonObject) -> None:
         _required_text(value.get("failure_category"), "Failure category")
         if value.get("audio_sha256") is not None:
             raise VoiceRepairComparisonError("Comparison failed item has a WAV")
-    elif combination in {
+    elif combination in (
         ("generated", "pending_review"),
         ("generated", "rejected"),
-    }:
+    ):
         _required_sha256(value.get("state_item_sha256"), "Generated state item SHA-256")
         _required_sha256(value.get("audio_sha256"), "Generated WAV SHA-256")
         if value.get("failure_category") is not None:
