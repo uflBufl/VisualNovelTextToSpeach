@@ -1,5 +1,7 @@
 import json
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -13,6 +15,7 @@ from vntts.authoring.listening import (
     load_listening_session,
     record_trial_preference,
 )
+from vntts.authoring.listening_cli import main as listening_main
 from vntts.authoring.listening_import import import_listening_session
 
 
@@ -48,6 +51,45 @@ class ListeningOperationCountTest(unittest.TestCase):
             ).destination
             / "session.json"
         )
+
+    def test_cli_commands_keep_domain_validation_phase_counts(self):
+        for kind in ("current", "legacy"):
+            with self.subTest(kind=kind), TemporaryDirectory() as directory:
+                root = Path(directory)
+                session_path = (
+                    self._current_session(root)
+                    if kind == "current"
+                    else self._legacy_session(root)
+                )
+                trial_id = json.loads(session_path.read_text())["trials"][0]["trial_id"]
+                commands = (
+                    (["status"], 1, "Listening progress:"),
+                    (["next"], 1, None),
+                    (["report"], 1, "Listening report:"),
+                    (
+                        ["score", trial_id, "--preference", "tie", "--overwrite"],
+                        2,
+                        "Saved",
+                    ),
+                )
+                for arguments, budget, message in commands:
+                    with (
+                        self.subTest(command=arguments[0]),
+                        redirect_stdout(StringIO()) as output,
+                    ):
+                        result = self._run_with_key_budget(
+                            lambda: listening_main(
+                                [*arguments, "--session", str(session_path)]
+                            ),
+                            budget,
+                        )
+                    self.assertEqual(result, 0)
+                    if message is not None:
+                        self.assertIn(message, output.getvalue())
+                saved = json.loads(session_path.read_text())
+                self.assertEqual(saved["trials"][0]["rating"]["preference"], "tie")
+                report = json.loads(session_path.with_name("report.json").read_text())
+                self.assertEqual(report["completed_trials"], saved["completed_count"])
 
     def test_public_operations_bound_key_capture_counts_for_current_and_legacy(self):
         for kind in ("current", "legacy"):

@@ -77,12 +77,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             from vntts.authoring.listening_ui import launch_listening_workbench
 
             return launch_listening_workbench(options.session)
-        session = load_listening_session(options.session)
         if options.command == "status":
-            completed, total = listening_progress(session)
+            completed, total = listening_progress(
+                load_listening_session(options.session)
+            )
             return cli_success(f"Listening progress: {completed}/{total} trials")
         if options.command == "next":
-            trial = next_pending_trial(session)
+            trial = next_pending_trial(load_listening_session(options.session))
             if trial is None:
                 return cli_success("Listening session is complete")
             print(json.dumps(trial, ensure_ascii=False, indent=2))
