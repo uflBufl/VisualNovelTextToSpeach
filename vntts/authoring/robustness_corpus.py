@@ -62,7 +62,7 @@ from vntts.authoring.workbench import (
 )
 from vntts.authoring.workspace_foundation import require_sha256
 from vntts.cleanup import temporary_directory
-from vntts.json_types import is_json_object
+from vntts.json_types import has_schema_version, is_json_object
 
 SPEECH_ROBUSTNESS_CORPUS_SCHEMA = "vntts.speech-robustness-corpus"
 SPEECH_ROBUSTNESS_CORPUS_VERSION = 3
@@ -1205,19 +1205,20 @@ def _failure_keys(version: int) -> set[str]:
 
 
 def _validate_artifacts(artifacts: Sequence[JsonDocument]) -> None:
-    paths = [row.get("path") for row in artifacts]
-    if len(paths) != len(artifacts) or len(set(paths)) != len(paths):
-        raise SpeechRobustnessCorpusError(
-            "Robustness corpus artifact inventory is invalid"
-        )
+    paths: set[str] = set()
     for artifact in artifacts:
         if set(artifact) != {"path", "sha256", "size"}:
             raise SpeechRobustnessCorpusError(
                 "Robustness corpus artifact record is invalid"
             )
-        _relative(artifact["path"], "Robustness artifact path")
+        path = _relative(artifact["path"], "Robustness artifact path").as_posix()
+        if path in paths:
+            raise SpeechRobustnessCorpusError(
+                "Robustness corpus artifact inventory is invalid"
+            )
+        paths.add(path)
         _require_sha256(artifact["sha256"], "Artifact SHA-256")
-        if not isinstance(artifact["size"], int) or artifact["size"] < 1:
+        if type(artifact["size"]) is not int or artifact["size"] < 1:
             raise SpeechRobustnessCorpusError(
                 "Robustness artifact size must be positive"
             )
@@ -1232,11 +1233,19 @@ def _validate_sample_version(sample: JsonDocument, version: int) -> None:
         raise SpeechRobustnessCorpusError("Robustness sample text checksum is invalid")
     _required_text(sample["speaker"], "Sample speaker")
     _required_text(sample["voice_character"], "Sample voice character")
-    if _object_field(sample, "text_timing", "Sample text timing").get("policy") != {
-        "diagnostic_only": True,
-        "automatic_rejection": False,
-        "alignment": "proportional_word_position_without_asr",
-    }:
+    timing = _object_field(sample, "text_timing", "Sample text timing")
+    policy = _object_field(timing, "policy", "Sample text-timing policy")
+    if (
+        not has_schema_version(timing, 1)
+        or policy.get("diagnostic_only") is not True
+        or policy.get("automatic_rejection") is not False
+        or policy
+        != {
+            "diagnostic_only": True,
+            "automatic_rejection": False,
+            "alignment": "proportional_word_position_without_asr",
+        }
+    ):
         raise SpeechRobustnessCorpusError(
             "Robustness sample text-timing policy is invalid"
         )
@@ -1275,10 +1284,14 @@ def _validate_sample_evidence(sample: JsonDocument) -> None:
         )
     for decision_id in sample["decision_ids"]:
         _require_sha256(decision_id, "Sample decision ID")
-    if _object_field(sample, "analysis", "Sample analysis").get("policy") != {
-        "diagnostic_only": True,
-        "automatic_rejection": False,
-    }:
+    analysis = _object_field(sample, "analysis", "Sample analysis")
+    policy = _object_field(analysis, "policy", "Sample analysis policy")
+    if (
+        not has_schema_version(analysis, SPEECH_ROBUSTNESS_ANALYSIS_VERSION)
+        or policy.get("diagnostic_only") is not True
+        or policy.get("automatic_rejection") is not False
+        or policy != {"diagnostic_only": True, "automatic_rejection": False}
+    ):
         raise SpeechRobustnessCorpusError("Robustness sample policy is invalid")
 
 
@@ -1398,12 +1411,20 @@ def _validate_document(document: JsonDocument) -> JsonDocument:
     if not isinstance(document, dict) or set(document) != expected:
         raise SpeechRobustnessCorpusError("Robustness corpus document shape is invalid")
     version = _corpus_version(document)
-    if document.get("analysis_policy") != {
-        "schema_version": SPEECH_ROBUSTNESS_ANALYSIS_VERSION,
-        "diagnostic_only": True,
-        "automatic_rejection": False,
-        "human_labels_are_authoritative": True,
-    }:
+    policy = _object_field(document, "analysis_policy", "Robustness corpus policy")
+    if (
+        not has_schema_version(policy, SPEECH_ROBUSTNESS_ANALYSIS_VERSION)
+        or policy.get("diagnostic_only") is not True
+        or policy.get("automatic_rejection") is not False
+        or policy.get("human_labels_are_authoritative") is not True
+        or policy
+        != {
+            "schema_version": SPEECH_ROBUSTNESS_ANALYSIS_VERSION,
+            "diagnostic_only": True,
+            "automatic_rejection": False,
+            "human_labels_are_authoritative": True,
+        }
+    ):
         raise SpeechRobustnessCorpusError("Robustness corpus policy is invalid")
     samples = _document_rows(document.get("samples"), "Robustness corpus samples")
     failures = _document_rows(document.get("failures"), "Robustness corpus failures")

@@ -198,6 +198,116 @@ class AuthoringRobustnessCorpusTest(unittest.TestCase):
                 self.assertEqual(samples.iterations, 1)
                 self.assertEqual(summary, expected)
 
+    def test_public_reader_rejects_malformed_artifact_inventory(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state_path, queue_id = _pending_workspace(root / "reviewed")
+            _decision(workspace, queue_id)
+            result = publish_speech_robustness_corpus(
+                [workspace / "cohort-reviews"], [], root / "corpus"
+            )
+            corpus_path = result.directory / "corpus.json"
+            original = corpus_path.read_text(encoding="utf-8")
+            for field, value, reason in (
+                (
+                    "path",
+                    json.loads(original)["artifacts"][1]["path"],
+                    "inventory is invalid",
+                ),
+                ("path", [], "POSIX-relative path"),
+                ("path", {}, "POSIX-relative path"),
+                ("path", None, "POSIX-relative path"),
+                ("size", True, "size must be positive"),
+                ("size", 1.0, "size must be positive"),
+                ("size", 0, "size must be positive"),
+            ):
+                with self.subTest(field=field, value=value):
+                    document = json.loads(original)
+                    document["artifacts"][0][field] = value
+                    document["corpus_id"] = _canonical_sha256(
+                        {
+                            key: item
+                            for key, item in document.items()
+                            if key != "corpus_id"
+                        }
+                    )
+                    corpus_path.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaisesRegex(SpeechRobustnessCorpusError, reason):
+                        load_speech_robustness_corpus(result.directory)
+            corpus_path.write_text(original, encoding="utf-8")
+            self.assertEqual(
+                load_speech_robustness_corpus(result.directory).sample_count, 1
+            )
+
+    def test_public_reader_requires_exact_nested_schema_versions(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state_path, queue_id = _pending_workspace(root / "reviewed")
+            _decision(workspace, queue_id)
+            result = publish_speech_robustness_corpus(
+                [workspace / "cohort-reviews"], [], root / "corpus"
+            )
+            corpus_path = result.directory / "corpus.json"
+            original = corpus_path.read_text(encoding="utf-8")
+            for field in ("analysis_policy", "analysis", "text_timing"):
+                for value in (True, 1.0):
+                    with self.subTest(field=field, value=value):
+                        document = json.loads(original)
+                        target = (
+                            document
+                            if field == "analysis_policy"
+                            else document["samples"][0]
+                        )
+                        target[field]["schema_version"] = value
+                        document["corpus_id"] = _canonical_sha256(
+                            {
+                                key: item
+                                for key, item in document.items()
+                                if key != "corpus_id"
+                            }
+                        )
+                        corpus_path.write_text(json.dumps(document), encoding="utf-8")
+                        with self.assertRaisesRegex(
+                            SpeechRobustnessCorpusError, "policy is invalid"
+                        ):
+                            load_speech_robustness_corpus(result.directory)
+
+    def test_public_reader_requires_boolean_policy_flags(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _state_path, queue_id = _pending_workspace(root / "reviewed")
+            _decision(workspace, queue_id)
+            result = publish_speech_robustness_corpus(
+                [workspace / "cohort-reviews"], [], root / "corpus"
+            )
+            corpus_path = result.directory / "corpus.json"
+            original = corpus_path.read_text(encoding="utf-8")
+            for section in ("analysis_policy", "analysis", "text_timing"):
+                fields = {"diagnostic_only": 1, "automatic_rejection": 0}
+                if section == "analysis_policy":
+                    fields["human_labels_are_authoritative"] = 1
+                for field, value in fields.items():
+                    with self.subTest(section=section, field=field):
+                        document = json.loads(original)
+                        policy = (
+                            document[section]
+                            if section == "analysis_policy"
+                            else document["samples"][0][section]["policy"]
+                        )
+                        policy[field] = value
+                        document["corpus_id"] = _canonical_sha256(
+                            {
+                                key: item
+                                for key, item in document.items()
+                                if key != "corpus_id"
+                            }
+                        )
+                        corpus_path.write_text(json.dumps(document), encoding="utf-8")
+                        with self.assertRaisesRegex(
+                            SpeechRobustnessCorpusError, "policy is invalid"
+                        ):
+                            load_speech_robustness_corpus(result.directory)
+
     def test_asr_summary_counts_and_groups_share_one_traversal(self):
         class CountedRecords(list):
             iterations = 0
