@@ -458,7 +458,7 @@ def _render_comparison_arms(
 ]:
     reports: list[str] = []
     arm_documents: list[JsonDocument] = []
-    complete_by_arm: dict[str, set[str]] = {}
+    shared = set(plan.queue_ids)
     copied_controls: dict[tuple[str, str], JsonDocument] = {}
     for arm in plan.arms:
         report, arm_document, complete_ids = _render_comparison_arm(
@@ -466,10 +466,7 @@ def _render_comparison_arms(
         )
         reports.append(report)
         arm_documents.append(arm_document)
-        complete_by_arm[arm["arm_id"]] = complete_ids
-    shared = set(plan.queue_ids)
-    for values in complete_by_arm.values():
-        shared &= values
+        shared &= complete_ids
     return reports, arm_documents, copied_controls, shared
 
 
@@ -1233,7 +1230,7 @@ def _validate_comparison_arms(
 ) -> set[str]:
     arm_reports: list[str] = []
     arm_ids: set[str] = set()
-    shared: set[str] | None = None
+    shared = set(queue_ids)
     for arm in arms:
         arm_id = _comparison_arm_id(arm)
         if arm_id in arm_ids:
@@ -1243,12 +1240,12 @@ def _validate_comparison_arms(
         arm_ids.add(arm_id)
         report, complete = _validate_comparison_arm(root, arm, arm_id, queue_ids)
         arm_reports.append(report)
-        shared = complete if shared is None else shared & complete
+        shared &= complete
     if arm_reports != reports or len(set(reports)) != len(reports):
         raise ReferenceRenderComparisonError(
             "Reference render comparison report inventory changed"
         )
-    return shared or set()
+    return shared
 
 
 def _comparison_arm_id(arm: object) -> str:
