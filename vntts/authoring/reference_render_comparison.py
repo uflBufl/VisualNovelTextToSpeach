@@ -49,6 +49,7 @@ from vntts.authoring.publication import (
     staged_directory,
 )
 from vntts.authoring.workspace_foundation import load_json_object
+from vntts.cleanup import cleanup_on_exit
 from vntts.document_identity import (
     canonical_document_sha256,
     is_lowercase_sha256,
@@ -411,6 +412,7 @@ def publish_reference_render_comparison(
     service = FailureReferencePreviewService(plan.audit_directory, **service_options)
     try:
         with (
+            cleanup_on_exit(service.close, description="Reference preview shutdown"),
             publication_errors(ReferenceRenderComparisonError),
             staged_directory(
                 output.parent, prefix=f".{output.name}.staging-"
@@ -434,8 +436,6 @@ def publish_reference_render_comparison(
             )
     except (FailureReferenceAuditError, FailureReferencePreviewError) as error:
         raise ReferenceRenderComparisonError(str(error)) from error
-    finally:
-        service.close()
 
 
 def _comparison_audit(directory: Path) -> _ComparisonAudit:

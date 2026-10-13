@@ -9,6 +9,7 @@ from typing import Protocol, TypeAlias
 from durable_file import atomic_write_json
 from PIL import Image
 
+from vntts.cleanup import cleanup_on_exit
 from vntts.cli import CLIReportResult
 from vntts.ocr import (
     default_dialog_region,
@@ -292,7 +293,5 @@ def _production_auto_advance(window_title: str) -> bool:
             live_sequence_mode="off",
         )
     )
-    try:
+    with cleanup_on_exit(controller.shutdown, description="Smoke controller shutdown"):
         return bool(controller._auto_advance_dialog())
-    finally:
-        controller.shutdown()

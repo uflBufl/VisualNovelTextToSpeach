@@ -2,7 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import vntts.authoring.listening as listening
 from tests.authoring_fixtures import create_failed_reference_workspace
@@ -11,6 +11,10 @@ from tests.source_reference_fixtures import (
 )
 from vntts.authoring import reference_render_comparison
 from vntts.authoring.failure_reference_audit import publish_failure_reference_audit
+from vntts.authoring.failure_reference_preview import (
+    FailureReferencePreviewError,
+    FailureReferencePreviewService,
+)
 from vntts.authoring.listening import load_listening_session
 from vntts.authoring.reference_render_comparison import (
     REFERENCE_RENDER_INPUT_SCHEMA,
@@ -150,6 +154,83 @@ class ReferenceRenderListeningContractTest(unittest.TestCase):
 
             self.assertEqual((output / "sentinel").read_bytes(), b"competitor")
             self.assertEqual(list(output.iterdir()), [output / "sentinel"])
+            self.assertEqual(list(root.glob(".comparison.staging-*")), [])
+
+    def test_render_error_survives_preview_shutdown_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            primary = FailureReferencePreviewError("render failed")
+            services = []
+
+            def create_service(*args, **kwargs):
+                service = FailureReferencePreviewService(*args, **kwargs)
+                original_close = service.close
+
+                def close_then_fail():
+                    original_close()
+                    raise RuntimeError("shutdown failed")
+
+                service.close = Mock(side_effect=close_then_fail)
+                services.append(service)
+                return service
+
+            with (
+                patch.object(
+                    reference_render_comparison,
+                    "_render_comparison_arms",
+                    side_effect=primary,
+                ),
+                patch.object(
+                    reference_render_comparison,
+                    "FailureReferencePreviewService",
+                    side_effect=create_service,
+                ),
+                self.assertRaisesRegex(
+                    ReferenceRenderComparisonError, "render failed"
+                ) as raised,
+            ):
+                self._comparison(root)
+
+            self.assertIs(raised.exception.__cause__, primary)
+            self.assertIn(
+                "Reference preview shutdown failed: shutdown failed", primary.__notes__
+            )
+            services[0].close.assert_called_once_with()
+            self.assertTrue(services[0]._closed)
+            self.assertFalse(services[0]._root.exists())
+            self.assertFalse((root / "comparison").exists())
+            self.assertEqual(list(root.glob(".comparison.staging-*")), [])
+
+    def test_shutdown_failure_after_publication_stays_visible(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            services = []
+
+            def create_service(*args, **kwargs):
+                service = FailureReferencePreviewService(*args, **kwargs)
+                original_close = service.close
+
+                def close_then_fail():
+                    original_close()
+                    raise RuntimeError("shutdown failed")
+
+                service.close = Mock(side_effect=close_then_fail)
+                services.append(service)
+                return service
+
+            with (
+                patch.object(
+                    reference_render_comparison,
+                    "FailureReferencePreviewService",
+                    side_effect=create_service,
+                ),
+                self.assertRaisesRegex(RuntimeError, "shutdown failed"),
+            ):
+                self._comparison(root)
+
+            services[0].close.assert_called_once_with()
+            self.assertFalse(services[0]._root.exists())
+            load_reference_render_comparison_document(root / "comparison")
             self.assertEqual(list(root.glob(".comparison.staging-*")), [])
 
     def test_public_session_preserves_source_identity_and_empty_output(self):

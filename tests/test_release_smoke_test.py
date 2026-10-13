@@ -17,6 +17,34 @@ from vntts.window_capture import WindowCaptureTarget
 
 
 class ReleaseSmokeTest(unittest.TestCase):
+    def test_production_advance_preserves_dispatch_error_during_shutdown(self):
+        primary = RuntimeError("key dispatch failed")
+        controller = Mock()
+        controller._auto_advance_dialog.side_effect = primary
+        controller.shutdown.side_effect = OSError("shutdown failed")
+        with (
+            patch("vntts.controller.AppController", return_value=controller),
+            self.assertRaises(RuntimeError) as raised,
+        ):
+            release_smoke_test._production_auto_advance("game")
+        self.assertIs(raised.exception, primary)
+        self.assertEqual(
+            primary.__notes__, ["Smoke controller shutdown failed: shutdown failed"]
+        )
+        controller._auto_advance_dialog.assert_called_once_with()
+        controller.shutdown.assert_called_once_with()
+
+    def test_production_advance_propagates_standalone_shutdown_failure(self):
+        controller = Mock()
+        controller._auto_advance_dialog.return_value = True
+        controller.shutdown.side_effect = OSError("shutdown failed")
+        with (
+            patch("vntts.controller.AppController", return_value=controller),
+            self.assertRaisesRegex(OSError, "shutdown failed"),
+        ):
+            release_smoke_test._production_auto_advance("game")
+        controller.shutdown.assert_called_once_with()
+
     @unittest.skipUnless(shutil.which("tesseract"), "Tesseract is not installed")
     def test_real_sample_reaches_speech_stage(self):
         sample = Path(__file__).resolve().parents[1] / "samples" / "01.jpeg"
