@@ -47,7 +47,7 @@ from vntts.document_identity import (
     is_lowercase_sha256,
     sha256_file,
 )
-from vntts.json_types import decode_json, has_schema_version
+from vntts.json_types import decode_json, has_schema_version, is_utf8_text
 from vntts.json_types import is_json_object as _is_json_document
 from vntts.path_safety import read_regular_bytes, read_regular_text
 from vntts.settings import get_local_data_directory
@@ -90,6 +90,19 @@ class ModelVariant:
     voice: str | None = None
     terms_accepted: bool = False
     require_cuda: bool = False
+
+    def __post_init__(self) -> None:
+        for field in (
+            "model_id",
+            "backend",
+            "model",
+            "model_revision",
+            "generation_profile",
+            "voice",
+        ):
+            value = getattr(self, field)
+            if value is not None and not is_utf8_text(value):
+                raise ModelBenchmarkError(f"Model variant {field} must be UTF-8 text")
 
 
 @dataclass(frozen=True)
@@ -652,7 +665,7 @@ def load_benchmark_corpus(path: str | Path) -> JsonDocument:
         line_id = _required_text(sample.get("line_id"), f"sample {index} line_id")
         character = _required_text(sample.get("character"), f"sample {index} character")
         text = sample.get("text")
-        if not isinstance(text, str) or not text:
+        if not is_utf8_text(text) or not text:
             raise ModelBenchmarkError(
                 f"Benchmark corpus sample {index} text is invalid"
             )
@@ -1390,13 +1403,13 @@ def _contained_child(root: str | Path, name: str | Path, label: str) -> Path:
 
 
 def _required_text(value: object, label: str) -> str:
-    if not isinstance(value, str) or not value.strip():
+    if not is_utf8_text(value) or not value.strip():
         raise ModelBenchmarkError(f"Benchmark corpus {label} must be non-empty text")
     return value.strip()
 
 
 def _required_exact_text(value: object, label: str) -> str:
-    if not isinstance(value, str) or not value:
+    if not is_utf8_text(value) or not value:
         raise ModelBenchmarkError(f"Benchmark corpus {label} must be non-empty text")
     return value
 

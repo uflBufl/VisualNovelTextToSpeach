@@ -4,10 +4,21 @@ import sys
 import unittest
 from unittest.mock import patch
 
-from vntts.json_types import decode_json
+from vntts.json_types import decode_json, is_utf8_text
 
 
 class JsonDecodeTest(unittest.TestCase):
+    def test_utf8_text_admission_preserves_json_decoder_contract(self):
+        for value in ("", "  text  ", "Привет", "🌊", "\x00"):
+            with self.subTest(value=value):
+                self.assertTrue(is_utf8_text(value))
+        for value in (None, b"text", 1, [], {}, "\ud800", "\udcff", "\ud800\udc00"):
+            with self.subTest(value=value):
+                self.assertFalse(is_utf8_text(value))
+        decoded = decode_json('"\\ud800"')
+        self.assertEqual(decoded, "\ud800")
+        self.assertFalse(is_utf8_text(decoded))
+
     def test_integer_digit_limit_is_a_parse_error_for_every_input_format(self):
         previous = sys.get_int_max_str_digits()
         try:

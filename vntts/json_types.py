@@ -24,6 +24,17 @@ def is_json_object(value: object) -> TypeGuard[dict[str, object]]:
     return isinstance(value, dict) and all(isinstance(key, str) for key in value)
 
 
+def is_utf8_text(value: object) -> TypeGuard[str]:
+    """Check whether text can be persisted or hashed as UTF-8."""
+    if not isinstance(value, str):
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def has_schema_version(document: Mapping[str, object], expected: int) -> bool:
     """Match a schema version only when its JSON value is an integer."""
     return (
@@ -32,4 +43,4 @@ def has_schema_version(document: Mapping[str, object], expected: int) -> bool:
     )
 
 
-__all__ = ["decode_json", "has_schema_version", "is_json_object"]
+__all__ = ["decode_json", "has_schema_version", "is_json_object", "is_utf8_text"]

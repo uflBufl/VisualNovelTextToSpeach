@@ -1067,7 +1067,87 @@ class TTSBenchmarkTest(unittest.TestCase):
                 factory.assert_not_called()
                 self.assertFalse(output.exists())
 
+    def test_utf8_report_labels_are_admitted_before_backend_startup(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = root / "corpus.json"
+            corpus.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "name": "\ud800",
+                        "samples": [
+                            {"id": "one", "character": "Kamuta", "text": "Text"}
+                        ],
+                    }
+                )
+            )
+            with self.assertRaisesRegex(ValueError, "UTF-8"):
+                load_tts_benchmark_corpus(corpus)
+            for field in ("backend_name", "model_id", "corpus_name"):
+                with self.subTest(field=field):
+                    options = {"backend_name": "fake", field: "Broken\ud800"}
+                    factory = Mock(return_value=FakeRenderingBackend())
+                    with self.assertRaisesRegex(ValueError, "UTF-8"):
+                        benchmark_backend(
+                            registry=CharacterVoiceRegistry(),
+                            characters=["Kamuta"],
+                            text="Text",
+                            output_directory=root / "output",
+                            backend_factory=factory,
+                            **options,
+                        )
+                    factory.assert_not_called()
+                    self.assertFalse((root / "output").exists())
+
+    def test_utf8_sample_fields_are_admitted_before_backend_startup(self):
+        original = {
+            "id": "one",
+            "line_id": "line-one",
+            "character": "Kamuta",
+            "text": "Text",
+        }
+        for field in original:
+            with self.subTest(field=field), TemporaryDirectory() as directory:
+                root = Path(directory)
+                sample = {**original, field: "Broken \ud800 value"}
+                sample["text_sha256"] = hashlib.sha256(b"Text").hexdigest()
+                corpus = root / "corpus.json"
+                for strict in (False, True):
+                    document = {"schema_version": 1, "samples": [dict(sample)]}
+                    if strict:
+                        document["schema"] = "vntts.tts-benchmark-corpus"
+                    else:
+                        document["samples"][0].pop("line_id")
+                        document["samples"][0].pop("text_sha256")
+                        if field == "line_id":
+                            continue
+                    corpus.write_text(json.dumps(document), encoding="utf-8")
+                    with self.subTest(strict=strict):
+                        with self.assertRaisesRegex(ValueError, "UTF-8"):
+                            load_tts_benchmark_corpus(corpus)
+                factory = Mock(return_value=FakeRenderingBackend())
+                with self.assertRaisesRegex(ValueError, "UTF-8"):
+                    benchmark_backend(
+                        "fake",
+                        CharacterVoiceRegistry(),
+                        [],
+                        "unused",
+                        root / "output",
+                        benchmark_samples=[sample],
+                        backend_factory=factory,
+                    )
+                factory.assert_not_called()
+                self.assertFalse((root / "output").exists())
+
     def test_samples_remain_bound_if_factory_mutates_original_inputs(self):
+        class ModelLabel:
+            value = "original-model"
+
+            def __str__(self):
+                return self.value
+
+        model_id = ModelLabel()
         sample = {
             "id": "one",
             "line_id": "line:1",
@@ -1079,6 +1159,7 @@ class TTSBenchmarkTest(unittest.TestCase):
 
         def factory(_name, _registry, _cache):
             sample.update(id="replacement", text="Replaced")
+            model_id.value = "replaced-model"
             return backend
 
         with TemporaryDirectory() as directory:
@@ -1089,8 +1170,10 @@ class TTSBenchmarkTest(unittest.TestCase):
                 "unused",
                 directory,
                 benchmark_samples=[sample],
+                model_id=model_id,
                 backend_factory=factory,
             )
+        self.assertEqual(report["model_id"], "original-model")
         self.assertEqual(report["samples"][0]["id"], "one")
         self.assertEqual(report["samples"][0]["text"], "Original")
         self.assertEqual(

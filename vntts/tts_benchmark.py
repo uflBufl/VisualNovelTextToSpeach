@@ -19,6 +19,7 @@ from vntts.authoring.publication import no_replace_destination, staged_directory
 from vntts.cleanup import attempt_cleanup, temporary_directory
 from vntts.cli import cli_error, cli_messages
 from vntts.document_identity import sha256_file
+from vntts.json_types import is_utf8_text
 from vntts.services.tts_engine import TTSEngine
 from vntts.settings import get_local_data_directory
 from vntts.speech_backend import XTTSVoiceRouterBackend
@@ -425,6 +426,9 @@ def load_tts_benchmark_corpus(path: PathInput) -> BenchmarkCorpus:
             raise ValueError(f"Duplicate TTS benchmark sample ID: {sample_id!r}")
         seen_ids.add(sample_id)
         line_id = str(sample["line_id"]) if strict else sample_id
+        _validate_benchmark_text_fields(
+            {"id": sample_id, "line_id": line_id, "character": character, "text": text}
+        )
         text_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
         if strict and sample.get("text_sha256") != text_digest:
             raise ValueError(
@@ -441,10 +445,15 @@ def load_tts_benchmark_corpus(path: PathInput) -> BenchmarkCorpus:
         )
     if not samples:
         raise ValueError("TTS benchmark corpus has no samples")
-    return {
-        "name": str(document.get("name") or Path(path).stem),
-        "samples": samples,
-    }
+    name = str(document.get("name") or Path(path).stem)
+    _validate_benchmark_text_fields({"corpus name": name})
+    return {"name": name, "samples": samples}
+
+
+def _validate_benchmark_text_fields(fields: Mapping[str, str]) -> None:
+    for field, value in fields.items():
+        if not is_utf8_text(value):
+            raise ValueError(f"Benchmark {field} must be UTF-8 text")
 
 
 def _safe_component(value: object, label: str) -> str:
@@ -637,6 +646,15 @@ def _prepare_benchmark_samples(
             raise ValueError(f"Duplicate benchmark sample ID: {sample_id!r}")
         seen_ids.add(sample_id)
         sample_text = item["text"]
+        line_id = str(item.get("line_id") or sample_id)
+        _validate_benchmark_text_fields(
+            {
+                "id": sample_id,
+                "line_id": line_id,
+                "character": item["character"],
+                "text": sample_text,
+            }
+        )
         if not sample_text.strip():
             raise ValueError(f"Benchmark sample {sample_id!r} has no text")
         text_digest = hashlib.sha256(sample_text.encode("utf-8")).hexdigest()
@@ -647,7 +665,7 @@ def _prepare_benchmark_samples(
             )
         sample: BenchmarkCorpusSample = {
             "id": sample_id,
-            "line_id": str(item.get("line_id") or sample_id),
+            "line_id": line_id,
             "character": item["character"],
             "text": sample_text,
             "text_sha256": text_digest,
@@ -683,6 +701,14 @@ def _benchmark_backend_staged(
     output_directory = Path(output_directory).expanduser().resolve()
     work_items = _prepare_benchmark_samples(
         backend_name, characters, text, benchmark_samples
+    )
+    reported_model_id = str(model_id or backend_name)
+    _validate_benchmark_text_fields(
+        {
+            "backend": backend_name,
+            "model_id": reported_model_id,
+            "corpus": corpus_name or "",
+        }
     )
     wall_started = clock()
     cpu_started = cpu_clock()
@@ -790,7 +816,7 @@ def _benchmark_backend_staged(
         "schema": TTS_BENCHMARK_REPORT_SCHEMA,
         "schema_version": TTS_BENCHMARK_REPORT_VERSION,
         "version": 1,
-        "model_id": str(model_id or backend_name),
+        "model_id": reported_model_id,
         "seed": seed,
         "backend": backend_name,
         "platform": platform.platform(),

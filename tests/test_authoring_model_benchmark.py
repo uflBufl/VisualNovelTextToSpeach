@@ -148,6 +148,58 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
         )
         return corpus
 
+    def test_model_variant_text_is_admitted_before_startup(self):
+        fields = (
+            "model_id",
+            "backend",
+            "model",
+            "model_revision",
+            "generation_profile",
+            "voice",
+        )
+        for field in fields:
+            with self.subTest(field=field):
+                values = {
+                    "model_id": "model",
+                    "backend": "moss-tts-delay",
+                    field: "\ud800",
+                }
+                with self.assertRaisesRegex(ModelBenchmarkError, "UTF-8"):
+                    ModelVariant(**values)
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "models.json"
+            path.write_text(
+                json.dumps(
+                    [{"model_id": "model", "backend": "fake", "model": "\ud800"}]
+                )
+            )
+            with self.assertRaisesRegex(ModelBenchmarkError, "UTF-8"):
+                load_model_variants(path)
+
+    def test_corpus_utf8_fields_fail_before_backend_startup(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = self._write_strict_corpus(root)
+            original = json.loads(corpus.read_text())
+            for field in ("id", "line_id", "character", "text"):
+                document = json.loads(json.dumps(original))
+                document["samples"][0][field] = "Broken \ud800 value"
+                corpus.write_text(json.dumps(document), encoding="utf-8")
+                with self.subTest(field=field):
+                    with self.assertRaises(ModelBenchmarkError):
+                        load_benchmark_corpus(corpus)
+                    with self.assertRaises(ModelBenchmarkError):
+                        benchmark_model_variants(
+                            corpus,
+                            (ModelVariant("fake", "fake"),),
+                            CharacterVoiceRegistry(),
+                            root / "output",
+                            backend_factory=lambda *a, **k: self.fail(
+                                "Backend started"
+                            ),
+                        )
+                    self.assertFalse((root / "output").exists())
+
     def test_voice_preflight_resolves_distinct_requested_characters(self):
         for override in (None, "Override"):
             with self.subTest(override=override), TemporaryDirectory() as directory:

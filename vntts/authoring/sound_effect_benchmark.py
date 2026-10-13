@@ -24,7 +24,7 @@ from vntts.authoring.publication import (
     staged_directory,
 )
 from vntts.cuda_probe import CudaProbeError, inspect_cuda
-from vntts.json_types import decode_json, has_schema_version
+from vntts.json_types import decode_json, has_schema_version, is_utf8_text
 from vntts.path_safety import read_regular_bytes
 
 CORPUS_SCHEMA = "vntts.sound-effect-benchmark-corpus"
@@ -69,11 +69,13 @@ class SoundEffectPipeline(Protocol):
 
 
 def load_sound_effect_corpus(path: str | Path) -> SoundEffectCorpus:
-    path = Path(path).expanduser().resolve()
+    path = Path(path).expanduser()
     try:
+        path = path.resolve()
+        _validate_utf8_text(str(path), "Sound-effect corpus path")
         payload = read_regular_bytes(path)
         document = decode_json(payload)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise SoundEffectBenchmarkError(f"Unable to read corpus: {error}") from error
     if (
         not isinstance(document, dict)
@@ -94,9 +96,17 @@ def load_sound_effect_corpus(path: str | Path) -> SoundEffectCorpus:
     return {
         "path": path,
         "sha256": hashlib.sha256(payload).hexdigest(),
-        "name": str(document.get("name") or path.stem),
+        "name": _validate_utf8_text(
+            str(document.get("name") or path.stem), "Sound-effect corpus name"
+        ),
         "samples": samples,
     }
+
+
+def _validate_utf8_text(value: str, label: str) -> str:
+    if not is_utf8_text(value):
+        raise SoundEffectBenchmarkError(f"{label} is invalid UTF-8 text")
+    return value
 
 
 def _validate_sample(item: object, index: int) -> SoundEffectSample:
@@ -133,8 +143,12 @@ def _validate_sample(item: object, index: int) -> SoundEffectSample:
         )
     return {
         "id": sample_id,
-        "kind": kind.strip(),
-        "prompt": prompt.strip(),
+        "kind": _validate_utf8_text(
+            kind.strip(), f"Sound-effect sample {sample_id} kind"
+        ),
+        "prompt": _validate_utf8_text(
+            prompt.strip(), f"Sound-effect sample {sample_id} prompt"
+        ),
         "seconds": seconds,
     }
 
@@ -154,6 +168,7 @@ def benchmark_sound_effects(
     clock: Callable[[], float] = monotonic,
 ) -> dict[str, object]:
     corpus = load_sound_effect_corpus(corpus_path)
+    _validate_utf8_text(model, "Model identifier")
     seeds = _validate_controls(seeds, num_inference_steps, cfg_scale, sigma_shift)
     if (
         not isinstance(model_revision, str)
