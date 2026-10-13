@@ -70,6 +70,7 @@ from vntts.authoring.failure_repair import (
 )
 from vntts.authoring.game_pack import FinalGamePackError
 from vntts.authoring.generation_failures import (
+    failure_repair_history,
     inline_pause_matches_failure,
     normalized_failure_record,
     sentence_repair_matches_failure,
@@ -2031,7 +2032,7 @@ def _validate_failed_carry_forward_source(
     attempts_by_provider = result.get("attempts_by_provider")
     provider = result.get("provider")
     source_provider_attempts = (
-        attempts_by_provider.get(provider, attempts)
+        attempts_by_provider.get(provider, 0)
         if _is_json_document(attempts_by_provider) and isinstance(provider, str)
         else attempts
     )
@@ -2045,7 +2046,9 @@ def _validate_failed_carry_forward_source(
         else 1
     )
     if (
-        _validate_failed_carry_forward_kind(
+        strategy == SENTENCE_BOUNDARY_SEGMENTATION
+        and SENTENCE_BOUNDARY_SEGMENTATION in failure_repair_history(result)
+        or _validate_failed_carry_forward_kind(
             strategy,
             failure,
             queue_item.text,

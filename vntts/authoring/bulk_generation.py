@@ -57,16 +57,16 @@ from vntts.authoring.generation_failures import (
 )
 from vntts.authoring.generation_failures import _CohortCount as _CohortCount
 from vntts.authoring.generation_failures import (
-    _failure_repair_history as _failure_repair_history,
-)
-from vntts.authoring.generation_failures import (
     _FailureReportRecord as _FailureReportRecord,
 )
 from vntts.authoring.generation_failures import (
     _GenerationFailureReport as _GenerationFailureReport,
 )
 from vntts.authoring.generation_failures import edge_silence_only as _edge_silence_only
-from vntts.authoring.generation_failures import failure_kind
+from vntts.authoring.generation_failures import (
+    failure_kind,
+    failure_repair_history,
+)
 from vntts.authoring.generation_failures import failure_record as _failure_record
 from vntts.authoring.generation_failures import (
     generation_failure_repair_plan as generation_failure_repair_plan,
@@ -856,11 +856,7 @@ def _validate_sentence_repair(
     failure: JsonDocument,
     _provider: str,
 ) -> None:
-    previous_repair = result.get("failure_repair")
-    if (
-        isinstance(previous_repair, dict)
-        and previous_repair.get("strategy") == SENTENCE_BOUNDARY_SEGMENTATION
-    ):
+    if SENTENCE_BOUNDARY_SEGMENTATION in failure_repair_history(result):
         raise BulkGenerationError(f"Sentence repair already failed for {queue_id!r}")
     if not _sentence_repair_matches_failure(failure, item.text):
         raise BulkGenerationError(
@@ -971,6 +967,7 @@ def _validate_inline_pause_repair(
 
 
 _failure_kind = failure_kind
+_failure_repair_history = failure_repair_history
 _sentence_repair_matches_failure = sentence_repair_matches_failure
 
 

@@ -407,7 +407,7 @@ print(json.dumps([name for name in blocked if name in sys.modules]))
             ("_failure_record", "failure_record"),
             ("_silence_durations", "silence_durations"),
             ("_edge_silence_only", "edge_silence_only"),
-            ("_failure_repair_history", "_failure_repair_history"),
+            ("_failure_repair_history", "failure_repair_history"),
         ):
             with self.subTest(alias=old):
                 self.assertIs(

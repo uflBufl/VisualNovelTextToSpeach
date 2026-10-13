@@ -240,7 +240,7 @@ def generation_failure_report(
                 "last_error": result.get("last_error"),
                 "failure": failure,
                 "failure_repair": copy.deepcopy(result.get("failure_repair")),
-                "failure_repair_history": _failure_repair_history(result),
+                "failure_repair_history": failure_repair_history(result),
             }
         )
     records.sort(key=lambda value: value["queue_id"])
@@ -395,9 +395,7 @@ def _bounded_repair_action(
     *,
     action: str = "bounded_seed_retry",
 ) -> tuple[str, str]:
-    attempts = record["attempts_by_provider"].get(
-        _failure_report_provider(record), record["attempts"]
-    )
+    attempts = record["attempts_by_provider"].get(_failure_report_provider(record), 0)
     return (
         (action, available)
         if attempts < MAX_BOUNDED_TOTAL_ATTEMPTS
@@ -476,7 +474,7 @@ def edge_silence_only(failure: JsonDocument) -> bool:
     )
 
 
-def _failure_repair_history(result: JsonDocument) -> list[str]:
+def failure_repair_history(result: JsonDocument) -> list[str]:
     """Return newest-first repair strategies proven by one outcome chain."""
     observed: list[str] = []
 
