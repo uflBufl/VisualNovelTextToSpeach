@@ -30,6 +30,7 @@ from vntts.authoring.publication import (
     staged_directory,
 )
 from vntts.authoring.workspace_foundation import contained_regular_file
+from vntts.json_types import has_schema_version
 from vntts.path_safety import copy_regular_file
 
 AUDIO_EVENT_COMPOSITION_SCHEMA = "vntts.authoring-audio-event-composition"
@@ -370,8 +371,7 @@ def _validate_composition_document(
         not isinstance(document, dict)
         or set(document) != required
         or document.get("schema") != AUDIO_EVENT_COMPOSITION_SCHEMA
-        or type(document.get("schema_version")) is not int
-        or document.get("schema_version") != AUDIO_EVENT_COMPOSITION_VERSION
+        or not has_schema_version(document, AUDIO_EVENT_COMPOSITION_VERSION)
         or review.decision != "accept"
         or not isinstance(candidate, dict)
         or document.get("review_id") != review.review_id
@@ -478,8 +478,7 @@ def _validate_composition_decision(
             "reviewed_at",
         }
         or value.get("schema") != AUDIO_EVENT_COMPOSITION_DECISION_SCHEMA
-        or type(value.get("schema_version")) is not int
-        or value.get("schema_version") != AUDIO_EVENT_COMPOSITION_DECISION_VERSION
+        or not has_schema_version(value, AUDIO_EVENT_COMPOSITION_DECISION_VERSION)
         or value.get("composition_id") != composition.get("composition_id")
         or value.get("composition_sha256") != composition_sha256
         or value.get("final_audio_sha256") != composition.get("final_audio_sha256")

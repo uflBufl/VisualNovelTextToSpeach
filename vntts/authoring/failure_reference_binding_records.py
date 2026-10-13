@@ -18,6 +18,7 @@ from vntts.document_identity import (
     is_lowercase_sha256,
     sha256_file,
 )
+from vntts.json_types import has_schema_version
 from vntts.path_safety import contained_regular_file, safe_relative_path
 
 FAILURE_REFERENCE_BINDING_SCHEMA = "vntts.authoring-failure-reference-binding"
@@ -341,8 +342,7 @@ def _validate_selection_authority(
     }
     if (
         not isinstance(value, dict)
-        or type(value.get("schema_version")) is not int
-        or value.get("schema_version") != 1
+        or not has_schema_version(value, 1)
         or value.get("selected_reference_sha256") != selected_reference_sha256
     ):
         raise FailureReferenceBindingError(

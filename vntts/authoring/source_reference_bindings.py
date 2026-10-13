@@ -7,6 +7,7 @@ from collections.abc import Iterable, Mapping
 from vntts_artifacts.voice_manifest import VoiceManifestEntry, normalize_character_name
 
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
+from vntts.json_types import has_schema_version
 
 SOURCE_REFERENCE_BINDINGS_FIELD = "vntts.authoring.source_reference_bindings"
 SOURCE_REFERENCE_BINDINGS_SCHEMA = "vntts.authoring-source-reference-bindings"
@@ -203,8 +204,7 @@ def _known_role_reuse_header(value: object) -> tuple[JsonObject, str, str]:
         not isinstance(value, dict)
         or set(value) != fields
         or value.get("schema") != KNOWN_ROLE_REUSE_BINDING_SCHEMA
-        or type(value.get("schema_version")) is not int
-        or value.get("schema_version") != KNOWN_ROLE_REUSE_BINDING_VERSION
+        or not has_schema_version(value, KNOWN_ROLE_REUSE_BINDING_VERSION)
         or value.get("mode") != "explicit_role_reuse"
         or value.get("authority") != KNOWN_ROLE_REUSE_AUTHORITY
     ):

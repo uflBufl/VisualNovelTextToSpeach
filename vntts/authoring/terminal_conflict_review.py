@@ -1632,8 +1632,7 @@ def _is_stored_progress_lease(value: object) -> TypeGuard[_StoredProgressLease]:
     return (
         isinstance(value, dict)
         and value.get("schema") == PROGRESS_LEASE_SCHEMA
-        and type(value.get("schema_version")) is int
-        and value.get("schema_version") == PROGRESS_LEASE_VERSION
+        and has_schema_version(value, PROGRESS_LEASE_VERSION)
         and is_process_id(value.get("pid"))
         and isinstance(value.get("hostname"), str)
         and bool(value["hostname"])

@@ -27,6 +27,7 @@ from vntts.authoring.source_reference_quality import (
     validate_source_reference_quality_review_document,
 )
 from vntts.authoring.workspace_foundation import contained_regular_file
+from vntts.json_types import has_schema_version
 from vntts.path_safety import read_regular_bytes
 
 PORTRAIT_ALIAS_PLAN_SCHEMA = "vntts.authoring-portrait-alias-plan"
@@ -329,8 +330,7 @@ def load_portrait_alias_decision(
     if (
         not isinstance(document, dict)
         or document.get("schema") != PORTRAIT_ALIAS_DECISION_SCHEMA
-        or type(document.get("schema_version")) is not int
-        or document.get("schema_version") != PORTRAIT_ALIAS_DECISION_VERSION
+        or not has_schema_version(document, PORTRAIT_ALIAS_DECISION_VERSION)
         or type(document.get("identity_count")) is not int
         or document.get("plan_id") != plan.plan_id
     ):

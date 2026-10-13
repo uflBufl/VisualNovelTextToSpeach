@@ -43,7 +43,7 @@ from vntts.authoring.cohort_review import (
 )
 from vntts.authoring.generation_review import ReviewAuthority
 from vntts.authoring.workbench import ReviewItem
-from vntts.json_types import decode_json, is_json_object
+from vntts.json_types import decode_json, has_schema_version, is_json_object
 from vntts.numeric_values import optional_finite_number
 from vntts.path_safety import read_regular_bytes
 
@@ -1519,8 +1519,7 @@ def _validated_progress_document(
             "progress_id",
         }
         or document.get("schema") != COHORT_REVIEW_PROGRESS_SCHEMA
-        or type(document.get("schema_version")) is not int
-        or document.get("schema_version") != COHORT_REVIEW_PROGRESS_VERSION
+        or not has_schema_version(document, COHORT_REVIEW_PROGRESS_VERSION)
         or document.get("root_bundle_id") != original.bundle_id
     ):
         raise CohortReviewError("Cohort review progress is malformed")
@@ -1924,10 +1923,7 @@ def _validate_bundle_document_header(document: dict[str, object]) -> None:
         raise CohortReviewError("Cohort review bundle fields are invalid")
     if document.get("schema") != COHORT_REVIEW_BUNDLE_SCHEMA:
         raise CohortReviewError("Unsupported cohort review bundle schema")
-    if (
-        type(document.get("schema_version")) is not int
-        or document.get("schema_version") != COHORT_REVIEW_BUNDLE_VERSION
-    ):
+    if not has_schema_version(document, COHORT_REVIEW_BUNDLE_VERSION):
         raise CohortReviewError("Unsupported cohort review bundle version")
 
 

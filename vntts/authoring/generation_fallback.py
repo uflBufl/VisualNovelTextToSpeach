@@ -85,7 +85,7 @@ from vntts.authoring.generation_state import (
 )
 from vntts.authoring.publication import publication_errors
 from vntts.document_identity import sha256_file
-from vntts.json_types import decode_json
+from vntts.json_types import decode_json, has_schema_version
 from vntts.json_types import is_json_object as _is_json_document
 from vntts.path_safety import read_regular_bytes
 from vntts.voices import synthesis_character_for_line
@@ -852,8 +852,7 @@ def _live_fallback_workspace_import(workspace: object, label: str) -> tuple[str,
     if (
         not isinstance(workspace, dict)
         or workspace.get("schema") != "vntts.authoring-workspace"
-        or type(workspace.get("schema_version")) is not int
-        or workspace.get("schema_version") != 1
+        or not has_schema_version(workspace, 1)
         or not isinstance(workspace.get("workspace_id"), str)
         or not workspace["workspace_id"].startswith("resume-")
         or not isinstance(workspace.get("source"), dict)

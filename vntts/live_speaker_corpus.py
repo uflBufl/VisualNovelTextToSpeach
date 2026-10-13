@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Self
 
-from vntts.json_types import decode_json
+from vntts.json_types import decode_json, has_schema_version
 from vntts.path_safety import open_regular_candidate
 
 LIVE_SPEAKER_CORPUS_VERSION = 1
@@ -54,7 +54,7 @@ class LiveSpeakerCorpus:
         if not isinstance(document, dict):
             raise ValueError("live speaker corpus root must be an object")
         version = document.get("schema_version")
-        if type(version) is not int or version != LIVE_SPEAKER_CORPUS_VERSION:
+        if not has_schema_version(document, LIVE_SPEAKER_CORPUS_VERSION):
             raise ValueError(
                 f"unsupported live speaker corpus schema version: {version}"
             )

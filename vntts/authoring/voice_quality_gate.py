@@ -36,7 +36,7 @@ from vntts.authoring.workbench import (
     load_workspace_authority,
 )
 from vntts.document_identity import file_sha256, is_lowercase_sha256
-from vntts.json_types import is_json_object
+from vntts.json_types import has_schema_version, is_json_object
 from vntts.voices import load_voice_manifest
 
 VOICE_QUALITY_GATE_SCHEMA = "vntts.authoring-voice-quality-gate"
@@ -508,8 +508,7 @@ def _validated_gate_document(
     if (
         not isinstance(document, dict)
         or document.get("schema") != VOICE_QUALITY_GATE_SCHEMA
-        or type(document.get("schema_version")) is not int
-        or document.get("schema_version") != VOICE_QUALITY_GATE_VERSION
+        or not has_schema_version(document, VOICE_QUALITY_GATE_VERSION)
     ):
         raise VoiceQualityGateError("Voice-quality gate schema is unsupported")
     claimed = _required_sha256(document.get("gate_id"), "Voice-quality gate ID")

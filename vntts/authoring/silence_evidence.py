@@ -21,7 +21,7 @@ from vntts.document_identity import (
     is_lowercase_sha256,
     sha256_file,
 )
-from vntts.json_types import decode_json
+from vntts.json_types import decode_json, has_schema_version
 from vntts.path_safety import read_regular_bytes, read_regular_text
 
 SILENCE_FAILURE_EVIDENCE_SCHEMA = "vntts.authoring-silence-failure-evidence"
@@ -101,8 +101,7 @@ def _validated_evidence_document(document: object) -> dict[str, object]:
             "metadata",
         }
         or document.get("schema") != SILENCE_FAILURE_EVIDENCE_SCHEMA
-        or type(document.get("schema_version")) is not int
-        or document.get("schema_version") != SILENCE_FAILURE_EVIDENCE_VERSION
+        or not has_schema_version(document, SILENCE_FAILURE_EVIDENCE_VERSION)
         or document.get("reviewable") is not False
         or document.get("generated_outcome") is not False
         or document.get("audio") != "rejected.wav"

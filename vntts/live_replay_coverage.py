@@ -11,7 +11,7 @@ from typing import TypedDict
 
 from vntts.authoring.authority import write_json_document_no_replace
 from vntts.cli import cli_error, cli_messages
-from vntts.json_types import is_json_object
+from vntts.json_types import has_schema_version, is_json_object
 from vntts.live_replay_evidence import _decode_json, _read_regular_file
 from vntts.live_sequence import (
     LiveSequenceEvent,
@@ -150,8 +150,7 @@ def _load_coverage_source(
     review_document = _decode_coverage_json(payload, "Sealed sequence review")
     if (
         review_document.get("schema") != "vntts.sequence-replay-seal-review"
-        or type(review_document.get("schema_version")) is not int
-        or review_document.get("schema_version") != 1
+        or not has_schema_version(review_document, 1)
         or review_document.get("sealed_replay_successful") is not True
     ):
         raise LiveReplayCoverageError(

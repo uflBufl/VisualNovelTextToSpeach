@@ -41,7 +41,7 @@ from vntts.authoring.workbench import (
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 from vntts.document_identity import sha256_file
-from vntts.json_types import decode_json, is_json_object
+from vntts.json_types import decode_json, has_schema_version, is_json_object
 from vntts.path_safety import copy_regular_file, read_regular_text
 
 REVIEW_BUNDLE_SCHEMA = "vntts.authoring-missing-voice-reuse-review-bundle"
@@ -789,8 +789,7 @@ def _validate_missing_voice_reuse_review(
     bundle_plan = _object(bundle.get("plan"), "Missing-voice review plan")
     if (
         key.get("schema") != REVIEW_KEY_SCHEMA
-        or type(key.get("schema_version")) is not int
-        or key.get("schema_version") != REVIEW_VERSION
+        or not has_schema_version(key, REVIEW_VERSION)
         or key.get("plan_id") != bundle_plan.get("plan_id")
     ):
         raise MissingVoiceReuseReviewError("Missing-voice blind key is invalid")

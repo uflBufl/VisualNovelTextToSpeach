@@ -61,6 +61,7 @@ from vntts.authoring.workspace_foundation import (
 )
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 from vntts.document_identity import sha256_file
+from vntts.json_types import has_schema_version
 from vntts.voices import load_voice_manifest, synthesis_character_for_line
 
 SCHEMA = "vntts.authoring-reviewed-rejection-live-fallback-batch"
@@ -489,8 +490,7 @@ def _validated_rejection_batch(value: object) -> tuple[dict[str, object], list[o
         not isinstance(batch, dict)
         or set(batch) != fields
         or batch.get("schema") != SCHEMA
-        or type(batch.get("schema_version")) is not int
-        or batch.get("schema_version") != SCHEMA_VERSION
+        or not has_schema_version(batch, SCHEMA_VERSION)
         or batch.get("reason") != REASON
         or not isinstance(batch.get("items"), list)
         or batch.get("batch_id")

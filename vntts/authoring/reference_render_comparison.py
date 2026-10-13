@@ -55,7 +55,7 @@ from vntts.document_identity import (
     is_lowercase_sha256,
     sha256_file,
 )
-from vntts.json_types import decode_json, is_json_object
+from vntts.json_types import decode_json, has_schema_version, is_json_object
 from vntts.path_safety import read_regular_bytes
 
 REFERENCE_RENDER_INPUT_SCHEMA = "vntts.authoring-reference-render-input"
@@ -1172,8 +1172,7 @@ def _read_comparison_document(root: Path) -> JsonDocument:
         ) from error
     if (
         document.get("schema") != REFERENCE_RENDER_SCHEMA
-        or type(document.get("schema_version")) is not int
-        or document.get("schema_version") != REFERENCE_RENDER_VERSION
+        or not has_schema_version(document, REFERENCE_RENDER_VERSION)
         or document.get("comparison_id") != expected_id
     ):
         raise ReferenceRenderComparisonError(

@@ -38,6 +38,7 @@ from vntts.document_identity import (
     is_lowercase_sha256,
     sha256_file,
 )
+from vntts.json_types import has_schema_version
 from vntts.json_types import is_json_object as _is_json_object
 from vntts.path_safety import copy_regular_file, open_regular_binary
 from vntts.settings import get_local_data_directory
@@ -1462,8 +1463,7 @@ def _legacy_import_audio_hashes(root: PathInput) -> dict[str, str]:
     manifest = _load_json(manifest_path, "listening import manifest")
     if (
         manifest.get("schema") != "vntts.authoring-listening-import"
-        or type(manifest.get("schema_version")) is not int
-        or manifest["schema_version"] != 1
+        or not has_schema_version(manifest, 1)
         or _object_list(manifest.get("artifacts")) is None
     ):
         raise ModelListeningError("Unsupported listening import manifest schema")
@@ -1535,8 +1535,7 @@ def _validate_schema(
     if (
         not isinstance(value.get("schema"), str)
         or value.get("schema") not in schemas
-        or type(value.get("schema_version")) is not int
-        or value["schema_version"] != SCHEMA_VERSION
+        or not has_schema_version(value, SCHEMA_VERSION)
     ):
         raise ModelListeningError(f"Unsupported {description} schema")
     return value

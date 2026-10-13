@@ -49,7 +49,7 @@ from vntts.authoring.workspace_foundation import (
     load_json_object_snapshot,
 )
 from vntts.document_identity import is_lowercase_sha256, sha256_file
-from vntts.json_types import decode_json
+from vntts.json_types import decode_json, has_schema_version
 from vntts.path_safety import (
     copy_regular_file,
     read_regular_bytes,
@@ -339,11 +339,9 @@ def _load_composite_authority(
         raise ExperimentalCompositeVoiceError(str(error)) from error
     if (
         ledger.get("schema") != COMPOSITE_SCHEMA
-        or type(ledger.get("schema_version")) is not int
-        or ledger.get("schema_version") != COMPOSITE_VERSION
+        or not has_schema_version(ledger, COMPOSITE_VERSION)
         or evaluation.get("schema") != COMPOSITE_EVALUATION_SCHEMA
-        or type(evaluation.get("schema_version")) is not int
-        or evaluation.get("schema_version") != COMPOSITE_EVALUATION_VERSION
+        or not has_schema_version(evaluation, COMPOSITE_EVALUATION_VERSION)
         or evaluation.get("source_composite_sha256") != ledger_sha256
         or review.get("source_reference_plan_sha256") != ledger_sha256
         or review.get("source_reference_evaluation_sha256") != evaluation_sha256
@@ -458,8 +456,7 @@ def _validate_experimental_composite_voice_input(
         raise ExperimentalCompositeVoiceError(str(error)) from error
     if (
         bundle.get("schema") != EXPERIMENTAL_COMPOSITE_INPUT_SCHEMA
-        or type(bundle.get("schema_version")) is not int
-        or bundle.get("schema_version") != EXPERIMENTAL_COMPOSITE_INPUT_VERSION
+        or not has_schema_version(bundle, EXPERIMENTAL_COMPOSITE_INPUT_VERSION)
         or bundle.get("source_voice_manifest_sha256")
         != sha256_file(expected["source_manifest"])
         or bundle.get("experimental_voice_character")

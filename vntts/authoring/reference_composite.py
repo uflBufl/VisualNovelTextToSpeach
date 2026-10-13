@@ -52,7 +52,7 @@ from vntts.authoring.workspace_foundation import (
 )
 from vntts.cli import cli_error, cli_success
 from vntts.document_identity import file_sha256, is_lowercase_sha256, sha256_file
-from vntts.json_types import decode_json
+from vntts.json_types import decode_json, has_schema_version
 from vntts.numeric_values import optional_finite_number
 from vntts.path_safety import read_regular_bytes
 from vntts.reference_quality import ReferenceQualityReport, analyze_reference_bytes
@@ -245,12 +245,10 @@ def _load_composite_review_inputs(directory: Path) -> _CompositeReviewInputs:
     if (
         not isinstance(ledger, dict)
         or ledger.get("schema") != COMPOSITE_SCHEMA
-        or type(ledger.get("schema_version")) is not int
-        or ledger.get("schema_version") != COMPOSITE_VERSION
+        or not has_schema_version(ledger, COMPOSITE_VERSION)
         or not isinstance(evaluation, dict)
         or evaluation.get("schema") != COMPOSITE_EVALUATION_SCHEMA
-        or type(evaluation.get("schema_version")) is not int
-        or evaluation.get("schema_version") != COMPOSITE_EVALUATION_VERSION
+        or not has_schema_version(evaluation, COMPOSITE_EVALUATION_VERSION)
         or evaluation.get("source_composite_sha256") != ledger_sha256
         or evaluation.get("queue_sha256") != _file_sha256(queue_path)
     ):
@@ -505,8 +503,7 @@ def _load_composite_selection(
     if (
         not isinstance(report, dict)
         or report.get("schema") != SOURCE_REPORT_SCHEMA
-        or type(report.get("schema_version")) is not int
-        or report.get("schema_version") != SOURCE_REPORT_VERSION
+        or not has_schema_version(report, SOURCE_REPORT_VERSION)
         or report.get("bank_inventory_scope") != COMPLETE_BANK_SCOPE
     ):
         raise ReferenceCompositeError(

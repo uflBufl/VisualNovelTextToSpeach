@@ -10,6 +10,7 @@ from pathlib import Path
 
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.document_identity import is_lowercase_sha256
+from vntts.json_types import has_schema_version
 
 AUTHORING_RECONCILIATION_SCHEMA = "vntts.authoring-authority-reconciliation"
 AUTHORING_RECONCILIATION_VERSION = 1
@@ -51,10 +52,10 @@ def validate_authoring_reconciliation_document(report: object) -> dict[str, obje
             "Authoring reconciliation must be an object"
         )
     document: dict[str, object] = copy.deepcopy(report)
-    if (
-        document.get("schema") != AUTHORING_RECONCILIATION_SCHEMA
-        or type(document.get("schema_version")) is not int
-        or document.get("schema_version") != AUTHORING_RECONCILIATION_VERSION
+    if document.get(
+        "schema"
+    ) != AUTHORING_RECONCILIATION_SCHEMA or not has_schema_version(
+        document, AUTHORING_RECONCILIATION_VERSION
     ):
         raise AuthoringReconciliationSchemaError("Unsupported authoring reconciliation")
     report_id = document.get("report_id")

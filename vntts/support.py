@@ -26,7 +26,7 @@ from vntts_artifacts.atomic_io import atomic_output_path
 from vntts.audio_lifecycle import audio_lifecycle_context
 from vntts.diagnostics import macos_permission_warnings
 from vntts.document_identity import is_lowercase_sha256, sha256_file
-from vntts.json_types import decode_json
+from vntts.json_types import decode_json, has_schema_version
 from vntts.numeric_values import optional_finite_number
 from vntts.ocr_review import OCR_REVIEW_SCHEMA_VERSION, OCRReviewMetadata
 from vntts.onboarding import probe_audio_output, probe_tesseract
@@ -1433,10 +1433,7 @@ def _support_mapping(value: object) -> SupportDocument:
 
 def _loaded_pregeneration_support(document: object) -> SupportDocument | None:
     source = _support_mapping(document)
-    if (
-        type(source.get("schema_version")) is not int
-        or source.get("schema_version") != 1
-    ):
+    if not has_schema_version(source, 1):
         return None
     return {
         "schema_version": 1,

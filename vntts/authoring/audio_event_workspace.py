@@ -21,6 +21,7 @@ from vntts.authoring.authority import (
 )
 from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.document_identity import is_lowercase_sha256
+from vntts.json_types import has_schema_version
 
 AUDIO_EVENT_WORKSPACE_SCHEMA = "vntts.authoring-audio-event-workspace"
 AUDIO_EVENT_WORKSPACE_VERSION = 2
@@ -135,8 +136,7 @@ def _validate_composition_workspace_schema(value: object) -> dict[str, object]:
         not isinstance(value, dict)
         or set(value) != _COMPOSITION_FIELDS
         or value.get("schema") != AUDIO_EVENT_WORKSPACE_SCHEMA
-        or type(value.get("schema_version")) is not int
-        or value.get("schema_version") != AUDIO_EVENT_WORKSPACE_VERSION
+        or not has_schema_version(value, AUDIO_EVENT_WORKSPACE_VERSION)
         or value.get("path") != "inputs/audio-event-composition/composition.json"
         or value.get("decision_path")
         != "inputs/audio-event-composition/composition-decision.json"
@@ -241,8 +241,7 @@ def _validate_base_workspace_authority(
     base_item = base_items.get(config["queue_id"])
     if (
         authority.base_workspace.get("schema") != "vntts.authoring-workspace"
-        or type(authority.base_workspace.get("schema_version")) is not int
-        or authority.base_workspace.get("schema_version") != 1
+        or not has_schema_version(authority.base_workspace, 1)
         or authority.base_workspace.get("workspace_id") != config["base_workspace_id"]
         or authority.base_state.get("active") is not None
         or authority.base_state.get("queue_sha256")

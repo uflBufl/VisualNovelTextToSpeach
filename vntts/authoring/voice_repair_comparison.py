@@ -51,7 +51,7 @@ from vntts.authoring.workbench_contracts import ReviewItem
 from vntts.authoring.workspace_inspection import generation_failure_category
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 from vntts.document_identity import is_lowercase_sha256, sha256_file
-from vntts.json_types import decode_json
+from vntts.json_types import decode_json, has_schema_version
 from vntts.path_safety import (
     contained_regular_file,
     read_regular_bytes,
@@ -820,10 +820,7 @@ def _validate_candidate_bundle_identity(
 ) -> None:
     if bundle.get("schema") != VOICE_REPAIR_CANDIDATE_BUNDLE_SCHEMA:
         raise VoiceRepairComparisonError("Voice repair candidate input conflicts")
-    if (
-        type(bundle.get("schema_version")) is not int
-        or bundle.get("schema_version") != VOICE_REPAIR_CANDIDATE_BUNDLE_VERSION
-    ):
+    if not has_schema_version(bundle, VOICE_REPAIR_CANDIDATE_BUNDLE_VERSION):
         raise VoiceRepairComparisonError("Voice repair candidate input conflicts")
     if bundle.get("plan_id") != _required_text(
         document.get("plan_id"), "Comparison plan ID"
@@ -1154,8 +1151,7 @@ def _validate_plan_header(document: object) -> None:
     if (
         not isinstance(document, dict)
         or document.get("schema") != VOICE_REPAIR_COMPARISON_SCHEMA
-        or type(document.get("schema_version")) is not int
-        or document.get("schema_version") != VOICE_REPAIR_COMPARISON_VERSION
+        or not has_schema_version(document, VOICE_REPAIR_COMPARISON_VERSION)
     ):
         raise VoiceRepairComparisonError(
             "Voice repair comparison schema is unsupported"

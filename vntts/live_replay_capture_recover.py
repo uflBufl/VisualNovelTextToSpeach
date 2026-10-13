@@ -30,6 +30,7 @@ from vntts.dialog_capture import (
     is_standalone_ellipsis_text,
 )
 from vntts.document_identity import sha256_file
+from vntts.json_types import has_schema_version
 from vntts.live_replay_evidence import (
     SequenceReplaySealError,
     _decode_json,
@@ -125,8 +126,7 @@ def recover_live_replay_capture(
     capture: JSONDocument = _decode_json(capture_payload, "Raw replay corpus")
     capture_binding = capture.get("capture")
     if (
-        type(capture.get("schema_version")) is not int
-        or capture.get("schema_version") != 1
+        not has_schema_version(capture, 1)
         or capture.get("fixture_kind") != "saved-frame-ocr-replay-capture"
         or not isinstance(capture_binding, dict)
     ):
@@ -449,8 +449,7 @@ def _load_ledger_observations(
     entries = document.get("observations")
     if (
         document.get("schema") != "vntts.live-replay-capture-observations"
-        or type(document.get("schema_version")) is not int
-        or document.get("schema_version") != 1
+        or not has_schema_version(document, 1)
         or document.get("story_index_sha256")
         != capture_binding.get("story_index_sha256")
         or not isinstance(entries, list)

@@ -68,6 +68,7 @@ from vntts.authoring.workspace_foundation import (
 )
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 from vntts.document_identity import sha256_file
+from vntts.json_types import has_schema_version
 from vntts.voices import load_voice_manifest
 
 _copy_base_wavs = partial(
@@ -645,8 +646,7 @@ def _validated_known_role_batch(value: object) -> dict[str, object]:
         not isinstance(batch, dict)
         or set(batch) != common
         or batch.get("schema") != SCHEMA
-        or type(batch.get("schema_version")) is not int
-        or batch.get("schema_version") != SCHEMA_VERSION
+        or not has_schema_version(batch, SCHEMA_VERSION)
         or batch.get("batch_id")
         != canonical_document_sha256(
             {key: value for key, value in batch.items() if key != "batch_id"}

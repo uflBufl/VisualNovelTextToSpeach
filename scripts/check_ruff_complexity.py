@@ -12,7 +12,7 @@ from collections import Counter
 from pathlib import Path
 from typing import NamedTuple
 
-from vntts.json_types import decode_json
+from vntts.json_types import decode_json, has_schema_version
 from vntts.path_safety import read_regular_text
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -91,11 +91,7 @@ class _Allowance(NamedTuple):
 
 
 def baseline_allowances(baseline: object) -> dict[tuple[str, str, str], _Allowance]:
-    if (
-        not isinstance(baseline, dict)
-        or type(baseline.get("schema_version")) is not int
-        or baseline["schema_version"] != 2
-    ):
+    if not isinstance(baseline, dict) or not has_schema_version(baseline, 2):
         raise ValueError("Ruff complexity baseline schema is unsupported")
     findings = baseline.get("findings")
     if not isinstance(findings, list):

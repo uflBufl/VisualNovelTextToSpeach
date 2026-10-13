@@ -46,7 +46,7 @@ from vntts.document_identity import (
     is_lowercase_sha256,
     sha256_file,
 )
-from vntts.json_types import decode_json
+from vntts.json_types import decode_json, has_schema_version
 from vntts.json_types import is_json_object as _is_json_document
 from vntts.path_safety import read_regular_bytes, read_regular_text
 from vntts.settings import get_local_data_directory
@@ -634,8 +634,7 @@ def load_benchmark_corpus(path: str | Path) -> JsonDocument:
         ) from error
     if not isinstance(document, dict) or (
         document.get("schema") != CORPUS_SCHEMA
-        or type(document.get("schema_version")) is not int
-        or document.get("schema_version") != SCHEMA_VERSION
+        or not has_schema_version(document, SCHEMA_VERSION)
     ):
         raise ModelBenchmarkError("Unsupported authoring benchmark corpus schema")
     raw_samples = document.get("samples")

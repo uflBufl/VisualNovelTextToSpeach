@@ -18,7 +18,7 @@ from vntts.authoring.authority import write_json_document_no_replace
 from vntts.authoring.publication import no_replace_destination, publication_errors
 from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.document_identity import is_lowercase_sha256, sha256_file
-from vntts.json_types import decode_json
+from vntts.json_types import decode_json, has_schema_version
 from vntts.path_safety import read_regular_bytes
 from vntts.reference_quality import (
     ReferenceQualityReport,
@@ -193,8 +193,7 @@ def validate_reference_selection_provenance(
     if (
         not isinstance(provenance, dict)
         or set(provenance) != expected_fields
-        or type(provenance.get("schema_version")) is not int
-        or provenance.get("schema_version") != REFERENCE_SELECTION_SCHEMA_VERSION
+        or not has_schema_version(provenance, REFERENCE_SELECTION_SCHEMA_VERSION)
         or provenance.get("manual_review_required") is not True
     ):
         raise ReferenceSelectionError(

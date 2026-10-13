@@ -56,7 +56,7 @@ from vntts.authoring.workbench import (
 )
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.document_identity import file_sha256
-from vntts.json_types import decode_json
+from vntts.json_types import decode_json, has_schema_version
 from vntts.path_safety import copy_regular_file, read_regular_text
 from vntts.voices import voice_manifest_entries_at_path
 
@@ -449,8 +449,7 @@ def _validate_binding_bundle(
     )
     if (
         bundle.get("schema") != MISSING_VOICE_REUSE_BINDING_BUNDLE_SCHEMA
-        or type(bundle.get("schema_version")) is not int
-        or bundle.get("schema_version") != MISSING_VOICE_REUSE_BINDING_BUNDLE_VERSION
+        or not has_schema_version(bundle, MISSING_VOICE_REUSE_BINDING_BUNDLE_VERSION)
         or bundle.get("plan_id") != plan["plan_id"]
         or bundle.get("bundle_id")
         != canonical_document_sha256(
@@ -506,8 +505,7 @@ def _validate_binding_bundle(
     )
     if (
         decision.get("schema") != MISSING_VOICE_REUSE_DECISION_SCHEMA
-        or type(decision.get("schema_version")) is not int
-        or decision.get("schema_version") != MISSING_VOICE_REUSE_DECISION_VERSION
+        or not has_schema_version(decision, MISSING_VOICE_REUSE_DECISION_VERSION)
         or decision.get("binding") != expected_binding
         or decision.get("decision_id")
         != canonical_document_sha256(

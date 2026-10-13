@@ -23,7 +23,7 @@ from vntts.authoring.publication import (
     staged_directory,
 )
 from vntts.cuda_probe import CudaProbeError, inspect_cuda
-from vntts.json_types import decode_json
+from vntts.json_types import decode_json, has_schema_version
 from vntts.path_safety import read_regular_bytes
 
 CORPUS_SCHEMA = "vntts.sound-effect-benchmark-corpus"
@@ -77,8 +77,7 @@ def load_sound_effect_corpus(path: str | Path) -> SoundEffectCorpus:
     if (
         not isinstance(document, dict)
         or document.get("schema") != CORPUS_SCHEMA
-        or type(document.get("schema_version")) is not int
-        or document.get("schema_version") != SCHEMA_VERSION
+        or not has_schema_version(document, SCHEMA_VERSION)
         or not isinstance(document.get("samples"), list)
         or not document["samples"]
     ):

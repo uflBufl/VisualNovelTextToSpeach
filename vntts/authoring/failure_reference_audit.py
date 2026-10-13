@@ -45,7 +45,7 @@ from vntts.authoring.workbench import (
 )
 from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.document_identity import file_sha256, is_lowercase_sha256
-from vntts.json_types import decode_json, is_json_object
+from vntts.json_types import decode_json, has_schema_version, is_json_object
 from vntts.path_safety import copy_regular_file, read_regular_bytes, read_regular_text
 from vntts.reference_quality import ReferenceQualityReport, analyze_reference_bytes
 from vntts.voices import load_voice_manifest
@@ -717,11 +717,9 @@ def _validate_audit_documents(
 ) -> tuple[str, list[object], list[object]]:
     if (
         document.get("schema") != FAILURE_REFERENCE_AUDIT_SCHEMA
-        or type(document.get("schema_version")) is not int
-        or document.get("schema_version") != FAILURE_REFERENCE_AUDIT_VERSION
+        or not has_schema_version(document, FAILURE_REFERENCE_AUDIT_VERSION)
         or key.get("schema") != FAILURE_REFERENCE_AUDIT_KEY_SCHEMA
-        or type(key.get("schema_version")) is not int
-        or key.get("schema_version") != FAILURE_REFERENCE_AUDIT_VERSION
+        or not has_schema_version(key, FAILURE_REFERENCE_AUDIT_VERSION)
     ):
         raise FailureReferenceAuditError("Unsupported reference audit schema")
     claimed = document.get("audit_id")
@@ -1249,11 +1247,7 @@ def _selection_authority_shape(
         "queue_id",
         "text_sha256",
     }
-    if (
-        not isinstance(value, dict)
-        or type(value.get("schema_version")) is not int
-        or value.get("schema_version") != 1
-    ):
+    if not isinstance(value, dict) or not has_schema_version(value, 1):
         raise FailureReferenceAuditError(
             "Reference audit selection authority is malformed"
         )

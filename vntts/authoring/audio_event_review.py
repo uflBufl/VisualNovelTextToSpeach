@@ -40,7 +40,7 @@ from vntts.authoring.publication import (
 from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.cleanup import temporary_directory
 from vntts.document_identity import is_lowercase_sha256
-from vntts.json_types import decode_json
+from vntts.json_types import decode_json, has_schema_version
 
 AUDIO_EVENT_REVIEW_SCHEMA = "vntts.authoring-audio-event-review"
 AUDIO_EVENT_REVIEW_VERSION = 1
@@ -364,10 +364,8 @@ def _validate_review_document(
 def _validate_review_schema_and_queue_authority(
     review: dict[str, object], queue_snapshot: AuthoritySnapshot
 ) -> VoiceGenerationQueue:
-    if (
-        review.get("schema") != AUDIO_EVENT_REVIEW_SCHEMA
-        or type(review.get("schema_version")) is not int
-        or review.get("schema_version") != AUDIO_EVENT_REVIEW_VERSION
+    if review.get("schema") != AUDIO_EVENT_REVIEW_SCHEMA or not has_schema_version(
+        review, AUDIO_EVENT_REVIEW_VERSION
     ):
         raise AudioEventReviewError("Unsupported audio-event review schema")
     if review.get("queue_sha256") != queue_snapshot.sha256:
@@ -572,10 +570,8 @@ def _validate_effect_audio_info(info: Pcm16MonoWavInfo) -> None:
 def _validate_decision_document(
     value: dict[str, object], review: dict[str, object], review_sha256: str
 ) -> dict[str, object]:
-    if (
-        value.get("schema") != AUDIO_EVENT_DECISION_SCHEMA
-        or type(value.get("schema_version")) is not int
-        or value.get("schema_version") != AUDIO_EVENT_DECISION_VERSION
+    if value.get("schema") != AUDIO_EVENT_DECISION_SCHEMA or not has_schema_version(
+        value, AUDIO_EVENT_DECISION_VERSION
     ):
         raise AudioEventReviewError("Unsupported audio-event decision schema")
     if value.get("review_id") != review["review_id"]:

@@ -28,7 +28,7 @@ from vntts.authoring.workbench import (
     load_workspace_authority,
 )
 from vntts.document_identity import is_lowercase_sha256
-from vntts.json_types import decode_json
+from vntts.json_types import decode_json, has_schema_version
 from vntts.path_safety import read_regular_text
 
 FAILURE_REGENERATION_PLAN_SCHEMA = "vntts.authoring-failure-regeneration-plan"
@@ -283,10 +283,10 @@ def _validated_plan_document(
     }
     if not isinstance(document, dict) or set(document) != required:
         raise FailureRegenerationError("Failure regeneration plan fields are invalid")
-    if (
-        document.get("schema") != FAILURE_REGENERATION_PLAN_SCHEMA
-        or type(document.get("schema_version")) is not int
-        or document.get("schema_version") != FAILURE_REGENERATION_PLAN_VERSION
+    if document.get(
+        "schema"
+    ) != FAILURE_REGENERATION_PLAN_SCHEMA or not has_schema_version(
+        document, FAILURE_REGENERATION_PLAN_VERSION
     ):
         raise FailureRegenerationError(
             "Failure regeneration plan schema is unsupported"

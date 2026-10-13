@@ -23,6 +23,7 @@ from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.cli import cli_error, cli_messages
 from vntts.dialog_capture import is_standalone_ellipsis_text
 from vntts.document_identity import is_lowercase_sha256
+from vntts.json_types import has_schema_version
 from vntts.live_replay import (
     LiveReplayRunner,
     ReplayRecognizer,
@@ -107,8 +108,7 @@ def seal_sequence_replay(
     )
     capture = _decode_json(capture_payload, "Raw replay corpus")
     if (
-        type(capture.get("schema_version")) is not int
-        or capture.get("schema_version") != 1
+        not has_schema_version(capture, 1)
         or capture.get("fixture_kind") != "saved-frame-ocr-replay-capture"
         or not isinstance(capture_binding := capture.get("capture"), dict)
     ):
@@ -712,11 +712,9 @@ def _validate_probe(
 
 
 def _validate_capture_report(capture: JSONDocument, report: JSONDocument) -> None:
-    if (
-        report.get("schema") != "vntts.live-replay-capture-report"
-        or type(report.get("schema_version")) is not int
-        or report.get("schema_version") != 1
-    ):
+    if report.get(
+        "schema"
+    ) != "vntts.live-replay-capture-report" or not has_schema_version(report, 1):
         raise SequenceReplaySealError("Capture review report has an unsupported schema")
     authority = _required_document(capture.get("capture"), "Raw replay corpus capture")
     if (
@@ -825,8 +823,7 @@ def _validate_capture_observation_ledger(
     observations = document.get("observations")
     if (
         document.get("schema") != "vntts.live-replay-capture-observations"
-        or type(document.get("schema_version")) is not int
-        or document.get("schema_version") != 1
+        or not has_schema_version(document, 1)
         or document.get("story_index_sha256") != authority.get("story_index_sha256")
         or not isinstance(observations, list)
         or type(document.get("observation_count")) is not int
@@ -916,8 +913,7 @@ def _validate_recovery_authority(
             "sequence_plan_sha256",
             "mapping_policy",
         }
-        or type(recovery.get("schema_version")) is not int
-        or recovery.get("schema_version") != 1
+        or not has_schema_version(recovery, 1)
         or recovery.get("mapping_policy") != "exact-explicit-sequence-run"
         or report.get("recovery") != recovery
     ):

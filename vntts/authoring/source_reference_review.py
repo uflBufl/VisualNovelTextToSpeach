@@ -70,7 +70,7 @@ from vntts.document_identity import (
     is_lowercase_sha256,
     sha256_file,
 )
-from vntts.json_types import decode_json
+from vntts.json_types import decode_json, has_schema_version
 from vntts.path_safety import copy_regular_file, read_regular_bytes
 from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.voices import load_voice_manifest, voice_manifest_entries_at_path
@@ -409,10 +409,8 @@ def _load_source_reference_plan_snapshot(
     )
     if plan_path.parent != directory:
         raise SourceReferenceReviewError("Source-reference plan path is inconsistent")
-    if (
-        plan.get("schema") != REFERENCE_PLAN_SCHEMA
-        or type(plan.get("schema_version")) is not int
-        or plan.get("schema_version") != REFERENCE_PLAN_VERSION
+    if plan.get("schema") != REFERENCE_PLAN_SCHEMA or not has_schema_version(
+        plan, REFERENCE_PLAN_VERSION
     ):
         raise SourceReferenceReviewError("Unsupported source-reference plan schema")
     clusters = plan.get("clusters")
@@ -1738,10 +1736,10 @@ def _load_evaluation_generation(
     comparison_path, comparison_payload, comparison = _read_json(
         evaluation_directory / "comparison.json", "source-reference evaluation"
     )
-    if (
-        comparison.get("schema") != REFERENCE_EVALUATION_SCHEMA
-        or type(comparison.get("schema_version")) is not int
-        or comparison.get("schema_version") != REFERENCE_EVALUATION_VERSION
+    if comparison.get(
+        "schema"
+    ) != REFERENCE_EVALUATION_SCHEMA or not has_schema_version(
+        comparison, REFERENCE_EVALUATION_VERSION
     ):
         raise SourceReferenceReviewError(
             "Unsupported source-reference evaluation schema"

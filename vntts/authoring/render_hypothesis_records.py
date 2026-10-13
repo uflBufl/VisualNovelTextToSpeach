@@ -15,6 +15,7 @@ from vntts.authoring.authority import (
     canonical_document_sha256,
     capture_authority_file,
 )
+from vntts.json_types import has_schema_version
 from vntts.path_safety import contained_regular_file
 
 JsonObject: TypeAlias = dict[str, object]
@@ -164,8 +165,7 @@ def _validate_review(
         not isinstance(review, dict)
         or set(review) != required
         or review.get("schema") != RENDER_HYPOTHESIS_REVIEW_SCHEMA
-        or type(review.get("schema_version")) is not int
-        or review.get("schema_version") != RENDER_HYPOTHESIS_REVIEW_VERSION
+        or not has_schema_version(review, RENDER_HYPOTHESIS_REVIEW_VERSION)
     ):
         raise RenderHypothesisRecordError("Render hypothesis review is malformed")
     identity = {
@@ -275,8 +275,7 @@ def _validate_decision(
             "reviewed_at",
         }
         or decision.get("schema") != RENDER_HYPOTHESIS_DECISION_SCHEMA
-        or type(decision.get("schema_version")) is not int
-        or decision.get("schema_version") != RENDER_HYPOTHESIS_DECISION_VERSION
+        or not has_schema_version(decision, RENDER_HYPOTHESIS_DECISION_VERSION)
         or decision.get("review_id") != review["review_id"]
         or decision.get("review_sha256") != review_sha256
         or decision.get("reference_sha256") != review["reference_sha256"]

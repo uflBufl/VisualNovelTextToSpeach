@@ -21,7 +21,7 @@ from vntts.authoring.advisory_lock import (
     exclusive_advisory_lock,
 )
 from vntts.document_identity import file_sha256, is_lowercase_sha256
-from vntts.json_types import decode_json
+from vntts.json_types import decode_json, has_schema_version
 from vntts.path_safety import (
     contained_regular_file,
     copy_regular_file,
@@ -101,10 +101,8 @@ def validate_source_reference_quality_review_document(
 
 
 def _validate_quality_review_header(session: JsonObject) -> None:
-    if (
-        session.get("schema") != QUALITY_REVIEW_SCHEMA
-        or type(session.get("schema_version")) is not int
-        or session["schema_version"] != QUALITY_REVIEW_VERSION
+    if session.get("schema") != QUALITY_REVIEW_SCHEMA or not has_schema_version(
+        session, QUALITY_REVIEW_VERSION
     ):
         raise SourceReferenceQualityError(
             "Unsupported source-reference quality review schema"

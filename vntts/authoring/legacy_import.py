@@ -42,7 +42,7 @@ from vntts.authoring.publication import (
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.cleanup import temporary_directory
 from vntts.document_identity import canonical_document_sha256, sha256_file
-from vntts.json_types import decode_json
+from vntts.json_types import decode_json, has_schema_version
 from vntts.path_safety import (
     copy_regular_file,
     open_regular_text,
@@ -407,10 +407,8 @@ def _build_import_plan(job_directory: str | Path) -> _ImportPlan:
     job_directory = Path(job_directory).expanduser().resolve()
     job_path = job_directory / "job.json"
     job, job_sha256 = _load_json_snapshot(job_path, "pregeneration job")
-    if (
-        job.get("schema") != LEGACY_JOB_SCHEMA
-        or type(job.get("schema_version")) is not int
-        or job.get("schema_version") != LEGACY_JOB_SCHEMA_VERSION
+    if job.get("schema") != LEGACY_JOB_SCHEMA or not has_schema_version(
+        job, LEGACY_JOB_SCHEMA_VERSION
     ):
         raise LegacyAuthoringImportError(
             "Unsupported pregeneration job schema; expected "
@@ -772,10 +770,8 @@ def _validate_state(
     queue: VoiceGenerationQueue,
     queue_sha256: str,
 ) -> tuple[StateItems, GeneratedFiles]:
-    if (
-        state.get("schema") != LEGACY_STATE_SCHEMA
-        or type(state.get("schema_version")) is not int
-        or state.get("schema_version") != LEGACY_STATE_SCHEMA_VERSION
+    if state.get("schema") != LEGACY_STATE_SCHEMA or not has_schema_version(
+        state, LEGACY_STATE_SCHEMA_VERSION
     ):
         raise LegacyAuthoringImportError(
             f"Unsupported generation state {state_path}; expected "

@@ -20,6 +20,7 @@ from vntts.authoring.generation_state import (
 )
 from vntts.authoring.publication import publication_errors
 from vntts.document_identity import file_sha256, is_lowercase_sha256
+from vntts.json_types import has_schema_version
 
 SCHEMA = "vntts.authoring-generation-queue-extension"
 SCHEMA_VERSION = 1
@@ -174,8 +175,7 @@ def _validate_extension_ledger(
         not isinstance(ledger, dict)
         or set(ledger) != required
         or ledger.get("schema") != SCHEMA
-        or type(ledger.get("schema_version")) is not int
-        or ledger.get("schema_version") != SCHEMA_VERSION
+        or not has_schema_version(ledger, SCHEMA_VERSION)
     ):
         return False
     body = {key: value for key, value in ledger.items() if key != "extension_id"}

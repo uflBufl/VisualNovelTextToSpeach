@@ -19,7 +19,7 @@ from vntts.authoring.workbench import (
     list_review_items,
 )
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
-from vntts.json_types import decode_json
+from vntts.json_types import decode_json, has_schema_version
 from vntts.json_types import is_json_object as _is_json_document
 from vntts.path_safety import read_regular_text
 
@@ -295,10 +295,7 @@ def _validated_plan_document(plan: object) -> _PlanDocument:
         raise PendingResolutionError("Pending resolution plan fields are invalid")
     if document.get("schema") != PENDING_RESOLUTION_PLAN_SCHEMA:
         raise PendingResolutionError("Pending resolution plan schema is unsupported")
-    if (
-        type(document.get("schema_version")) is not int
-        or document["schema_version"] != PENDING_RESOLUTION_PLAN_VERSION
-    ):
+    if not has_schema_version(document, PENDING_RESOLUTION_PLAN_VERSION):
         raise PendingResolutionError("Pending resolution plan version is unsupported")
     workspace_id = _required_text(document.get("workspace_id"), "Workspace ID")
     workspace_fingerprint = _required_sha256(

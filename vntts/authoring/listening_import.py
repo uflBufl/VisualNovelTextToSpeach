@@ -24,7 +24,7 @@ from vntts.authoring.publication import (
 )
 from vntts.authoring.workspace_foundation import load_json_object, require_sha256
 from vntts.document_identity import canonical_document_sha256, sha256_file
-from vntts.json_types import decode_json
+from vntts.json_types import decode_json, has_schema_version
 from vntts.json_types import is_json_object as _is_json_object
 from vntts.path_safety import copy_regular_file, read_regular_bytes, safe_relative_path
 
@@ -734,11 +734,7 @@ def _load_schema_snapshot(
         ) from error
     if not _is_json_object(value):
         raise ListeningImportError(f"{description.title()} must be a JSON object")
-    if (
-        value.get("schema") != schema
-        or type(value.get("schema_version")) is not int
-        or value["schema_version"] != SCHEMA_VERSION
-    ):
+    if value.get("schema") != schema or not has_schema_version(value, SCHEMA_VERSION):
         raise ListeningImportError(
             f"Unsupported {description} schema; expected {schema!r} version {SCHEMA_VERSION}"
         )

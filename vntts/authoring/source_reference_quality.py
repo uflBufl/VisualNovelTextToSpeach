@@ -59,6 +59,7 @@ from vntts.authoring.source_reference_review import (
 from vntts.cleanup import temporary_directory
 from vntts.cli import cli_error, cli_success
 from vntts.document_identity import file_sha256, sha256_file
+from vntts.json_types import has_schema_version
 from vntts.path_safety import read_regular_bytes
 
 
@@ -148,10 +149,8 @@ def _load_quality_review_evaluation(
     path = directory / "comparison.json"
     payload, document = _read_json(path, "source-reference evaluation")
     digest = hashlib.sha256(payload).hexdigest()
-    if (
-        document.get("schema") != REFERENCE_EVALUATION_SCHEMA
-        or type(document.get("schema_version")) is not int
-        or document.get("schema_version") != REFERENCE_EVALUATION_VERSION
+    if document.get("schema") != REFERENCE_EVALUATION_SCHEMA or not has_schema_version(
+        document, REFERENCE_EVALUATION_VERSION
     ):
         raise SourceReferenceQualityError(
             "Unsupported source-reference evaluation schema"

@@ -34,7 +34,7 @@ from vntts.audio_output import (
 )
 from vntts.chapter_voice_preload import ChapterDialogue
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
-from vntts.json_types import decode_json
+from vntts.json_types import decode_json, has_schema_version
 from vntts.path_safety import read_regular_bytes, read_regular_text
 from vntts.playback import (
     PlaybackOutcome as PlaybackOutcome,
@@ -288,11 +288,7 @@ def recorded_voice_identity(
     if not isinstance(document, dict):
         return None
     identity = document.get("vntts.recorded_voice")
-    if (
-        not isinstance(identity, dict)
-        or type(identity.get("schema_version")) is not int
-        or identity["schema_version"] != 1
-    ):
+    if not isinstance(identity, dict) or not has_schema_version(identity, 1):
         return None
     for field in ("audio_sha256", "synthesis_provenance_sha256"):
         if not is_lowercase_sha256(identity.get(field)) or identity[

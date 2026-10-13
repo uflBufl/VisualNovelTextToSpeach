@@ -61,7 +61,7 @@ from vntts.authoring.workbench import (
 from vntts.authoring.workspace_config import selected_voice_manifest_path
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.document_identity import file_sha256
-from vntts.json_types import decode_json
+from vntts.json_types import decode_json, has_schema_version
 from vntts.path_safety import copy_regular_file, read_regular_bytes
 from vntts.voices import load_voice_manifest, synthesis_character_for_line
 
@@ -700,8 +700,7 @@ def _validated_bundle_inventory(
     body = {key: value for key, value in bundle.items() if key != "bundle_id"}
     if (
         bundle.get("schema") != KNOWN_ROLE_REUSE_BUNDLE_SCHEMA
-        or type(bundle.get("schema_version")) is not int
-        or bundle.get("schema_version") != KNOWN_ROLE_REUSE_BUNDLE_VERSION
+        or not has_schema_version(bundle, KNOWN_ROLE_REUSE_BUNDLE_VERSION)
         or bundle.get("bundle_id") != canonical_document_sha256(body)
         or bundle.get("decision_id") != canonical_document_sha256(decision_body)
     ):

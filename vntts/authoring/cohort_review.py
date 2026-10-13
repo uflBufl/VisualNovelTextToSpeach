@@ -28,7 +28,7 @@ from vntts.authoring.workbench import (
 from vntts.authoring.workspace_config import workspace_successor_config_fingerprint
 from vntts.authoring.workspace_inspection import load_review_items_snapshot
 from vntts.document_identity import is_lowercase_sha256
-from vntts.json_types import decode_json
+from vntts.json_types import decode_json, has_schema_version
 from vntts.path_safety import read_regular_bytes, read_regular_text
 
 COHORT_REVIEW_PLAN_SCHEMA = "vntts.authoring-cohort-review-plan"
@@ -721,10 +721,8 @@ def _bound_workspace_document(directory: Path) -> JsonObject:
 def _validate_bound_workspace_identity(
     directory: Path, workspace: JsonObject, plan_document: Mapping[str, object]
 ) -> None:
-    if (
-        workspace.get("schema") != WORKSPACE_SCHEMA
-        or type(workspace.get("schema_version")) is not int
-        or workspace.get("schema_version") != WORKSPACE_VERSION
+    if workspace.get("schema") != WORKSPACE_SCHEMA or not has_schema_version(
+        workspace, WORKSPACE_VERSION
     ):
         raise CohortReviewError("Unsupported authoring workspace")
     if workspace.get("workspace_id") != plan_document["workspace_id"]:
@@ -1657,10 +1655,7 @@ def _cohort_identity(workspace: JsonObject, result: JsonObject) -> JsonObject:
     if binding is not None:
         if not isinstance(binding, dict):
             raise CohortReviewError("Source-reference binding must be an object")
-        if (
-            type(binding.get("schema_version")) is not int
-            or binding.get("schema_version") != 1
-        ):
+        if not has_schema_version(binding, 1):
             raise CohortReviewError("Source-reference binding version is unsupported")
         _required_text(
             binding.get("source_voice_character"),

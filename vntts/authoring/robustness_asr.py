@@ -29,7 +29,7 @@ from vntts.authoring.robustness_corpus import (
     _read_pcm16,
     load_speech_robustness_corpus,
 )
-from vntts.json_types import decode_json
+from vntts.json_types import decode_json, has_schema_version
 from vntts.json_types import is_json_object as _is_json_document
 from vntts.path_safety import read_regular_text
 
@@ -396,8 +396,7 @@ def _validate_document(document: object) -> JsonDocument:
         raise SpeechRobustnessAsrError("ASR robustness report shape is invalid")
     if (
         document.get("schema") != SPEECH_ROBUSTNESS_ASR_SCHEMA
-        or type(document.get("schema_version")) is not int
-        or document.get("schema_version") != SPEECH_ROBUSTNESS_ASR_VERSION
+        or not has_schema_version(document, SPEECH_ROBUSTNESS_ASR_VERSION)
         or type(document.get("corpus_schema_version")) is not int
         or document["corpus_schema_version"] not in (2, 3)
     ):
@@ -472,8 +471,7 @@ def _load_progress(
         not _is_json_document(document)
         or set(document) != expected
         or document.get("schema") != "vntts.speech-robustness-asr-progress"
-        or type(document.get("schema_version")) is not int
-        or document.get("schema_version") != SPEECH_ROBUSTNESS_ASR_VERSION
+        or not has_schema_version(document, SPEECH_ROBUSTNESS_ASR_VERSION)
         or document.get("corpus_id") != corpus_id
         or document.get("model_sha256") != model_sha256
         or document.get("device") != device

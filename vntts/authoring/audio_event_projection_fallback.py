@@ -55,6 +55,7 @@ from vntts.authoring.workspace_config import (
 from vntts.authoring.workspace_foundation import stage_single_base_successor
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 from vntts.document_identity import sha256_file
+from vntts.json_types import has_schema_version
 
 SCHEMA = "vntts.authoring-audio-event-projection-fallback-batch"
 SCHEMA_VERSION = 1
@@ -451,8 +452,7 @@ def _validated_projection_batch(value: object) -> dict[str, object]:
             not isinstance(batch, dict)
             or set(batch) != fields
             or batch.get("schema") != SCHEMA
-            or type(batch.get("schema_version")) is not int
-            or batch.get("schema_version") != SCHEMA_VERSION
+            or not has_schema_version(batch, SCHEMA_VERSION)
             or batch.get("provider") != "pocket-tts"
             or batch.get("model") != "pocket-tts"
             or batch.get("generation_profile") != "default"

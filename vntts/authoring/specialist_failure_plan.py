@@ -24,7 +24,7 @@ from vntts.authoring.failure_repair import (
     SENTENCE_BOUNDARY_SEGMENTATION,
 )
 from vntts.document_identity import file_sha256, is_lowercase_sha256
-from vntts.json_types import decode_json
+from vntts.json_types import decode_json, has_schema_version
 from vntts.path_safety import read_regular_bytes
 
 SPECIALIST_FAILURE_PLAN_SCHEMA = "vntts.authoring-specialist-failure-plan"
@@ -302,10 +302,7 @@ def _validated(plan: SpecialistFailurePlan | object) -> JsonObject:
         or document.get("schema") != SPECIALIST_FAILURE_PLAN_SCHEMA
     ):
         raise CohortReviewError("Unsupported specialist failure plan schema")
-    if (
-        type(document.get("schema_version")) is not int
-        or document.get("schema_version") != SPECIALIST_FAILURE_PLAN_VERSION
-    ):
+    if not has_schema_version(document, SPECIALIST_FAILURE_PLAN_VERSION):
         raise CohortReviewError("Unsupported specialist failure plan version")
     claimed = document.get("plan_id")
     actual = canonical_document_sha256(
