@@ -176,6 +176,111 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
                         tree_hashes(baseline.directory),
                     )
 
+    def test_import_rejects_unencodable_candidate_evidence_before_publication(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            report, review, story = write_source_reference_review_inputs(root)
+            original = report.read_text(encoding="utf-8")
+            for field, value in (
+                ("provider_extension", json.loads(r'{"nested": ["\ud800"]}')),
+                ("provider_extension", json.loads(r'{"\ud800": "label"}')),
+                ("character", json.loads(r'"\ud800"')),
+                ("portrait", json.loads(r'"\ud800"')),
+                ("source_bank", json.loads(r'"\ud800"')),
+            ):
+                with self.subTest(field=field, value=value):
+                    document = json.loads(original)
+                    document["candidates"][0][field] = value
+                    report.write_text(json.dumps(document), encoding="utf-8")
+                    self.assertIn(b"\\ud800", report.read_bytes())
+                    before = tree_hashes(root)
+                    with (
+                        patch.object(
+                            source_review_module, "_publish_source_reference_plan"
+                        ) as publish,
+                        self.assertRaisesRegex(
+                            SourceReferenceReviewError,
+                            "Candidate 0 evidence is invalid",
+                        ) as caught,
+                    ):
+                        import_source_reference_review(
+                            report, review, story, root / "refused-plan"
+                        )
+                    self.assertIsInstance(
+                        caught.exception.__cause__, UnicodeEncodeError
+                    )
+                    publish.assert_not_called()
+                    self.assertEqual(tree_hashes(root), before)
+
+    def test_import_keeps_full_unicode_candidate_evidence_hash(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            report, review, story = write_source_reference_review_inputs(
+                root, character="Герой 🦉"
+            )
+            document = json.loads(report.read_text(encoding="utf-8"))
+            candidate = document["candidates"][0]
+            candidate["provider_extension"] = {"nested": ["证据 🦉", float("nan")]}
+            expected = hashlib.sha256(
+                json.dumps(
+                    candidate, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+            ).hexdigest()
+            report.write_text(json.dumps(document), encoding="utf-8")
+            review_document = json.loads(review.read_text(encoding="utf-8"))
+            review_document["candidate_report_sha256"] = hashlib.sha256(
+                report.read_bytes()
+            ).hexdigest()
+            review_document["decisions"][0]["candidate_evidence_sha256"] = expected
+            review.write_text(json.dumps(review_document), encoding="utf-8")
+            result = import_source_reference_review(
+                report, review, story, root / "plan"
+            )
+            plan = load_source_reference_plan(result.directory)
+            reference = next(
+                reference
+                for cluster in plan["clusters"]
+                for reference in cluster["references"]
+                if reference["media_id"] == candidate["media_id"]
+            )
+            self.assertEqual(reference["candidate_evidence_sha256"], expected)
+            for cluster in plan["clusters"]:
+                identity = [
+                    cluster[field] for field in ("character", "portrait", "source_bank")
+                ]
+                identity_payload = json.dumps(
+                    identity, ensure_ascii=False, separators=(",", ":")
+                ).encode("utf-8")
+                expected_id = (
+                    "cluster-" + hashlib.sha256(identity_payload).hexdigest()[:24]
+                )
+                self.assertEqual(cluster["cluster_id"], expected_id)
+
+    def test_plan_loader_rejects_unencodable_cluster_identity_without_mutation(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            report, review, story = write_source_reference_review_inputs(root)
+            result = import_source_reference_review(
+                report, review, story, root / "plan"
+            )
+            plan_path = result.directory / "plan.json"
+            original = plan_path.read_text(encoding="utf-8")
+            for field in ("character", "portrait", "source_bank"):
+                with self.subTest(field=field):
+                    document = json.loads(original)
+                    document["clusters"][0][field] = json.loads(r'"\ud800"')
+                    plan_path.write_text(json.dumps(document), encoding="utf-8")
+                    self.assertIn(b"\\ud800", plan_path.read_bytes())
+                    before = tree_hashes(root)
+                    with self.assertRaisesRegex(
+                        SourceReferenceReviewError, "Plan cluster 0 identity is invalid"
+                    ) as caught:
+                        load_source_reference_plan(result.directory)
+                    self.assertIsInstance(
+                        caught.exception.__cause__, UnicodeEncodeError
+                    )
+                    self.assertEqual(tree_hashes(root), before)
+
     def test_v2_unrouted_media_uses_fixed_corpus_without_invented_transcript(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

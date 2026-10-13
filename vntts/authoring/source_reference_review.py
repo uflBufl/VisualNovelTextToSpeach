@@ -453,7 +453,13 @@ def _validate_plan_cluster(
     source_bank = _text(
         cluster.get("source_bank"), f"cluster {cluster_index} source bank"
     )
-    if cluster_id != _cluster_id(character, portrait, source_bank):
+    try:
+        expected_cluster_id = _cluster_id(character, portrait, source_bank)
+    except ValueError as error:
+        raise SourceReferenceReviewError(
+            f"Plan cluster {cluster_index} identity is invalid"
+        ) from error
+    if cluster_id != expected_cluster_id:
         raise SourceReferenceReviewError(
             f"Plan cluster {cluster_index} ID does not match its identity"
         )
@@ -2249,10 +2255,15 @@ def _load_candidate(
         raise SourceReferenceReviewError(
             f"Candidate {index} reference checksum changed"
         )
-    candidate_key = _candidate_key(
-        character, portrait, bank, media_id, reference_sha256
-    )
-    evidence_sha256 = canonical_document_sha256(value, allow_nan=True)
+    try:
+        candidate_key = _candidate_key(
+            character, portrait, bank, media_id, reference_sha256
+        )
+        evidence_sha256 = canonical_document_sha256(value, allow_nan=True)
+    except ValueError as error:
+        raise SourceReferenceReviewError(
+            f"Candidate {index} evidence is invalid"
+        ) from error
     return {
         "candidate_key": candidate_key,
         "evidence_sha256": evidence_sha256,
