@@ -753,7 +753,6 @@ def _composite_ledger(
     composite_path: Path,
     preflight: ReferenceQualityReport,
 ) -> JsonObject:
-    preflight["path"] = composite_path.name
     return {
         "schema": COMPOSITE_SCHEMA,
         "schema_version": COMPOSITE_VERSION,
@@ -779,7 +778,7 @@ def _composite_ledger(
             "sample_rate": staged.sample_rate,
             "frame_count": len(composite),
             "duration_seconds": len(composite) / staged.sample_rate,
-            "objective_preflight": preflight,
+            "objective_preflight": {**preflight, "path": composite_path.name},
         },
         "authority": (
             "Experimental same-bank synthesis reference only. Exact bank identity "

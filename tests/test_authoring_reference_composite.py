@@ -180,6 +180,36 @@ class AuthoringReferenceCompositeTest(unittest.TestCase):
             self.assertEqual(voices[0].references, ("composite.wav",))
             self.assertEqual(queue.items[0].voice_character, voices[0].character)
 
+    def test_publishing_keeps_the_analyzer_report_unchanged(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = write_exact_bank_composite_report(root)
+            analyzer = reference_composite.analyze_reference_bytes
+            reports = []
+
+            def capture_report(*args, **kwargs):
+                preflight = analyzer(*args, **kwargs)
+                reports.append((preflight, preflight.copy()))
+                return preflight
+
+            with patch.object(
+                reference_composite,
+                "analyze_reference_bytes",
+                side_effect=capture_report,
+            ):
+                result = publish_exact_bank_reference_composite(
+                    report, "Hotelier", "505401.png", "hotelier.bnk", root / "composite"
+                )
+
+            self.assertEqual(len(reports), 1)
+            preflight, original = reports[0]
+            self.assertEqual(preflight, original)
+            ledger = json.loads((result.directory / "composite.json").read_text())
+            self.assertEqual(
+                ledger["composite"]["objective_preflight"],
+                {**original, "path": "composite.wav"},
+            )
+
     def test_rejects_story_routed_only_report(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
