@@ -67,6 +67,106 @@ def story_audio_cue():
 
 
 class AuthoringQueueBuilderTest(unittest.TestCase):
+    def test_inspection_rejects_surrogate_source_extensions_without_writes(self):
+        for phase in ("metadata", "record", "voice-alias"):
+            with self.subTest(phase=phase), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                story, manifest = write_inputs(root, [story_record("line-1", "absent")])
+                if phase == "voice-alias":
+                    document = json.loads(manifest.read_text())
+                    document["voices"][1]["aliases"] = ["\ud800"]
+                    manifest.write_text(json.dumps(document), encoding="utf-8")
+                    label = "Source voice-manifest entries"
+                else:
+                    rows = [json.loads(row) for row in story.read_text().splitlines()]
+                    rows[0 if phase == "metadata" else 1]["producer_extension"] = {
+                        "label": "\ud800"
+                    }
+                    story.write_text(
+                        "\n".join(json.dumps(row, sort_keys=True) for row in rows)
+                        + "\n",
+                        encoding="utf-8",
+                    )
+                    label = "Source story-index document"
+                before = {
+                    path: path.read_bytes()
+                    for path in root.rglob("*")
+                    if path.is_file()
+                }
+
+                with self.assertRaisesRegex(
+                    GenerationQueueBuildError,
+                    f"{label} contains invalid UTF-8 text",
+                ) as caught:
+                    inspect_generation_queue(story, manifest)
+
+                self.assertIsInstance(caught.exception.__cause__, UnicodeEncodeError)
+                self.assertEqual(
+                    {
+                        path: path.read_bytes()
+                        for path in root.rglob("*")
+                        if path.is_file()
+                    },
+                    before,
+                )
+
+    def test_unicode_source_extensions_preserve_inputs_and_canonical_identity(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            record = story_record(
+                "line-1", "absent", producer_extension={"label": "реплика 音声"}
+            )
+            story, manifest = write_inputs(root, [record])
+            rows = [json.loads(row) for row in story.read_text().splitlines()]
+            rows[0]["producer_extension"] = {"label": "источник 音声"}
+            story.write_text(
+                "\n".join(
+                    json.dumps(row, ensure_ascii=False, sort_keys=True) for row in rows
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            document = json.loads(manifest.read_text())
+            document["voices"][1]["aliases"] = ["запасной 音声"]
+            manifest.write_text(
+                json.dumps(document, ensure_ascii=False), encoding="utf-8"
+            )
+            _manifest, entries = load_voice_manifest(manifest)
+            before = {
+                path: path.read_bytes() for path in root.rglob("*") if path.is_file()
+            }
+
+            plan = inspect_generation_queue(story, manifest)
+            output = publish_generation_queue(plan, root / "queue.jsonl")
+            queue = VoiceGenerationQueue.load(output)
+
+            self.assertEqual(
+                plan.metadata["source_story_index_document_sha256"],
+                builder.canonical_document_sha256(
+                    {"metadata": rows[0], "records": rows[1:]}
+                ),
+            )
+            self.assertEqual(
+                queue.items[0].document["producer_extension"],
+                record["producer_extension"],
+            )
+            self.assertEqual(entries[1].aliases, ("запасной 音声",))
+            self.assertEqual(
+                plan.metadata["source_voice_manifest_entries_sha256"],
+                builder.canonical_document_sha256(
+                    [
+                        {
+                            "character": entry.character,
+                            "speaker": entry.speaker,
+                            "aliases": list(entry.aliases),
+                            "references": list(entry.references),
+                        }
+                        for entry in entries
+                    ]
+                ),
+            )
+            self.assertEqual({path: path.read_bytes() for path in before}, before)
+
     def test_source_replacement_after_capture_is_refused_during_inspection(self):
         for source_name in ("story", "manifest"):
             with self.subTest(source=source_name), TemporaryDirectory() as directory:

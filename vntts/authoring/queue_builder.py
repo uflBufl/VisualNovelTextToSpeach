@@ -354,6 +354,15 @@ def plan_generation_queue(
     return GenerationQueuePlan(metadata, tuple(items), summary)
 
 
+def _source_document_sha256(document: object, label: str) -> str:
+    try:
+        return canonical_document_sha256(document)
+    except UnicodeEncodeError as error:
+        raise GenerationQueueBuildError(
+            f"{label} contains invalid UTF-8 text"
+        ) from error
+
+
 def _source_queue_metadata(
     document: StoryIndexDocument,
     document_path: Path,
@@ -361,13 +370,14 @@ def _source_queue_metadata(
     voice_manifest_path: Path,
 ) -> dict[str, object]:
     metadata: dict[str, object] = {
-        "source_story_index_document_sha256": canonical_document_sha256(
+        "source_story_index_document_sha256": _source_document_sha256(
             {
                 "metadata": document.metadata,
                 "records": [record.to_record() for record in document.records],
-            }
+            },
+            "Source story-index document",
         ),
-        "source_voice_manifest_entries_sha256": canonical_document_sha256(
+        "source_voice_manifest_entries_sha256": _source_document_sha256(
             [
                 {
                     "character": entry.character,
@@ -376,7 +386,8 @@ def _source_queue_metadata(
                     "references": list(entry.references),
                 }
                 for entry in entries
-            ]
+            ],
+            "Source voice-manifest entries",
         ),
     }
     if document.game is not None:
