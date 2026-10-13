@@ -462,14 +462,21 @@ def _fit_threshold(results: list[_ScoredPair]) -> tuple[float | None, _FitMetric
         for item in fit
         if item["relationship"] != "same-speaker"
     ]
-    separated = bool(positives and negatives and max(positives) < min(negatives))
-    threshold = (max(positives) + min(negatives)) / 2 if separated else None
+    max_positive = max(positives, default=None)
+    min_negative = min(negatives, default=None)
+    threshold = (
+        (max_positive + min_negative) / 2
+        if max_positive is not None
+        and min_negative is not None
+        and max_positive < min_negative
+        else None
+    )
     return threshold, {
         "positive_count": len(positives),
         "negative_count": len(negatives),
-        "max_positive_distance": max(positives) if positives else None,
-        "min_negative_distance": min(negatives) if negatives else None,
-        "separated": separated,
+        "max_positive_distance": max_positive,
+        "min_negative_distance": min_negative,
+        "separated": threshold is not None,
     }
 
 

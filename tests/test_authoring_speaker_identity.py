@@ -295,6 +295,45 @@ class SpeakerIdentityTest(unittest.TestCase):
                 build_speaker_identity_report(inventory, labels, embed, {})
             embed.assert_not_called()
 
+    def test_fit_threshold_preserves_empty_and_boundary_cases(self):
+        for positives, negatives, expected_threshold in (
+            ((), (), None),
+            ((0.2,), (), None),
+            ((), (0.8,), None),
+            ((0.4,), (0.4,), None),
+            ((0.2, 0.8), (0.6, 1.0), None),
+            ((0.1, 0.25), (0.75, 1.0), 0.5),
+        ):
+            with self.subTest(positives=positives, negatives=negatives):
+                results = [
+                    {
+                        "left_reference_id": "left",
+                        "right_reference_id": "right",
+                        "partition": partition,
+                        "relationship": relationship,
+                        "cosine_distance": distance,
+                    }
+                    for partition, relationship, distances in (
+                        ("fit", "same-speaker", positives),
+                        ("fit", "different-speaker", negatives),
+                        ("held-out", "same-speaker", (2.0,)),
+                        ("held-out", "same-character/different-age", (0.0,)),
+                    )
+                    for distance in distances
+                ]
+                threshold, metrics = speaker_identity._fit_threshold(results)
+                self.assertEqual(threshold, expected_threshold)
+                self.assertEqual(
+                    metrics,
+                    {
+                        "positive_count": len(positives),
+                        "negative_count": len(negatives),
+                        "max_positive_distance": max(positives, default=None),
+                        "min_negative_distance": min(negatives, default=None),
+                        "separated": expected_threshold is not None,
+                    },
+                )
+
     def test_invalid_model_embeddings_use_the_domain_error(self):
         with TemporaryDirectory() as directory:
             inventory = build_reference_inventory(_fixture(Path(directory)))
