@@ -629,8 +629,7 @@ def _prepare_benchmark_samples(
             for character in characters
         )
     )
-    work_items: list[BenchmarkCorpusSample] = []
-    output_names: list[str] = []
+    work_items: list[tuple[BenchmarkCorpusSample, str]] = []
     seen_ids: set[str] = set()
     for index, item in enumerate(requested_samples, start=1):
         sample_id = str(item.get("id") or item.get("character") or f"sample-{index}")
@@ -646,23 +645,22 @@ def _prepare_benchmark_samples(
             raise ValueError(
                 f"Benchmark sample {sample_id!r} text_sha256 does not match exact text"
             )
-        work_items.append(
-            {
-                "id": sample_id,
-                "line_id": str(item.get("line_id") or sample_id),
-                "character": item["character"],
-                "text": sample_text,
-                "text_sha256": text_digest,
-            }
-        )
+        sample: BenchmarkCorpusSample = {
+            "id": sample_id,
+            "line_id": str(item.get("line_id") or sample_id),
+            "character": item["character"],
+            "text": sample_text,
+            "text_sha256": text_digest,
+        }
         character_component = _safe_component(item.get("character"), "Character")
         sample_component = _safe_component(sample_id, "Sample ID")
-        output_names.append(
+        output_name = (
             f"{backend_component}-{character_component}-{sample_component}.wav"
         )
-    if len(output_names) != len({name.casefold() for name in output_names}):
+        work_items.append((sample, output_name))
+    if len(work_items) != len({name.casefold() for _, name in work_items}):
         raise ValueError("Benchmark samples collide as output WAV names")
-    return list(zip(work_items, output_names, strict=True))
+    return work_items
 
 
 def _benchmark_backend_staged(

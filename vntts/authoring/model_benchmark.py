@@ -892,8 +892,9 @@ def benchmark_model_variants(
     """Benchmark multiple model variants over one exact corpus."""
     corpus = load_benchmark_corpus(corpus_path)
     samples = _documents(corpus.get("samples"), "Benchmark samples")
-    variants = tuple(variants)
-    safe_model_ids = _validated_benchmark_variants(variants, samples, registry)
+    prepared_variants = _validated_benchmark_variants(
+        tuple(variants), samples, registry
+    )
     output_directory = _benchmark_output_directory(output_directory)
     output_directory.parent.mkdir(parents=True, exist_ok=True)
     with (
@@ -906,8 +907,7 @@ def benchmark_model_variants(
         aggregate = _write_benchmark_staging(
             corpus,
             samples,
-            variants,
-            safe_model_ids,
+            prepared_variants,
             registry,
             cache_root,
             staging_root,
@@ -923,18 +923,18 @@ def _validated_benchmark_variants(
     variants: tuple[ModelVariant, ...],
     samples: Sequence[JsonDocument],
     registry: CharacterVoiceRegistry,
-) -> list[str]:
+) -> list[tuple[ModelVariant, str]]:
     if not variants:
         raise ModelBenchmarkError("At least one model variant is required")
     model_ids = [variant.model_id for variant in variants]
     if len(model_ids) != len(set(model_ids)):
         raise ModelBenchmarkError("Model variant IDs must be unique")
-    safe_model_ids = [_safe_name(model_id) for model_id in model_ids]
-    if len(safe_model_ids) != len({value.casefold() for value in safe_model_ids}):
+    prepared = [(variant, _safe_name(variant.model_id)) for variant in variants]
+    if len(prepared) != len({name.casefold() for _, name in prepared}):
         raise ModelBenchmarkError("Model variant IDs collide as output directory names")
-    for variant in variants:
+    for variant, _ in prepared:
         _validate_benchmark_variant(variant, samples, registry)
-    return safe_model_ids
+    return prepared
 
 
 def _validate_benchmark_variant(
@@ -979,8 +979,7 @@ def _benchmark_output_directory(
 def _write_benchmark_staging(
     corpus: JsonDocument,
     samples: Sequence[JsonDocument],
-    variants: tuple[ModelVariant, ...],
-    safe_model_ids: Sequence[str],
+    prepared_variants: Sequence[tuple[ModelVariant, str]],
     registry: CharacterVoiceRegistry,
     cache_root: Path,
     staging_root: Path,
@@ -991,15 +990,18 @@ def _write_benchmark_staging(
     published_corpus = staging_root / "benchmark-corpus.json"
     atomic_write_json(published_corpus, corpus, sort_keys=True)
     snapshot_registry, voice_controls = _benchmark_voice_controls(
-        variants, samples, registry, staging_root, output_directory
+        (variant for variant, _ in prepared_variants),
+        samples,
+        registry,
+        staging_root,
+        output_directory,
     )
     voice_controls_sha256 = canonical_document_sha256(voice_controls)
     voice_controls_content_sha256 = canonical_document_sha256(
         [_voice_control_content(control) for control in voice_controls]
     )
     reports, model_summaries = _render_benchmark_variants(
-        variants,
-        safe_model_ids,
+        prepared_variants,
         snapshot_registry,
         samples,
         cache_root,
@@ -1021,7 +1023,7 @@ def _write_benchmark_staging(
         "voice_controls_content_sha256": voice_controls_content_sha256,
         "sample_count": len(samples),
         "manual_review_required": True,
-        "comparison_ready": len(variants) >= 2,
+        "comparison_ready": len(prepared_variants) >= 2,
         "models": model_summaries,
         "reports": reports,
     }
@@ -1073,8 +1075,7 @@ def _voice_control_content(control: JsonDocument) -> JsonDocument:
 
 
 def _render_benchmark_variants(
-    variants: Sequence[ModelVariant],
-    safe_model_ids: Sequence[str],
+    prepared_variants: Sequence[tuple[ModelVariant, str]],
     registry: CharacterVoiceRegistry,
     samples: Sequence[JsonDocument],
     cache_root: Path,
@@ -1087,7 +1088,7 @@ def _render_benchmark_variants(
 ) -> tuple[list[str], list[JsonDocument]]:
     reports: list[str] = []
     model_summaries: list[JsonDocument] = []
-    for variant, safe_model_id in zip(variants, safe_model_ids, strict=True):
+    for variant, safe_model_id in prepared_variants:
         reported_model_output = _contained_child(
             output_directory, safe_model_id, "reported model output"
         )
