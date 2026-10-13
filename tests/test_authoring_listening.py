@@ -1784,6 +1784,54 @@ class AuthoringListeningDialogTest(unittest.TestCase):
                     dialog.close()
                     dialog.deleteLater()
 
+    def test_replay_during_save_keeps_decisions_locked_until_retry(self):
+        with TemporaryDirectory() as directory:
+            started = Event()
+            release = Event()
+            attempts = 0
+
+            def slow_recorder(*args, **kwargs):
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    started.set()
+                    release.wait(3)
+                    raise OSError("temporary disk failure")
+                return record_trial_preference(*args, **kwargs)
+
+            session, dialog = self.create_dialog(
+                Path(directory), preference_recorder=slow_recorder
+            )
+            dialog.completed_sides = {"a", "b"}
+            dialog.set_preference_buttons_enabled(True)
+            try:
+                dialog.save_preference("a")
+                self.wait_for(started.is_set)
+                dialog.play("b")
+                dialog.playback.finish()
+                dialog.poll_playback()
+                for button in (
+                    dialog.prefer_a,
+                    dialog.prefer_b,
+                    dialog.tie,
+                    dialog.neither,
+                ):
+                    self.assertFalse(button.isEnabled())
+                    self.assertIn("Decision saving", button.accessibleDescription())
+                self.assertIn("Decision saving", dialog.decision_reason.text())
+                self.assertIn("Decision saving", dialog.status.text())
+                dialog.save_preference("b")
+                self.assertEqual(attempts, 1)
+            finally:
+                release.set()
+                self.wait_for(lambda: not dialog._preference_active)
+            self.assertTrue(dialog.prefer_a.isEnabled())
+            self.assertEqual(load_listening_session(session)["completed_count"], 0)
+            dialog.save_preference("a")
+            self.wait_for(lambda: not dialog._preference_active)
+            self.assertEqual(load_listening_session(session)["completed_count"], 1)
+            self.assertEqual(attempts, 2)
+
     def test_slow_save_keeps_qt_responsive_and_defers_close(self):
         with TemporaryDirectory() as directory:
             started = Event()

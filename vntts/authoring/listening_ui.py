@@ -381,6 +381,9 @@ class ModelListeningDialog(CloseGuardedDialog):
             (self.neither, "Record that neither anonymous sample is acceptable"),
             (self.prefer_b, "Record anonymous sample B as better"),
         )
+        if self._preference_active:
+            enabled = False
+            reason = "Decision saving: playback remains available."
         if reason is None:
             reason = (
                 "Decision ready: choose one result."
@@ -687,7 +690,11 @@ class ModelListeningDialog(CloseGuardedDialog):
             self.auto_play_pending_b = False
             QTimer.singleShot(0, self, lambda: self.play("b", automatic=True))
         elif self.completed_sides == {"a", "b"}:
-            self.status.setText("Both samples completed. Choose a preference.")
+            self.status.setText(
+                self.decision_reason.text()
+                if self._preference_active
+                else "Both samples completed. Choose a preference."
+            )
         elif side not in self.completed_sides:
             self.auto_play_pending_b = False
             self.status.setText(
@@ -769,10 +776,7 @@ class ModelListeningDialog(CloseGuardedDialog):
             return
         trial_id = self.current_trial["trial_id"]
         self._preference_active = True
-        self.set_preference_buttons_enabled(
-            False,
-            "Decision saving: playback remains available.",
-        )
+        self.set_preference_buttons_enabled(False)
         self.status.setText(
             "Saving preference and updating the blinded report... "
             "Playback remains available."
