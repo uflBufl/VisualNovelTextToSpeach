@@ -9,7 +9,10 @@ from unittest.mock import patch
 
 import numpy as np
 
-from vntts.authoring.publication import rename_directory_no_replace
+from vntts.authoring.publication import (
+    AtomicPublicationError,
+    rename_directory_no_replace,
+)
 from vntts.authoring.sound_effect_benchmark import (
     SoundEffectBenchmarkError,
     benchmark_sound_effects,
@@ -356,6 +359,44 @@ class SoundEffectBenchmarkTest(unittest.TestCase):
 
             self.assertFalse(output.exists())
 
+    def test_unavailable_publication_preserves_cause_and_allows_retry(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = root / "corpus.json"
+            output = root / "output"
+            write_corpus(corpus)
+            failure = AtomicPublicationError(
+                "Atomic no-replace directory publication is unavailable"
+            )
+            with (
+                patch(
+                    "vntts.authoring.sound_effect_benchmark.rename_directory_no_replace",
+                    side_effect=failure,
+                ),
+                self.assertRaisesRegex(
+                    SoundEffectBenchmarkError,
+                    "Unable to publish sound-effect benchmark: .* unavailable",
+                ) as caught,
+            ):
+                benchmark_sound_effects(
+                    corpus,
+                    output,
+                    seeds=(0,),
+                    torch_module=FakeTorch(),
+                    pipeline_factory=lambda *args, **kwargs: FakePipeline(),
+                )
+            self.assertIs(caught.exception.__cause__, failure)
+            self.assertFalse(output.exists())
+            self.assertEqual(list(root.glob(f".{output.name}-*")), [])
+            benchmark_sound_effects(
+                corpus,
+                output,
+                seeds=(0,),
+                torch_module=FakeTorch(),
+                pipeline_factory=lambda *args, **kwargs: FakePipeline(),
+            )
+            self.assertTrue((output / "report.json").is_file())
+
     def test_concurrent_publication_does_not_overwrite(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -374,7 +415,7 @@ class SoundEffectBenchmarkTest(unittest.TestCase):
                     side_effect=publish_first,
                 ),
                 self.assertRaisesRegex(
-                    SoundEffectBenchmarkError, "refusing to overwrite"
+                    SoundEffectBenchmarkError, "Publication destination already exists"
                 ),
             ):
                 benchmark_sound_effects(

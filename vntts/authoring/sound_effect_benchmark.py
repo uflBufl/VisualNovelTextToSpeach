@@ -250,7 +250,7 @@ def benchmark_sound_effects(
             rename_directory_no_replace(root, output_directory)
         except AtomicPublicationError as error:
             raise SoundEffectBenchmarkError(
-                f"Benchmark output already exists; refusing to overwrite: {output_directory}"
+                f"Unable to publish sound-effect benchmark: {error}"
             ) from error
     return report
 
