@@ -28,6 +28,47 @@ from vntts.authoring.silence_comparison import (
 
 
 class AuthoringSilenceComparisonTest(unittest.TestCase):
+    def test_truncated_odd_byte_wav_is_a_domain_error_before_publication(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sample = write_silence_comparison_sample(root)
+            payload = sample.raw_audio.read_bytes()[:-1]
+            sample.raw_audio.write_bytes(payload)
+            destination = root / "comparison"
+
+            with self.assertRaisesRegex(
+                SilenceComparisonError,
+                "Unable to read raw comparison audio.*incomplete",
+            ):
+                publish_silence_comparison((sample,), destination)
+
+            self.assertFalse(destination.exists())
+            self.assertEqual(sample.raw_audio.read_bytes(), payload)
+
+    def test_captured_wav_decode_preserves_exact_pcm_and_empty_stream(self):
+        import wave
+
+        for samples in ([-32768, -1, 0, 1, 32767], []):
+            with (
+                self.subTest(samples=samples),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                path = Path(temporary) / "source.wav"
+                with wave.open(str(path), "wb") as writer:
+                    writer.setnchannels(1)
+                    writer.setsampwidth(2)
+                    writer.setframerate(22_050)
+                    writer.writeframes(np.asarray(samples, dtype="<i2").tobytes())
+                payload = path.read_bytes()
+                expected_hash = sha256_file(path)
+                result = comparison_module._read_source_wav(path, "comparison audio")
+                self.assertEqual(result[:3], (path.resolve(), payload, expected_hash))
+                np.testing.assert_array_equal(
+                    result[3], np.asarray(samples, dtype=np.float32) / 32768.0
+                )
+                self.assertEqual(result[3].dtype, np.dtype(np.float32))
+                self.assertEqual(result[4], 22_050)
+
     def test_publishes_checksum_bound_reports_and_blind_session(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

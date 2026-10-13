@@ -6,7 +6,6 @@ import hashlib
 import io
 import json
 import shutil
-import wave
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -14,7 +13,11 @@ from pathlib import Path
 
 import numpy as np
 from durable_file import atomic_write_json
-from vntts_artifacts.audio import Pcm16MonoWavError, write_pcm16_wav
+from vntts_artifacts.audio import (
+    Pcm16MonoWavError,
+    read_pcm16_mono_wav,
+    write_pcm16_wav,
+)
 
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
@@ -992,28 +995,15 @@ def _read_source_wav(
     source = source.resolve()
     try:
         payload = read_regular_bytes(source)
-        with wave.open(io.BytesIO(payload), "rb") as wav:
-            if (
-                wav.getcomptype() != "NONE"
-                or wav.getnchannels() != 1
-                or wav.getsampwidth() != 2
-                or wav.getframerate() < 1
-            ):
-                raise Pcm16MonoWavError("expected mono 16-bit PCM WAV")
-            rate = wav.getframerate()
-            count = wav.getnframes()
-            pcm_payload = wav.readframes(count)
-        pcm: np.ndarray = np.frombuffer(pcm_payload, dtype="<i2")
-        if len(pcm) != count:
-            raise Pcm16MonoWavError("WAV sample data is incomplete")
-    except (OSError, EOFError, wave.Error, Pcm16MonoWavError) as error:
+        samples, info = read_pcm16_mono_wav(io.BytesIO(payload))
+    except (OSError, Pcm16MonoWavError) as error:
         raise SilenceComparisonError(f"Unable to read {label}: {error}") from error
     return (
         source,
         payload,
         hashlib.sha256(payload).hexdigest(),
-        pcm.astype(np.float32) / 32768.0,
-        rate,
+        np.asarray(samples, dtype=np.float32) / 32768.0,
+        info.sample_rate,
     )
 
 
