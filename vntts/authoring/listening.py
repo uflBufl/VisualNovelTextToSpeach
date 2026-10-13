@@ -39,7 +39,7 @@ from vntts.document_identity import (
     is_lowercase_sha256,
     sha256_file,
 )
-from vntts.json_types import has_schema_version
+from vntts.json_types import has_schema_version, is_utf8_text
 from vntts.json_types import is_json_object as _is_json_object
 from vntts.path_safety import copy_regular_file, open_regular_binary
 from vntts.settings import get_local_data_directory
@@ -258,7 +258,12 @@ def _source_digest(
         {"path": str(snapshot.path), "sha256": snapshot.sha256}
         for snapshot in snapshots
     ]
-    payload = json.dumps(sources, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    try:
+        payload = json.dumps(sources, ensure_ascii=False, sort_keys=True).encode(
+            "utf-8"
+        )
+    except UnicodeEncodeError as error:
+        raise ModelListeningError("Model report paths must be UTF-8 text") from error
     return sources, hashlib.sha256(payload).hexdigest()
 
 
@@ -343,7 +348,7 @@ def _selected_model_report_ids(
         return None
     raw_selected_ids = tuple(sample_ids)
     if not raw_selected_ids or any(
-        not isinstance(value, str) or not value.strip() for value in raw_selected_ids
+        not is_utf8_text(value) or not value.strip() for value in raw_selected_ids
     ):
         raise ModelListeningError(
             "Selected model-report sample IDs must be non-empty text"
@@ -750,11 +755,11 @@ def _validate_current_trial_identity(trial: _ValidatedListeningTrial) -> None:
     line_id = trial.get("line_id")
     text = trial.get("text")
     text_hash = trial.get("text_sha256")
-    if not isinstance(line_id, str) or not line_id.strip():
+    if not is_utf8_text(line_id) or not line_id.strip():
         raise ModelListeningError(
             f"Listening trial line identity is invalid: {trial['trial_id']}"
         )
-    if not isinstance(text, str) or not text or not is_lowercase_sha256(text_hash):
+    if not is_utf8_text(text) or not text or not is_lowercase_sha256(text_hash):
         raise ModelListeningError(
             f"Listening trial text identity is invalid: {trial['trial_id']}"
         )
@@ -1284,13 +1289,13 @@ def _model_report_metadata(
 ) -> ModelReport:
     backend = report.get("backend")
     model_id = report.get("model_id")
-    if not isinstance(backend, str) or not backend.strip():
+    if not is_utf8_text(backend) or not backend.strip():
         raise ModelListeningError(f"Model report backend is invalid: {path}")
-    if not isinstance(model_id, str) or not model_id.strip():
+    if not is_utf8_text(model_id) or not model_id.strip():
         raise ModelListeningError(f"Model report model_id is invalid: {path}")
     for field in ("provider", "model"):
         value = report.get(field)
-        if value is not None and not isinstance(value, str):
+        if value is not None and not is_utf8_text(value):
             raise ModelListeningError(f"Model report {field} is invalid: {path}")
     return {
         "backend": backend.strip(),
@@ -1322,7 +1327,7 @@ def _model_report_sample_id(
     sample: Mapping[str, object], index: int, seen_ids: set[str]
 ) -> str:
     sample_id = sample.get("id")
-    if not isinstance(sample_id, str) or not sample_id.strip():
+    if not is_utf8_text(sample_id) or not sample_id.strip():
         raise ModelListeningError(f"Model report sample {index} id is invalid")
     if sample_id in seen_ids:
         raise ModelListeningError(f"Duplicate model report sample ID: {sample_id!r}")
@@ -1336,9 +1341,9 @@ def _model_report_sample_text(
     line_id = sample.get("line_id")
     text = sample.get("text")
     text_hash = sample.get("text_sha256")
-    if not isinstance(line_id, str) or not line_id.strip():
+    if not is_utf8_text(line_id) or not line_id.strip():
         raise ModelListeningError(f"Model report sample {index} line_id is invalid")
-    if not isinstance(text, str) or not text:
+    if not is_utf8_text(text) or not text:
         raise ModelListeningError(f"Model report sample {index} text is invalid")
     if (
         not is_lowercase_sha256(text_hash)
@@ -1375,7 +1380,7 @@ def _model_report_sample_audio(
             f"Model report sample {index} audio_sha256 is invalid"
         )
     raw_audio = sample.get("audio")
-    if not isinstance(raw_audio, str) or not raw_audio.strip():
+    if not is_utf8_text(raw_audio) or not raw_audio.strip():
         raise ModelListeningError(f"Model report sample {index} audio is invalid")
     audio = Path(raw_audio).expanduser()
     if not audio.is_absolute():

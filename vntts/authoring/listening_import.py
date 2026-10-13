@@ -24,7 +24,7 @@ from vntts.authoring.publication import (
 )
 from vntts.authoring.workspace_foundation import load_json_object, require_sha256
 from vntts.document_identity import canonical_document_sha256, sha256_file
-from vntts.json_types import decode_json, has_schema_version
+from vntts.json_types import decode_json, has_schema_version, is_utf8_text
 from vntts.json_types import is_json_object as _is_json_object
 from vntts.path_safety import copy_regular_file, read_regular_bytes, safe_relative_path
 
@@ -238,7 +238,7 @@ def _validate_session(
 
 def _validate_session_header(session: JsonObject) -> list[object]:
     source_kind = session.get("source_kind")
-    if not isinstance(source_kind, str) or not source_kind.strip():
+    if not is_utf8_text(source_kind) or not source_kind.strip():
         raise ListeningImportError(
             "Listening session source_kind must be non-empty text"
         )
@@ -263,7 +263,7 @@ def _validate_session_trial(
     audio: dict[Path, Path],
 ) -> int:
     trial_id = trial.get("trial_id")
-    if not isinstance(trial_id, str) or not trial_id or trial_id in trial_ids:
+    if not is_utf8_text(trial_id) or not trial_id or trial_id in trial_ids:
         raise ListeningImportError("Listening session trial IDs are invalid")
     trial_ids.add(trial_id)
     _validate_trial_rating(trial, trial_id)
@@ -373,9 +373,14 @@ def _validate_source_inventory(sources: Sequence[object]) -> dict[Path, str]:
 
 
 def _validate_source_digest(sources: Sequence[object], session: JsonObject) -> None:
-    source_digest = hashlib.sha256(
-        json.dumps(sources, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    ).hexdigest()
+    try:
+        source_digest = hashlib.sha256(
+            json.dumps(sources, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+    except UnicodeEncodeError as error:
+        raise ListeningImportError(
+            "Blind-listening source inventory contains invalid UTF-8 text"
+        ) from error
     if source_digest != session.get("source_sha256"):
         raise ListeningImportError(
             "Blind-listening source inventory digest is inconsistent"
@@ -476,7 +481,7 @@ def _validate_assignment_sides(
             raise ListeningImportError(
                 f"Blind assignment {trial_id!r} side {side} has an unknown model"
             )
-        if not isinstance(value.get("source"), str) or not value["source"].strip():
+        if not is_utf8_text(value.get("source")) or not value["source"].strip():
             raise ListeningImportError(
                 f"Blind assignment {trial_id!r} side {side} has no source provenance"
             )
@@ -504,7 +509,7 @@ def _validate_report(
 ) -> None:
     configured_session = report.get("session")
     if (
-        not isinstance(configured_session, str)
+        not is_utf8_text(configured_session)
         or Path(configured_session).expanduser().resolve() != session_path
     ):
         raise ListeningImportError("Listening report points to a different session")
@@ -746,6 +751,8 @@ def _load_json(path: PathInput, description: str) -> JsonObject:
 
 
 def _safe_relative(value: object, label: str) -> Path:
+    if not is_utf8_text(value):
+        raise ListeningImportError(f"{label} must be a UTF-8 POSIX-relative path")
     return safe_relative_path(value, label, error_type=ListeningImportError)
 
 
@@ -782,7 +789,7 @@ def _object_field(document: JsonObject, field: str) -> JsonObject:
 
 def _text_field(document: JsonObject, field: str) -> str:
     value = document.get(field)
-    if not isinstance(value, str):
+    if not is_utf8_text(value):
         raise ListeningImportError(f"Listening {field} is invalid")
     return value
 

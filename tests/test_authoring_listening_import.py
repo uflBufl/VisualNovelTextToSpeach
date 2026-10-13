@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 import os
@@ -374,6 +375,50 @@ class ListeningImportTest(unittest.TestCase):
                     tree_hashes(source),
                 )
 
+    def test_rejects_surrogate_text_through_public_inspection_and_import(self):
+        mutations = (
+            ("session.json", ("source_kind",)),
+            ("session.json", ("trials", 0, "trial_id")),
+            ("session.json", ("trials", 0, "audio", "a")),
+            ("session.json", ("trials", 0, "rating", "preference")),
+            (".blind-key.json", ("models", 0, "provider")),
+            (".blind-key.json", ("sources", 0, "path")),
+            (".blind-key.json", ("sources", 0, "metadata")),
+            (".blind-key.json", ("assignments", 0, "a", "source")),
+            ("report.json", ("session",)),
+            ("report.json", ("models", 0, "provider")),
+        )
+        for filename, fields in mutations:
+            with (
+                self.subTest(filename=filename, fields=fields),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                source = write_listening_fixture(root)
+                path = source / filename
+                document = json.loads(path.read_text(encoding="utf-8"))
+                target = document
+                for field in fields[:-1]:
+                    target = target[field]
+                target[fields[-1]] = (
+                    {"label": "\ud800"} if fields[-1] == "metadata" else "\ud800"
+                )
+                path.write_text(json.dumps(document, sort_keys=True), encoding="utf-8")
+                if filename == ".blind-key.json":
+                    session_path = source / "session.json"
+                    session = json.loads(session_path.read_text(encoding="utf-8"))
+                    session["blind_key_sha256"] = sha256_file(path)
+                    session_path.write_text(json.dumps(session), encoding="utf-8")
+                source_hashes = tree_hashes(root)
+
+                with self.assertRaises(ListeningImportError):
+                    inspect_listening_session(source)
+                with self.assertRaises(ListeningImportError):
+                    import_listening_session(source, root / "app-data")
+
+                self.assertFalse((root / "app-data").exists())
+                self.assertEqual(tree_hashes(root), source_hashes)
+
     def test_reimport_reports_surrogate_manifest_metadata_as_domain_error(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -391,6 +436,63 @@ class ListeningImportTest(unittest.TestCase):
                 import_listening_session(source, root / "app-data")
 
             self.assertEqual(tree_hashes(root), before)
+
+    def test_unicode_fields_and_extension_metadata_preserve_original_bytes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = write_listening_fixture(root)
+            key_path = source / ".blind-key.json"
+            key = json.loads(key_path.read_text(encoding="utf-8"))
+            key["source_kind"] = "модели 音声"
+            key["sources"][0]["metadata"] = {"label": "источник 音声"}
+            key["source_sha256"] = hashlib.sha256(
+                json.dumps(key["sources"], ensure_ascii=False, sort_keys=True).encode(
+                    "utf-8"
+                )
+            ).hexdigest()
+            for model in key["models"]:
+                model["provider"] = "провайдер 音声"
+            key_path.write_text(
+                json.dumps(key, ensure_ascii=False, sort_keys=True), encoding="utf-8"
+            )
+            session_path = source / "session.json"
+            session = json.loads(session_path.read_text(encoding="utf-8"))
+            session["source_kind"] = key["source_kind"]
+            session["source_sha256"] = key["source_sha256"]
+            session["blind_key_sha256"] = sha256_file(key_path)
+            session["metadata"] = {"label": "сессия 音声"}
+            session_path.write_text(
+                json.dumps(session, ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+            report_path = source / "report.json"
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            for model in report["models"]:
+                model["provider"] = "провайдер 音声"
+            report["metadata"] = {"label": "отчёт 音声"}
+            report_path.write_text(
+                json.dumps(report, ensure_ascii=False, sort_keys=True), encoding="utf-8"
+            )
+            before = tree_hashes(root)
+
+            inspection = inspect_listening_session(source)
+            imported = import_listening_session(source, root / "app-data")
+            repeated = import_listening_session(source, root / "app-data")
+
+            self.assertTrue(imported.created)
+            self.assertFalse(repeated.created)
+            for _role, original, relative, digest in inspection.artifacts:
+                preserved = imported.destination / relative
+                self.assertEqual(preserved.read_bytes(), original.read_bytes())
+                self.assertEqual(sha256_file(preserved), digest)
+            self.assertEqual(
+                {
+                    path: digest
+                    for path, digest in tree_hashes(root).items()
+                    if not path.startswith("app-data/")
+                },
+                before,
+            )
 
     def test_rejects_non_integer_schema_versions_and_session_counts(self):
         mutations = (

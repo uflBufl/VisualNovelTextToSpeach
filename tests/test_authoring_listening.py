@@ -282,8 +282,8 @@ class AuthoringListeningTest(unittest.TestCase):
                     self.assertFalse((root / "session").exists())
 
     def test_malformed_model_labels_are_domain_errors(self):
-        for field in ("provider", "model"):
-            for value in ([], {}):
+        for field in ("backend", "model_id", "provider", "model"):
+            for value in ([], {}, "\ud800"):
                 with (
                     self.subTest(field=field, value=value),
                     TemporaryDirectory() as directory,
@@ -364,6 +364,35 @@ class AuthoringListeningTest(unittest.TestCase):
                         key["models"][0]["reports"],
                         [str(reports[0].resolve()), str(extra.resolve())],
                     )
+
+    def test_report_sample_utf8_fields_fail_before_audio_inspection(self):
+        for field in ("id", "line_id", "text", "audio"):
+            with self.subTest(field=field), TemporaryDirectory() as directory:
+                root = Path(directory)
+                reports = write_model_reports(root, item_count=1)
+                document = json.loads(reports[0].read_text())
+                document["samples"][0][field] = "invalid\ud800"
+                reports[0].write_text(json.dumps(document), encoding="utf-8")
+                with patch.object(listening_module, "_verify_pcm_audio") as inspect:
+                    with self.assertRaises(ModelListeningError):
+                        create_listening_session_from_reports(reports, root / "session")
+                inspect.assert_not_called()
+                self.assertFalse((root / "session").exists())
+
+    def test_current_trial_utf8_text_is_a_domain_error_without_mutation(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = create_listening_session_from_reports(
+                write_model_reports(root, item_count=1), root / "session"
+            )
+            document = json.loads(path.read_text())
+            document["trials"][0]["text"] = "invalid\ud800"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            before = path.read_bytes()
+            with self.assertRaises(ModelListeningError):
+                record_trial_preference(path, document["trials"][0]["trial_id"], "tie")
+            self.assertEqual(path.read_bytes(), before)
+            self.assertFalse(path.with_name("report.json").exists())
 
     def test_hidden_key_and_report_keep_explicit_model_metadata(self):
         for explicit in (False, True):
