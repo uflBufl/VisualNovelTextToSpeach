@@ -154,7 +154,7 @@ class AuthoringCliTerminalConflictsTest(unittest.TestCase):
             {"directory": "workspace", "created": False},
         )
 
-    def test_carry_io_failures_keep_cause_and_become_parser_errors(self):
+    def test_carry_io_failures_remain_raw_and_become_parser_errors(self):
         for target, arguments in (
             (
                 "carry_terminal_conflict_decisions",
@@ -171,11 +171,11 @@ class AuthoringCliTerminalConflictsTest(unittest.TestCase):
                 patch.object(terminal_cli, target, side_effect=failure),
             ):
                 with self.assertRaisesRegex(
-                    terminal_cli.TerminalConflictReviewError,
+                    PermissionError,
                     "terminal progress is unwritable",
                 ) as raised:
                     handle(create_parser().parse_args(arguments))
-                self.assertIs(raised.exception.__cause__, failure)
+                self.assertIs(raised.exception, failure)
                 output, errors = StringIO(), StringIO()
                 with (
                     redirect_stdout(output),

@@ -155,6 +155,60 @@ class AuthoringCliAudioEventsTest(unittest.TestCase):
         self.assertEqual(raised.exception.code, 2)
         self.assertIn("review authority changed", errors.getvalue())
 
+    def test_publication_io_errors_remain_raw_and_reach_the_parser(self):
+        cases = (
+            (
+                "publish_source_audio_event_review",
+                [
+                    "audio-event-review-publish",
+                    "queue.jsonl",
+                    "queue-1",
+                    "story.json",
+                    "source.wav",
+                    "--output",
+                    "review",
+                    "--source-line-id",
+                    "line-1",
+                    "--source-speaker",
+                    "speaker",
+                    "--source-event",
+                    "event",
+                    "--source-bank",
+                    "bank",
+                    "--source-media-id",
+                    "1",
+                    "--source-audio-id",
+                    "audio-1",
+                ],
+            ),
+            (
+                "publish_audio_event_composition",
+                [
+                    "audio-event-composition-publish",
+                    "review",
+                    "--output",
+                    "composition",
+                ],
+            ),
+        )
+        for target, argv in cases:
+            with self.subTest(target=target):
+                error = PermissionError("audio-event storage is read-only")
+                stdout, stderr = StringIO(), StringIO()
+                with (
+                    patch.object(audio_event_cli, target, side_effect=error),
+                    redirect_stdout(stdout),
+                    redirect_stderr(stderr),
+                ):
+                    with self.assertRaises(PermissionError) as caught:
+                        handle(create_parser().parse_args(argv))
+                    self.assertIs(caught.exception, error)
+                    with self.assertRaises(SystemExit) as exited:
+                        main(argv)
+                self.assertEqual(exited.exception.code, 2)
+                self.assertIn(str(error), stderr.getvalue())
+                self.assertEqual(stdout.getvalue(), "")
+
     def test_family_handler_rejects_an_unowned_command(self):
         with self.assertRaisesRegex(ValueError, "Unsupported audio-event command"):
             handle(argparse.Namespace(command="other"))

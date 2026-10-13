@@ -46,6 +46,7 @@ from vntts.authoring.missing_voice_reuse import MissingVoiceReuseError
 from vntts.authoring.missing_voice_reuse_binding import MissingVoiceReuseBindingError
 from vntts.authoring.missing_voice_reuse_review import MissingVoiceReuseReviewError
 from vntts.authoring.portrait_aliases import PortraitAliasError
+from vntts.authoring.publication import AtomicPublicationError
 from vntts.authoring.queue_builder import GenerationQueueBuildError
 from vntts.authoring.queue_extension import QueueExtensionError
 from vntts.authoring.reference_selection import ReferenceSelectionError
@@ -55,6 +56,8 @@ from vntts.authoring.source_reference_review import SourceReferenceReviewError
 from vntts.authoring.workbench import AuthoringWorkbenchError
 
 USER_ERRORS = (
+    OSError,
+    AtomicPublicationError,
     AudioEventReviewError,
     AudioEventCompositionError,
     AuthoringWorkbenchError,

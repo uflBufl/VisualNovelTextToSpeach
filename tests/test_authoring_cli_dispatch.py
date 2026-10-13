@@ -1,7 +1,7 @@
 import argparse
 import json
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -13,6 +13,7 @@ from vntts.authoring.cli_contract import (
     parser_contract_sha256,
 )
 from vntts.authoring.cli_dispatch import CommandFamily, dispatch_command
+from vntts.authoring.publication import AtomicPublicationError
 
 
 class AuthoringCliDispatchTest(unittest.TestCase):
@@ -103,6 +104,67 @@ class AuthoringCliDispatchTest(unittest.TestCase):
         self.assertIsNone(
             dispatch_command(argparse.Namespace(command="other"), (family,))
         )
+
+    def test_operational_failures_from_registered_families_reach_the_parser(self):
+        for argv in (
+            ["discover-legacy"],
+            ["audio-event-review-status", "review"],
+        ):
+            for error in (
+                PermissionError("authoring storage is read-only"),
+                AtomicPublicationError("atomic no-replace publication is unavailable"),
+            ):
+                with self.subTest(command=argv[0], error=type(error).__name__):
+                    handler = Mock(side_effect=error)
+                    families = tuple(
+                        CommandFamily(family.commands, handler)
+                        if argv[0] in family.commands
+                        else family
+                        for family in COMMAND_FAMILIES
+                    )
+                    output, errors = StringIO(), StringIO()
+                    with (
+                        patch("vntts.authoring.cli.COMMAND_FAMILIES", families),
+                        redirect_stdout(output),
+                        redirect_stderr(errors),
+                        self.assertRaises(SystemExit) as exited,
+                    ):
+                        main(argv)
+                    handler.assert_called_once()
+                    self.assertEqual(exited.exception.code, 2)
+                    self.assertIn(str(error), errors.getvalue())
+                    self.assertNotIn("Traceback", errors.getvalue())
+                    self.assertEqual(output.getvalue(), "")
+
+    def test_programming_errors_and_interruptions_propagate_from_registered_family(
+        self,
+    ):
+        for error in (
+            RuntimeError("unexpected state"),
+            ValueError("unexpected value"),
+            TypeError("unexpected type"),
+            KeyboardInterrupt(),
+        ):
+            with self.subTest(error=type(error).__name__):
+                handler = Mock(side_effect=error)
+                families = tuple(
+                    CommandFamily(family.commands, handler)
+                    if "discover-legacy" in family.commands
+                    else family
+                    for family in COMMAND_FAMILIES
+                )
+                output, errors = StringIO(), StringIO()
+                with (
+                    patch("vntts.authoring.cli.COMMAND_FAMILIES", families),
+                    redirect_stdout(output),
+                    redirect_stderr(errors),
+                    self.assertRaises(type(error)) as raised,
+                ):
+                    main(["discover-legacy"])
+                handler.assert_called_once()
+                self.assertIs(raised.exception, error)
+                self.assertEqual(output.getvalue(), "")
+                self.assertEqual(errors.getvalue(), "")
 
     def test_dispatch_rejects_duplicate_family_ownership(self):
         arguments = argparse.Namespace(command="duplicate")

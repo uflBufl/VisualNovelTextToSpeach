@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from vntts.authoring.publication import publication_errors
 from vntts.authoring.terminal_conflict_resolution import (
     TerminalConflictResolutionError as _TerminalConflictResolutionError,
 )
@@ -84,7 +83,6 @@ def configure_parsers(
     )
 
 
-@publication_errors(TerminalConflictReviewError)
 def handle(arguments: argparse.Namespace) -> int:
     payload: dict[str, object]
     if arguments.command == "terminal-conflict-resolution":
