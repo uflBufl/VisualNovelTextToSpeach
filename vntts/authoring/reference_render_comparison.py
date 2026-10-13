@@ -1418,9 +1418,7 @@ def _listening_arms(
         _safe_id(value.get("arm_id"), "arm ID"): value
         for value in _documents(comparison.get("arms"), "comparison arms")
     }
-    model_records = [
-        value for value in _documents(key.get("models"), "listening models")
-    ]
+    model_records = _documents(key.get("models"), "listening models")
     selected_arm_ids = [
         _safe_id(value.get("model_id"), "listening model ID") for value in model_records
     ]
