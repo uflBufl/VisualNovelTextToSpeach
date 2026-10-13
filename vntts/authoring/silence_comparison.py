@@ -149,13 +149,10 @@ def _silence_comparison_input_samples(
     for record in records:
         if not isinstance(record, dict) or set(record) != required_fields:
             raise SilenceComparisonError("Silence comparison input sample is malformed")
-        text = record["text"]
-        if (
-            not isinstance(text, str)
-            or not text
-            or text != text.strip()
-            or hashlib.sha256(text.encode("utf-8")).hexdigest() != record["text_sha256"]
-        ):
+        queue_id = _comparison_text(record["queue_id"], "input queue_id")
+        line_id = _comparison_text(record["line_id"], "input line_id")
+        text = _comparison_text(record["text"], "input text")
+        if hashlib.sha256(text.encode("utf-8")).hexdigest() != record["text_sha256"]:
             raise SilenceComparisonError(
                 "Silence comparison input text identity is invalid"
             )
@@ -173,16 +170,14 @@ def _silence_comparison_input_samples(
             raise SilenceComparisonError(
                 "Raw and segmented comparison audio must be different"
             )
-        sample = _validate_sample(
-            SilenceComparisonSample(
-                record["queue_id"],
-                record["line_id"],
-                text,
-                raw_path,
-                segmented_path,
-                raw_sha256,
-                segmented_sha256,
-            )
+        sample = SilenceComparisonSample(
+            queue_id,
+            line_id,
+            text,
+            raw_path,
+            segmented_path,
+            raw_sha256,
+            segmented_sha256,
         )
         if sample.queue_id in queue_ids:
             raise SilenceComparisonError(
@@ -676,8 +671,8 @@ def _validate_silence_comparison_samples(
     for sample in samples:
         if not isinstance(sample, dict) or set(sample) != required_sample_fields:
             raise SilenceComparisonError("Silence comparison sample is malformed")
-        queue_id = sample["queue_id"]
-        if not isinstance(queue_id, str) or not queue_id or queue_id in by_queue_id:
+        queue_id = _comparison_text(sample["queue_id"], "sample ID")
+        if queue_id in by_queue_id:
             raise SilenceComparisonError("Silence comparison sample ID is invalid")
         _validate_silence_comparison_sample(root, sample, seen, target_seconds)
         by_queue_id[queue_id] = sample
@@ -690,14 +685,9 @@ def _validate_silence_comparison_sample(
     seen: Mapping[str, str],
     target_seconds: float,
 ) -> None:
-    if (
-        not isinstance(sample["line_id"], str)
-        or not sample["line_id"]
-        or not isinstance(sample["text"], str)
-        or not sample["text"]
-        or hashlib.sha256(sample["text"].encode("utf-8")).hexdigest()
-        != sample["text_sha256"]
-    ):
+    _comparison_text(sample["line_id"], "sample identity")
+    text = _comparison_text(sample["text"], "sample identity")
+    if hashlib.sha256(text.encode("utf-8")).hexdigest() != sample["text_sha256"]:
         raise SilenceComparisonError("Silence comparison sample identity is invalid")
     _validate_silence_comparison_sample_artifacts(sample, seen)
     sample_rate = _silence_comparison_sample_rate(sample)
@@ -921,13 +911,23 @@ def _validate_sample(value: object) -> SilenceComparisonSample:
             "Silence comparison samples must be SilenceComparisonSample values"
         )
     for field in ("queue_id", "line_id", "text"):
-        text = getattr(value, field)
-        if not isinstance(text, str) or not text or text != text.strip():
-            raise SilenceComparisonError(f"Silence comparison {field} is invalid")
+        _comparison_text(getattr(value, field), field)
     for field in ("raw_audio_sha256", "segmented_audio_sha256"):
         digest = getattr(value, field)
         if digest is not None and not is_lowercase_sha256(digest):
             raise SilenceComparisonError(f"Silence comparison {field} is invalid")
+    return value
+
+
+def _comparison_text(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise SilenceComparisonError(f"Silence comparison {label} is invalid")
+    try:
+        value.encode("utf-8")
+    except UnicodeError as error:
+        raise SilenceComparisonError(
+            f"Silence comparison {label} is invalid"
+        ) from error
     return value
 
 

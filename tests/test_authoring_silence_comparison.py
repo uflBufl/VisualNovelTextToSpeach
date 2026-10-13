@@ -162,6 +162,38 @@ class AuthoringSilenceComparisonTest(unittest.TestCase):
                     read.assert_not_called()
                     self.assertFalse(output.parent.exists())
 
+    def test_invalid_unicode_identity_is_a_domain_error_at_each_public_boundary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sample = write_silence_comparison_sample(root)
+            plan = write_silence_comparison_input_plan(root, sample)
+            plan_document = json.loads(plan.read_text("utf-8"))
+            result = publish_silence_comparison((sample,), root / "comparison")
+            path = result.directory / "comparison.json"
+            document = json.loads(path.read_text("utf-8"))
+            for field in ("queue_id", "line_id", "text"):
+                with self.subTest(field=field):
+                    invalid = "Broken \ud800 identity. Still three more words."
+                    with self.assertRaisesRegex(SilenceComparisonError, "invalid"):
+                        publish_silence_comparison(
+                            (replace(sample, **{field: invalid}),), root / "unpublished"
+                        )
+                    self.assertFalse((root / "unpublished").exists())
+                    forged_plan = json.loads(json.dumps(plan_document))
+                    forged_plan["samples"][0][field] = invalid
+                    plan.write_text(json.dumps(forged_plan), "utf-8")
+                    with mock.patch.object(
+                        comparison_module, "_read_source_wav"
+                    ) as read:
+                        with self.assertRaisesRegex(SilenceComparisonError, "invalid"):
+                            load_silence_comparison_input_plan(plan)
+                        read.assert_not_called()
+                    forged = json.loads(json.dumps(document))
+                    forged["samples"][0][field] = invalid
+                    path.write_text(json.dumps(forged), "utf-8")
+                    with self.assertRaisesRegex(SilenceComparisonError, "invalid"):
+                        load_silence_comparison(result.directory)
+
     def test_racing_publication_preserves_competitor_and_uses_domain_error(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

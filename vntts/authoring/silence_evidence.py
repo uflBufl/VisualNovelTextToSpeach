@@ -45,6 +45,7 @@ def publish_silence_failure_evidence(
     _probe_pcm16_mono_bytes(wav_payload)
     if not isinstance(metadata, dict):
         raise SilenceFailureEvidenceError("Silence-failure metadata is invalid")
+    _validate_evidence_metadata(metadata)
     output.parent.mkdir(parents=True, exist_ok=True)
     with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
         wav = staging / "rejected.wav"
@@ -133,6 +134,12 @@ def _validate_evidence_metadata(metadata: object) -> None:
             raise SilenceFailureEvidenceError(
                 "Silence-failure evidence identity is malformed"
             )
+        try:
+            metadata[field].encode("utf-8")
+        except UnicodeError as error:
+            raise SilenceFailureEvidenceError(
+                "Silence-failure evidence identity is malformed"
+            ) from error
     if (
         not is_lowercase_sha256(metadata["queue_sha256"])
         or not is_lowercase_sha256(metadata["state_sha256"])
@@ -155,8 +162,17 @@ def _validate_evidence_metadata(metadata: object) -> None:
         )
         or not isinstance(state_item.get("failure"), dict)
         or state_item["failure"].get("kind") != "speech_silence"
-        or canonical_document_sha256(state_item) != metadata["state_item_sha256"]
     ):
+        raise SilenceFailureEvidenceError(
+            "Silence-failure evidence state item is malformed"
+        )
+    try:
+        state_item_sha256 = canonical_document_sha256(state_item)
+    except (TypeError, ValueError) as error:
+        raise SilenceFailureEvidenceError(
+            "Silence-failure evidence state item is malformed"
+        ) from error
+    if state_item_sha256 != metadata["state_item_sha256"]:
         raise SilenceFailureEvidenceError(
             "Silence-failure evidence state item is malformed"
         )

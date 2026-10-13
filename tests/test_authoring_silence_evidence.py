@@ -1,5 +1,6 @@
 import hashlib
 import io
+import json
 import unittest
 import wave
 from pathlib import Path
@@ -57,6 +58,68 @@ class SilenceFailureEvidenceTest(unittest.TestCase):
                 SilenceFailureEvidenceError, "Unable to read silence-failure evidence"
             ):
                 load_silence_failure_evidence(directory)
+
+    def test_malformed_metadata_is_rejected_before_publication(self):
+        cyclic = {}
+        cyclic["self"] = cyclic
+        for field, value in (
+            ("queue", "\ud800"),
+            ("state", "\ud800"),
+            ("queue_id", "\ud800"),
+            ("line_id", "\ud800"),
+            ("text", "\ud800"),
+            ("state_item", float("nan")),
+            ("state_item", float("inf")),
+            ("state_item", "\ud800"),
+            ("state_item", {"unsupported"}),
+            ("state_item", cyclic),
+        ):
+            with (
+                self.subTest(field=field, value=value),
+                TemporaryDirectory() as directory,
+            ):
+                metadata = evidence_metadata()
+                if field != "state_item":
+                    metadata[field] = value
+                else:
+                    metadata[field]["invalid"] = value
+                parent = Path(directory) / "new-parent"
+                with self.assertRaisesRegex(SilenceFailureEvidenceError, "malformed"):
+                    publish_silence_failure_evidence(
+                        parent / "evidence", wav_payload(), metadata
+                    )
+                self.assertFalse(parent.exists())
+
+    def test_malformed_metadata_preserves_loader_domain_error(self):
+        for field, value in (
+            ("queue", "\ud800"),
+            ("state", "\ud800"),
+            ("queue_id", "\ud800"),
+            ("line_id", "\ud800"),
+            ("text", "\ud800"),
+            ("state_item", float("nan")),
+            ("state_item", float("inf")),
+            ("state_item", "\ud800"),
+        ):
+            with (
+                self.subTest(field=field, value=value),
+                TemporaryDirectory() as directory,
+            ):
+                evidence = Path(directory) / "evidence"
+                publish_silence_failure_evidence(
+                    evidence, wav_payload(), evidence_metadata()
+                )
+                document = load_silence_failure_evidence(evidence)
+                metadata = document["metadata"]
+                if field != "state_item":
+                    metadata[field] = value
+                else:
+                    metadata[field]["invalid"] = value
+                (evidence / "evidence.json").write_text(
+                    json.dumps(document), encoding="utf-8"
+                )
+                with self.assertRaisesRegex(SilenceFailureEvidenceError, "malformed"):
+                    load_silence_failure_evidence(evidence)
 
     def test_staged_wav_corruption_is_rejected_without_publication(self):
         payload = wav_payload()
