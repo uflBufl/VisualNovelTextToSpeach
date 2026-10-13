@@ -1168,7 +1168,7 @@
       "path": "vntts/authoring/failure_repair.py",
       "scope": "compress_single_sentence_boundary_silence",
       "count": 1,
-      "maximum": 54
+      "maximum": 53
     },
     {
       "code": "PLR0915",

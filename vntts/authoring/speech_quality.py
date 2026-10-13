@@ -13,6 +13,7 @@ import numpy as np
 from numpy.typing import NDArray
 from vntts_artifacts.audio import Pcm16MonoWavError, read_pcm16_mono_wav
 
+from vntts.authoring.audio_frames import frame_rms
 from vntts.authoring.failure_repair import safe_sentence_segments
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.numeric_values import optional_finite_number as optional_finite_number
@@ -173,7 +174,7 @@ def _analyze_speech_frames(
         # Version 1 remains available only to validate published legacy state.
         sample_values = sample_values / 32768.0
     frame_samples = max(1, round(sample_rate * SILENCE_FRAME_MS / 1000))
-    silent = _silent_frames(sample_values, frame_samples)
+    silent = frame_rms(sample_values, frame_samples) <= 10 ** (SILENCE_DBFS / 20.0)
     active_indices = np.flatnonzero(~silent)
     frame_seconds = frame_samples / sample_rate
     return silent, active_indices, frame_seconds
@@ -218,21 +219,6 @@ def _validated_sample_values(
             "Generated speech duration does not match its samples"
         )
     return values
-
-
-def _silent_frames(
-    samples: NDArray[np.float32], frame_samples: int
-) -> NDArray[np.bool_]:
-    full_frames, tail_size = divmod(samples.size, frame_samples)
-    full_end = full_frames * frame_samples
-    # Row-wise means retain the float32 reduction used by the versioned
-    # per-frame algorithm; reduceat sums need not have the same rounding.
-    frame_rms = np.sqrt(
-        np.mean((samples[:full_end] ** 2).reshape(full_frames, frame_samples), axis=1)
-    )
-    if tail_size:
-        frame_rms = np.append(frame_rms, np.sqrt(np.mean(samples[full_end:] ** 2)))
-    return frame_rms <= 10 ** (SILENCE_DBFS / 20.0)
 
 
 def _frame_quality(

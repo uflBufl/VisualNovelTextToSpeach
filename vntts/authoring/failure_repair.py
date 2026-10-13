@@ -10,6 +10,7 @@ from typing import TypeGuard
 
 import numpy as np
 
+from vntts.authoring.audio_frames import frame_rms
 from vntts.synthesis import (
     SynthesisChunkStream,
     SynthesisCompletion,
@@ -491,13 +492,7 @@ def compress_single_sentence_boundary_silence(
         )
 
     frame_samples = max(1, round(sample_rate * frame_ms / 1000))
-    frame_rms = np.asarray(
-        [
-            np.sqrt(np.mean(samples[start : start + frame_samples] ** 2))
-            for start in range(0, len(samples), frame_samples)
-        ]
-    )
-    silent = frame_rms <= 10.0 ** (float(silence_dbfs) / 20.0)
+    silent = frame_rms(samples, frame_samples) <= 10.0 ** (float(silence_dbfs) / 20.0)
     active = np.flatnonzero(~silent)
     if not active.size:
         raise ValueError("Silence compression requires speech on both sides")

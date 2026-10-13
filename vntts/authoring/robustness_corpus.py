@@ -24,6 +24,7 @@ from vntts_artifacts import (
 )
 from vntts_artifacts.hashing import text_sha256
 
+from vntts.authoring.audio_frames import frame_rms
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
     AuthoritySnapshot,
@@ -591,13 +592,7 @@ def _analyze_text_timing_samples(
 ) -> JsonDocument:
     normalized = samples.astype(np.float64) / 32768.0
     frame_samples = max(1, round(sample_rate * 0.08))
-    frame_rms = np.asarray(
-        [
-            math.sqrt(float(np.mean(normalized[start : start + frame_samples] ** 2)))
-            for start in range(0, len(normalized), frame_samples)
-        ]
-    )
-    silent = frame_rms <= 10 ** (-45.0 / 20.0)
+    silent = frame_rms(normalized, frame_samples) <= 10 ** (-45.0 / 20.0)
     words, sentence_boundaries, clause_boundaries = _text_boundaries(text)
     pauses = _internal_pauses(
         silent,
