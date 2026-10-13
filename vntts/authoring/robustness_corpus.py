@@ -389,7 +389,7 @@ def _max_exact_active_repeat(
     for index, digest in enumerate(digests):
         if active[index]:
             for previous in positions.get(digest, ())[-16:]:
-                if previous == index:
+                if min(index - previous, block_count - index) <= best_blocks:
                     continue
                 length = 0
                 while (

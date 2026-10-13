@@ -308,6 +308,19 @@ class AuthoringRobustnessCorpusTest(unittest.TestCase):
                         ):
                             load_speech_robustness_corpus(result.directory)
 
+    def test_exact_repeat_preserves_nonoverlap_and_first_winning_lag(self):
+        block = np.repeat(np.arange(1000, 1300, dtype=np.int16), 20)
+        for samples, seconds in (
+            (np.tile(block, 2), 6.0),
+            (np.concatenate((block, block, block[:3000])), 6.0),
+            (np.full(1200, 1000, dtype=np.int16), 0.32),
+        ):
+            with self.subTest(sample_count=len(samples)):
+                self.assertEqual(
+                    robustness_corpus._max_exact_active_repeat(samples, 1000),
+                    {"seconds": seconds, "lag_seconds": seconds},
+                )
+
     def test_asr_summary_counts_and_groups_share_one_traversal(self):
         class CountedRecords(list):
             iterations = 0
