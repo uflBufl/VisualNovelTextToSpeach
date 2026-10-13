@@ -1240,6 +1240,28 @@ class AppController:
             return None
         return line
 
+    def _sequence_cursor_for_lease_locked(
+        self, lease: SequenceEventLease
+    ) -> _StoryCursor | None:
+        cursor = self.story_cursor
+        if (
+            cursor is None
+            or cursor.current_event_id != lease.event_id
+            or cursor.occurrence_id != lease.occurrence_id
+        ):
+            return None
+        return cursor
+
+    def _seal_sequence_route_locked(
+        self, cursor: _StoryCursor, lease: SequenceEventLease, route: str
+    ) -> bool:
+        existing = self.sequence_event_terminal_routes.setdefault(lease, route)
+        if existing != route:
+            cursor.desynchronize("conflicting-terminal-audio-route")
+            self._publish_live_sequence_status()
+            return False
+        return True
+
     def _mark_sequence_silence_locked(self, event_id: str) -> bool:
         cursor = self.story_cursor
         if cursor is None or cursor.current_event_id != event_id:
@@ -1248,12 +1270,7 @@ class AppController:
         if event is None or event.kind != "silent":
             return False
         lease = SequenceEventLease(event.event_id, cursor.occurrence_id)
-        existing = self.sequence_event_terminal_routes.setdefault(lease, "silence")
-        if existing != "silence":
-            cursor.desynchronize("conflicting-terminal-audio-route")
-            self._publish_live_sequence_status()
-            return False
-        return True
+        return self._seal_sequence_route_locked(cursor, lease, "silence")
 
     def _load_live_sequence_plan(self) -> bool:
         with self.story_cursor_lock:
@@ -2468,13 +2485,10 @@ class AppController:
         started_at = monotonic()
         settings = self.settings
         with self.story_cursor_lock:
-            cursor = self.story_cursor
             authorized = bool(
                 backend is self.speech_backend
                 and settings is self.settings
-                and cursor is not None
-                and cursor.current_event_id == owner_lease.event_id
-                and cursor.occurrence_id == owner_lease.occurrence_id
+                and self._sequence_cursor_for_lease_locked(owner_lease) is not None
                 and self.game_focused
                 and is_live_sequence_audio_mode(self.settings.live_sequence_mode)
             )
@@ -2522,13 +2536,10 @@ class AppController:
                 outcome = "failed"
                 self.error_handler(error)
         with self.story_cursor_lock:
-            cursor = self.story_cursor
             if outcome in {"reserved", "prepared"} and (
                 backend is not self.speech_backend
                 or settings is not self.settings
-                or cursor is None
-                or cursor.current_event_id != owner_lease.event_id
-                or cursor.occurrence_id != owner_lease.occurrence_id
+                or self._sequence_cursor_for_lease_locked(owner_lease) is None
                 or not self.game_focused
             ):
                 outcome = "stale"
@@ -2600,14 +2611,10 @@ class AppController:
         self, lease: SequenceEventLease | None, outcome: PlaybackOutcome | None
     ) -> bool:
         with self.story_cursor_lock:
-            cursor = self.story_cursor
-            if (
-                not isinstance(lease, SequenceEventLease)
-                or cursor is None
-                or cursor.current_event_id != lease.event_id
-                or cursor.occurrence_id != lease.occurrence_id
-                or cursor.state != StoryCursorState.PLAYING
-            ):
+            if not isinstance(lease, SequenceEventLease):
+                return False
+            cursor = self._sequence_cursor_for_lease_locked(lease)
+            if cursor is None or cursor.state != StoryCursorState.PLAYING:
                 return False
             successful = isinstance(outcome, PlaybackOutcome) and outcome.successful
             audible = bool(
@@ -2617,13 +2624,7 @@ class AppController:
             )
             if (successful or audible) and isinstance(outcome, PlaybackOutcome):
                 route = str(outcome.audio_source or "unknown")
-                existing = self.sequence_event_terminal_routes.setdefault(
-                    lease,
-                    route,
-                )
-                if existing != route:
-                    cursor.desynchronize("conflicting-terminal-audio-route")
-                    self._publish_live_sequence_status()
+                if not self._seal_sequence_route_locked(cursor, lease, route):
                     return False
             cursor.finish_playback(successful=successful)
             generation = (

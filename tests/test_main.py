@@ -2565,6 +2565,190 @@ class MainTest(unittest.TestCase):
             "canonical-line-integrity-failed",
         )
 
+    def _sequence_controller(self):
+        lines = tuple(
+            ChapterDialogue(
+                f"reverse1999:1:{index}",
+                "1",
+                index,
+                "Rhiannon",
+                text,
+                text_sha256(text),
+            )
+            for index, text in enumerate(
+                ("First canonical line.", "Next canonical line."), 1
+            )
+        )
+        plan = stub_live_sequence_plan(*lines)
+        plan.events["event-1"] = replace(
+            plan.events["event-1"], control="automatic", successors=("event-2",)
+        )
+        pipeline = Mock()
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                live_sequence_plan="plan.json",
+                live_sequence_mode="audio-auto",
+            ),
+            tts_factory=Mock(),
+            chapter_voice_preloader=ChapterVoicePreloader(lines),
+            live_sequence_plan_factory=Mock(return_value=plan),
+            pipeline_event_handler=pipeline,
+        )
+        return controller, lines, pipeline
+
+    def test_successor_prefetch_rejects_same_event_new_occurrence_before_or_during_work(
+        self,
+    ):
+        for reanchor_before_work in (True, False):
+            with self.subTest(reanchor_before_work=reanchor_before_work):
+                controller, lines, pipeline = self._sequence_controller()
+                backend = Mock()
+                pending = PreparedPlayback(object(), None, None, None, "test:fresh")
+                backend.prepare_playback.return_value = pending
+                controller.speech_backend = backend
+                controller.speech_executor = Mock()
+                controller.story_cursor.anchor_event("event-1")
+                lease = controller._begin_sequence_playback(
+                    SpeechChunk(
+                        1, lines[0].speaker, lines[0].text, line_id=lines[0].line_id
+                    )
+                )
+                submitted = controller.speech_executor.submit.call_args.args
+                key = submitted[1]
+                self.assertIn(key, controller.sequence_prefetch_keys)
+
+                def reanchor():
+                    with controller.story_cursor_lock:
+                        controller.story_cursor.reset("prefetch-race")
+                        controller.story_cursor.anchor_event(
+                            "event-1", "same-event-resync"
+                        )
+
+                def materialize(_prepared, *, cancellation):
+                    self.assertFalse(cancellation())
+                    reanchor()
+                    return replace(pending, generation_completed=True)
+
+                backend.materialize_prepared.side_effect = materialize
+                if reanchor_before_work:
+                    reanchor()
+                self.assertEqual(submitted[0](*submitted[1:]), "stale")
+                if reanchor_before_work:
+                    backend.prepare_playback.assert_not_called()
+                    backend.materialize_prepared.assert_not_called()
+                else:
+                    backend.materialize_prepared.assert_called_once_with(
+                        pending, cancellation=ANY
+                    )
+                self.assertNotIn(key, controller.sequence_prefetch_keys)
+                self.assertEqual(
+                    pipeline.call_args.args[0], "sequence-successor-prefetch"
+                )
+                self.assertEqual(pipeline.call_args.kwargs["outcome"], "stale")
+                self.assertEqual(
+                    controller.story_cursor.current_event_id, lease.event_id
+                )
+                self.assertGreater(
+                    controller.story_cursor.occurrence_id, lease.occurrence_id
+                )
+                self.assertEqual(controller.story_cursor.state, StoryCursorState.LOCKED)
+                self.assertEqual(controller.sequence_event_terminal_routes, {})
+                self.assertEqual(controller.sequence_advance_leases, set())
+
+    def test_terminal_audio_requires_success_or_actual_first_pcm(self):
+        for status, first_audio_ms, sealed in (
+            (PlaybackStatus.COMPLETED, None, True),
+            (PlaybackStatus.INTERRUPTED, 0.0, True),
+            (PlaybackStatus.INTERRUPTED, None, False),
+            (PlaybackStatus.INTERRUPTED, True, False),
+        ):
+            with self.subTest(status=status, first_audio_ms=first_audio_ms):
+                controller, lines, _pipeline = self._sequence_controller()
+                controller.story_cursor.anchor_event("event-1")
+                lease = controller._begin_sequence_playback(
+                    SpeechChunk(
+                        1, lines[0].speaker, lines[0].text, line_id=lines[0].line_id
+                    )
+                )
+                completed = status == PlaybackStatus.COMPLETED
+                self.assertEqual(
+                    controller._finish_sequence_playback(
+                        lease,
+                        PlaybackOutcome(
+                            status,
+                            1.0,
+                            first_audio_ms=first_audio_ms,
+                            audio_source="generated",
+                        ),
+                    ),
+                    completed,
+                )
+                self.assertEqual(
+                    controller.sequence_event_terminal_routes,
+                    {lease: "generated"} if sealed else {},
+                )
+                self.assertEqual(
+                    controller.story_cursor.reason,
+                    "playback-completed" if completed else "playback-failed",
+                )
+                if not completed:
+                    self.assertFalse(controller.story_cursor.can_auto_advance)
+
+    def test_terminal_route_conflicts_keep_the_first_route_and_desynchronize(self):
+        for silent in (True, False):
+            with self.subTest(silent=silent):
+                controller, lines, _pipeline = self._sequence_controller()
+                if silent:
+                    plan = controller.live_sequence_plan
+                    plan.events["event-1"] = replace(
+                        plan.events["event-1"], kind="silent", line_id=None
+                    )
+                    controller.story_cursor.anchor_event("event-1")
+                    lease = SequenceEventLease(
+                        "event-1", controller.story_cursor.occurrence_id
+                    )
+                    with controller.story_cursor_lock:
+                        self.assertTrue(
+                            controller._mark_sequence_silence_locked("event-1")
+                        )
+                        self.assertTrue(
+                            controller._mark_sequence_silence_locked("event-1")
+                        )
+                    self.assertEqual(
+                        controller.sequence_event_terminal_routes, {lease: "silence"}
+                    )
+                else:
+                    controller.story_cursor.anchor_event("event-1")
+                    lease = controller._begin_sequence_playback(
+                        SpeechChunk(
+                            1, lines[0].speaker, lines[0].text, line_id=lines[0].line_id
+                        )
+                    )
+                controller.sequence_event_terminal_routes[lease] = "competing-route"
+                if silent:
+                    with controller.story_cursor_lock:
+                        accepted = controller._mark_sequence_silence_locked("event-1")
+                else:
+                    accepted = controller._finish_sequence_playback(
+                        lease,
+                        PlaybackOutcome(
+                            PlaybackStatus.COMPLETED, 1.0, audio_source="game"
+                        ),
+                    )
+                self.assertFalse(accepted)
+                self.assertEqual(
+                    controller.story_cursor.state, StoryCursorState.DESYNCHRONIZED
+                )
+                self.assertEqual(
+                    controller.story_cursor.reason, "conflicting-terminal-audio-route"
+                )
+                self.assertEqual(
+                    controller.sequence_event_terminal_routes,
+                    {lease: "competing-route"},
+                )
+                self.assertFalse(controller.story_cursor.can_auto_advance)
+
     def test_stale_playback_lease_cannot_finish_a_resynced_same_event(self):
         text = "The same event is explicitly revisited."
         line = ChapterDialogue(
