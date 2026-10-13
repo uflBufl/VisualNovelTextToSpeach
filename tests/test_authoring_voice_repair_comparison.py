@@ -34,6 +34,26 @@ class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
         state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
         return fixture, workspace.directory, state_path
 
+    def test_profile_iterators_preserve_plan_identity_and_validation(self):
+        with TemporaryDirectory() as directory:
+            _, workspace, _ = self.create_rejected_workspace(Path(directory))
+            expected = build_voice_repair_comparison_plan(workspace, "Rhiannon")
+            actual = build_voice_repair_comparison_plan(
+                workspace,
+                "Rhiannon",
+                generation_profiles=iter(("stable", "natural")),
+            )
+            self.assertEqual(actual.to_dict(), expected.to_dict())
+            for profiles, message in (
+                ((), "non-empty"),
+                (("stable", "stable"), "duplicated"),
+            ):
+                with self.subTest(profiles=profiles):
+                    with self.assertRaisesRegex(VoiceRepairComparisonError, message):
+                        build_voice_repair_comparison_plan(
+                            workspace, "Rhiannon", generation_profiles=iter(profiles)
+                        )
+
     def test_captured_manifest_validates_original_reference_root(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

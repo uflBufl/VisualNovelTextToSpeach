@@ -1097,7 +1097,13 @@ def _comparison_samples(targets: Sequence[JsonObject]) -> list[str]:
 def _validated_profiles(
     provider: str, generation_profiles: Iterable[object]
 ) -> list[str]:
-    if not isinstance(generation_profiles, (list, tuple)) or not generation_profiles:
+    try:
+        generation_profiles = list(generation_profiles)
+    except TypeError as error:
+        raise VoiceRepairComparisonError(
+            "Comparison profiles must be non-empty"
+        ) from error
+    if not generation_profiles:
         raise VoiceRepairComparisonError("Comparison profiles must be non-empty")
     profiles = []
     for value in generation_profiles:
