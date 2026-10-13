@@ -1820,6 +1820,7 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
             self.status.setText("BLOCKED: voice manifest selection changed")
             return
         self.voice_controller = trusted
+        self._discard_review_playback_copy()
         self.player.setSource(QUrl.fromLocalFile(str(reference.path)))
         self.player.play()
         self._preview_active = True
