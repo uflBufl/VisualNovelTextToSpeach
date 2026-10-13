@@ -13,7 +13,7 @@ import numpy as np
 from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 
 import vntts.authoring.model_benchmark as benchmark_module
-from tests.authoring_fixtures import write_legacy_fixture
+from tests.authoring_fixtures import tree_hashes, write_legacy_fixture
 from tests.symlink_support import symlink_or_skip
 from vntts.authoring import generation_state
 from vntts.authoring.generation_lease import BulkGenerationError
@@ -775,11 +775,120 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
                 ],
             )
 
-            corpus = build_benchmark_corpus(queue, root / "corpus.json")
+            original = queue.read_bytes()
+            for alias in ("direct", "hardlink", "symlink"):
+                with self.subTest(alias=alias):
+                    output = queue if alias == "direct" else root / "alias.json"
+                    if alias == "hardlink":
+                        output.hardlink_to(queue)
+                    elif alias == "symlink":
+                        symlink_or_skip(output, queue)
+                    before = tree_hashes(root)
+                    with self.assertRaisesRegex(ModelBenchmarkError, "must differ"):
+                        build_benchmark_corpus(queue, output)
+                    self.assertEqual(tree_hashes(root), before)
+                    if alias == "symlink":
+                        self.assertTrue(output.is_symlink())
+                    if alias != "direct":
+                        output.unlink()
+            output = root / "corpus.json"
+            output.write_text("old corpus", encoding="utf-8")
+            build_benchmark_corpus(queue, output, name="first corpus")
+            corpus = build_benchmark_corpus(queue, output, name="replacement corpus")
+            self.assertEqual(json.loads(output.read_text(encoding="utf-8")), corpus)
+            self.assertEqual(queue.read_bytes(), original)
 
         self.assertEqual(corpus["samples"][0]["character"], "Voice")
         self.assertEqual(corpus["samples"][0]["line_id"], "line:any")
         self.assertEqual(corpus["samples"][0]["text_sha256"], text_hash)
+
+    def test_failure_corpus_refuses_captured_inputs_and_unselected_success_wav(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = write_legacy_fixture(root / "legacy")
+            queue = fixture["queue"]
+            original_item = json.loads(
+                queue.read_text(encoding="utf-8").splitlines()[1]
+            )
+            text = "Unresolved MOSS failure."
+            digest = hashlib.sha256(text.encode()).hexdigest()
+            queue_id = f"line:failed:{digest[:16]}"
+            write_voice_generation_queue(
+                queue,
+                {"game": "Reverse: 1999", "language": "en"},
+                [
+                    original_item,
+                    {
+                        "record_type": "generation_item",
+                        "queue_id": queue_id,
+                        "line_id": "line:failed",
+                        "text_sha256": digest,
+                        "text": text,
+                        "speaker": "Rhiannon",
+                        "voice_character": "Rhiannon",
+                        "action": "generate",
+                        "state": "pending",
+                    },
+                ],
+            )
+            state = json.loads(fixture["state"].read_text(encoding="utf-8"))
+            state["queue_sha256"] = hashlib.sha256(queue.read_bytes()).hexdigest()
+            state["active"] = None
+            state["items"][queue_id] = {
+                "status": "failed",
+                "attempts": 1,
+                "provider": "moss-tts",
+            }
+            fixture["state"].write_text(json.dumps(state), encoding="utf-8")
+            manifest = Path(fixture["job"]["voice_manifest"])
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "voices": [{"character": "Rhiannon", "speaker": "rhiannon"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            sources = [queue, fixture["state"], manifest, fixture["wav"]]
+            original = {source: source.read_bytes() for source in sources}
+
+            def create(output, name=None):
+                return build_failure_comparison_corpus(
+                    queue,
+                    fixture["state"],
+                    output,
+                    pocket_sample_size=0,
+                    control_sample_size=0,
+                    manifest_path=manifest,
+                    name=name,
+                )
+
+            for source in sources:
+                for alias in ("direct", "hardlink", "symlink"):
+                    with self.subTest(input=source.name, alias=alias):
+                        output = source if alias == "direct" else root / "alias.json"
+                        if alias == "hardlink":
+                            output.hardlink_to(source)
+                        elif alias == "symlink":
+                            symlink_or_skip(output, source)
+                        before = tree_hashes(root)
+                        with self.assertRaisesRegex(ModelBenchmarkError, "must differ"):
+                            create(output)
+                        self.assertEqual(tree_hashes(root), before)
+                        if alias == "symlink":
+                            self.assertTrue(output.is_symlink())
+                        if alias != "direct":
+                            output.unlink()
+            output = root / "corpus.json"
+            output.write_text("old corpus", encoding="utf-8")
+            create(output, "first corpus")
+            corpus = create(output, "replacement corpus")
+            self.assertEqual(json.loads(output.read_text(encoding="utf-8")), corpus)
+            self.assertEqual([sample["id"] for sample in corpus["samples"]], [queue_id])
+            self.assertEqual(
+                {source: source.read_bytes() for source in sources}, original
+            )
 
     def test_builds_exact_failure_recovery_and_control_comparison_corpus(self):
         with TemporaryDirectory() as directory:

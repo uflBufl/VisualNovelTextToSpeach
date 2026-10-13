@@ -1,5 +1,6 @@
 import contextlib
 import io
+import json
 import os
 import unittest
 from pathlib import Path
@@ -9,6 +10,7 @@ from unittest.mock import Mock, patch
 from PIL import Image, UnidentifiedImageError
 
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
+from tests.symlink_support import symlink_or_skip
 from vntts import ocr_benchmark
 from vntts.ocr import OCRResult, VoiceRegistry
 from vntts.ocr_benchmark import benchmark_ocr, main, write_report
@@ -220,6 +222,103 @@ class OCRBenchmarkTest(unittest.TestCase):
 
         self.assertEqual(report["summary"]["images"], 0)
         self.assertIsNone(report["summary"]["median_cpu_utilization_percent"])
+
+    def test_cli_refuses_report_over_input_files_before_backend_creation(self):
+        for input_name in ("dialog.png", "expectations.json", "manifest.json"):
+            for alias in ("direct", "hardlink", "symlink"):
+                with (
+                    self.subTest(input=input_name, alias=alias),
+                    TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    image = root / "dialog.png"
+                    Image.new("RGB", (10, 10), "black").save(image)
+                    expectations = root / "expectations.json"
+                    expectations.write_text("{}", encoding="utf-8")
+                    manifest = root / "manifest.json"
+                    manifest.write_text("{}", encoding="utf-8")
+                    source = root / input_name
+                    output = source if alias == "direct" else root / "report.json"
+                    if alias == "hardlink":
+                        os.link(source, output)
+                    elif alias == "symlink":
+                        symlink_or_skip(output, source)
+                    original = {
+                        path: path.read_bytes()
+                        for path in (image, expectations, manifest)
+                    }
+                    errors = io.StringIO()
+                    with (
+                        patch.object(
+                            ocr_benchmark,
+                            "find_default_voice_manifest",
+                            return_value=manifest,
+                        ),
+                        patch.object(
+                            ocr_benchmark.CharacterVoiceRegistry, "from_file"
+                        ) as registry,
+                        patch.object(ocr_benchmark, "TesseractOCRBackend") as backend,
+                        patch.object(ocr_benchmark, "benchmark_ocr") as benchmark,
+                        contextlib.redirect_stderr(errors),
+                    ):
+                        self.assertEqual(
+                            main(
+                                [
+                                    str(image),
+                                    "--expectations",
+                                    str(expectations),
+                                    "--output",
+                                    str(output),
+                                ]
+                            ),
+                            1,
+                        )
+                    self.assertIn(
+                        "Output must differ from input files", errors.getvalue()
+                    )
+                    registry.assert_not_called()
+                    backend.assert_not_called()
+                    benchmark.assert_not_called()
+                    self.assertEqual(
+                        {path: path.read_bytes() for path in original}, original
+                    )
+                    self.assertEqual(output.read_bytes(), original[source])
+
+    def test_cli_replaces_an_existing_report_with_fake_backend(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            image = root / "dialog.png"
+            Image.new("RGB", (10, 10), "black").save(image)
+            original = image.read_bytes()
+            output = root / "report.json"
+            output.write_text("old report", encoding="utf-8")
+            with (
+                patch.object(
+                    ocr_benchmark, "find_default_voice_manifest", return_value=None
+                ),
+                patch.object(
+                    ocr_benchmark, "TesseractOCRBackend", return_value=FakeOCRBackend()
+                ),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(
+                    main(
+                        [
+                            str(image),
+                            "--output",
+                            str(output),
+                            "--repeats",
+                            "1",
+                            "--warmups",
+                            "0",
+                        ]
+                    ),
+                    0,
+                )
+            self.assertEqual(
+                json.loads(output.read_text(encoding="utf-8"))["summary"]["images"], 1
+            )
+            self.assertEqual(image.read_bytes(), original)
 
     def test_cli_reports_malformed_expectations_without_traceback(self):
         with TemporaryDirectory() as temporary_directory:

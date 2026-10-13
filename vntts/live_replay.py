@@ -59,7 +59,7 @@ from vntts.live import (
 from vntts.live_sequence import LiveSequenceEvent, LiveSequencePlan, StoryCursor
 from vntts.numeric_values import optional_finite_number
 from vntts.ocr import DialogRegion
-from vntts.path_safety import open_regular_candidate
+from vntts.path_safety import ensure_separate_output, open_regular_candidate
 from vntts.playback import PlaybackOutcome, PreparedPlayback, outcome_for_prepared
 from vntts.settings import AppSettings
 from vntts.speech_backend import SpeechBackendCapabilities
@@ -2458,13 +2458,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     try:
         timeout_seconds = _replay_timeout_seconds(arguments.timeout)
+        output = arguments.output or arguments.corpus.with_suffix(".report.json")
+        corpus_path = arguments.corpus.expanduser()
+        ensure_separate_output(output, [corpus_path])
         corpus = load_live_replay_corpus(arguments.corpus)
+        inputs = [
+            corpus_path.parent.resolve() / frame_path
+            for dialogue in corpus.dialogue
+            for frame_path in dialogue.frame_paths
+        ]
+        if corpus.generated_audio_manifest is not None:
+            inputs.append(corpus.generated_audio_manifest.path)
+            inputs.extend(
+                artifact.path for artifact in corpus.generated_audio_manifest.artifacts
+            )
+        if corpus.live_sequence is not None:
+            inputs.extend(
+                (corpus.live_sequence.story_index.path, corpus.live_sequence.plan.path)
+            )
+        ensure_separate_output(output, inputs)
         report = LiveReplayRunner(
             corpus,
             timeout_seconds=timeout_seconds,
             audio_source_policy=arguments.audio_source_policy,
         ).run()
-        output = arguments.output or arguments.corpus.with_suffix(".report.json")
         atomic_write_json(output, report)
     except (OSError, TypeError, ValueError) as error:
         return cli_error(error)

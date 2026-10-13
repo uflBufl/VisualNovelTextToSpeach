@@ -41,7 +41,11 @@ from vntts.document_identity import (
 )
 from vntts.json_types import has_schema_version, is_utf8_text
 from vntts.json_types import is_json_object as _is_json_object
-from vntts.path_safety import copy_regular_file, open_regular_binary
+from vntts.path_safety import (
+    copy_regular_file,
+    ensure_separate_output,
+    open_regular_binary,
+)
 from vntts.settings import get_local_data_directory
 
 SESSION_SCHEMA = "vntts.model-listening-session"
@@ -1026,6 +1030,22 @@ def aggregate_listening_report(
     """Aggregate current preferences, optionally bound to captured input documents."""
     session_path = Path(session_path).expanduser().resolve()
     session, key = _load_listening_documents(session_path)
+    if output_path is not None:
+        inputs = [session_path, session_path.with_name(".blind-key.json")]
+        inputs.extend(
+            _within(session_path.parent, relative, "listening trial audio")
+            for trial in session["trials"]
+            for relative in trial["audio"].values()
+        )
+        inputs.extend(
+            Path(arm["source"]).expanduser().resolve()
+            for assignment in key["assignments"]
+            for arm in (assignment["a"], assignment["b"])
+            if Path(arm["source"]).expanduser().is_file()
+        )
+        if session["schema"] == LEGACY_SESSION_SCHEMA:
+            inputs.append(session_path.with_name("import.json"))
+        ensure_separate_output(output_path, inputs, error_type=ModelListeningError)
     for label, actual, expected in (
         ("session", session, expected_session),
         ("key", key, expected_key),

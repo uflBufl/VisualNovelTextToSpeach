@@ -27,7 +27,7 @@ from vntts.authoring.robustness_corpus import (
 )
 from vntts.authoring.workbench import AuthoringWorkbenchError, load_workspace_authority
 from vntts.json_types import decode_json, has_schema_version
-from vntts.path_safety import read_regular_text
+from vntts.path_safety import ensure_separate_output, read_regular_text
 
 PROGRESS_SCHEMA = "vntts.legacy-reason-review-progress"
 PROGRESS_VERSION = 1
@@ -67,6 +67,7 @@ class LegacyReasonReview:
     decision_root: Path
     items: tuple[LegacyReasonReviewItem, ...]
     known_reasons: dict[tuple[str, str, str], tuple[str, ...]]
+    input_paths: tuple[Path, ...] = ()
 
 
 def build_legacy_reason_review(
@@ -133,6 +134,14 @@ def build_legacy_reason_review(
         root,
         tuple(sorted(items, key=lambda item: (item.speaker, item.line_id))),
         known,
+        input_paths=(corpus.directory / "corpus.json",)
+        + tuple(
+            corpus.directory
+            / _required_text(artifact.get("path"), "Robustness artifact path")
+            for artifact in _object_list(
+                corpus.document.get("artifacts"), "Robustness corpus artifacts"
+            )
+        ),
     )
 
 
@@ -198,7 +207,17 @@ def write_reason_review_progress(
             if item.item_id in selections
         ],
     }
-    atomic_write_json(Path(path).expanduser(), document)
+    path = Path(path).expanduser()
+    ensure_separate_output(
+        path,
+        (
+            review.corpus_directory / "corpus.json",
+            *review.input_paths,
+            *(item.audio for item in review.items),
+        ),
+        error_type=LegacyReasonReviewError,
+    )
+    atomic_write_json(path, document)
     return document
 
 

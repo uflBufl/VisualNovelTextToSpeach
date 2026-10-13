@@ -20,6 +20,7 @@ from vntts.cleanup import attempt_cleanup, temporary_directory
 from vntts.cli import cli_error, cli_messages
 from vntts.document_identity import sha256_file
 from vntts.json_types import is_utf8_text
+from vntts.path_safety import ensure_separate_output
 from vntts.services.tts_engine import TTSEngine
 from vntts.settings import get_local_data_directory
 from vntts.speech_backend import XTTSVoiceRouterBackend
@@ -829,13 +830,16 @@ def _benchmark_backend_staged(
     }
 
 
-def write_report(report: Mapping[str, object], output_directory: PathInput) -> Path:
-    output_directory = Path(output_directory).expanduser().resolve()
-    output_directory.mkdir(parents=True, exist_ok=True)
-    backend_component = _safe_component(report["backend"], "Backend")
-    path = _contained_child(
+def _report_path(backend: object, output_directory: PathInput) -> Path:
+    backend_component = _safe_component(backend, "Backend")
+    return _contained_child(
         output_directory, f"{backend_component}.json", "Benchmark report"
     )
+
+
+def write_report(report: Mapping[str, object], output_directory: PathInput) -> Path:
+    path = _report_path(report["backend"], output_directory)
+    path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_json(path, report)
     return path
 
@@ -892,6 +896,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             load_tts_benchmark_corpus(arguments.corpus)
             if arguments.corpus is not None
             else None
+        )
+        input_paths = [
+            path
+            for path in (
+                Path(manifest).expanduser() if manifest is not None else None,
+                arguments.corpus,
+                narrator_reference,
+            )
+            if path is not None
+        ]
+        input_paths.extend(
+            reference
+            for voice in registry.unique_voices()
+            for reference in voice.references
+        )
+        ensure_separate_output(
+            _report_path(arguments.backend, arguments.output), input_paths
         )
         characters = (
             sorted({sample["character"] for sample in corpus["samples"]})
@@ -951,6 +972,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             model_id=f"{arguments.backend}/{arguments.model or 'default'}",
             seed=arguments.seed,
             backend_factory=backend_factory,
+        )
+        ensure_separate_output(
+            _report_path(report["backend"], arguments.output), input_paths
         )
         report_path = write_report(report, arguments.output)
         messages: list[str | Path] = [report_path]

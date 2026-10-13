@@ -1214,6 +1214,120 @@ class TTSBenchmarkTest(unittest.TestCase):
                 self.assertEqual(len(backend.render_requests), 1)
                 self.assertEqual(list(Path(directory).glob("*.wav")), [])
 
+    def test_cli_report_cannot_replace_inputs_before_starting_backend(self):
+        for collision in ("manifest", "corpus", "reference", "narrator"):
+            for alias in ("direct", "hardlink", "symlink"):
+                with (
+                    self.subTest(collision=collision, alias=alias),
+                    TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory).resolve()
+                    report_path = root / "pocket-tts.json"
+                    inputs = {
+                        "manifest": root / "manifest.json",
+                        "corpus": root / "corpus.json",
+                        "reference": root / "reference.wav",
+                        "narrator": root / "narrator.wav",
+                    }
+                    if alias == "direct":
+                        inputs[collision] = report_path
+                    inputs["reference"].write_bytes(b"voice reference")
+                    inputs["narrator"].write_bytes(b"narrator reference")
+                    inputs["manifest"].write_text(
+                        json.dumps(
+                            {
+                                "voices": [
+                                    {
+                                        "character": "Kamuta",
+                                        "speaker": "kamuta",
+                                        "references": [inputs["reference"].name],
+                                    }
+                                ]
+                            }
+                        )
+                    )
+                    inputs["corpus"].write_text(
+                        json.dumps(
+                            {
+                                "schema_version": 1,
+                                "samples": [
+                                    {"character": "Kamuta", "text": "Sentence"}
+                                ],
+                            }
+                        )
+                    )
+                    if alias == "hardlink":
+                        report_path.hardlink_to(inputs[collision])
+                    elif alias == "symlink":
+                        symlink_or_skip(report_path, inputs[collision])
+                    before = {path.name: path.read_bytes() for path in root.iterdir()}
+                    with (
+                        patch("vntts.tts_benchmark.benchmark_backend") as benchmark,
+                        redirect_stderr(StringIO()) as errors,
+                    ):
+                        result = main(
+                            [
+                                "--backend",
+                                "pocket-tts",
+                                "--output",
+                                str(root),
+                                "--manifest",
+                                str(inputs["manifest"]),
+                                "--corpus",
+                                str(inputs["corpus"]),
+                                "--narrator-reference",
+                                str(inputs["narrator"]),
+                            ]
+                        )
+                    self.assertEqual(result, 1)
+                    self.assertIn("must differ from input files", errors.getvalue())
+                    benchmark.assert_not_called()
+                    self.assertEqual(
+                        {path.name: path.read_bytes() for path in root.iterdir()},
+                        before,
+                    )
+                    self.assertTrue(report_path.samefile(inputs[collision]))
+                    if alias == "symlink":
+                        self.assertTrue(report_path.is_symlink())
+
+    def test_cli_replaces_unrelated_report_with_real_benchmark_results(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            reference = root / "narrator.wav"
+            reference.write_bytes(b"narrator reference")
+            report_path = root / "pocket-tts.json"
+            report_path.write_text("old report")
+            with (
+                patch(
+                    "vntts.tts_benchmark.find_default_voice_manifest", return_value=None
+                ),
+                patch(
+                    "vntts.tts_benchmark.create_backend",
+                    return_value=FakeRenderingBackend(),
+                ),
+                redirect_stdout(StringIO()),
+            ):
+                self.assertEqual(
+                    main(
+                        [
+                            "--backend",
+                            "pocket-tts",
+                            "--output",
+                            str(root),
+                            "--character",
+                            "Narrator",
+                            "--narrator-reference",
+                            str(reference),
+                        ]
+                    ),
+                    0,
+                )
+            report = json.loads(report_path.read_text())
+            self.assertEqual(report["backend"], "pocket-tts")
+            self.assertEqual(report["samples"][0]["character"], "Narrator")
+            self.assertEqual(reference.read_bytes(), b"narrator reference")
+            self.assertTrue(Path(report["samples"][0]["audio"]).is_file())
+
     def test_cli_handles_malformed_corpus_without_starting_or_publishing(self):
         errors = StringIO()
         with TemporaryDirectory() as directory:

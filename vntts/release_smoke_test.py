@@ -16,7 +16,7 @@ from vntts.ocr import (
     default_minimum_ocr_confidence,
     recognize_dialog_image_result,
 )
-from vntts.path_safety import open_regular_binary
+from vntts.path_safety import ensure_separate_output, open_regular_binary
 from vntts.services.tts_engine import TTSEngine
 from vntts.settings import get_local_data_directory
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
@@ -77,13 +77,16 @@ def configure_release_smoke_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--release-smoke-test-auto-advance-expected-text")
 
 
-def _write_report(report: SmokeReport, report_path: PathInput | None) -> Path:
+def _report_destination(
+    report_path: PathInput | None, image_path: PathInput | None
+) -> Path:
     report_path = (
         get_local_data_directory() / "release-smoke-test.json"
         if report_path is None
         else Path(report_path).expanduser()
     )
-    atomic_write_json(report_path, report)
+    if image_path:
+        ensure_separate_output(report_path, [Path(image_path).expanduser()])
     return report_path
 
 
@@ -102,6 +105,7 @@ def run_release_smoke_test(
     auto_advance: Callable[[], bool] | None = None,
     auto_advance_timeout_seconds: float = default_auto_advance_timeout_seconds,
 ) -> CLIReportResult:
+    report_path = _report_destination(report_path, image_path)
     checks: list[SmokeReport] = []
     recognized_text = ""
     recognized_speaker = ""
@@ -131,7 +135,6 @@ def run_release_smoke_test(
                 Image.open(stream) as screenshot,
             ):
                 image = default_dialog_region.crop(screenshot.convert("RGB"))
-            capture_source = str(image_path)
         else:
             if capture is None:
                 from vntts.dialog_capture import capture_dialog
@@ -141,12 +144,11 @@ def run_release_smoke_test(
                 save_screenshot=False,
                 capture_target=WindowCaptureTarget(window_title),
             )
-            capture_source = f"window:{window_title}"
         checks.append(
             {
                 "name": "Dialog capture",
                 "status": "ok",
-                "message": capture_source,
+                "message": str(image_path or f"window:{window_title}"),
             }
         )
 
@@ -278,7 +280,8 @@ def run_release_smoke_test(
         "auto_advance_controller": "AppController._auto_advance_dialog",
         "checks": checks,
     }
-    return CLIReportResult(successful, _write_report(report, report_path))
+    atomic_write_json(report_path, report)
+    return CLIReportResult(successful, report_path)
 
 
 def _production_auto_advance(window_title: str) -> bool:

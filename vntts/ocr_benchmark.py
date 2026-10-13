@@ -15,7 +15,11 @@ from vntts.cli import cli_error, cli_messages
 from vntts.json_types import decode_json, is_json_object
 from vntts.ocr import VoiceRegistry
 from vntts.ocr_backend import OCRBackend, RapidOCRBackend, TesseractOCRBackend
-from vntts.path_safety import open_regular_binary, read_regular_text
+from vntts.path_safety import (
+    ensure_separate_output,
+    open_regular_binary,
+    read_regular_text,
+)
 from vntts.settings import get_local_data_directory
 from vntts.voices import CharacterVoiceRegistry, find_default_voice_manifest
 
@@ -273,6 +277,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     try:
         manifest = find_default_voice_manifest()
+        inputs = [image.expanduser().resolve() for image in arguments.images]
+        if arguments.expectations is not None:
+            inputs.append(arguments.expectations)
+        if manifest is not None:
+            inputs.append(manifest.expanduser().resolve())
+        ensure_separate_output(arguments.output.expanduser().resolve(), inputs)
         registry = CharacterVoiceRegistry.from_file(manifest) if manifest else None
         backend = (
             RapidOCRBackend()

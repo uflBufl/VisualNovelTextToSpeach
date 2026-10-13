@@ -18,7 +18,7 @@ from numpy.typing import NDArray
 
 from vntts.cli import cli_error, cli_messages
 from vntts.numeric_values import optional_finite_scalar
-from vntts.path_safety import read_regular_bytes
+from vntts.path_safety import ensure_separate_output, read_regular_bytes
 
 
 class ReferenceQualityReport(TypedDict):
@@ -246,6 +246,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     try:
+        ensure_separate_output(
+            arguments.output, (path.expanduser() for path in arguments.reference)
+        )
         report = analyze_reference_set(arguments.reference)
         atomic_write_json(arguments.output, report)
     except (OSError, TypeError, ValueError) as error:

@@ -3,7 +3,7 @@
 import os
 import shutil
 import stat
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from io import BufferedReader, TextIOWrapper, text_encoding
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
@@ -65,6 +65,20 @@ def copy_regular_file(
         shutil.copyfileobj(original, output)
     if preserve_metadata:
         shutil.copystat(source, destination)
+
+
+def ensure_separate_output(
+    output: str | Path,
+    inputs: Iterable[str | Path],
+    *,
+    error_type: type[Exception] = ValueError,
+) -> None:
+    """Refuse a report destination that aliases an existing input file."""
+    output = Path(output)
+    if output.exists() and any(
+        Path(source).exists() and output.samefile(source) for source in inputs
+    ):
+        raise error_type(f"Output must differ from input files: {output}")
 
 
 def no_replace_destination(value: str | Path) -> Path:
@@ -169,6 +183,7 @@ __all__ = [
     "contained_path",
     "contained_regular_file",
     "copy_regular_file",
+    "ensure_separate_output",
     "no_replace_destination",
     "open_regular_candidate",
     "open_regular_binary",

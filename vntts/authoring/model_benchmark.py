@@ -49,7 +49,11 @@ from vntts.document_identity import (
 )
 from vntts.json_types import decode_json, has_schema_version, is_utf8_text
 from vntts.json_types import is_json_object as _is_json_document
-from vntts.path_safety import read_regular_bytes, read_regular_text
+from vntts.path_safety import (
+    ensure_separate_output,
+    read_regular_bytes,
+    read_regular_text,
+)
 from vntts.settings import get_local_data_directory
 from vntts.speech_backend_contract import RenderableBackend, is_renderable_backend
 from vntts.speech_backend_runtime import shutdown_speech_backend
@@ -216,6 +220,7 @@ def build_benchmark_corpus(
         "samples": samples,
     }
     output_path = Path(output_path)
+    ensure_separate_output(output_path, [queue.path], error_type=ModelBenchmarkError)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_json(output_path, document, sort_keys=True)
     return document
@@ -259,6 +264,20 @@ def build_failure_comparison_corpus(
     )
     _verify_failure_corpus_sources(capture, voice_context)
     output_path = Path(output_path).expanduser().resolve()
+    inputs = [capture.queue_path, capture.state_path]
+    if voice_context is not None:
+        inputs.append(voice_context.path)
+    for result in _json_document(
+        capture.state.get("items"), "Generation state items"
+    ).values():
+        if _is_json_document(result) and result.get("status") in (
+            "generated",
+            "approved",
+        ):
+            audio = result.get("path")
+            if isinstance(audio, str):
+                inputs.append(capture.state_path.parent / audio)
+    ensure_separate_output(output_path, inputs, error_type=ModelBenchmarkError)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_json(output_path, document, sort_keys=True)
     return document

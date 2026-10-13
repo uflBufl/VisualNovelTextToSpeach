@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 from PIL import Image
 
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
+from tests.symlink_support import symlink_or_skip
 from vntts import release_smoke_test
 from vntts.ocr import OCRResult
 from vntts.release_smoke_test import run_release_smoke_test
@@ -64,12 +65,52 @@ class ReleaseSmokeTest(unittest.TestCase):
         self.assertIn("wanted to go home", report["text"])
         engine.speak.assert_called_once_with(report["text"])
 
+    def test_report_cannot_replace_image_before_ocr_or_speech(self):
+        for alias in ("direct", "hardlink", "symlink", "default"):
+            with self.subTest(alias=alias), TemporaryDirectory() as directory:
+                root = Path(directory)
+                image = root / (
+                    "release-smoke-test.json" if alias == "default" else "dialog.png"
+                )
+                Image.new("RGB", (20, 10), "white").save(image, format="PNG")
+                original = image.read_bytes()
+                output = (
+                    image if alias in {"direct", "default"} else root / "report.json"
+                )
+                if alias == "hardlink":
+                    output.hardlink_to(image)
+                elif alias == "symlink":
+                    symlink_or_skip(output, image)
+                recognize, engine_factory = Mock(), Mock()
+                with (
+                    patch.object(
+                        release_smoke_test,
+                        "get_local_data_directory",
+                        return_value=root,
+                    ),
+                    self.assertRaisesRegex(ValueError, "must differ from input files"),
+                ):
+                    run_release_smoke_test(
+                        image_path=image,
+                        report_path=None if alias == "default" else output,
+                        recognize=recognize,
+                        engine_factory=engine_factory,
+                    )
+                recognize.assert_not_called()
+                engine_factory.assert_not_called()
+                self.assertEqual(image.read_bytes(), original)
+                self.assertTrue(output.samefile(image))
+                if alias == "symlink":
+                    self.assertTrue(output.is_symlink())
+
     def test_static_image_runs_ocr_synthesis_and_audio_playback(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             image_path = root / "dialog.png"
             report_path = root / "report.json"
             Image.new("RGB", (1000, 800), "white").save(image_path)
+            original = image_path.read_bytes()
+            report_path.write_text("old report")
             recognize = Mock(
                 return_value=OCRResult(
                     "Marcus",
@@ -96,6 +137,7 @@ class ReleaseSmokeTest(unittest.TestCase):
             self.assertEqual(result.exit_code, 0)
             self.assertEqual(written_path, report_path)
             self.assertTrue(report["success"])
+            self.assertEqual(image_path.read_bytes(), original)
             self.assertEqual(report["speaker"], "Marcus")
             self.assertEqual(report["confidence"], 94.0)
             engine_factory.assert_called_once_with(model_name="tts_models/en/vctk/vits")

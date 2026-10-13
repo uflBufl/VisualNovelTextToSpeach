@@ -1,10 +1,14 @@
+import json
 import unittest
 import wave
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import numpy as np
 
+from tests.symlink_support import symlink_or_skip
 from vntts.reference_quality import (
     analyze_reference,
     analyze_reference_bytes,
@@ -170,6 +174,68 @@ class ReferenceQualityTest(unittest.TestCase):
 
         self.assertEqual(report["objective_ranking"], [2, 1])
         self.assertIn("blinded listening comparison", report["selection_policy"])
+
+    def test_cli_report_cannot_replace_any_input(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            references = [root / "first.wav", root / "second.wav"]
+            for path in references:
+                write_wav(path, self.tone(2000))
+            original = {path: path.read_bytes() for path in references}
+            for output in references:
+                with self.subTest(output=output), redirect_stderr(StringIO()) as errors:
+                    result = main([*map(str, references), "--output", str(output)])
+                    self.assertEqual(result, 1)
+                    self.assertIn("must differ from input files", errors.getvalue())
+                    self.assertEqual({p: p.read_bytes() for p in references}, original)
+            report_path = root / "report.json"
+            with redirect_stdout(StringIO()):
+                self.assertEqual(
+                    main([*map(str, references), "--output", str(report_path)]), 0
+                )
+            self.assertEqual(
+                json.loads(report_path.read_text()), analyze_reference_set(references)
+            )
+
+    def test_cli_report_rejects_input_aliases_without_replacing_them(self):
+        for alias in ("hardlink", "file-symlink", "directory-symlink"):
+            with self.subTest(alias=alias), TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "input.wav"
+                write_wav(source, self.tone(2000))
+                original = source.read_bytes()
+                output = root / "report.json"
+                if alias == "hardlink":
+                    output.hardlink_to(source)
+                elif alias == "file-symlink":
+                    symlink_or_skip(output, source)
+                else:
+                    directory_alias = root / "alias"
+                    symlink_or_skip(directory_alias, root, target_is_directory=True)
+                    output = directory_alias / source.name
+                with redirect_stderr(StringIO()) as errors:
+                    self.assertEqual(main([str(source), "--output", str(output)]), 1)
+                self.assertIn("must differ from input files", errors.getvalue())
+                self.assertEqual(source.read_bytes(), original)
+                self.assertTrue(output.samefile(source))
+                if alias == "file-symlink":
+                    self.assertTrue(output.is_symlink())
+
+    def test_cli_can_replace_an_existing_report(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "input.wav"
+            write_wav(source, self.tone(2000))
+            original = source.read_bytes()
+            output = root / "report.json"
+            output.write_text("old report")
+            for _ in range(2):
+                with redirect_stdout(StringIO()):
+                    self.assertEqual(main([str(source), "--output", str(output)]), 0)
+                self.assertEqual(
+                    json.loads(output.read_text()), analyze_reference_set([source])
+                )
+                self.assertEqual(source.read_bytes(), original)
 
     def test_cli_returns_failure_for_an_invalid_wave(self):
         with TemporaryDirectory() as temporary_directory:

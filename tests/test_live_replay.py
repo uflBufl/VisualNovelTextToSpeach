@@ -1,9 +1,10 @@
 import hashlib
 import json
+import os
 import unittest
 import wave
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -1385,6 +1386,112 @@ class LiveReplayTest(unittest.TestCase):
                 self.assertTrue(any("timed out" in error for error in report["errors"]))
             finally:
                 release.set()
+
+    def test_cli_refuses_reports_over_loaded_inputs_before_replay(self):
+        with TemporaryDirectory() as directory:
+            path = write_sequence_replay_corpus(
+                directory,
+                mode="shadow",
+                story_lines=[
+                    {
+                        "line_id": "story:1",
+                        "chapter": "1",
+                        "sequence": 1,
+                        "speaker": "Rhiannon",
+                        "text": "A generated line.",
+                    }
+                ],
+                events=[
+                    {
+                        "event_id": "event-1",
+                        "sequence": 1,
+                        "kind": "speech",
+                        "control": "terminal",
+                        "successors": [],
+                        "line_id": "story:1",
+                    }
+                ],
+                dialogue_line_ids=("story:1",),
+                expected_counts={
+                    "ocr_calls": 1,
+                    "bounded_recoveries": 0,
+                    "key_dispatch_attempts": 0,
+                    "confirmed_key_dispatches": 0,
+                },
+                generated_line_id="story:1",
+            )
+            root = path.parent
+            sources = [
+                path,
+                root / "sequence-0-0.png",
+                root / "sequence-generated.json",
+                root / "sequence-generated.wav",
+                root / "story.jsonl",
+                root / "live-sequence.json",
+            ]
+            original = {source: source.read_bytes() for source in sources}
+            for source in sources:
+                for alias in ("direct", "hardlink", "symlink"):
+                    with self.subTest(input=source.name, alias=alias):
+                        output = source if alias == "direct" else root / "report.json"
+                        if alias == "hardlink":
+                            os.link(source, output)
+                        elif alias == "symlink":
+                            symlink_or_skip(output, source)
+                        errors = StringIO()
+                        with (
+                            patch("vntts.live_replay.LiveReplayRunner") as runner,
+                            redirect_stderr(errors),
+                        ):
+                            self.assertEqual(
+                                main([str(path), "--output", str(output)]), 1
+                            )
+                        self.assertIn(
+                            "Output must differ from input files", errors.getvalue()
+                        )
+                        runner.assert_not_called()
+                        self.assertEqual(
+                            {item: item.read_bytes() for item in sources}, original
+                        )
+                        self.assertEqual(output.read_bytes(), original[source])
+                        if alias != "direct":
+                            output.unlink()
+
+    def test_cli_refuses_default_report_alias_of_loaded_frame(self):
+        with TemporaryDirectory() as directory:
+            path = self.create_corpus(directory)
+            image = path.parent / "first.png"
+            original = image.read_bytes()
+            output = path.with_suffix(".report.json")
+            os.link(image, output)
+            with (
+                patch("vntts.live_replay.LiveReplayRunner") as runner,
+                redirect_stderr(StringIO()),
+            ):
+                self.assertEqual(main([str(path)]), 1)
+            runner.assert_not_called()
+            self.assertEqual(image.read_bytes(), original)
+            self.assertEqual(output.read_bytes(), original)
+
+    def test_cli_replaces_an_existing_report(self):
+        with TemporaryDirectory() as directory:
+            path = self.create_corpus(directory)
+            original = path.read_bytes()
+            output = path.parent / "report.json"
+            output.write_text("old report", encoding="utf-8")
+            with (
+                patch(
+                    "vntts.live_replay.LiveReplayRunner.run",
+                    return_value={"successful": True},
+                ) as run,
+                redirect_stdout(StringIO()),
+            ):
+                self.assertEqual(main([str(path), "--output", str(output)]), 0)
+            run.assert_called_once()
+            self.assertEqual(
+                json.loads(output.read_text(encoding="utf-8")), {"successful": True}
+            )
+            self.assertEqual(path.read_bytes(), original)
 
     def test_cli_reports_output_publication_failure(self):
         with TemporaryDirectory() as temporary_directory:

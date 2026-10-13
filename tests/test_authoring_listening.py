@@ -655,6 +655,96 @@ class AuthoringListeningTest(unittest.TestCase):
             self.assertFalse(gate["armed"], "regular file must be swapped at open")
             listening_module._probe_supported_wav(path)
 
+    def test_aggregation_refuses_reports_over_admitted_inputs(self):
+        for kind in ("current", "legacy"):
+            with self.subTest(kind=kind), TemporaryDirectory() as directory:
+                root = Path(directory)
+                if kind == "current":
+                    session = create_listening_session_from_reports(
+                        write_model_reports(root, item_count=1),
+                        root / "session",
+                        seed=5,
+                    )
+                else:
+                    session = (
+                        import_listening_session(
+                            write_listening_fixture(root), root / "app-data"
+                        ).destination
+                        / "session.json"
+                    )
+                document = json.loads(session.read_text(encoding="utf-8"))
+                key_path = session.with_name(".blind-key.json")
+                key = json.loads(key_path.read_text(encoding="utf-8"))
+                inputs = [session, key_path]
+                inputs.extend(
+                    session.parent / relative
+                    for trial in document["trials"]
+                    for relative in trial["audio"].values()
+                )
+                inputs.extend(
+                    Path(assignment[side]["source"])
+                    for assignment in key["assignments"]
+                    for side in ("a", "b")
+                )
+                if kind == "legacy":
+                    inputs.append(session.with_name("import.json"))
+                original = {path: path.read_bytes() for path in inputs}
+                for source in inputs:
+                    for alias in ("direct", "hardlink", "symlink"):
+                        with self.subTest(input=source.name, alias=alias):
+                            output = (
+                                source if alias == "direct" else root / "output.json"
+                            )
+                            if alias == "hardlink":
+                                os.link(source, output)
+                            elif alias == "symlink":
+                                symlink_or_skip(output, source)
+                            with (
+                                patch.object(
+                                    listening_module, "atomic_write_json"
+                                ) as write,
+                                self.assertRaisesRegex(
+                                    ModelListeningError, "Output must differ"
+                                ),
+                            ):
+                                aggregate_listening_report(session, output)
+                            write.assert_not_called()
+                            self.assertEqual(
+                                {path: path.read_bytes() for path in inputs}, original
+                            )
+                            self.assertEqual(output.read_bytes(), original[source])
+                            if alias != "direct":
+                                output.unlink()
+
+    def test_report_replacement_preserves_inputs_without_optional_sources(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = create_listening_session_from_reports(
+                write_model_reports(root, item_count=1), root / "session", seed=5
+            )
+            key_path = session.with_name(".blind-key.json")
+            key = json.loads(key_path.read_text(encoding="utf-8"))
+            for assignment in key["assignments"]:
+                for side in ("a", "b"):
+                    Path(assignment[side]["source"]).unlink()
+            document = json.loads(session.read_text(encoding="utf-8"))
+            inputs = [
+                session,
+                key_path,
+                *(
+                    session.parent / path
+                    for path in document["trials"][0]["audio"].values()
+                ),
+            ]
+            original = {path: path.read_bytes() for path in inputs}
+            output = session.with_name("report.json")
+            output.write_text("old report", encoding="utf-8")
+            first = aggregate_listening_report(session, output)
+            second = aggregate_listening_report(session, output)
+            self.assertEqual(json.loads(output.read_text(encoding="utf-8")), second)
+            self.assertEqual(first["completed_trials"], second["completed_trials"])
+            self.assertEqual({path: path.read_bytes() for path in inputs}, original)
+
     def test_creates_deterministic_blind_trials_without_public_model_names(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
