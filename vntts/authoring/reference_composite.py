@@ -316,7 +316,7 @@ def _load_composite_review_sources(
         ) from error
     if hashlib.sha256(report_payload).hexdigest() != report_sha256:
         raise ReferenceCompositeError("Source candidate report changed")
-    group = _matching_group(report, _ledger_identity(inputs.ledger))
+    group = _matching_group(report, _composite_identity(inputs.ledger))
     affected = group.get("affected_portrait_line_count") if group else None
     if isinstance(affected, bool) or not isinstance(affected, int) or affected <= 0:
         raise ReferenceCompositeError("Composite affected story-line count is invalid")
@@ -381,11 +381,11 @@ def _read_json(path: Path) -> tuple[bytes, object]:
     return payload, value
 
 
-def _ledger_identity(ledger: JsonObject) -> tuple[object, object, object]:
+def _composite_identity(record: JsonObject) -> tuple[object, object, object]:
     return (
-        ledger.get("character"),
-        ledger.get("portrait"),
-        ledger.get("source_bank"),
+        record.get("character"),
+        record.get("portrait"),
+        record.get("source_bank"),
     )
 
 
@@ -401,13 +401,7 @@ def _matching_group(
         (
             value
             for value in groups
-            if isinstance(value, dict)
-            and (
-                value.get("character"),
-                value.get("portrait"),
-                value.get("source_bank"),
-            )
-            == identity
+            if isinstance(value, dict) and _composite_identity(value) == identity
         ),
         None,
     )
@@ -525,20 +519,12 @@ def _load_composite_selection(
     selected = [
         candidate
         for candidate in candidates
-        if isinstance(candidate, dict)
-        and (
-            candidate.get("character"),
-            candidate.get("portrait"),
-            candidate.get("source_bank"),
-        )
-        == identity
+        if isinstance(candidate, dict) and _composite_identity(candidate) == identity
     ]
     matching_groups = [
         group
         for group in groups
-        if isinstance(group, dict)
-        and (group.get("character"), group.get("portrait"), group.get("source_bank"))
-        == identity
+        if isinstance(group, dict) and _composite_identity(group) == identity
     ]
     if len(matching_groups) != 1 or len(selected) < 2:
         raise ReferenceCompositeError(
