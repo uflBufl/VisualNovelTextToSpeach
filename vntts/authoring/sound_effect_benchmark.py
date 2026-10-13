@@ -299,11 +299,11 @@ def _render_sample(
     torch_module: object,
     clock: Callable[[], float],
 ) -> dict[str, object]:
-    cuda = getattr(torch_module, "cuda")
-    if callable(getattr(cuda, "reset_peak_memory_stats", None)):
-        cuda.reset_peak_memory_stats()
-    started = clock()
     try:
+        cuda = getattr(torch_module, "cuda")
+        if callable(getattr(cuda, "reset_peak_memory_stats", None)):
+            cuda.reset_peak_memory_stats()
+        started = clock()
         audio = pipeline(
             prompt=sample["prompt"],
             seconds=sample["seconds"],
@@ -316,19 +316,19 @@ def _render_sample(
             cuda.synchronize()
         elapsed = clock() - started
         pcm = _mono_pcm(audio)
+        filename = f"{sample['id']}-seed-{seed}.wav"
+        path = audio_directory / filename
+        _write_pcm16_mono(path, pcm, sample_rate)
+        payload = read_regular_bytes(path)
+        peak_memory = (
+            int(cuda.max_memory_allocated())
+            if callable(getattr(cuda, "max_memory_allocated", None))
+            else None
+        )
     except Exception as error:
         raise SoundEffectBenchmarkError(
             f"Sound-effect render failed for {sample['id']} seed {seed}: {error}"
         ) from error
-    filename = f"{sample['id']}-seed-{seed}.wav"
-    path = audio_directory / filename
-    _write_pcm16_mono(path, pcm, sample_rate)
-    payload = read_regular_bytes(path)
-    peak_memory = (
-        int(cuda.max_memory_allocated())
-        if callable(getattr(cuda, "max_memory_allocated", None))
-        else None
-    )
     absolute = np.abs(pcm)
     return {
         **sample,

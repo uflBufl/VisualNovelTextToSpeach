@@ -359,6 +359,68 @@ class SoundEffectBenchmarkTest(unittest.TestCase):
 
             self.assertFalse(output.exists())
 
+    def test_cuda_metric_failures_preserve_context_and_allow_retry(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = root / "corpus.json"
+            write_corpus(corpus)
+            for metric in ("reset_peak_memory_stats", "max_memory_allocated"):
+                with self.subTest(metric=metric):
+                    output = root / metric
+                    torch = FakeTorch()
+                    pipeline = FakePipeline()
+                    failure = RuntimeError(f"{metric} failed")
+                    with (
+                        patch.object(torch.cuda, metric, side_effect=failure),
+                        self.assertRaisesRegex(
+                            SoundEffectBenchmarkError,
+                            "Sound-effect render failed for gasp seed 7: "
+                            f"{metric} failed",
+                        ) as caught,
+                    ):
+                        benchmark_sound_effects(
+                            corpus,
+                            output,
+                            seeds=(7,),
+                            torch_module=torch,
+                            pipeline_factory=lambda *args, **kwargs: pipeline,
+                        )
+                    self.assertIs(caught.exception.__cause__, failure)
+                    self.assertEqual(
+                        len(pipeline.calls),
+                        0 if metric == "reset_peak_memory_stats" else 1,
+                    )
+                    self.assertFalse(output.exists())
+                    self.assertEqual(list(root.glob(f".{output.name}-*")), [])
+                    report = benchmark_sound_effects(
+                        corpus,
+                        output,
+                        seeds=(7,),
+                        torch_module=torch,
+                        pipeline_factory=lambda *args, **kwargs: pipeline,
+                    )
+                    self.assertEqual(
+                        report["samples"][0]["peak_cuda_memory_bytes"], 4000
+                    )
+                    self.assertTrue((output / "audio/gasp-seed-7.wav").is_file())
+
+    def test_missing_optional_cuda_metrics_still_publish(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = root / "corpus.json"
+            write_corpus(corpus)
+            torch = FakeTorch()
+            torch.cuda.reset_peak_memory_stats = None
+            torch.cuda.max_memory_allocated = None
+            report = benchmark_sound_effects(
+                corpus,
+                root / "output",
+                seeds=(0,),
+                torch_module=torch,
+                pipeline_factory=lambda *args, **kwargs: FakePipeline(),
+            )
+            self.assertIsNone(report["samples"][0]["peak_cuda_memory_bytes"])
+
     def test_unavailable_publication_preserves_cause_and_allows_retry(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
