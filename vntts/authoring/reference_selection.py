@@ -62,7 +62,6 @@ class _ManifestSnapshot(TypedDict):
     entry_index: int
     character: str
     candidates: list[_ReferenceCandidate]
-    report: ReferenceCandidatesReport
 
 
 class ReferenceSelectionError(ValueError):
@@ -92,7 +91,31 @@ def inspect_voice_reference_candidates(
 ) -> ReferenceCandidatesReport:
     """Return objective metrics over one read-once manifest/reference snapshot."""
     snapshot = _capture_manifest(manifest_path, character)
-    return snapshot["report"]
+    candidates = snapshot["candidates"]
+    ranking = rank_reference_quality(
+        [candidate["analysis"] for candidate in candidates]
+    )
+    return {
+        "schema": "vntts.authoring-reference-candidates",
+        "schema_version": 1,
+        "manifest": str(snapshot["manifest_path"]),
+        "manifest_sha256": snapshot["manifest_sha256"],
+        "character": snapshot["character"],
+        "references": [
+            {
+                **value["analysis"],
+                "reference_number": candidate_index + 1,
+                "path": value["relative"],
+            }
+            for candidate_index, value in enumerate(candidates)
+        ],
+        "objective_ranking": [value + 1 for value in ranking],
+        "manual_review_required": [
+            "speaker similarity",
+            "music or background contamination",
+            "spoken content and pronunciation",
+        ],
+    }
 
 
 def select_voice_reference(
@@ -324,38 +347,13 @@ def _capture_manifest(manifest_path: PathInput, character: str) -> _ManifestSnap
                 "analysis": analysis,
             }
         )
-    ranking = rank_reference_quality(
-        [candidate["analysis"] for candidate in candidates]
-    )
-    report: ReferenceCandidatesReport = {
-        "schema": "vntts.authoring-reference-candidates",
-        "schema_version": 1,
-        "manifest": str(manifest_path),
-        "manifest_sha256": hashlib.sha256(payload).hexdigest(),
-        "character": entry.character,
-        "references": [
-            {
-                **value["analysis"],
-                "reference_number": candidate_index + 1,
-                "path": value["relative"],
-            }
-            for candidate_index, value in enumerate(candidates)
-        ],
-        "objective_ranking": [value + 1 for value in ranking],
-        "manual_review_required": [
-            "speaker similarity",
-            "music or background contamination",
-            "spoken content and pronunciation",
-        ],
-    }
     return {
         "manifest_path": manifest_path,
-        "manifest_sha256": report["manifest_sha256"],
+        "manifest_sha256": hashlib.sha256(payload).hexdigest(),
         "document": document,
         "entry_index": index,
         "character": entry.character,
         "candidates": candidates,
-        "report": report,
     }
 
 
