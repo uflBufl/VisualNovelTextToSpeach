@@ -110,7 +110,16 @@ def create_audio_event_projection_fallback_workspace(
             staged = _stage_projection(selection, staging)
             workspace = _mutate_projection_state(selection, identity, staged)
             _validate_staged_projection(staging, staged, workspace)
-            _publish_projection(selection, identity, staging, staged.snapshots)
+            publish_single_base_successor(
+                staging,
+                identity.destination,
+                selection.base_directory,
+                selection.queue_sha256,
+                staged.snapshots,
+                label="Audio-event projection",
+                publish_label="audio-event projection",
+                error_type=AuthoringWorkbenchError,
+            )
     except (BulkGenerationError, OSError, ValueError) as error:
         raise AuthoringWorkbenchError(str(error)) from error
     return WorkspaceCreationResult(identity.destination, True)
@@ -377,27 +386,6 @@ def _validate_staged_projection(
     load_generation_state(
         staged.output / "generation-state.json", staging / "queue.jsonl"
     )
-
-
-def _publish_projection(
-    selection: _ProjectionSelection,
-    identity: _ProjectionIdentity,
-    staging: Path,
-    snapshots: list[tuple[Path, str]],
-) -> None:
-    try:
-        publish_single_base_successor(
-            staging,
-            identity.destination,
-            selection.base_directory,
-            selection.queue_sha256,
-            snapshots,
-            label="Audio-event projection",
-            publish_label="audio-event projection",
-            error_type=AuthoringWorkbenchError,
-        )
-    except BulkGenerationError as error:
-        raise AuthoringWorkbenchError(str(error)) from error
 
 
 def validate_audio_event_projection_fallback_workspace(

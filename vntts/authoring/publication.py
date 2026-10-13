@@ -79,26 +79,32 @@ def publish_single_base_successor(
     error_type: type[Exception],
 ) -> None:
     """Publish one immutable successor while its source authority is stable."""
-    from vntts.authoring.generation_lease import process_is_alive
+    from vntts.authoring.generation_lease import BulkGenerationError, process_is_alive
     from vntts.document_identity import file_sha256
 
     output = base_directory / "generated-audio"
-    with generation_publication_leases(
-        ((output, queue_sha256),), process_checker=process_is_alive
-    ) as leases:
-        if any(output.rglob("*.partial.wav")):
-            raise error_type(f"{label} base became active")
-        for path, digest in snapshots:
-            if not path.is_file() or file_sha256(path, error_type=OSError) != digest:
-                raise error_type(f"{label} authority changed before publication")
-        leases[0].assert_owned()
-        try:
-            rename_directory_no_replace(staging, destination)
-        except (AtomicPublicationError, OSError) as error:
-            raise error_type(
-                f"Unable to publish {publish_label} workspace: {error}"
-            ) from error
-        leases[0].mark_committed()
+    try:
+        with generation_publication_leases(
+            ((output, queue_sha256),), process_checker=process_is_alive
+        ) as leases:
+            if any(output.rglob("*.partial.wav")):
+                raise error_type(f"{label} base became active")
+            for path, digest in snapshots:
+                if (
+                    not path.is_file()
+                    or file_sha256(path, error_type=OSError) != digest
+                ):
+                    raise error_type(f"{label} authority changed before publication")
+            leases[0].assert_owned()
+            try:
+                rename_directory_no_replace(staging, destination)
+            except (AtomicPublicationError, OSError) as error:
+                raise error_type(
+                    f"Unable to publish {publish_label} workspace: {error}"
+                ) from error
+            leases[0].mark_committed()
+    except BulkGenerationError as error:
+        raise error_type(str(error)) from error
 
 
 def rename_directory_no_replace(source: str | Path, destination: str | Path) -> None:

@@ -125,7 +125,16 @@ def create_reviewed_rejection_fallback_workspace(
             staged = _stage_rejection_workspace(selection, staging)
             workspace = _mutate_rejection_state(selection, identity, staged)
             _validate_staged_rejection_workspace(staging, staged, workspace)
-            _publish_rejection_workspace(selection, identity, staging, staged.snapshots)
+            publish_single_base_successor(
+                staging,
+                identity.destination,
+                selection.base_directory,
+                selection.queue_sha256,
+                staged.snapshots,
+                label="Reviewed-rejection fallback",
+                publish_label="reviewed-rejection",
+                error_type=AuthoringWorkbenchError,
+            )
     except (BulkGenerationError, OSError, ValueError) as error:
         raise AuthoringWorkbenchError(str(error)) from error
     return WorkspaceCreationResult(identity.destination, True)
@@ -395,27 +404,6 @@ def _validate_staged_rejection_workspace(
     load_generation_state(
         staged.output / "generation-state.json", staging / "queue.jsonl"
     )
-
-
-def _publish_rejection_workspace(
-    selection: _RejectionSelection,
-    identity: _RejectionIdentity,
-    staging: Path,
-    snapshots: list[tuple[Path, str]],
-) -> None:
-    try:
-        publish_single_base_successor(
-            staging,
-            identity.destination,
-            selection.base_directory,
-            selection.queue_sha256,
-            snapshots,
-            label="Reviewed-rejection fallback",
-            publish_label="reviewed-rejection",
-            error_type=AuthoringWorkbenchError,
-        )
-    except BulkGenerationError as error:
-        raise AuthoringWorkbenchError(str(error)) from error
 
 
 def validate_reviewed_rejection_fallback_workspace(

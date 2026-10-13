@@ -100,7 +100,16 @@ def create_audio_event_omission_workspace(
                 staging, output, selection, identity, target_state
             )
             _validate_staged_omission_workspace(staging, output, workspace)
-            _publish_staged_omission_workspace(staging, selection, identity, snapshots)
+            publish_single_base_successor(
+                staging,
+                identity.destination,
+                selection.base_directory,
+                selection.queue_sha256,
+                snapshots,
+                label="Audio-event omission",
+                publish_label="audio-event omission",
+                error_type=AuthoringWorkbenchError,
+            )
     except (BulkGenerationError, OSError, ValueError) as error:
         raise AuthoringWorkbenchError(str(error)) from error
     return WorkspaceCreationResult(identity.destination, True)
@@ -322,27 +331,6 @@ def _validate_staged_omission_workspace(
     )
     validate_workspace_provenance_extensions(staging, workspace, import_snapshot)
     load_generation_state(output / "generation-state.json", staging / "queue.jsonl")
-
-
-def _publish_staged_omission_workspace(
-    staging: Path,
-    selection: _OmissionSelection,
-    identity: _OmissionIdentity,
-    snapshots: list[tuple[Path, str]],
-) -> None:
-    try:
-        publish_single_base_successor(
-            staging,
-            identity.destination,
-            selection.base_directory,
-            selection.queue_sha256,
-            snapshots,
-            label="Audio-event omission",
-            publish_label="audio-event omission",
-            error_type=AuthoringWorkbenchError,
-        )
-    except BulkGenerationError as error:
-        raise AuthoringWorkbenchError(str(error)) from error
 
 
 def validate_audio_event_omission_workspace(

@@ -168,8 +168,15 @@ def create_reviewed_waveform_publication_workspace(
                 config_fingerprint,
             )
             _validate_staged_reviewed_waveform_workspace(staging, output, workspace)
-            _publish_staged_reviewed_waveform_workspace(
-                staging, base_directory, queue_sha256, destination, snapshots
+            publish_single_base_successor(
+                staging,
+                destination,
+                base_directory,
+                queue_sha256,
+                snapshots,
+                label="Reviewed-waveform publication",
+                publish_label="reviewed-waveform",
+                error_type=AuthoringWorkbenchError,
             )
     except (BulkGenerationError, OSError, ValueError) as error:
         raise AuthoringWorkbenchError(str(error)) from error
@@ -317,28 +324,6 @@ def _validate_staged_reviewed_waveform_workspace(
     )
     validate_workspace_provenance_extensions(staging, workspace, import_snapshot)
     load_generation_state(output / "generation-state.json", staging / "queue.jsonl")
-
-
-def _publish_staged_reviewed_waveform_workspace(
-    staging: Path,
-    base_directory: Path,
-    queue_sha256: str,
-    destination: Path,
-    snapshots: list[tuple[Path, str]],
-) -> None:
-    try:
-        publish_single_base_successor(
-            staging,
-            destination,
-            base_directory,
-            queue_sha256,
-            snapshots,
-            label="Reviewed-waveform publication",
-            publish_label="reviewed-waveform",
-            error_type=AuthoringWorkbenchError,
-        )
-    except BulkGenerationError as error:
-        raise AuthoringWorkbenchError(str(error)) from error
 
 
 def validate_reviewed_waveform_publication_workspace(

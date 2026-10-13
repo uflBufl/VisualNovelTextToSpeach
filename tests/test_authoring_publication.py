@@ -1,9 +1,11 @@
+import json
 import unittest
 from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from vntts.authoring.generation_lease import BulkGenerationError, GenerationLease
 from vntts.authoring.publication import publish_single_base_successor, staged_directory
 
 
@@ -77,6 +79,85 @@ class StagedDirectoryTest(unittest.TestCase):
                 )
             self.assertTrue(staging.exists())
             self.assertFalse((root / "published").exists())
+
+    def test_single_base_active_lease_keeps_source_and_uses_caller_error(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = root / "base"
+            output = base / "generated-audio"
+            output.mkdir(parents=True)
+            staging = root / "staging"
+            staging.mkdir()
+            destination = root / "published"
+            lease_path = output / ".generation-lease.json"
+            with GenerationLease(output, "0" * 64, process_checker=lambda _pid: True):
+                before = lease_path.read_bytes()
+                with self.assertRaises(ValueError) as caught:
+                    publish_single_base_successor(
+                        staging,
+                        destination,
+                        base,
+                        "0" * 64,
+                        (),
+                        label="Test",
+                        publish_label="test",
+                        error_type=ValueError,
+                    )
+                self.assertIsInstance(caught.exception.__cause__, BulkGenerationError)
+                self.assertEqual(str(caught.exception), str(caught.exception.__cause__))
+                self.assertEqual(lease_path.read_bytes(), before)
+                self.assertTrue(staging.is_dir())
+                self.assertFalse(destination.exists())
+            self.assertFalse(lease_path.exists())
+
+    def test_single_base_lost_lease_keeps_successor_lease_and_never_publishes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = root / "base"
+            output = base / "generated-audio"
+            output.mkdir(parents=True)
+            source = base / "workspace.json"
+            source.write_bytes(b"original")
+            digest = sha256(source.read_bytes()).hexdigest()
+            staging = root / "staging"
+            staging.mkdir()
+            destination = root / "published"
+            lease_path = output / ".generation-lease.json"
+
+            def steal_and_hash(path, *, error_type):
+                self.assertIs(error_type, OSError)
+                lease = json.loads(lease_path.read_text(encoding="utf-8"))
+                lease["lease_id"] = "successor"
+                lease_path.write_text(json.dumps(lease), encoding="utf-8")
+                return sha256(Path(path).read_bytes()).hexdigest()
+
+            with (
+                patch(
+                    "vntts.document_identity.file_sha256", side_effect=steal_and_hash
+                ),
+                patch(
+                    "vntts.authoring.publication.rename_directory_no_replace"
+                ) as rename,
+                self.assertRaisesRegex(ValueError, "lease ownership changed") as caught,
+            ):
+                publish_single_base_successor(
+                    staging,
+                    destination,
+                    base,
+                    "0" * 64,
+                    [(source, digest)],
+                    label="Test",
+                    publish_label="test",
+                    error_type=ValueError,
+                )
+            self.assertIsInstance(caught.exception.__cause__, BulkGenerationError)
+            rename.assert_not_called()
+            self.assertEqual(
+                json.loads(lease_path.read_text())["lease_id"], "successor"
+            )
+            self.assertEqual(source.read_bytes(), b"original")
+            self.assertTrue(staging.is_dir())
+            self.assertFalse(destination.exists())
 
 
 if __name__ == "__main__":
