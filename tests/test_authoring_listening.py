@@ -16,6 +16,7 @@ from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 
 import vntts.authoring.listening as listening_module
+from tests.audio_output_fixtures import FakeAudioModule
 from tests.authoring_fixtures import tree_hashes
 from tests.listening_fixtures import (
     FakePlayback,
@@ -38,7 +39,7 @@ from vntts.authoring.listening import (
 )
 from vntts.authoring.listening_cli import main as listening_main
 from vntts.authoring.listening_import import import_listening_session
-from vntts.authoring.pcm_playback import PcmClip
+from vntts.authoring.pcm_playback import PcmClip, PersistentPcmPlayer
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -1736,6 +1737,52 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             self.assertIn("Preference was saved", dialog.status.text())
             self.assertFalse(dialog.prefer_a.isEnabled())
             dialog.deleteLater()
+
+    def test_real_pcm_pause_cannot_erase_an_unpolled_underflow(self):
+        for underflow in (False, True):
+            with self.subTest(underflow=underflow), TemporaryDirectory() as directory:
+                root = Path(directory)
+                session = create_listening_session_from_reports(
+                    write_model_reports(root, item_count=1), root / "session"
+                )
+                audio = FakeAudioModule(sample_rate=16_000, channels=1)
+                player = PersistentPcmPlayer(audio)
+                dialog = ModelListeningDialog(
+                    session, auto_play=False, playback_factory=lambda: player
+                )
+                try:
+                    dialog.play("a")
+                    audio.stream.pump(160)
+                    audio.stream.time += audio.latency
+                    dialog.poll_playback()
+                    audio.stream.pump(160, underflow=underflow)
+                    dialog.toggle_playback()
+                    self.assertEqual(dialog.playback_control_state, "stopped")
+                    dialog.toggle_playback()
+                    audio.stream.pump(800)
+                    audio.stream.time += audio.latency
+                    dialog.poll_playback()
+
+                    self.assertEqual("a" in dialog.completed_sides, not underflow)
+                    self.assertFalse(dialog.prefer_a.isEnabled())
+                    if underflow:
+                        self.assertIn("underflowed", dialog.status.text())
+                    dialog.play("a")
+                    audio.stream.pump(800)
+                    audio.stream.time += audio.latency
+                    dialog.poll_playback()
+                    self.assertIn("a", dialog.completed_sides)
+                    dialog.play("b")
+                    audio.stream.pump(800)
+                    audio.stream.time += audio.latency
+                    dialog.poll_playback()
+                    self.assertTrue(dialog.prefer_a.isEnabled())
+                    self.assertEqual(
+                        load_listening_session(session)["completed_count"], 0
+                    )
+                finally:
+                    dialog.close()
+                    dialog.deleteLater()
 
     def test_slow_save_keeps_qt_responsive_and_defers_close(self):
         with TemporaryDirectory() as directory:

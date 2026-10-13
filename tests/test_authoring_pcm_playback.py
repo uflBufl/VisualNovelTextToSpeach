@@ -3,7 +3,7 @@ import unittest
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import Mock, PropertyMock, patch
 
 import numpy as np
 import soundfile as sf
@@ -128,6 +128,65 @@ class PersistentPcmPlayerTest(unittest.TestCase):
         player.play(clip)
         audio.stream.pump(2, underflow=True)
         self.assertTrue(player.snapshot().underflowed)
+
+    def test_attempt_failures_survive_pause_seek_and_resume_until_new_play(self):
+        for failure in ("underflow", "clock", "callback"):
+            with self.subTest(failure=failure):
+                audio, player = self.create_player()
+                clip = PcmClip(np.ones((480, 2), np.float32), player.sample_rate)
+                token = player.play(clip)
+                if failure == "underflow":
+                    audio.stream.pump(48, underflow=True)
+                elif failure == "clock":
+                    with patch.object(
+                        FakeOutputStream,
+                        "time",
+                        create=True,
+                        new_callable=PropertyMock,
+                        side_effect=RuntimeError("device clock failed"),
+                    ):
+                        player.snapshot()
+                else:
+                    audio.stream.callback(
+                        np.empty((48, 2), np.float32),
+                        48,
+                        Mock(outputBufferDacTime="invalid DAC time"),
+                        None,
+                    )
+                failed = player.snapshot()
+                self.assertTrue(failed.underflowed or failed.error)
+
+                player.pause()
+                self.assertEqual(player.snapshot().token, token)
+                seek_token = player.seek(48)
+                resume_token = player.resume()
+                self.assertLess(token, seek_token)
+                self.assertLess(seek_token, resume_token)
+                self.assertFalse(player.snapshot().started)
+                audio.stream.pump(432)
+                audio.stream.time += audio.latency + 0.001
+                completed = player.snapshot()
+                self.assertEqual(completed.token, resume_token)
+                self.assertTrue(completed.finished)
+                self.assertEqual(completed.position_frames, clip.frames)
+                self.assertEqual(completed.underflowed, failed.underflowed)
+                self.assertEqual(completed.error, failed.error)
+
+                player.play(clip)
+                self.assertFalse(player.snapshot().underflowed)
+                self.assertIsNone(player.snapshot().error)
+                audio.stream.pump(480)
+                audio.stream.time += audio.latency + 0.001
+                self.assertTrue(player.snapshot().finished)
+
+                player.play(clip)
+                audio.stream.pump(48, underflow=True)
+                player.stop()
+                stopped = player.snapshot()
+                self.assertFalse(stopped.underflowed)
+                self.assertIsNone(stopped.error)
+                self.assertEqual(stopped.position_frames, 0)
+                self.assertFalse(stopped.started or stopped.playing or stopped.finished)
 
     def test_close_aborts_and_closes_stream(self):
         audio = FakeAudioModule()

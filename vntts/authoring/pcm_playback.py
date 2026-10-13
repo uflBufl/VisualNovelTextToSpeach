@@ -182,17 +182,12 @@ class PersistentPcmPlayer:
             raise PcmPlaybackError("Playback received an incompatible PCM clip")
         position = max(0, min(clip.frames, int(position_frames)))
         with self._lock:
-            self._token += 1
             self._samples = clip.samples
             self._position = position
-            self._audible_origin = position
-            self._first_dac_time = None
-            self._end_dac_time = None
             self._playing = position < clip.frames
-            self._started = False
             self._underflowed = False
             self._error = None
-            return self._token
+            return self._reset_timeline()
 
     def pause(self) -> None:
         with self._lock:
@@ -205,40 +200,31 @@ class PersistentPcmPlayer:
         with self._lock:
             if self._position >= len(self._samples):
                 self._position = 0
-            self._token += 1
-            self._audible_origin = self._position
-            self._first_dac_time = None
-            self._end_dac_time = None
             self._playing = bool(len(self._samples))
-            self._started = False
-            self._underflowed = False
-            self._error = None
-            return self._token
+            return self._reset_timeline()
 
     def seek(self, position_frames: int) -> int:
         with self._lock:
-            self._token += 1
             self._position = max(0, min(len(self._samples), int(position_frames)))
-            self._audible_origin = self._position
-            self._first_dac_time = None
-            self._end_dac_time = None
-            self._started = False
-            self._underflowed = False
-            self._error = None
-            return self._token
+            return self._reset_timeline()
 
     def stop(self) -> None:
         with self._lock:
-            self._token += 1
             self._samples = np.empty((0, self.channels), dtype=np.float32)
             self._position = 0
-            self._audible_origin = 0
-            self._first_dac_time = None
-            self._end_dac_time = None
             self._playing = False
-            self._started = False
             self._underflowed = False
             self._error = None
+            self._reset_timeline()
+
+    def _reset_timeline(self) -> int:
+        # Called under the lock; only a new play or stop clears attempt failures.
+        self._token += 1
+        self._audible_origin = self._position
+        self._first_dac_time = None
+        self._end_dac_time = None
+        self._started = False
+        return self._token
 
     def snapshot(self) -> PlaybackSnapshot:
         try:
