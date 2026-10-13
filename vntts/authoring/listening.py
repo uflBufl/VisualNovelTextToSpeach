@@ -1379,8 +1379,8 @@ def _model_report_sample_audio(
     audio = audio.resolve()
     _verify_pcm_audio(audio, audio_hash, "model report audio")
     return {
-        "id": sample_id.strip(),
-        "line_id": line_id.strip(),
+        "id": sample_id,
+        "line_id": line_id,
         "text": text,
         "text_sha256": text_hash,
         "audio_sha256": audio_hash,

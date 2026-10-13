@@ -298,6 +298,43 @@ class AuthoringListeningTest(unittest.TestCase):
                         create_listening_session_from_reports(reports, root / "session")
                     self.assertFalse((root / "session").exists())
 
+    def test_report_sample_id_and_line_id_remain_exact(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reports = write_model_reports(root, item_count=1)
+            for path in reports:
+                document = json.loads(path.read_text())
+                document["samples"].append(
+                    {
+                        **document["samples"][0],
+                        "id": " sample-0 ",
+                        "line_id": " line-0 ",
+                    }
+                )
+                path.write_text(json.dumps(document), encoding="utf-8")
+            for selected in (None, (" sample-0 ",)):
+                with self.subTest(selected=selected):
+                    path = create_listening_session_from_reports(
+                        reports,
+                        root / ("all" if selected is None else "selected"),
+                        sample_ids=selected,
+                    )
+                    trials = load_listening_session(path)["trials"]
+                    expected = (
+                        {"line-0", " line-0 "} if selected is None else {" line-0 "}
+                    )
+                    self.assertEqual({trial["line_id"] for trial in trials}, expected)
+                    self.assertEqual(len(trials), len(expected))
+                    for trial in trials:
+                        sample_id = (
+                            " sample-0 "
+                            if trial["line_id"].startswith(" ")
+                            else "sample-0"
+                        )
+                        self.assertTrue(
+                            trial["queue_id"].startswith(f"corpus:{sample_id}:")
+                        )
+
     def test_hidden_key_and_report_keep_explicit_model_metadata(self):
         for explicit in (False, True):
             with self.subTest(explicit=explicit), TemporaryDirectory() as directory:
