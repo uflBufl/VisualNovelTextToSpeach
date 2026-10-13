@@ -62,6 +62,69 @@ class ReferenceRenderListeningContractTest(unittest.TestCase):
             backend_factory=_PreviewBackendFactory(),
         )
 
+    def test_changed_loaded_plan_is_rejected_before_render_or_publication(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original_publish = publish_reference_render_comparison
+            original_plan = None
+
+            def mutate_then_publish(plan, output, **kwargs):
+                nonlocal original_plan
+                original_plan = plan
+                plan.arms[0]["samples"][0]["candidate_id"] = plan.arms[1]["samples"][0][
+                    "candidate_id"
+                ]
+                return original_publish(plan, output, **kwargs)
+
+            with (
+                patch(
+                    f"{__name__}.publish_reference_render_comparison",
+                    side_effect=mutate_then_publish,
+                ),
+                patch.object(
+                    reference_render_comparison, "FailureReferencePreviewService"
+                ) as service,
+                self.assertRaisesRegex(ReferenceRenderComparisonError, "plan changed"),
+            ):
+                self._comparison(root)
+
+            self.assertIsNotNone(original_plan)
+            service.assert_not_called()
+            self.assertFalse((root / "comparison").exists())
+            self.assertEqual(list(root.glob(".comparison.staging-*")), [])
+
+    def test_publication_uses_detached_plan_when_caller_mutates_loaded_controls(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original_publish = publish_reference_render_comparison
+            expected = None
+
+            def publish_with_mutating_factory(plan, output, **kwargs):
+                nonlocal expected
+                expected = [arm["samples"][0]["candidate_id"] for arm in plan.arms]
+                factory = kwargs["backend_factory"]
+
+                def mutate_then_create_backend(*args, **factory_kwargs):
+                    plan.arms[1]["samples"][0]["candidate_id"] = expected[0]
+                    return factory(*args, **factory_kwargs)
+
+                return original_publish(
+                    plan, output, backend_factory=mutate_then_create_backend
+                )
+
+            with patch(
+                f"{__name__}.publish_reference_render_comparison",
+                side_effect=publish_with_mutating_factory,
+            ):
+                comparison = self._comparison(root)
+
+            document = load_reference_render_comparison_document(comparison.directory)
+            self.assertEqual(
+                [arm["renders"][0]["candidate_id"] for arm in document["arms"]],
+                expected,
+            )
+            self.assertEqual(comparison.complete_pair_count, 1)
+
     def test_publication_race_preserves_destination_and_cleans_staging(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

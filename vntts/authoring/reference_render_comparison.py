@@ -392,6 +392,12 @@ def publish_reference_render_comparison(
         raise ReferenceRenderComparisonError(
             "Reference render publication requires a loaded plan"
         )
+    captured_plan = load_reference_render_plan(plan.path)
+    if plan != captured_plan:
+        raise ReferenceRenderComparisonError(
+            "Reference render plan changed after loading"
+        )
+    plan = captured_plan
     output = no_replace_destination(output_directory)
     if output.exists() or output.is_symlink():
         raise ReferenceRenderComparisonError(
