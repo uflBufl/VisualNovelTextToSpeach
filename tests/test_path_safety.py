@@ -11,6 +11,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import vntts.authoring.generation_review as generation_review
 from tests.pregeneration_fixtures import ambiguous_fixture
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
@@ -724,7 +725,7 @@ class VerifiedEvidenceAdmissionTest(unittest.TestCase):
                 ),
                 (
                     "cohort WAV",
-                    lambda: bulk_generation._review_snapshot_audio(
+                    lambda: generation_review._review_snapshot_audio(
                         path, "queue", review
                     ),
                     BulkGenerationError,

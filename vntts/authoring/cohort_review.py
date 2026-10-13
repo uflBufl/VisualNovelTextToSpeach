@@ -14,11 +14,8 @@ from vntts.authoring.authority import (
     canonical_document_sha256,
     write_json_document_no_replace,
 )
-from vntts.authoring.bulk_generation import (
-    BulkGenerationError,
-    ReviewAuthority,
-    review_generation_cohort,
-)
+from vntts.authoring.bulk_generation import BulkGenerationError
+from vntts.authoring.generation_review import ReviewAuthority, review_generation_cohort
 from vntts.authoring.workbench import (
     REVIEW_ATTENTION_POLICY_VERSION,
     REVIEW_NOTABLE_INTERNAL_PAUSE_SECONDS,

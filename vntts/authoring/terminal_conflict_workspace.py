@@ -17,13 +17,9 @@ from vntts.authoring.authority import (
     canonical_document_sha256,
     capture_authority_file,
 )
-from vntts.authoring.bulk_generation import (
-    BulkGenerationError,
-    ReviewAuthority,
-    _assert_review_authorities,
-    process_is_alive,
-)
+from vntts.authoring.bulk_generation import BulkGenerationError, process_is_alive
 from vntts.authoring.generation_manifest import write_generated_manifest_from_state
+from vntts.authoring.generation_review import ReviewAuthority, assert_review_authorities
 from vntts.authoring.publication import (
     AtomicPublicationError,
     generation_publication_leases,
@@ -524,7 +520,7 @@ def _select_terminal_conflict_sources(
         authority = ReviewAuthority(**source["review_authority"])
         if cached is None:
             try:
-                _state, item_audio = _assert_review_authorities(
+                _state, item_audio = assert_review_authorities(
                     state_path,
                     authorities_by_workspace[source["workspace_id"]],
                     queue_path,

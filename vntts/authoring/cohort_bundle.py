@@ -14,7 +14,6 @@ from typing import NotRequired, TypeAlias, TypedDict, TypeIs
 from durable_file import atomic_write_json
 
 from vntts.authoring.authority import canonical_document_sha256
-from vntts.authoring.bulk_generation import ReviewAuthority
 from vntts.authoring.cohort_review import (
     COHORT_REVIEW_DEFECT_REASONS,
     DEFAULT_CLEAN_SAMPLES_PER_BUCKET,
@@ -40,6 +39,7 @@ from vntts.authoring.cohort_review import (
 from vntts.authoring.cohort_review import (
     _validated_plan_document as _validate_plan_document,
 )
+from vntts.authoring.generation_review import ReviewAuthority
 from vntts.authoring.workbench import ReviewItem
 from vntts.json_types import decode_json, is_json_object
 from vntts.numeric_values import optional_finite_number

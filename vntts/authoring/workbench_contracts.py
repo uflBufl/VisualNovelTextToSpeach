@@ -12,7 +12,7 @@ from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueueItem,
 )
 
-from vntts.authoring.bulk_generation import ReviewAuthority
+from vntts.authoring.generation_review import ReviewAuthority
 from vntts.path_safety import read_regular_bytes
 
 WORKSPACE_SCHEMA = "vntts.authoring-workspace"

@@ -19,6 +19,7 @@ from vntts_artifacts.generated_audio import GeneratedAudioIndex
 
 import vntts.authoring.bulk_generation as bulk_module
 import vntts.authoring.generation_lease as generation_lease_module
+import vntts.authoring.generation_review as review_module
 import vntts.authoring.workspace_foundation as foundation_module
 from tests.authoring_fixtures import tree_hashes
 from tests.bulk_generation_fixtures import (
@@ -37,16 +38,18 @@ from vntts.authoring.bulk_generation import (
     authorize_live_fallback,
     generation_failure_repair_plan,
     generation_failure_report,
-    generation_review_authorities,
-    generation_review_authority,
     load_generation_state,
     publish_generated_manifest,
-    review_generation_item,
     run_bulk_generation,
 )
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_repair import FailureRepairPolicy
 from vntts.authoring.generation_manifest import RUNTIME_PROGRESS_MANIFEST_NAME
+from vntts.authoring.generation_review import (
+    generation_review_authorities,
+    generation_review_authority,
+    review_generation_item,
+)
 from vntts.authoring.generation_state import (
     control_directory_digest,
     validate_synthesis_controls,
@@ -575,7 +578,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             result = self.run_generation(queue, root / "output", SyntheticRenderer())
             before = tree_hashes(root)
             failure = PermissionError("Review state recheck was blocked")
-            checksum = bulk_module.sha256_file
+            checksum = review_module.sha256_file
 
             def unreadable_state(path):
                 if Path(path) == result.state:
@@ -583,7 +586,9 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 return checksum(path)
 
             with (
-                patch.object(bulk_module, "sha256_file", side_effect=unreadable_state),
+                patch.object(
+                    review_module, "sha256_file", side_effect=unreadable_state
+                ),
                 self.assertRaises(BulkGenerationError) as caught,
             ):
                 generation_review_authority(result.state, item["queue_id"])
@@ -610,8 +615,8 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 ("_assert_cohort_commit_authority", 2),
             ):
                 with self.subTest(recheck=name):
-                    check = getattr(bulk_module, name)
-                    checksum = bulk_module.sha256_file
+                    check = getattr(review_module, name)
+                    checksum = review_module.sha256_file
                     failure = PermissionError("Cohort state recheck was blocked")
                     state_reads = 0
 
@@ -625,15 +630,15 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
                     def fail_final_check(*args, **kwargs):
                         with patch.object(
-                            bulk_module, "sha256_file", side_effect=unreadable_state
+                            review_module, "sha256_file", side_effect=unreadable_state
                         ):
                             return check(*args, **kwargs)
 
                     with (
-                        patch.object(bulk_module, name, side_effect=fail_final_check),
+                        patch.object(review_module, name, side_effect=fail_final_check),
                         self.assertRaises(BulkGenerationError) as caught,
                     ):
-                        bulk_module.review_generation_cohort(
+                        review_module.review_generation_cohort(
                             result.state,
                             queue,
                             authorities,
@@ -1627,7 +1632,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             authority = generation_review_authority(result.state, item["queue_id"])
             state_before = result.state.read_bytes()
             manifest_before = result.manifest.read_bytes()
-            original_writer = bulk_module._write_generated_manifest_from_state
+            original_writer = review_module._write_generated_manifest_from_state
 
             def steal_lease_during_staging(*arguments, **options):
                 written = original_writer(*arguments, **options)
@@ -1639,7 +1644,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
             with (
                 patch.object(
-                    bulk_module,
+                    review_module,
                     "_write_generated_manifest_from_state",
                     side_effect=steal_lease_during_staging,
                 ),
@@ -1667,7 +1672,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             audio = result.state.parent / state["items"][item["queue_id"]]["path"]
             state_before = result.state.read_bytes()
             manifest_before = result.manifest.read_bytes()
-            original_writer = bulk_module._write_generated_manifest_from_state
+            original_writer = review_module._write_generated_manifest_from_state
 
             def change_wav_during_staging(*arguments, **options):
                 written = original_writer(*arguments, **options)
@@ -1676,7 +1681,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
             with (
                 patch.object(
-                    bulk_module,
+                    review_module,
                     "_write_generated_manifest_from_state",
                     side_effect=change_wav_during_staging,
                 ),
@@ -1714,7 +1719,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
             with (
                 patch.object(
-                    bulk_module.os,
+                    review_module.os,
                     "replace",
                     side_effect=steal_after_state_replace,
                 ),
@@ -1758,23 +1763,23 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             )
             state_sha256 = sha256_file(state_path)
             authorities = {
-                queue_id: bulk_module.ReviewAuthority(
+                queue_id: review_module.ReviewAuthority(
                     queue_sha256=queue_sha256,
                     state_sha256=state_sha256,
-                    item_sha256=bulk_module._canonical_sha256(item),
+                    item_sha256=review_module._canonical_sha256(item),
                     audio_sha256=sha256_file(audio_paths[queue_id]),
                 )
                 for queue_id, item in items.items()
             }
             reads = []
-            real_read_bytes = bulk_module.read_regular_bytes
+            real_read_bytes = review_module.read_regular_bytes
 
             def tracked_read_bytes(path):
                 reads.append(Path(path).resolve())
                 return real_read_bytes(path)
 
-            with patch.object(bulk_module, "read_regular_bytes", tracked_read_bytes):
-                state, snapshots = bulk_module._assert_review_authorities(
+            with patch.object(review_module, "read_regular_bytes", tracked_read_bytes):
+                state, snapshots = review_module.assert_review_authorities(
                     state_path, authorities, queue
                 )
 
@@ -1784,7 +1789,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             self.assertEqual(reads.count(queue.resolve()), 1)
             audio_paths["queue-1"].write_bytes(b"changed audio")
             with self.assertRaisesRegex(BulkGenerationError, "authority changed"):
-                bulk_module._assert_review_authorities(state_path, authorities, queue)
+                review_module.assert_review_authorities(state_path, authorities, queue)
 
     def test_cohort_commit_validates_only_newly_approved_wavs(self):
         with TemporaryDirectory() as directory:
@@ -1810,18 +1815,18 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             first_wav = result.state.parent / state["items"][first["queue_id"]]["path"]
             write_pcm16_wav(first_wav, audio_samples() * 0.5, 16_000)
             checked = []
-            original_validate = bulk_module._validate_success_file
+            original_validate = review_module._validate_success_file
 
             def track_validation(queue_id, item, audio):
                 checked.append(queue_id)
                 return original_validate(queue_id, item, audio)
 
             with patch.object(
-                bulk_module,
+                review_module,
                 "_validate_success_file",
                 side_effect=track_validation,
             ):
-                bulk_module._review_generation_cohort(
+                review_module.review_generation_cohort(
                     result.state,
                     queue,
                     {second["queue_id"]: second_authority},
@@ -1855,7 +1860,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 for item in (first, second)
             }
 
-            commits = bulk_module._review_generation_cohort(
+            commits = review_module.review_generation_cohort(
                 result.state,
                 queue,
                 authorities,
@@ -1909,7 +1914,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 third["queue_id"]
             ]
 
-            commits = bulk_module._review_generation_cohort(
+            commits = review_module.review_generation_cohort(
                 result.state,
                 queue,
                 authorities,
@@ -1957,7 +1962,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             audio = result.state.parent / state["items"][first["queue_id"]]["path"]
             state_before = result.state.read_bytes()
             manifest_before = result.manifest.read_bytes()
-            original_writer = bulk_module._write_generated_manifest_from_state
+            original_writer = review_module._write_generated_manifest_from_state
             writes = 0
 
             def mutate_after_conservative_staging(*arguments, **options):
@@ -1970,13 +1975,13 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
             with (
                 patch.object(
-                    bulk_module,
+                    review_module,
                     "_write_generated_manifest_from_state",
                     side_effect=mutate_after_conservative_staging,
                 ),
                 self.assertRaisesRegex(BulkGenerationError, "authority changed"),
             ):
-                bulk_module._review_generation_cohort(
+                review_module.review_generation_cohort(
                     result.state,
                     queue,
                     authorities,
@@ -2016,13 +2021,13 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
             with (
                 patch.object(
-                    bulk_module.os,
+                    review_module.os,
                     "replace",
                     side_effect=steal_after_state_replace,
                 ),
                 self.assertRaisesRegex(BulkGenerationError, "lease ownership changed"),
             ):
-                bulk_module._review_generation_cohort(
+                review_module.review_generation_cohort(
                     result.state,
                     queue,
                     authorities,
@@ -2061,13 +2066,13 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
             with (
                 patch.object(
-                    bulk_module.os,
+                    review_module.os,
                     "replace",
                     side_effect=mutate_after_state_replace,
                 ),
                 self.assertRaisesRegex(BulkGenerationError, "decision was saved"),
             ):
-                bulk_module._review_generation_cohort(
+                review_module.review_generation_cohort(
                     result.state,
                     queue,
                     {item["queue_id"]: authority},
@@ -2625,7 +2630,9 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     "queue_sha256": sha256_file(queue),
                     "pid": os.getpid(),
                     "hostname": socket.gethostname(),
-                    "process_started_at": bulk_module._process_started_at(os.getpid()),
+                    "process_started_at": generation_lease_module.process_started_at(
+                        os.getpid()
+                    ),
                     "lease_id": "live",
                 },
             )

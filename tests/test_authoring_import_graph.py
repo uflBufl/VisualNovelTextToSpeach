@@ -1,11 +1,15 @@
 import ast
 import json
+import pickle
 import subprocess
 import sys
 import unittest
 from pathlib import Path
 
+import vntts.authoring.bulk_generation as bulk_generation_module
 import vntts.authoring.game_pack as game_pack_module
+import vntts.authoring.generation_lease as lease_module
+import vntts.authoring.generation_review as review_module
 import vntts.authoring.terminal_conflict_workspace as terminal_workspace_module
 from vntts.authoring.bulk_generation import (
     SpeechQuality as BulkSpeechQuality,
@@ -379,6 +383,77 @@ print(json.dumps([name for name in blocked if name in sys.modules]))
                 "vntts.authoring.generation_state",
                 "vntts.authoring.bulk_generation",
             )
+        )
+
+    def test_generation_review_has_direct_consumers_and_compatible_exports(self):
+        names = (
+            "ReviewAuthority",
+            "ReviewCommit",
+            "generation_review_authority",
+            "generation_review_authorities",
+            "load_review_audio_bytes",
+            "review_generation_item",
+            "review_generation_cohort",
+        )
+        for name in names:
+            with self.subTest(name=name):
+                self.assertIs(
+                    getattr(bulk_generation_module, name), getattr(review_module, name)
+                )
+                self.assertEqual(
+                    _production_importers("vntts.authoring.bulk_generation", name), []
+                )
+        self.assertIs(
+            bulk_generation_module._assert_review_authorities,
+            review_module.assert_review_authorities,
+        )
+        self.assertEqual(
+            _production_importers(
+                "vntts.authoring.bulk_generation", "_assert_review_authorities"
+            ),
+            [],
+        )
+        self.assertIs(
+            bulk_generation_module.BulkGenerationSourceChangedError,
+            lease_module.BulkGenerationSourceChangedError,
+        )
+        self.assertFalse(
+            _reachable(
+                _authoring_import_graph(),
+                "vntts.authoring.generation_review",
+                "vntts.authoring.bulk_generation",
+            )
+        )
+        authority = review_module.ReviewAuthority("queue", "state", "item", "audio")
+        commit = review_module.ReviewCommit(
+            "queue-id", "approved", "approved", "time", authority
+        )
+        for value in (
+            authority,
+            commit,
+            lease_module.BulkGenerationSourceChangedError("changed"),
+        ):
+            with self.subTest(record=type(value).__name__):
+                self.assertEqual(
+                    type(value).__module__, "vntts.authoring.bulk_generation"
+                )
+                restored = pickle.loads(pickle.dumps(value))
+                self.assertIs(type(restored), type(value))
+                self.assertEqual(
+                    restored.args if isinstance(value, Exception) else restored,
+                    value.args if isinstance(value, Exception) else value,
+                )
+
+    def test_generation_review_import_does_not_load_bulk_execution(self):
+        subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import sys; import vntts.authoring.generation_review; assert 'vntts.authoring.bulk_generation' not in sys.modules",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
         )
 
     def test_authoring_module_graph_has_no_strongly_connected_components(self):

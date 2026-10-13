@@ -32,12 +32,11 @@ from vntts.authoring.authority import (
 )
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
-    ReviewAuthority,
-    load_review_audio_bytes,
     process_is_alive,
     process_started_at,
 )
 from vntts.authoring.generation_lease import is_process_id
+from vntts.authoring.generation_review import ReviewAuthority, load_review_audio_bytes
 from vntts.authoring.publication import (
     AtomicPublicationError,
     no_replace_destination,

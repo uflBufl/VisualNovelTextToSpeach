@@ -21,8 +21,9 @@ import vntts.authoring.workbench as workbench_module
 import vntts.authoring.workspace_inspection as workspace_inspection_module
 from tests.authoring_fixtures import create_test_workspace
 from tests.symlink_support import symlink_or_skip
-from vntts.authoring.bulk_generation import ReviewCommit, process_started_at
+from vntts.authoring.bulk_generation import process_started_at
 from vntts.authoring.cohort_bundle import CohortReviewBundle
+from vntts.authoring.generation_review import ReviewCommit
 from vntts.authoring.workbench import (
     ReviewItem,
     load_workbench_projection_data,

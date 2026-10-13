@@ -42,10 +42,10 @@ from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     load_generation_state,
     publish_generated_manifest,
-    review_generation_item,
 )
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.config_rebase import rebase_workspace_config
+from vntts.authoring.generation_review import review_generation_item
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     create_audio_event_composition_workspace,

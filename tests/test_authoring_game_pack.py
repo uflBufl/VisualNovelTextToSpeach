@@ -38,7 +38,6 @@ from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     _canonical_sha256,
     authorize_live_fallback,
-    review_generation_item,
     run_bulk_generation,
 )
 from vntts.authoring.cli import main as authoring_main
@@ -48,6 +47,7 @@ from vntts.authoring.generation_manifest import (
     RUNTIME_PROGRESS_MANIFEST_NAME,
     write_runtime_progress_manifest_from_state,
 )
+from vntts.authoring.generation_review import review_generation_item
 from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
 from vntts.authoring.render_hypothesis_review import (
     publish_render_hypothesis_review,

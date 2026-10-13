@@ -23,6 +23,7 @@ from vntts_artifacts.voice_generation_queue import (
 )
 
 import vntts.authoring.bulk_generation as bulk_generation_module
+import vntts.authoring.generation_review as review_module
 import vntts.authoring.reconciliation_merge as reconciliation_merge_module
 import vntts.authoring.workbench as workbench_module
 import vntts.authoring.workspace_authority as workspace_authority_module
@@ -371,7 +372,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 state_path = source.directory / "generated-audio/generation-state.json"
                 queue = VoiceGenerationQueue.load(queue_path)
                 visited = []
-                state_items = bulk_generation_module._state_items
+                state_items = review_module._state_items
 
                 def count_validation(state):
                     items = state_items(state)
@@ -379,12 +380,12 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                     return items
 
                 with patch.object(
-                    bulk_generation_module, "_state_items", side_effect=count_validation
+                    review_module, "_state_items", side_effect=count_validation
                 ):
-                    authorities = bulk_generation_module.generation_review_authorities(
+                    authorities = review_module.generation_review_authorities(
                         state_path, [item.queue_id for item in queue.items]
                     )
-                    commits = bulk_generation_module.review_generation_cohort(
+                    commits = review_module.review_generation_cohort(
                         state_path,
                         queue_path,
                         authorities,
@@ -3941,12 +3942,12 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                     "vntts.path_safety.open", side_effect=track_audio_reads, create=True
                 ),
                 patch.object(
-                    bulk_generation_module,
+                    review_module,
                     "load_generation_state",
                     side_effect=AssertionError("full state scan is forbidden"),
                 ),
                 patch.object(
-                    bulk_generation_module,
+                    review_module,
                     "_validate_success_file",
                     side_effect=AssertionError("unrelated WAV scan is forbidden"),
                 ),

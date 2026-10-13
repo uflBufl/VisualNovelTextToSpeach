@@ -57,6 +57,7 @@ from vntts.authoring.workspace_foundation import load_json_object
 from vntts.cleanup import temporary_directory
 from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import has_schema_version as _has_exact_schema_version
+from vntts.json_types import is_json_object
 from vntts.numeric_values import optional_finite_number
 from vntts.path_safety import read_regular_bytes
 from vntts.synthesis import SynthesisCompletion
@@ -118,7 +119,18 @@ FAILURE_KINDS = {
 }
 
 StateObject: TypeAlias = dict[str, object]
+StateItems: TypeAlias = dict[str, StateObject]
 QueueById: TypeAlias = dict[str, VoiceGenerationQueueItem]
+
+
+def generation_state_items(state: StateObject) -> StateItems:
+    items = state.get("items")
+    if not isinstance(items, dict) or not all(
+        isinstance(queue_id, str) and is_json_object(record)
+        for queue_id, record in items.items()
+    ):
+        raise BulkGenerationError("Generation state items are malformed")
+    return items
 
 
 def load_stable_generation_queue(
@@ -2758,6 +2770,8 @@ __all__ = [
     "REVIEWED_REJECTION_LIVE_FALLBACK_EVIDENCE_SCHEMA",
     "STATE_SCHEMA",
     "STATE_VERSION",
+    "StateItems",
+    "generation_state_items",
     "contained_state_path",
     "control_directory_digest",
     "live_fallback_decision",

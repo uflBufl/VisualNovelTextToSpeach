@@ -1247,7 +1247,7 @@ class AuthoringCohortReviewTest(unittest.TestCase):
 
             with (
                 patch(
-                    "vntts.authoring.bulk_generation.os.replace",
+                    "vntts.authoring.generation_review.os.replace",
                     side_effect=fail_state_commit,
                 ),
                 self.assertRaisesRegex(CohortReviewError, "remains fail-closed"),
@@ -1282,9 +1282,9 @@ class AuthoringCohortReviewTest(unittest.TestCase):
             state_before = state_path.read_bytes()
             manifest_path = state_path.parent / "manifest.json"
             manifest_before = manifest_path.read_bytes()
-            from vntts.authoring import bulk_generation
+            from vntts.authoring import generation_review
 
-            original = bulk_generation._write_generated_manifest_from_state
+            original = generation_review._write_generated_manifest_from_state
 
             def mutate_after_staging(*args, **kwargs):
                 original(*args, **kwargs)
@@ -1292,7 +1292,7 @@ class AuthoringCohortReviewTest(unittest.TestCase):
 
             with (
                 patch(
-                    "vntts.authoring.bulk_generation._write_generated_manifest_from_state",
+                    "vntts.authoring.generation_review._write_generated_manifest_from_state",
                     side_effect=mutate_after_staging,
                 ),
                 self.assertRaisesRegex(CohortReviewError, "authority changed"),

@@ -32,7 +32,6 @@ from vntts.authoring.audio_event_workspace import (
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     JsonDocument,
-    ReviewAuthority,
     StateItems,
     is_spoken_queue_item,
     normalized_failure_record,
@@ -49,6 +48,7 @@ from vntts.authoring.generation_lease import (
     process_is_alive,
     process_started_at,
 )
+from vntts.authoring.generation_review import ReviewAuthority
 from vntts.authoring.generation_state import load_generation_state_from_snapshot
 from vntts.authoring.missing_voice_policy import (
     NARRATOR_ALL_UNRESOLVED,

@@ -6,15 +6,15 @@ import importlib
 from pathlib import Path
 
 from vntts.authoring.authority import canonical_document_sha256
-from vntts.authoring.bulk_generation import (
-    BulkGenerationError,
-    ReviewCommit,
-    load_review_audio_bytes,
-    review_generation_item,
-)
+from vntts.authoring.bulk_generation import BulkGenerationError
 from vntts.authoring.failure_repair import (
     INLINE_PAUSE_MARKER,
     SENTENCE_BOUNDARY_SEGMENTATION,
+)
+from vntts.authoring.generation_review import (
+    ReviewCommit,
+    load_review_audio_bytes,
+    review_generation_item,
 )
 from vntts.authoring.terminal_conflict_records import is_terminal_review_outcome
 from vntts.authoring.workbench_contracts import (

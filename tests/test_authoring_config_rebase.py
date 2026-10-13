@@ -27,7 +27,6 @@ from vntts.authoring.bulk_generation import (
     authorize_live_fallback,
     load_generation_state,
     publish_generated_manifest,
-    review_generation_item,
 )
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.config_rebase import (
@@ -39,6 +38,7 @@ from vntts.authoring.config_rebase import (
     rebase_workspace_config,
     validate_config_rebase_workspace,
 )
+from vntts.authoring.generation_review import review_generation_item
 from vntts.authoring.queue_extension import publish_additive_generation_queue
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,

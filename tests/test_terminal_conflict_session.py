@@ -187,8 +187,8 @@ class TerminalConflictSessionTest(unittest.TestCase):
 
             with patch.object(
                 workspace_module,
-                "_assert_review_authorities",
-                wraps=workspace_module._assert_review_authorities,
+                "assert_review_authorities",
+                wraps=workspace_module.assert_review_authorities,
             ) as validate_selected:
                 result = merge_terminal_conflict_resolution(
                     primary, successor, root / "workspaces"

@@ -8,9 +8,9 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from vntts.authoring.bulk_generation import ReviewAuthority
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.cohort_review import CohortReviewPlan
+from vntts.authoring.generation_review import ReviewAuthority
 from vntts.authoring.pending_resolution import (
     RECOVER_OR_REGENERATE,
     PendingResolutionError,

@@ -44,6 +44,12 @@ class BulkGenerationError(RuntimeError):
     """A queue cannot be generated or resumed safely."""
 
 
+class BulkGenerationSourceChangedError(BulkGenerationError):
+    """A queue or synthesis control changed during a generation snapshot."""
+
+    __module__ = "vntts.authoring.bulk_generation"
+
+
 def is_process_id(value: object) -> TypeGuard[int]:
     return type(value) is int and 0 < value <= 0xFFFFFFFF
 
@@ -339,6 +345,7 @@ __all__ = [
     "LEASE_SCHEMA",
     "LEASE_VERSION",
     "BulkGenerationError",
+    "BulkGenerationSourceChangedError",
     "GenerationLeaseDocument",
     "GenerationLease",
     "archive_interrupted_artifact",

@@ -25,7 +25,6 @@ from vntts.authoring.bulk_generation import (
     load_generation_state,
     normalize_short_trailing_ellipsis,
     publish_generated_manifest,
-    review_generation_item,
     run_bulk_generation,
     sha256_control_path,
 )
@@ -37,6 +36,7 @@ from vntts.authoring.cli_generation_options import (
 )
 from vntts.authoring.failure_repair import FailureRepairPolicy
 from vntts.authoring.generation_lease import BulkGenerationError
+from vntts.authoring.generation_review import review_generation_item
 from vntts.authoring.generation_state import LIVE_FALLBACK_REASONS
 from vntts.authoring.missing_voice_policy import MissingVoicePolicy
 from vntts.authoring.source_reference_bindings import (
