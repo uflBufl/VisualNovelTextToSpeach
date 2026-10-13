@@ -537,27 +537,29 @@ def _capture_import_documents(context: _ImportContext) -> _ImportDocuments:
         exact_comparison = load_reference_render_comparison_document(
             context.comparison_directory
         )
+        if (
+            context.fresh.audit_id != exact_fresh.audit_id
+            or context.fresh.audit_id != fresh_document.get("audit_id")
+            or context.review.review_id != record.review.get("review_id")
+            or record.decision is None
+            or record.decision.get("decision") != "accept_hypothesis"
+            or record.decision.get("review_id") != context.review.review_id
+            or context.comparison != exact_comparison
+            or context.comparison
+            != comparison.json_document("reference render comparison")
+            or context.comparison.get("comparison_id")
+            != record.review.get("comparison_id")
+            or comparison.sha256 != record.review.get("comparison_sha256")
+        ):
+            raise RenderHypothesisReviewError(
+                "Accepted render hypothesis authority changed"
+            )
     except (
         AuthoringAuthorityError,
         FailureReferenceAuditError,
         ReferenceRenderComparisonError,
     ) as error:
         raise RenderHypothesisReviewError(str(error)) from error
-    if (
-        context.fresh.audit_id != exact_fresh.audit_id
-        or context.fresh.audit_id != fresh_document.get("audit_id")
-        or context.review.review_id != record.review.get("review_id")
-        or record.decision is None
-        or record.decision.get("decision") != "accept_hypothesis"
-        or record.decision.get("review_id") != context.review.review_id
-        or context.comparison != exact_comparison
-        or context.comparison != comparison.json_document("reference render comparison")
-        or context.comparison.get("comparison_id") != record.review.get("comparison_id")
-        or comparison.sha256 != record.review.get("comparison_sha256")
-    ):
-        raise RenderHypothesisReviewError(
-            "Accepted render hypothesis authority changed"
-        )
     return _ImportDocuments(
         fresh_audit, fresh_key, comparison, fresh_document, fresh_key_document, record
     )

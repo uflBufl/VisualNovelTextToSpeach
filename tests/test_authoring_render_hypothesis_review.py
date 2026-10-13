@@ -18,6 +18,7 @@ from tests.source_reference_fixtures import (
 )
 from tests.symlink_support import symlink_or_skip
 from vntts.authoring import render_hypothesis_records, render_hypothesis_review
+from vntts.authoring.authority import AuthoringAuthorityError
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_reference_audit import (
     load_failure_reference_decisions,
@@ -163,6 +164,10 @@ class RenderHypothesisReviewTest(unittest.TestCase):
                 root, workspace, comparison.directory, review_root, queue_id
             )
 
+            self.assert_import_translates_captured_comparison_errors(
+                fresh_audit, comparison.directory, review_root, queue_id
+            )
+
             imported = import_accepted_render_hypothesis(
                 fresh_audit, comparison.directory, review_root, queue_id
             )
@@ -203,6 +208,43 @@ class RenderHypothesisReviewTest(unittest.TestCase):
                 )
             self.assertEqual(code, 0)
             self.assertFalse(json.loads(stdout.getvalue())["created"])
+
+    def assert_import_translates_captured_comparison_errors(
+        self, fresh_audit, comparison_root, review_root, queue_id
+    ):
+        path = comparison_root / "comparison.json"
+        original = path.read_bytes()
+        capture = render_hypothesis_review.capture_authority_file
+        for malformed in (b"[]", b"{", b"\xff"):
+
+            def capture_changed_comparison(source, label, **kwargs):
+                if Path(source) != path:
+                    return capture(source, label, **kwargs)
+                path.write_bytes(malformed)
+                try:
+                    return capture(source, label, **kwargs)
+                finally:
+                    path.write_bytes(original)
+
+            with (
+                self.subTest(payload=malformed),
+                patch.object(
+                    render_hypothesis_review,
+                    "capture_authority_file",
+                    capture_changed_comparison,
+                ),
+            ):
+                with self.assertRaises(RenderHypothesisReviewError) as raised:
+                    import_accepted_render_hypothesis(
+                        fresh_audit, comparison_root, review_root, queue_id
+                    )
+                self.assertIsInstance(
+                    raised.exception.__cause__, AuthoringAuthorityError
+                )
+                self.assertEqual(path.read_bytes(), original)
+                self.assertEqual(
+                    load_failure_reference_decisions(fresh_audit)["decisions"], []
+                )
 
     def assert_import_preserves_competing_decision(
         self, root, workspace, comparison_root, review_root, queue_id
