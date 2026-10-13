@@ -154,6 +154,39 @@ class AuthoringCliTerminalConflictsTest(unittest.TestCase):
             {"directory": "workspace", "created": False},
         )
 
+    def test_carry_io_failures_keep_cause_and_become_parser_errors(self):
+        for target, arguments in (
+            (
+                "carry_terminal_conflict_decisions",
+                ["terminal-conflict-carry", "source", "target"],
+            ),
+            (
+                "carry_approved_cohort_terminal_conflict_decisions",
+                ["terminal-conflict-cohort-carry", "review"],
+            ),
+        ):
+            failure = PermissionError("terminal progress is unwritable")
+            with (
+                self.subTest(command=arguments[0]),
+                patch.object(terminal_cli, target, side_effect=failure),
+            ):
+                with self.assertRaisesRegex(
+                    terminal_cli.TerminalConflictReviewError,
+                    "terminal progress is unwritable",
+                ) as raised:
+                    handle(create_parser().parse_args(arguments))
+                self.assertIs(raised.exception.__cause__, failure)
+                output, errors = StringIO(), StringIO()
+                with (
+                    redirect_stdout(output),
+                    redirect_stderr(errors),
+                    self.assertRaises(SystemExit) as exited,
+                ):
+                    main(arguments)
+                self.assertEqual(exited.exception.code, 2)
+                self.assertIn("terminal progress is unwritable", errors.getvalue())
+                self.assertEqual(output.getvalue(), "")
+
     def test_top_level_parser_translates_family_domain_errors(self):
         errors = StringIO()
         with (
