@@ -549,6 +549,82 @@ class LegacyAuthoringImportTest(unittest.TestCase):
             with self.assertRaisesRegex(LegacyAuthoringImportError, "conflicts"):
                 import_legacy_job(second_fixture["job_directory"], root / "app-data")
 
+    def test_queue_extension_utf8_admission_preserves_job_and_standalone_sources(self):
+        for importer in (import_legacy_job, import_standalone_generation):
+            for label in ("\ud800", "сохранить 音声"):
+                with (
+                    self.subTest(importer=importer.__name__, label=label),
+                    TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    fixture = write_legacy_fixture(root)
+                    rows = [
+                        json.loads(line)
+                        for line in fixture["queue"]
+                        .read_text(encoding="utf-8")
+                        .splitlines()
+                    ]
+                    rows[1]["provider_extension"]["label"] = label
+                    fixture["queue"].write_text(
+                        "\n".join(json.dumps(row, sort_keys=True) for row in rows)
+                        + "\n",
+                        encoding="utf-8",
+                    )
+                    queue_hash = sha256_file(fixture["queue"])
+                    for name, field in (
+                        ("state", "queue_sha256"),
+                        ("manifest", "source_queue_sha256"),
+                    ):
+                        document = json.loads(fixture[name].read_text(encoding="utf-8"))
+                        document[field] = queue_hash
+                        fixture[name].write_text(
+                            json.dumps(document, sort_keys=True), encoding="utf-8"
+                        )
+                    arguments = (
+                        (fixture["job_directory"],)
+                        if importer is import_legacy_job
+                        else (fixture["queue"], fixture["state"].parent)
+                    )
+                    destination = root / "app-data"
+                    destination.mkdir()
+                    (destination / "keep.txt").write_text("keep", encoding="utf-8")
+                    before = tree_hashes(root)
+                    if label == "\ud800":
+                        with self.assertRaisesRegex(
+                            LegacyAuthoringImportError, "invalid UTF-8 text"
+                        ) as caught:
+                            importer(*arguments, destination)
+                        self.assertIsInstance(
+                            caught.exception.__cause__, UnicodeEncodeError
+                        )
+                        self.assertIn(fixture["queue_id"], str(caught.exception))
+                        self.assertEqual(tree_hashes(root), before)
+                        self.assertEqual(
+                            list(destination.iterdir()), [destination / "keep.txt"]
+                        )
+                    else:
+                        imported = importer(*arguments, destination)
+                        repeated = importer(*arguments, destination)
+                        self.assertTrue(imported.created)
+                        self.assertFalse(repeated.created)
+                        self.assertEqual(
+                            (imported.destination / "queue.jsonl").read_bytes(),
+                            fixture["queue"].read_bytes(),
+                        )
+                        self.assertEqual(
+                            {
+                                path: digest
+                                for path, digest in tree_hashes(root).items()
+                                if not path.startswith("app-data/")
+                            },
+                            {
+                                path: digest
+                                for path, digest in before.items()
+                                if not path.startswith("app-data/")
+                            },
+                        )
+                        self.assertEqual((destination / "keep.txt").read_text(), "keep")
+
     def test_rejects_invalid_status_review_combinations(self):
         for status, review in (("failed", "approved"), ("generated", "approved")):
             with (

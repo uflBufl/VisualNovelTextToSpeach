@@ -1120,14 +1120,20 @@ def _import_identities(plan: _ImportPlan) -> list[JsonDocument]:
     identities: list[JsonDocument] = []
     for queue_item in plan.queue.items:
         state = state_items.get(queue_item.queue_id, {})
+        try:
+            queue_item_sha256 = canonical_document_sha256(
+                queue_item.document, allow_nan=True
+            )
+        except UnicodeEncodeError as error:
+            raise LegacyAuthoringImportError(
+                f"Queue item {queue_item.queue_id!r} contains invalid UTF-8 text"
+            ) from error
         identities.append(
             {
                 "queue_id": queue_item.queue_id,
                 "line_id": queue_item.line_id,
                 "text_sha256": queue_item.text_sha256,
-                "queue_item_sha256": canonical_document_sha256(
-                    queue_item.document, allow_nan=True
-                ),
+                "queue_item_sha256": queue_item_sha256,
                 "attempts": state.get("attempts"),
                 "seed": state.get("seed"),
                 "status": state.get("status", "pending"),
