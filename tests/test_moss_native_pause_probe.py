@@ -1,6 +1,8 @@
+import io
 import json
 import os
 import unittest
+import wave
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -13,6 +15,7 @@ from tests.native_moss_fixtures import FakeNativeBackend as _FakeBackend
 from tests.native_moss_fixtures import OwnedServer as _OwnedServer
 from tests.pregeneration_fixtures import clean_wav_bytes
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
+from vntts.authoring.speech_quality import SpeechSilenceSpan
 from vntts.settings import AppSettings
 from vntts.synthesis import SynthesisCompletion
 from vntts.voice_library import VoiceLibrary
@@ -65,6 +68,35 @@ def _options(root):
 
 
 class MossNativePauseProbeTest(unittest.TestCase):
+    def test_raw_channel_metrics_skip_unused_silence_spans(self):
+        output = io.BytesIO()
+        with wave.open(output, "wb") as writer:
+            writer.setnchannels(2)
+            writer.setsampwidth(2)
+            writer.setframerate(48000)
+            writer.writeframes(b"\0\0\xe8\x03" * 48000)
+        with patch(
+            "vntts.authoring.speech_quality.SpeechSilenceSpan",
+            wraps=SpeechSilenceSpan,
+        ) as create_span:
+            report = probe._raw_measurements(output.getvalue())
+        self.assertEqual(report["sample_rate"], 48000)
+        self.assertEqual(report["wav_frames"], 48000)
+        self.assertEqual(report["seconds"], 1.0)
+        for channel in ("left", "right", "mono"):
+            silent = channel == "left"
+            self.assertEqual(
+                report[channel],
+                {
+                    "silence_ratio": 1.0 if silent else 0.0,
+                    "leading_silence_seconds": 1.0 if silent else 0.0,
+                    "trailing_silence_seconds": 1.0 if silent else 0.0,
+                    "longest_internal_silence_seconds": 0.0,
+                    "analysis_version": 2,
+                },
+            )
+        create_span.assert_not_called()
+
     def test_failed_archive_preserves_existing_destination_and_primary_error(self):
         for stage in ("close", "write", "replace"):
             for fail_cleanup in (False, True):
