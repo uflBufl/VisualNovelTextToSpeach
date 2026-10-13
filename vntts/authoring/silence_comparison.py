@@ -202,6 +202,7 @@ def publish_silence_comparison(
     input_plan_sha256: str | None = None,
 ) -> SilenceComparisonResult:
     """Publish immutable segmentation/compression reports for later blind review."""
+    _silence_comparison_target_seconds(target_seconds)
     values = _publishable_silence_comparison_samples(samples, input_plan_sha256)
     output = _silence_comparison_output_directory(output_directory)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -492,12 +493,14 @@ def _load_validated_silence_comparison(
         document = snapshot.json_document("silence comparison")
     except AuthoringAuthorityError as error:
         raise SilenceComparisonError(str(error)) from error
-    policy, reports, samples, artifacts = _validate_silence_comparison_document(
+    target_seconds, reports, samples, artifacts = _validate_silence_comparison_document(
         document
     )
     seen = _validate_silence_comparison_artifacts(root, artifacts)
     _validate_silence_comparison_inventory(root, seen, reports)
-    by_queue_id = _validate_silence_comparison_samples(root, samples, seen, policy)
+    by_queue_id = _validate_silence_comparison_samples(
+        root, samples, seen, target_seconds
+    )
     segmented = _validate_comparison_report(
         root,
         reports[0],
@@ -525,7 +528,7 @@ def _load_validated_silence_comparison(
 
 def _validate_silence_comparison_document(
     document: dict[str, object],
-) -> tuple[dict[str, object], list[object], list[object], list[object]]:
+) -> tuple[float, list[object], list[object], list[object]]:
     required_document_fields = {
         "schema",
         "schema_version",
@@ -566,7 +569,7 @@ def _validate_silence_comparison_document(
         or policy["requires_blind_review"] is not True
     ):
         raise SilenceComparisonError("Silence comparison policy is invalid")
-    _silence_comparison_policy_target(policy)
+    target_seconds = _silence_comparison_target_seconds(policy["target_seconds"])
     reports = document.get("reports")
     samples = document.get("samples")
     artifacts = document.get("artifacts")
@@ -581,7 +584,7 @@ def _validate_silence_comparison_document(
         or not isinstance(artifacts, list)
     ):
         raise SilenceComparisonError("Silence comparison inventory is malformed")
-    return policy, reports, samples, artifacts
+    return target_seconds, reports, samples, artifacts
 
 
 def _silence_comparison_created_at(value: object) -> datetime:
@@ -651,7 +654,7 @@ def _validate_silence_comparison_samples(
     root: Path,
     samples: list[object],
     seen: Mapping[str, str],
-    policy: Mapping[str, object],
+    target_seconds: float,
 ) -> dict[str, dict[str, object]]:
     required_sample_fields = {
         "queue_id",
@@ -669,16 +672,14 @@ def _validate_silence_comparison_samples(
         "sample_rate",
         "transform",
     }
-    sample_ids = set()
     by_queue_id: dict[str, dict[str, object]] = {}
     for sample in samples:
         if not isinstance(sample, dict) or set(sample) != required_sample_fields:
             raise SilenceComparisonError("Silence comparison sample is malformed")
         queue_id = sample["queue_id"]
-        if not isinstance(queue_id, str) or not queue_id or queue_id in sample_ids:
+        if not isinstance(queue_id, str) or not queue_id or queue_id in by_queue_id:
             raise SilenceComparisonError("Silence comparison sample ID is invalid")
-        sample_ids.add(queue_id)
-        _validate_silence_comparison_sample(root, sample, seen, policy)
+        _validate_silence_comparison_sample(root, sample, seen, target_seconds)
         by_queue_id[queue_id] = sample
     return by_queue_id
 
@@ -687,7 +688,7 @@ def _validate_silence_comparison_sample(
     root: Path,
     sample: dict[str, object],
     seen: Mapping[str, str],
-    policy: Mapping[str, object],
+    target_seconds: float,
 ) -> None:
     if (
         not isinstance(sample["line_id"], str)
@@ -701,7 +702,6 @@ def _validate_silence_comparison_sample(
     _validate_silence_comparison_sample_artifacts(sample, seen)
     sample_rate = _silence_comparison_sample_rate(sample)
     audio = _silence_comparison_sample_audio(root, sample, sample_rate)
-    target_seconds = _silence_comparison_policy_target(policy)
     try:
         compression = compress_single_sentence_boundary_silence(
             audio["raw_copy"],
@@ -780,8 +780,8 @@ def _silence_comparison_sample_audio(
     return audio
 
 
-def _silence_comparison_policy_target(policy: Mapping[str, object]) -> float:
-    target_seconds = optional_finite_number(policy["target_seconds"])
+def _silence_comparison_target_seconds(value: object) -> float:
+    target_seconds = optional_finite_number(value)
     if target_seconds is None or target_seconds <= 0:
         raise SilenceComparisonError("Silence comparison policy is invalid")
     return target_seconds

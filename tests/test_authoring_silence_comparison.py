@@ -131,6 +131,37 @@ class AuthoringSilenceComparisonTest(unittest.TestCase):
             )
             self.assertEqual(load_listening_session(session)["trial_count"], 2)
 
+    def test_invalid_target_is_rejected_before_sources_or_output_creation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sample = write_silence_comparison_sample(root)
+            output = root / "new-parent" / "comparison"
+            for value in (
+                None,
+                "0.6",
+                [],
+                {},
+                True,
+                False,
+                10**400,
+                -(10**400),
+                float("nan"),
+                float("inf"),
+                float("-inf"),
+                0,
+                -1,
+            ):
+                with (
+                    self.subTest(target=value),
+                    mock.patch.object(comparison_module, "_read_source_wav") as read,
+                ):
+                    with self.assertRaisesRegex(SilenceComparisonError, "policy"):
+                        publish_silence_comparison(
+                            (sample,), output, target_seconds=value
+                        )
+                    read.assert_not_called()
+                    self.assertFalse(output.parent.exists())
+
     def test_racing_publication_preserves_competitor_and_uses_domain_error(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
