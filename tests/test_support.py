@@ -227,6 +227,38 @@ class NativeSpeechLogTest(unittest.TestCase):
         self.assertIn("psutil", report["versions"])
 
 
+class PregenerationSupportSummaryTest(unittest.TestCase):
+    def test_failed_item_summary_is_bounded_and_counts_all_failures(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "generation-state.json"
+            items = {
+                f"failed-{index:02d}": {"status": "failed", "line_id": str(index)}
+                for index in reversed(range(70))
+            }
+            items.update(
+                {
+                    "approved": {"status": "approved"},
+                    "bad-status": {"status": 1},
+                    "not-an-object": ["failed"],
+                }
+            )
+            path.write_text(json.dumps({"items": items}), encoding="utf-8")
+
+            with patch(
+                "vntts.support._pregeneration_failure_summary",
+                wraps=support_module._pregeneration_failure_summary,
+            ) as summarize:
+                result = support_module._pregeneration_state_summary(path)
+
+        self.assertEqual(result["status_counts"], {"approved": 1, "failed": 70})
+        self.assertEqual(result["failed_items_truncated"], 6)
+        self.assertEqual(
+            [item["queue_id"] for item in result["failed_items"]],
+            [f"failed-{index:02d}" for index in range(64)],
+        )
+        self.assertEqual(summarize.call_count, 64)
+
+
 class GenerationTimelineLogTest(unittest.TestCase):
     def test_unrepresentable_latency_does_not_abort_publication(self):
         with TemporaryDirectory() as temporary_directory:

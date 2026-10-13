@@ -1338,25 +1338,32 @@ def _pregeneration_state_summary(path: str | Path | None) -> SupportDocument:
     items = document.get("items")
     if not isinstance(items, dict):
         return {"available": False, "reason": "state items are invalid"}
-    statuses = Counter(
-        item.get("status")
-        for item in items.values()
-        if isinstance(item, dict) and isinstance(item.get("status"), str)
-    )
-    failures = [
-        _pregeneration_failure_summary(queue_id, item)
-        for queue_id, item in sorted(items.items())
-        if isinstance(queue_id, str)
-        and isinstance(item, dict)
-        and item.get("status") == "failed"
-    ]
     return {
         "available": True,
         "state_sha256": hashlib.sha256(payload).hexdigest(),
         "queue_sha256": _sha256_support_value(document.get("queue_sha256")),
+        **_pregeneration_item_summary(items),
+    }
+
+
+def _pregeneration_item_summary(items: dict[str, object]) -> SupportDocument:
+    statuses: Counter[str] = Counter()
+    failures: list[SupportDocument] = []
+    failed_item_count = 0
+    for queue_id, item in sorted(items.items()):
+        if not isinstance(item, dict):
+            continue
+        status = item.get("status")
+        if isinstance(status, str):
+            statuses[status] += 1
+        if isinstance(queue_id, str) and status == "failed":
+            failed_item_count += 1
+            if len(failures) < 64:
+                failures.append(_pregeneration_failure_summary(queue_id, item))
+    return {
         "status_counts": dict(sorted(statuses.items())),
-        "failed_items": failures[:64],
-        "failed_items_truncated": max(0, len(failures) - 64),
+        "failed_items": failures,
+        "failed_items_truncated": max(0, failed_item_count - 64),
     }
 
 
