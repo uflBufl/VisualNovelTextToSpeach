@@ -224,7 +224,10 @@ from vntts.authoring.missing_voice_policy import (
     MissingVoicePolicyError,
 )
 from vntts.authoring.publication import no_replace_destination
-from vntts.authoring.silence_evidence import publish_silence_failure_evidence
+from vntts.authoring.silence_evidence import (
+    SilenceFailureEvidenceError,
+    publish_silence_failure_evidence,
+)
 from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
 from vntts.authoring.speech_quality import (
     LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION as LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION,
@@ -1857,23 +1860,26 @@ def _finalize_generation_run(
     if captured is not None:
         if evidence_directory is None:
             raise BulkGenerationError("Silence-failure evidence directory is missing")
-        publish_silence_failure_evidence(
-            evidence_directory,
-            captured["wav_payload"],
-            {
-                "queue": str(queue_path),
-                "queue_sha256": queue_sha256,
-                "state": str(state_path),
-                "state_sha256": sha256_file(state_path),
-                "queue_id": captured["queue_id"],
-                "line_id": captured["line_id"],
-                "text": captured["text"],
-                "text_sha256": captured["text_sha256"],
-                "state_item": captured["state_item"],
-                "state_item_sha256": _canonical_sha256(captured["state_item"]),
-                "synthesis_controls_sha256": provenance_sha256,
-            },
-        )
+        try:
+            publish_silence_failure_evidence(
+                evidence_directory,
+                captured["wav_payload"],
+                {
+                    "queue": str(queue_path),
+                    "queue_sha256": queue_sha256,
+                    "state": str(state_path),
+                    "state_sha256": sha256_file(state_path),
+                    "queue_id": captured["queue_id"],
+                    "line_id": captured["line_id"],
+                    "text": captured["text"],
+                    "text_sha256": captured["text_sha256"],
+                    "state_item": captured["state_item"],
+                    "state_item_sha256": _canonical_sha256(captured["state_item"]),
+                    "synthesis_controls_sha256": provenance_sha256,
+                },
+            )
+        except (SilenceFailureEvidenceError, OSError) as error:
+            raise BulkGenerationError(str(error)) from error
     failed = sum(
         value.get("status") == "failed" for value in _state_items(state).values()
     )

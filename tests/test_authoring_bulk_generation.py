@@ -2858,6 +2858,180 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         )
         self.assertEqual(published_wavs, [])
 
+    def test_silence_evidence_publication_failure_preserves_checkpoint_and_recovers(
+        self,
+    ):
+        for failure, target in (
+            (
+                SilenceFailureEvidenceError("synthetic evidence publication failure"),
+                "vntts.authoring.bulk_generation.publish_silence_failure_evidence",
+            ),
+            (
+                PermissionError("synthetic evidence write failure"),
+                "vntts.authoring.silence_evidence.atomic_write_json",
+            ),
+        ):
+            with (
+                self.subTest(failure=type(failure).__name__),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                item = queue_item(
+                    text="The gate is already open. We should leave before dawn."
+                )
+                queue = write_queue(root / "queue.jsonl", [item])
+                source = queue.read_bytes()
+                output = root / "output"
+                evidence = root / "evidence"
+                tone = audio_samples()
+                pcm = np.concatenate(
+                    (tone, np.zeros(16_000 * 2, dtype=np.float32), tone)
+                )
+                saved = {}
+
+                def fail_publication(*arguments, **options):
+                    for name in ("generation-state.json", "manifest.json"):
+                        saved[name] = (output / name).read_bytes()
+                    raise failure
+
+                with patch(target, side_effect=fail_publication):
+                    with self.assertRaisesRegex(
+                        BulkGenerationError, str(failure)
+                    ) as caught:
+                        self.run_generation(
+                            queue,
+                            output,
+                            SyntheticRenderer(pcm=pcm),
+                            retries=0,
+                            include_queue_ids=(item["queue_id"],),
+                            silence_failure_evidence=evidence,
+                        )
+                self.assertIs(caught.exception.__cause__, failure)
+                for name, payload in saved.items():
+                    self.assertEqual((output / name).read_bytes(), payload)
+                state = load_generation_state(output / "generation-state.json", queue)
+                self.assertIsNone(state["active"])
+                stored = state["items"][item["queue_id"]]
+                self.assertEqual(stored["status"], "failed")
+                self.assertEqual(stored["failure"]["kind"], "speech_silence")
+                self.assertEqual(stored["attempts"], 1)
+                self.assertEqual(
+                    GeneratedAudioIndex.load(output / "manifest.json").entries, ()
+                )
+                self.assertEqual(queue.read_bytes(), source)
+                self.assertFalse(evidence.exists())
+                self.assertFalse(list(root.glob(".evidence.staging-*")))
+                self.assertFalse((output / ".generation-lease.json").exists())
+                self.assertFalse(list(output.rglob("*.wav")))
+
+                recovered = self.run_generation(
+                    queue,
+                    output,
+                    SyntheticRenderer(pcm=pcm),
+                    retries=0,
+                    include_queue_ids=(item["queue_id"],),
+                    silence_failure_evidence=evidence,
+                )
+                document = load_silence_failure_evidence(evidence)
+                self.assertEqual(recovered.generated, 0)
+                self.assertEqual(recovered.failed, 1)
+                self.assertEqual(document["metadata"]["state_item"]["attempts"], 2)
+                self.assertEqual(
+                    document["metadata"]["state_sha256"], sha256_file(recovered.state)
+                )
+                self.assertEqual(queue.read_bytes(), source)
+                self.assertFalse(list(output.rglob("*.wav")))
+
+    def test_cli_silence_evidence_write_failure_is_actionable_without_traceback(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item(
+                text="The gate is already open. We should leave before dawn."
+            )
+            queue = write_queue(root / "queue.jsonl", [item])
+            voice_manifest = root / "voices.json"
+            voice_manifest.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "voices": [
+                            {
+                                "character": "Hero",
+                                "speaker": "anna",
+                                "aliases": [],
+                                "references": [],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            sources = {path: path.read_bytes() for path in (queue, voice_manifest)}
+            tone = audio_samples()
+            pcm = np.concatenate((tone, np.zeros(16_000 * 2, dtype=np.float32), tone))
+            renderer = SyntheticRenderer(pcm=pcm)
+            renderer.shutdown = Mock()
+            output = root / "output"
+            evidence = root / "evidence"
+            errors = StringIO()
+
+            def create_renderer(name, _registry, _cache, **options):
+                renderer.name = name
+                renderer.model_name = name
+                return renderer
+
+            with (
+                patch(
+                    "vntts.authoring.cli_generation.create_backend",
+                    side_effect=create_renderer,
+                ),
+                patch(
+                    "vntts.authoring.silence_evidence.atomic_write_json",
+                    side_effect=PermissionError("synthetic evidence write failure"),
+                ),
+                redirect_stderr(errors),
+                redirect_stdout(StringIO()),
+                self.assertRaises(SystemExit) as caught,
+            ):
+                authoring_main(
+                    [
+                        "generate",
+                        "--queue",
+                        str(queue),
+                        "--output",
+                        str(output),
+                        "--voice-manifest",
+                        str(voice_manifest),
+                        "--backend",
+                        "pocket-tts",
+                        "--queue-id",
+                        item["queue_id"],
+                        "--retries",
+                        "0",
+                        "--capture-silence-failure",
+                        str(evidence),
+                    ]
+                )
+            self.assertEqual(caught.exception.code, 2)
+            self.assertIn("synthetic evidence write failure", errors.getvalue())
+            self.assertNotIn("Traceback", errors.getvalue())
+            renderer.shutdown.assert_called_once_with()
+            self.assertEqual(len(renderer.requests), 1)
+            state = load_generation_state(output / "generation-state.json", queue)
+            self.assertIsNone(state["active"])
+            self.assertEqual(
+                state["items"][item["queue_id"]]["failure"]["kind"], "speech_silence"
+            )
+            self.assertEqual(
+                GeneratedAudioIndex.load(output / "manifest.json").entries, ()
+            )
+            for path, payload in sources.items():
+                self.assertEqual(path.read_bytes(), payload)
+            self.assertFalse(evidence.exists())
+            self.assertFalse(list(root.glob(".evidence.staging-*")))
+            self.assertFalse((output / ".generation-lease.json").exists())
+            self.assertFalse(list(output.rglob("*.wav")))
+
     def test_silence_failure_capture_requires_exact_one_attempt_scope(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
