@@ -334,7 +334,6 @@ def _manifest_entries(
             "speech_quality",
             "carry_forward",
             "failure_repair",
-            "synthesis_text_sha256",
             "attempts",
             "attempts_by_provider",
             "cohort_review",
@@ -361,7 +360,9 @@ def write_generated_manifest_from_state(
 ) -> None:
     """Atomically publish the approved-only projection of one generation state."""
     entries = (
-        approved_manifest_entries(state, output_directory)
+        approved_manifest_entries(
+            state, output_directory, validate_files=validate_files
+        )
         if entries is None
         else entries
     )
