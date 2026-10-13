@@ -426,6 +426,46 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
         self.assertEqual(result.recovered, 1)
         self.assertEqual(result.remaining_failed, 0)
 
+    def test_scoped_report_counts_only_remaining_failures_for_that_dialogue(self):
+        for queue_id, expected_failed, expected_counts in (
+            ("a", 0, ()),
+            ("b", 1, (("edge_silence_trim", 1),)),
+        ):
+            with self.subTest(queue_id=queue_id), TemporaryDirectory() as directory:
+                generation_input, first, voice_plan = inputs(Path(directory))
+                repaired = replace(first, generated=2, failed=1)
+                plans = iter(
+                    (
+                        OfflineRecoveryPlan(
+                            "1" * 64,
+                            "2" * 64,
+                            2,
+                            (OfflineRecoveryBatch("edge_silence_trim", ("a", "b")),),
+                            (),
+                        ),
+                        OfflineRecoveryPlan(
+                            "3" * 64,
+                            "2" * 64,
+                            1,
+                            (OfflineRecoveryBatch("edge_silence_trim", ("b",)),),
+                            (),
+                        ),
+                    )
+                )
+                generator = Mock()
+                generator.repair.return_value = repaired
+                result = OfflineRecoveryWorker(
+                    generator, planner=lambda *_arguments: next(plans)
+                ).recover(generation_input, voice_plan, first, queue_id=queue_id)
+
+            self.assertEqual(result.remaining_failed, expected_failed)
+            self.assertEqual(result.remaining_action_counts, expected_counts)
+            self.assertEqual(result.recovered, 1 - expected_failed)
+            generator.repair.assert_called_once()
+            self.assertEqual(
+                generator.repair.call_args.kwargs["queue_ids"], (queue_id,)
+            )
+
     def test_generation_and_recovery_alternate_in_queue_order(self):
         with TemporaryDirectory() as temporary_directory:
             generation_input, first, voice_plan = inputs(Path(temporary_directory))

@@ -306,11 +306,12 @@ class OfflineRecoveryWorker:
                         if queue_id in batch.queue_ids
                     )
                 )
-                for batch in plan.automatic_batches:
-                    remaining[batch.action] += sum(
-                        queue_id is None or candidate == queue_id
-                        for candidate in batch.queue_ids
-                    )
+                remaining.update(
+                    batch.action
+                    for batch in plan.automatic_batches
+                    for candidate in batch.queue_ids
+                    if queue_id is None or candidate == queue_id
+                )
                 remaining_failed = (
                     current.failed
                     if queue_id is None
