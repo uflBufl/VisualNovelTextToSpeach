@@ -325,10 +325,12 @@ def dialog_completion_cue_visible(frame: object) -> bool:
     for component in components:
         xs = [point[0] for point in component]
         ys = [point[1] for point in component]
-        component_width = max(xs) - min(xs) + 1
-        component_height = max(ys) - min(ys) + 1
-        center_x = left + (min(xs) + max(xs)) / 2
-        center_y = top + (min(ys) + max(ys)) / 2
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        component_width = max_x - min_x + 1
+        component_height = max_y - min_y + 1
+        center_x = left + (min_x + max_x) / 2
+        center_y = top + (min_y + max_y) / 2
         aspect_ratio = component_width / component_height
         if (
             minimum_component_pixels <= len(component) <= 500
@@ -337,7 +339,7 @@ def dialog_completion_cue_visible(frame: object) -> bool:
             and width * 0.95 <= center_x <= width * 0.99
             and height * 0.78 <= center_y <= height * 0.93
             and 0.65 <= aspect_ratio <= 2.5
-            and max(ys) < region.height - 1
+            and max_y < region.height - 1
             and len(component) / (component_width * component_height) >= 0.12
         ):
             return True

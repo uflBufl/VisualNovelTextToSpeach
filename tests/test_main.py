@@ -383,6 +383,18 @@ class MainTest(unittest.TestCase):
                     dialog_completion_cue_visible(CapturedDialogFrame(resized, 0))
                 )
 
+    def test_dialog_completion_cue_rejects_a_component_touching_crop_bottom(self):
+        for bottom, expected in ((228, True), (229, False)):
+            with self.subTest(bottom=bottom):
+                image = Image.new("RGB", (1200, 240), "#202020")
+                draw = ImageDraw.Draw(image)
+                draw.text((60, 100), "Same dialogue", fill="white")
+                draw.rectangle((1150, 214, 1160, bottom), fill="white")
+                self.assertEqual(
+                    dialog_completion_cue_visible(CapturedDialogFrame(image, 0)),
+                    expected,
+                )
+
     def test_dialog_completion_cue_rejects_text_only_and_bright_popup(self):
         text_only = Image.new("RGB", (1200, 240), "#202020")
         ImageDraw.Draw(text_only).text(
