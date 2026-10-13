@@ -2,7 +2,7 @@ import hashlib
 import io
 import json
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -403,6 +403,81 @@ class RenderHypothesisReviewTest(unittest.TestCase):
             decision_path.write_text(json.dumps(decision), encoding="utf-8")
             with self.assertRaisesRegex(RenderHypothesisReviewError, "malformed"):
                 load_render_hypothesis_review(output)
+
+    def test_publication_io_errors_leave_no_output_and_reach_cli(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            comparison = root / "comparison"
+            queue_id = write_comparison(comparison)
+            original_sources = {
+                path.relative_to(comparison): path.read_bytes()
+                for path in comparison.rglob("*")
+                if path.is_file()
+            }
+            output = root / "destination" / "review"
+            mkdir = Path.mkdir
+            write_bytes = Path.write_bytes
+            error = PermissionError("review storage is read-only")
+
+            def blocked_mkdir(path, *args, **kwargs):
+                if path.resolve() == output.parent.resolve():
+                    raise error
+                return mkdir(path, *args, **kwargs)
+
+            def blocked_audio_write(path, payload):
+                if path.name == "result.wav":
+                    raise error
+                return write_bytes(path, payload)
+
+            failures = (
+                patch.object(
+                    render_hypothesis_review,
+                    "no_replace_destination",
+                    side_effect=error,
+                ),
+                patch.object(Path, "mkdir", blocked_mkdir),
+                patch.object(Path, "write_bytes", blocked_audio_write),
+                patch.object(
+                    render_hypothesis_review, "atomic_write_json", side_effect=error
+                ),
+            )
+            for failure in failures:
+                with self.subTest(boundary=failure.attribute), failure:
+                    with self.assertRaises(RenderHypothesisReviewError) as raised:
+                        publish_render_hypothesis_review(
+                            comparison, queue_id, "reference-02", output
+                        )
+                    self.assertIs(raised.exception.__cause__, error)
+                    stdout, stderr = io.StringIO(), io.StringIO()
+                    with redirect_stdout(stdout), redirect_stderr(stderr):
+                        with self.assertRaises(SystemExit) as exited:
+                            authoring_main(
+                                [
+                                    "render-hypothesis-review-publish",
+                                    str(comparison),
+                                    queue_id,
+                                    "reference-02",
+                                    "--output",
+                                    str(output),
+                                ]
+                            )
+                    self.assertEqual(exited.exception.code, 2)
+                    self.assertIn(str(error), stderr.getvalue())
+                    self.assertEqual(stdout.getvalue(), "")
+                self.assertFalse(output.exists())
+                self.assertEqual(list(output.parent.glob(".review.staging-*")), [])
+                self.assertEqual(
+                    {
+                        path.relative_to(comparison): path.read_bytes()
+                        for path in comparison.rglob("*")
+                        if path.is_file()
+                    },
+                    original_sources,
+                )
+            published = publish_render_hypothesis_review(
+                comparison, queue_id, "reference-02", output
+            )
+            self.assertEqual(published.queue_id, queue_id)
 
     def test_rejects_incomplete_arm_and_ambiguous_reference(self):
         with TemporaryDirectory() as directory:

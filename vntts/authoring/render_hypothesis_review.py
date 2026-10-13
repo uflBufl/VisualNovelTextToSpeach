@@ -27,8 +27,8 @@ from vntts.authoring.failure_reference_audit import (
     record_failure_reference_decision,
 )
 from vntts.authoring.publication import (
-    AtomicPublicationError,
     no_replace_destination,
+    publication_errors,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -161,6 +161,7 @@ class _Selection:
     authority: JsonObject
 
 
+@publication_errors(RenderHypothesisReviewError)
 def publish_render_hypothesis_review(
     comparison_directory: str | Path,
     queue_id: object,
@@ -187,10 +188,7 @@ def publish_render_hypothesis_review(
     with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
         _stage_review(staging, snapshots, identity, review_id)
         _assert_publish_snapshots(snapshots)
-        try:
-            rename_directory_no_replace(staging, output)
-        except (AtomicPublicationError, OSError) as error:
-            raise RenderHypothesisReviewError(str(error)) from error
+        rename_directory_no_replace(staging, output)
         return load_render_hypothesis_review(output)
 
 
