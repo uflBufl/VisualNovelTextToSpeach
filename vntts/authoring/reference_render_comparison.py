@@ -379,6 +379,7 @@ def _validate_reference_render_sample(
     prior.add(selection)
 
 
+@publication_errors(ReferenceRenderComparisonError)
 def publish_reference_render_comparison(
     plan: object,
     output_directory: str | Path,
@@ -410,7 +411,6 @@ def publish_reference_render_comparison(
     try:
         with (
             cleanup_on_exit(service.close, description="Reference preview shutdown"),
-            publication_errors(ReferenceRenderComparisonError),
             staged_directory(
                 output.parent, prefix=f".{output.name}.staging-"
             ) as staging,

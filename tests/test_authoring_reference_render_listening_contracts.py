@@ -66,6 +66,28 @@ class ReferenceRenderListeningContractTest(unittest.TestCase):
             backend_factory=_PreviewBackendFactory(),
         )
 
+    def test_plan_rejects_noninteger_and_unsupported_schema_versions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            plan_path = Path(temporary) / "plan.json"
+            for version in (True, False, 1.0, "1", None, 0, 2):
+                with self.subTest(version=version):
+                    plan_path.write_text(
+                        json.dumps(
+                            {
+                                "schema": REFERENCE_RENDER_INPUT_SCHEMA,
+                                "schema_version": version,
+                                "audit": "unused",
+                                "audit_id": "a" * 64,
+                                "arms": [],
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    with self.assertRaisesRegex(
+                        ReferenceRenderComparisonError, "Unsupported.*schema"
+                    ):
+                        load_reference_render_plan(plan_path)
+
     def test_changed_loaded_plan_is_rejected_before_render_or_publication(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -128,6 +150,51 @@ class ReferenceRenderListeningContractTest(unittest.TestCase):
                 expected,
             )
             self.assertEqual(comparison.complete_pair_count, 1)
+
+    def test_destination_io_failure_precedes_preview_startup(self):
+        for boundary in ("destination", "mkdir"):
+            with (
+                self.subTest(boundary=boundary),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                original_publish = publish_reference_render_comparison
+                mkdir = Path.mkdir
+                error = PermissionError("comparison storage is read-only")
+
+                def publish_with_refusal(plan, output, **kwargs):
+                    def blocked_mkdir(path, *args, **options):
+                        if path.resolve() == output.parent.resolve():
+                            raise error
+                        return mkdir(path, *args, **options)
+
+                    failure = (
+                        patch.object(
+                            reference_render_comparison,
+                            "no_replace_destination",
+                            side_effect=error,
+                        )
+                        if boundary == "destination"
+                        else patch.object(Path, "mkdir", blocked_mkdir)
+                    )
+                    with failure:
+                        return original_publish(plan, output, **kwargs)
+
+                with (
+                    patch(
+                        f"{__name__}.publish_reference_render_comparison",
+                        side_effect=publish_with_refusal,
+                    ),
+                    patch.object(
+                        reference_render_comparison, "FailureReferencePreviewService"
+                    ) as service,
+                    self.assertRaises(ReferenceRenderComparisonError) as caught,
+                ):
+                    self._comparison(root)
+                self.assertIs(caught.exception.__cause__, error)
+                service.assert_not_called()
+                self.assertFalse((root / "comparison").exists())
+                self.assertEqual(list(root.glob(".comparison.staging-*")), [])
 
     def test_publication_race_preserves_destination_and_cleans_staging(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -315,28 +382,6 @@ class ReferenceRenderListeningContractTest(unittest.TestCase):
             report.write_text(json.dumps(payload))
 
         self._assert_handoff_change_rejected(mutate)
-
-    def test_plan_rejects_noninteger_and_unsupported_schema_versions(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            plan_path = Path(temporary) / "plan.json"
-            for version in (True, False, 1.0, "1", None, 0, 2):
-                with self.subTest(version=version):
-                    plan_path.write_text(
-                        json.dumps(
-                            {
-                                "schema": REFERENCE_RENDER_INPUT_SCHEMA,
-                                "schema_version": version,
-                                "audit": "unused",
-                                "audit_id": "a" * 64,
-                                "arms": [],
-                            }
-                        ),
-                        encoding="utf-8",
-                    )
-                    with self.assertRaisesRegex(
-                        ReferenceRenderComparisonError, "Unsupported.*schema"
-                    ):
-                        load_reference_render_plan(plan_path)
 
 
 if __name__ == "__main__":
