@@ -384,6 +384,61 @@ class FailureReferenceBindingTest(unittest.TestCase):
                 for path, payload in zip(paths, originals, strict=True):
                     path.write_bytes(payload)
 
+    def test_captured_versions_and_selection_authority_fail_closed(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit, *_rest = self.create_decided_audit(root)
+            load_decisions = failure_audit_module.load_failure_reference_decisions
+            mutations = [
+                (name, "schema_version", value)
+                for name in ("audit.json", ".blind-key.json", "decisions.json")
+                for value in (True, 2.0, [], {})
+            ]
+            mutations.extend(
+                ("decisions.json", "selection_authority", value)
+                for value in (None, [], "not an object")
+            )
+            for index, (name, field, value) in enumerate(mutations):
+                path = audit / name
+                original = path.read_bytes()
+                document = json.loads(original)
+                if field == "selection_authority":
+                    document["decisions"][0][field] = value
+                    document["decision_set_id"] = canonical_document_sha256(
+                        {
+                            key: item
+                            for key, item in document.items()
+                            if key != "decision_set_id"
+                        }
+                    )
+                    message = "Reference audit selection authority is malformed"
+                else:
+                    document[field] = value
+                    message = "Unsupported reference audit schema"
+                captured = json.dumps(document).encode()
+                output = root / f"binding-{index}"
+
+                def replace_after_initial_validation(*args, **kwargs):
+                    result = load_decisions(*args, **kwargs)
+                    path.write_bytes(captured)
+                    return result
+
+                try:
+                    with (
+                        self.subTest(name=name, field=field, value=value),
+                        patch.object(
+                            failure_audit_module,
+                            "load_failure_reference_decisions",
+                            side_effect=replace_after_initial_validation,
+                        ),
+                        self.assertRaisesRegex(FailureReferenceBindingError, message),
+                    ):
+                        publish_failure_reference_binding(audit, output)
+                    self.assertFalse(output.exists())
+                    self.assertEqual(list(root.glob(f".{output.name}.staging-*")), [])
+                finally:
+                    path.write_bytes(original)
+
     def test_publication_race_preserves_competing_output_and_domain_error(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

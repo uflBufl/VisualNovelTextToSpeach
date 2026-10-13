@@ -37,7 +37,7 @@ from vntts.authoring.publication import (
 )
 from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
 from vntts.document_identity import sha256_file
-from vntts.json_types import is_json_object
+from vntts.json_types import has_schema_version, is_json_object
 
 _AUDIT_SCHEMA = "vntts.authoring-failure-reference-audit"
 _AUDIT_KEY_SCHEMA = "vntts.authoring-failure-reference-audit-key"
@@ -85,7 +85,7 @@ class _Decision(TypedDict):
     decision: str
     selected_reference_sha256: str | None
     case_queue_ids: list[str]
-    selection_authority: NotRequired[object]
+    selection_authority: NotRequired[JsonDocument]
 
 
 class _AuditSnapshot(TypedDict):
@@ -233,7 +233,10 @@ def _decisions(value: object) -> list[_Decision]:
             ),
         )
         if "selection_authority" in raw_decision:
-            decision["selection_authority"] = raw_decision["selection_authority"]
+            decision["selection_authority"] = _document(
+                raw_decision["selection_authority"],
+                "Reference audit selection authority is malformed",
+            )
         decisions.append(decision)
     return decisions
 
@@ -514,16 +517,12 @@ def _load_audit_snapshots(directory: Path) -> _AuditSnapshots:
     audit = documents["audit"]
     key = documents["key"]
     decisions = documents["decisions"]
-    audit_version = audit.get("schema_version")
-    key_version = key.get("schema_version")
     decisions_version = decisions.get("schema_version")
     if (
         audit.get("schema") != _AUDIT_SCHEMA
-        or type(audit_version) is not int
-        or audit_version != _AUDIT_VERSION
+        or not has_schema_version(audit, _AUDIT_VERSION)
         or key.get("schema") != _AUDIT_KEY_SCHEMA
-        or type(key_version) is not int
-        or key_version != _AUDIT_VERSION
+        or not has_schema_version(key, _AUDIT_VERSION)
         or decisions.get("schema") != _DECISIONS_SCHEMA
         or type(decisions_version) is not int
         or decisions_version not in {*_LEGACY_DECISIONS_VERSIONS, _DECISIONS_VERSION}
