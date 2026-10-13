@@ -109,14 +109,18 @@ class SpeakerIdentityTest(unittest.TestCase):
                 )
             }
 
-            report = build_speaker_identity_report(
-                inventory,
-                labels,
-                lambda payload: np.asarray(
-                    vectors[hashlib.sha256(payload).hexdigest()]
-                ),
-                {"model_id": "injected-test-model"},
-            )
+            with patch.object(
+                speaker_identity, "_sha256_bytes", wraps=speaker_identity._sha256_bytes
+            ) as rehash_reference:
+                report = build_speaker_identity_report(
+                    inventory,
+                    labels,
+                    lambda payload: np.asarray(
+                        vectors[hashlib.sha256(payload).hexdigest()]
+                    ),
+                    {"model_id": "injected-test-model"},
+                )
+            rehash_reference.assert_not_called()
 
             self.assertTrue(report["fit"]["separated"])
             self.assertTrue(report["threshold_eligible"])
@@ -266,6 +270,30 @@ class SpeakerIdentityTest(unittest.TestCase):
                     with self.assertRaisesRegex(SpeakerIdentityError, reason):
                         build_speaker_identity_report(inventory, invalid, embed, {})
                     embed.assert_not_called()
+
+    def test_report_rejects_changed_reference_before_embedding(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            inventory = build_reference_inventory(_fixture(root))
+            references = sorted(
+                inventory["references"], key=lambda item: item["reference_id"]
+            )[:2]
+            labels = build_labelled_pairs(
+                inventory,
+                [
+                    {
+                        "left_reference_id": references[0]["reference_id"],
+                        "right_reference_id": references[1]["reference_id"],
+                        "partition": "fit",
+                        "relationship": "same-speaker",
+                    }
+                ],
+            )
+            _wav(root / references[0]["path"], 100)
+            embed = Mock(return_value=(1.0, 0.0))
+            with self.assertRaisesRegex(SpeakerIdentityError, "Reference changed"):
+                build_speaker_identity_report(inventory, labels, embed, {})
+            embed.assert_not_called()
 
     def test_invalid_model_embeddings_use_the_domain_error(self):
         with TemporaryDirectory() as directory:

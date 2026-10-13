@@ -312,17 +312,17 @@ def build_speaker_identity_report(
         item = by_id[reference_id]
         path = Path(inventory["voice_manifest"]).parent / item["path"]
         try:
-            payload = capture_authority_file(
+            snapshot = capture_authority_file(
                 path,
                 f"speaker reference {item['path']}",
                 root=Path(inventory["voice_manifest"]).parent,
-            ).payload
+            )
         except AuthoringAuthorityError as error:
             raise SpeakerIdentityError(str(error)) from error
-        if _sha256_bytes(payload) != item["sha256"]:
+        if snapshot.sha256 != item["sha256"]:
             raise SpeakerIdentityError(f"Reference changed: {item['path']}")
         try:
-            vector = np.asarray(embed(payload), dtype=np.float64).reshape(-1)
+            vector = np.asarray(embed(snapshot.payload), dtype=np.float64).reshape(-1)
         except (TypeError, ValueError, OverflowError) as error:
             raise SpeakerIdentityError(
                 f"Invalid embedding for {item['path']}: {error}"
