@@ -465,7 +465,10 @@ def _fit_threshold(results: list[_ScoredPair]) -> tuple[float | None, _FitMetric
     max_positive = max(positives, default=None)
     min_negative = min(negatives, default=None)
     threshold = (
-        (max_positive + min_negative) / 2
+        min(
+            (max_positive + min_negative) / 2,
+            math.nextafter(min_negative, max_positive),
+        )
         if max_positive is not None
         and min_negative is not None
         and max_positive < min_negative

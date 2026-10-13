@@ -1,5 +1,6 @@
 import hashlib
 import json
+import math
 import tomllib
 import unittest
 import wave
@@ -393,6 +394,9 @@ class SpeakerIdentityTest(unittest.TestCase):
             ((0.4,), (0.4,), None),
             ((0.2, 0.8), (0.6, 1.0), None),
             ((0.1, 0.25), (0.75, 1.0), 0.5),
+            ((math.nextafter(1.0, 0.0),), (1.0,), math.nextafter(1.0, 0.0)),
+            ((1.0,), (math.nextafter(1.0, 2.0),), 1.0),
+            ((0.0,), (math.nextafter(0.0, 1.0),), 0.0),
         ):
             with self.subTest(positives=positives, negatives=negatives):
                 results = [
@@ -423,6 +427,45 @@ class SpeakerIdentityTest(unittest.TestCase):
                         "separated": expected_threshold is not None,
                     },
                 )
+
+    def test_report_separates_adjacent_fit_distances(self):
+        with TemporaryDirectory() as directory:
+            inventory = build_reference_inventory(_fixture(Path(directory)))
+            ids = [item["reference_id"] for item in inventory["references"]]
+            labels = build_labelled_pairs(
+                inventory,
+                [
+                    {
+                        "left_reference_id": ids[left],
+                        "right_reference_id": ids[right],
+                        "partition": partition,
+                        "relationship": relationship,
+                    }
+                    for left, right, partition, relationship in (
+                        (0, 1, "fit", "same-speaker"),
+                        (0, 2, "fit", "different-speaker"),
+                        (3, 4, "held-out", "same-speaker"),
+                        (3, 5, "held-out", "different-speaker"),
+                    )
+                ],
+            )
+            vectors = {
+                item["sha256"]: vector
+                for item, vector in zip(
+                    inventory["references"],
+                    ((1, 0), (2**-53, 1), (0, 1), (1, 0), (1, 0), (0, 1)),
+                    strict=True,
+                )
+            }
+            report = build_speaker_identity_report(
+                inventory,
+                labels,
+                lambda payload: vectors[hashlib.sha256(payload).hexdigest()],
+                {},
+            )
+            self.assertEqual(report["threshold"], math.nextafter(1.0, 0.0))
+            self.assertTrue(report["threshold_eligible"])
+            self.assertEqual(report["held_out"]["boundary_violation_count"], 0)
 
     def test_invalid_model_embeddings_use_the_domain_error(self):
         with TemporaryDirectory() as directory:
