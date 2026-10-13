@@ -159,6 +159,8 @@ def select_voice_reference(
     except VoiceManifestError as error:
         raise ReferenceSelectionError(str(error)) from error
     _assert_snapshot_unchanged(snapshot)
+    if output.parent != source_path.parent:
+        validate_reference_selection_provenance(output, document)
     write_json_document_no_replace(
         output, document, "reference-selection", error_type=ReferenceSelectionError
     )

@@ -121,6 +121,37 @@ class AuthoringReferenceSelectionTest(unittest.TestCase):
                     select_voice_reference(manifest, "Hero", 2, output)
                 self.assertEqual(tree_hashes(root), recovered)
 
+    def test_relocated_selection_requires_the_same_reference_bytes(self):
+        for destination in ("missing", "changed", "matching"):
+            with (
+                self.subTest(destination=destination),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                manifest = write_manifest(root / "source")
+                output = root / "export" / "selected.json"
+                if destination == "missing":
+                    output.parent.mkdir()
+                else:
+                    write_manifest(output.parent)
+                    if destination == "changed":
+                        (output.parent / "references/hero-1.wav").write_bytes(
+                            b"changed"
+                        )
+                before = tree_hashes(root)
+                if destination == "matching":
+                    result = select_voice_reference(manifest, "Hero", 2, output)
+                    self.assertEqual(result.output, output.resolve())
+                    validate_reference_selection_provenance(
+                        output, json.loads(output.read_text(encoding="utf-8"))
+                    )
+                    output.unlink()
+                else:
+                    with self.assertRaises(ReferenceSelectionError):
+                        select_voice_reference(manifest, "Hero", 2, output)
+                    self.assertFalse(output.exists())
+                self.assertEqual(tree_hashes(root), before)
+
     def test_dangling_symlink_output_is_not_redirected(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
