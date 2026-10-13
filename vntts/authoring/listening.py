@@ -170,11 +170,14 @@ class ModelStats(TypedDict):
     reviewed_trials: int
 
 
-class PreferenceStats(TypedDict):
+class ListeningReportPreference(TypedDict):
+    rate: float | None
+
+
+class PreferenceStats(ListeningReportPreference):
     wins: int
     losses: int
     ties: int
-    rate: float | None
     rejections: NotRequired[int]
 
 
@@ -228,6 +231,7 @@ class ListeningSession(TypedDict):
 
 class ListeningReportModel(TypedDict):
     model_id: str
+    preference: ListeningReportPreference
 
 
 class ListeningReport(TypedDict):
@@ -1694,7 +1698,11 @@ def _is_public_report(value: object) -> TypeGuard[ListeningReport]:
         _is_json_object(value)
         and models is not None
         and all(
-            _is_json_object(model) and isinstance(model.get("model_id"), str)
+            _is_json_object(model)
+            and isinstance(model.get("model_id"), str)
+            and _is_json_object(preference := model.get("preference"))
+            and "rate" in preference
+            and (preference["rate"] is None or type(preference["rate"]) in (int, float))
             for model in models
         )
     )

@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import ClassVar, Literal, NotRequired, Protocol, TypedDict, cast
+from typing import ClassVar, Literal, Protocol
 
 from PySide6.QtCore import QEvent, QObject, Qt, QThreadPool, QTimer, QUrl, Signal
 from PySide6.QtGui import QCloseEvent, QDesktopServices, QKeySequence, QMouseEvent
@@ -29,6 +29,10 @@ from PySide6.QtWidgets import (
 
 from vntts.async_ui import LatestTaskRunner
 from vntts.authoring.listening import (
+    ListeningReport,
+    ListeningSession,
+    ListeningTrial,
+    Preference,
     ensure_listening_report,
     listening_progress,
     load_listening_session,
@@ -44,40 +48,21 @@ from vntts.authoring.review_context_ui import ReviewDecisionContext, review_scro
 from vntts.qt_dialogs import CloseGuardedDialog
 
 Side = Literal["a", "b"]
-Preference = Literal["a", "b", "tie", "neither"]
 PlaybackState = Literal[
     "ready", "loading", "playing", "finished", "stopped", "complete"
 ]
 
 
-class _TrialAudio(TypedDict):
-    a: str
-    b: str
-
-
-class _ListeningTrial(TypedDict):
-    trial_id: str
-    queue_id: str
-    audio: _TrialAudio
-    line_id: NotRequired[str]
-    text: NotRequired[str]
-
-
-class _ListeningSession(TypedDict):
-    trials: list[_ListeningTrial]
-
-
-class _ReportPreference(TypedDict):
-    rate: float | None
-
-
-class _ReportModel(TypedDict):
-    model_id: str
-    preference: _ReportPreference
-
-
-class _ListeningReport(TypedDict):
-    models: list[_ReportModel]
+class PreferenceRecorder(Protocol):
+    def __call__(
+        self,
+        session_path: Path,
+        trial_id: str,
+        preference: Preference,
+        /,
+        *,
+        report_path: Path,
+    ) -> ListeningSession: ...
 
 
 class _Playback(Protocol):
@@ -98,11 +83,10 @@ class _Playback(Protocol):
     def close(self) -> None: ...
 
 
-SessionLoader = Callable[[Path], _ListeningSession]
-ProgressReader = Callable[[_ListeningSession], tuple[int, int]]
-PendingTrialReader = Callable[[_ListeningSession], _ListeningTrial | None]
-PreferenceRecorder = Callable[[Path, str, Preference], _ListeningSession]
-ReportBuilder = Callable[[Path, Path], _ListeningReport]
+SessionLoader = Callable[[Path], ListeningSession]
+ProgressReader = Callable[[ListeningSession], tuple[int, int]]
+PendingTrialReader = Callable[[ListeningSession], ListeningTrial | None]
+ReportBuilder = Callable[[Path, Path], ListeningReport]
 PreferenceConfirmer = Callable[[Preference], bool]
 PlaybackFactory = Callable[[], _Playback]
 
@@ -110,7 +94,7 @@ _load_session: SessionLoader = load_listening_session
 _listening_progress: ProgressReader = listening_progress
 _next_pending_trial: PendingTrialReader = next_pending_trial
 _record_preference: PreferenceRecorder = record_trial_preference
-_ensure_report: ReportBuilder = cast(ReportBuilder, ensure_listening_report)
+_ensure_report: ReportBuilder = ensure_listening_report
 _playback_factory: PlaybackFactory = PersistentPcmPlayer
 
 
@@ -162,14 +146,14 @@ class ModelListeningDialog(CloseGuardedDialog):
     ) -> None:
         super().__init__(parent)
         self.session_path = Path(session_path).expanduser().resolve()
-        self.session: _ListeningSession = _load_session(self.session_path)
+        self.session: ListeningSession = _load_session(self.session_path)
         self.preference_recorder = preference_recorder
         self.confirmer = confirmer or self._confirm_preference
         self.preference_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.preference_runner.finished.connect(self._preference_finished)
         self._preference_active = False
         self._close_pending = False
-        self.current_trial: _ListeningTrial | None = None
+        self.current_trial: ListeningTrial | None = None
         self.auto_play = auto_play
         self.auto_play_pending_b = False
         self.active_side: Side | None = None

@@ -1204,6 +1204,52 @@ class AuthoringListeningTest(unittest.TestCase):
                 self.assertEqual(repaired["schema"], REPORT_SCHEMA)
                 self.assertEqual(repaired["session"], str(session_path.resolve()))
 
+    def test_public_report_projection_requires_numeric_preference_rate(self):
+        for preference in (None, {}, {"rate": "0.5"}, {"rate": True}):
+            with self.subTest(preference=preference):
+                report = {"models": [{"model_id": "model", "preference": preference}]}
+                with self.assertRaisesRegex(ModelListeningError, "report is invalid"):
+                    listening_module._public_report(report)
+        with self.assertRaises(ModelListeningError):
+            listening_module._public_report({"models": [{"model_id": "model"}]})
+        for rate in (None, 0, 0.5):
+            with self.subTest(rate=rate):
+                report = {
+                    "models": [{"model_id": "model", "preference": {"rate": rate}}],
+                    "extra": "preserved",
+                }
+                self.assertIs(listening_module._public_report(report), report)
+
+    def test_public_report_repairs_invalid_preference_and_preserves_valid_bytes(self):
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy), TemporaryDirectory() as directory:
+                root = Path(directory)
+                session = (
+                    import_listening_session(
+                        write_listening_fixture(root), root / "app-data"
+                    ).destination
+                    / "session.json"
+                    if legacy
+                    else create_listening_session_from_reports(
+                        write_model_reports(root, item_count=1), root / "session"
+                    )
+                )
+                expected = ensure_listening_report(session)
+                report_path = session.with_name("report.json")
+                valid_bytes = report_path.read_bytes()
+                self.assertEqual(ensure_listening_report(session), expected)
+                self.assertEqual(report_path.read_bytes(), valid_bytes)
+                for preference in (None, {}, {"rate": "0.5"}, {"rate": True}):
+                    with self.subTest(preference=preference):
+                        invalid = json.loads(valid_bytes)
+                        invalid["models"][0]["preference"] = preference
+                        report_path.write_text(json.dumps(invalid), encoding="utf-8")
+                        repaired = ensure_listening_report(session)
+                        self.assertEqual(repaired["models"], expected["models"])
+                        repaired_bytes = report_path.read_bytes()
+                        self.assertEqual(ensure_listening_report(session), repaired)
+                        self.assertEqual(report_path.read_bytes(), repaired_bytes)
+
     def test_report_failure_explicitly_preserves_and_reports_saved_rating(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
