@@ -2749,6 +2749,46 @@ class MainTest(unittest.TestCase):
                 )
                 self.assertFalse(controller.story_cursor.can_auto_advance)
 
+    def test_explicit_anchor_survives_first_start_and_next_start_invalidates_old_lease(
+        self,
+    ):
+        controller, lines, _pipeline = self._sequence_controller()
+        reader = Mock(is_running=False)
+        controller.live_reader = reader
+
+        def toggle():
+            reader.is_running = not reader.is_running
+            return reader.is_running
+
+        reader.toggle.side_effect = toggle
+        self.assertTrue(controller.resync_live_sequence("event-1"))
+        self.assertTrue(controller.explicit_sequence_anchor_pending)
+        anchored = controller.story_cursor.snapshot()
+        self.assertTrue(controller.toggle_live())
+        self.assertFalse(controller.explicit_sequence_anchor_pending)
+        self.assertEqual(controller.story_cursor.snapshot(), anchored)
+        old_lease = controller._begin_sequence_playback(
+            SpeechChunk(1, lines[0].speaker, lines[0].text, line_id=lines[0].line_id)
+        )
+        playing = controller.story_cursor.snapshot()
+        self.assertFalse(controller.toggle_live())
+        self.assertEqual(controller.story_cursor.snapshot(), playing)
+        self.assertTrue(controller.toggle_live())
+        self.assertEqual(controller.story_cursor.state, StoryCursorState.UNSYNCHRONIZED)
+        self.assertEqual(controller.story_cursor.reason, "live-session-started")
+        self.assertGreater(
+            controller.story_cursor.occurrence_id, old_lease.occurrence_id
+        )
+        controller.story_cursor.anchor_event("event-1")
+        new_lease = controller._begin_sequence_playback(
+            SpeechChunk(2, lines[0].speaker, lines[0].text, line_id=lines[0].line_id)
+        )
+        completed = PlaybackOutcome(PlaybackStatus.COMPLETED, 1.0, audio_source="game")
+        self.assertFalse(controller._finish_sequence_playback(old_lease, completed))
+        self.assertEqual(controller.story_cursor.state, StoryCursorState.PLAYING)
+        self.assertTrue(controller._finish_sequence_playback(new_lease, completed))
+        self.assertEqual(controller.sequence_event_terminal_routes, {new_lease: "game"})
+
     def test_stale_playback_lease_cannot_finish_a_resynced_same_event(self):
         text = "The same event is explicitly revisited."
         line = ChapterDialogue(

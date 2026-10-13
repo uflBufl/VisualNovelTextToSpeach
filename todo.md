@@ -1,10 +1,5 @@
 # TODO
 
-## Continue live-sequence rule ownership
-
-- [ ] Consolidate current `(event_id, occurrence_id)` admission and terminal-route conflict sealing in controller-local helpers used by prefetch, playback completion and silence. Keep backend/settings/focus/mode, PLAYING and first-PCM checks at their callers. Preserve stale/resynchronized lease refusal, one-key advance and interrupted-audible sealing; add a prefetch race gate before and during materialization.
-- [ ] Move the session-start cursor reset/explicit-anchor consumption from `LiveSessionComponent.toggle` behind a controller method. Preserve ordinary-start invalidation, stopped explicit anchors surviving the first start and pending-flag consumption exactly once. Keep cursor graph, reader generations/timers and replay diagnostics as separate owners.
-
 ## Separate authoring review and fallback transaction ownership
 
 - [ ] Move exact review snapshots, `ReviewAuthority`/`ReviewCommit`, single-item and cohort decisions from `bulk_generation` to one review owner; switch workbench, cohort, terminal review and workspace inspection to direct imports. Preserve compatible exports and shared error identity through the existing leaf `generation_lease`, exact state/queue/item/WAV authority, lease refusal and distinct rejection/approval/mixed-cohort publication order. Verify import graph, review/UI, changed-WAV, failed staging and conservative-manifest gates before completion.

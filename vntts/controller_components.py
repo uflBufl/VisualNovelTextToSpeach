@@ -932,13 +932,7 @@ class LiveSessionComponent:
             )
             with controller.speaker_announcement_lock:
                 controller.last_visible_speaker_key = None
-            with controller.story_cursor_lock:
-                if controller.story_cursor is not None:
-                    if controller.explicit_sequence_anchor_pending:
-                        controller.explicit_sequence_anchor_pending = False
-                    else:
-                        controller.story_cursor.reset("live-session-started")
-                    controller._publish_live_sequence_status()
+            controller._start_live_sequence_session()
         running = reader.toggle()
         if running:
             controller.next_live_narrator_fallback_names.clear()

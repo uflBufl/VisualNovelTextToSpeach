@@ -1262,6 +1262,17 @@ class AppController:
             return False
         return True
 
+    def _start_live_sequence_session(self) -> None:
+        with self.story_cursor_lock:
+            cursor = self.story_cursor
+            if cursor is None:
+                return
+            if self.explicit_sequence_anchor_pending:
+                self.explicit_sequence_anchor_pending = False
+            else:
+                cursor.reset("live-session-started")
+            self._publish_live_sequence_status()
+
     def _mark_sequence_silence_locked(self, event_id: str) -> bool:
         cursor = self.story_cursor
         if cursor is None or cursor.current_event_id != event_id:
