@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 from types import ModuleType
 from unittest.mock import patch
 
-from tests.authoring_fixtures import create_failed_reference_workspace
+from tests.authoring_fixtures import create_failed_reference_workspace, tree_hashes
 from tests.missing_voice_reuse_fixtures import (
     build_missing_voice_reuse_plan_fixture,
     create_missing_voice_live_fallback_fixture,
@@ -14,6 +14,7 @@ from tests.missing_voice_reuse_fixtures import (
     create_missing_voice_reuse_workspace,
 )
 from tests.source_reference_fixtures import write_experimental_composite_voice_fixture
+from tests.symlink_support import symlink_or_skip
 from vntts.authoring import (
     experimental_composite_voice,
     failure_reference_audit,
@@ -134,6 +135,44 @@ class ReferencePublicationBoundariesTest(unittest.TestCase):
                 missing_voice_reuse.MissingVoiceReuseError,
             )
             self.assertFalse(workspaces_root.exists())
+
+    def test_missing_voice_candidate_refuses_derived_output_symlinks(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            _fixture, imported, workspace = create_missing_voice_reuse_workspace(root)
+            plan = build_missing_voice_reuse_plan_fixture(workspace)
+            publish = partial(
+                missing_voice_reuse.prepare_missing_voice_reuse_candidate_workspace,
+                plan,
+                plan.document["candidates"][0]["candidate_id"],
+                imported,
+                root / "candidate-inputs",
+                root / "candidate-workspaces",
+            )
+            created = publish()
+            self.assertTrue(created.input_created)
+            self.assertFalse(publish().input_created)
+            destination = created.input_directory
+            saved = destination.with_name("saved-input")
+            destination.rename(saved)
+            empty = destination.with_name("empty-target")
+            empty.mkdir()
+            for target in (destination.with_name("missing-target"), empty, saved):
+                with self.subTest(target=target.name):
+                    symlink_or_skip(destination, target, target_is_directory=True)
+                    before = tree_hashes(root)
+                    paths = set(destination.parent.iterdir())
+                    with self.assertRaisesRegex(
+                        missing_voice_reuse.MissingVoiceReuseError, "symbolic link"
+                    ):
+                        publish()
+                    self.assertEqual(tree_hashes(root), before)
+                    self.assertEqual(set(destination.parent.iterdir()), paths)
+                    self.assertTrue(destination.is_symlink())
+                    self.assertEqual(destination.readlink(), target)
+                    destination.unlink()
+            self.assertFalse(destination.with_name("missing-target").exists())
+            self.assertEqual(list(empty.iterdir()), [])
 
     def test_missing_voice_binding_preserves_racing_output_and_cleanup(self):
         with TemporaryDirectory() as directory:

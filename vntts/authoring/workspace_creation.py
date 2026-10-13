@@ -174,7 +174,11 @@ from vntts.authoring.workspace_voice_runtime import (
 from vntts.document_identity import canonical_document_sha256, file_sha256, sha256_file
 from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
-from vntts.path_safety import copy_regular_file, read_regular_bytes
+from vntts.path_safety import (
+    contained_no_replace_destination,
+    copy_regular_file,
+    read_regular_bytes,
+)
 from vntts.voices import (
     CharacterVoice,
     CharacterVoiceRegistry,
@@ -515,7 +519,12 @@ def _resume_identity_and_document(
         queue_extension=queue_extension,
     )
     workspace_id = workspace_id_for_config(source.import_id, config_fingerprint)
-    destination = _within(root, Path(workspace_id), "Workspace destination")
+    destination = contained_no_replace_destination(
+        root,
+        Path(workspace_id),
+        "Workspace destination",
+        error_type=AuthoringWorkbenchError,
+    )
     for existing in root.iterdir():
         if (
             existing.name.casefold() == workspace_id.casefold()
@@ -736,7 +745,13 @@ def _failure_reference_workspace_document(
             "config_fingerprint": fingerprint,
         }
     )
-    return config, _within(root, Path(workspace_id), "Workspace destination"), workspace
+    destination = contained_no_replace_destination(
+        root,
+        Path(workspace_id),
+        "Workspace destination",
+        error_type=AuthoringWorkbenchError,
+    )
+    return config, destination, workspace
 
 
 def _failure_reference_controls(
@@ -1444,7 +1459,13 @@ def _audio_event_workspace_document(
             "config_fingerprint": fingerprint,
         }
     )
-    return config, _within(root, Path(workspace_id), "Workspace destination"), workspace
+    destination = contained_no_replace_destination(
+        root,
+        Path(workspace_id),
+        "Workspace destination",
+        error_type=AuthoringWorkbenchError,
+    )
+    return config, destination, workspace
 
 
 def _preserve_seed_generation_state(

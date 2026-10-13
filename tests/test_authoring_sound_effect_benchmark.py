@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import numpy as np
 
+from tests.symlink_support import symlink_or_skip
 from vntts.authoring.publication import (
     AtomicPublicationError,
     rename_directory_no_replace,
@@ -358,6 +359,43 @@ class SoundEffectBenchmarkTest(unittest.TestCase):
                 )
 
             self.assertFalse(output.exists())
+
+    def test_output_symlinks_are_rejected_before_pipeline_load(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = root / "corpus.json"
+            write_corpus(corpus)
+            for kind in ("missing", "empty", "populated"):
+                with self.subTest(target=kind):
+                    target = root / kind
+                    if kind != "missing":
+                        target.mkdir()
+                    if kind == "populated":
+                        (target / "keep").write_text("unchanged")
+                    output = root / f"output-{kind}"
+                    symlink_or_skip(output, target, target_is_directory=True)
+                    with self.assertRaisesRegex(
+                        SoundEffectBenchmarkError, "refusing to overwrite"
+                    ):
+                        benchmark_sound_effects(
+                            corpus,
+                            output,
+                            torch_module=FakeTorch(),
+                            pipeline_factory=lambda *args, **kwargs: self.fail(
+                                "Pipeline must not load"
+                            ),
+                        )
+                    self.assertTrue(output.is_symlink())
+                    self.assertEqual(output.readlink(), target)
+                    self.assertEqual(target.exists(), kind != "missing")
+                    if target.exists():
+                        self.assertEqual(
+                            sorted(path.name for path in target.iterdir()),
+                            ["keep"] if kind == "populated" else [],
+                        )
+                    if kind == "populated":
+                        self.assertEqual((target / "keep").read_text(), "unchanged")
+                    self.assertEqual(list(root.glob(f".{output.name}-*")), [])
 
     def test_cuda_metric_failures_preserve_context_and_allow_retry(self):
         with TemporaryDirectory() as directory:

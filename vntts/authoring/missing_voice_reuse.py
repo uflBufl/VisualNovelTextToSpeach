@@ -78,7 +78,11 @@ from vntts.authoring.workspace_inspection import generation_failure_category
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 from vntts.document_identity import sha256_file
 from vntts.json_types import decode_json, has_schema_version, is_json_object
-from vntts.path_safety import copy_regular_file, read_regular_text
+from vntts.path_safety import (
+    contained_no_replace_destination,
+    copy_regular_file,
+    read_regular_text,
+)
 from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.voices import voice_manifest_entries_at_path
 
@@ -847,13 +851,12 @@ def _publish_candidate_input(
     source_info = _object(document["source"], "plan source")
     root.mkdir(parents=True, exist_ok=True)
     name = f"missing-voice-reuse-{_string(document['plan_id'], 'plan_id')[:24]}-{_string(candidate['candidate_id'], 'candidate_id')[:16]}"
-    destination = contained_workspace_path(
-        root, Path(name), "Missing-voice candidate input"
+    destination = contained_no_replace_destination(
+        root,
+        Path(name),
+        "Missing-voice candidate input",
+        error_type=MissingVoiceReuseError,
     )
-    if destination.is_symlink():
-        raise MissingVoiceReuseError(
-            "Missing-voice candidate input must not be a symbolic link"
-        )
     if destination.exists():
         _validate_candidate_input(destination, document, candidate)
         return destination, False

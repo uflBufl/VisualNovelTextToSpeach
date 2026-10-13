@@ -40,7 +40,6 @@ from vntts.authoring.publication import (
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     WorkspaceCreationResult,
-    contained_workspace_path,
     default_workspaces_root,
     load_workspace_authority,
     load_workspace_json,
@@ -56,6 +55,7 @@ from vntts.authoring.workspace_foundation import stage_single_base_successor
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 from vntts.document_identity import sha256_file
 from vntts.json_types import has_schema_version
+from vntts.path_safety import contained_no_replace_destination
 
 SCHEMA = "vntts.authoring-audio-event-projection-fallback-batch"
 SCHEMA_VERSION = 1
@@ -261,8 +261,11 @@ def _projection_identity(
     workspace_id = workspace_id_for_config(selection.import_id, config_fingerprint)
     root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    destination = contained_workspace_path(
-        root, Path(workspace_id), "Audio-event projection fallback destination"
+    destination = contained_no_replace_destination(
+        root,
+        Path(workspace_id),
+        "Audio-event projection fallback destination",
+        error_type=AuthoringWorkbenchError,
     )
     return _ProjectionIdentity(
         batch, config_fingerprint, root, destination, workspace_id

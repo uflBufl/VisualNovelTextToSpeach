@@ -32,6 +32,7 @@ from vntts.authoring.failure_reference_binding_records import (
 from vntts.authoring.private_files import private_file_is_restricted
 from vntts.authoring.publication import (
     AtomicPublicationError,
+    no_replace_destination,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -252,7 +253,7 @@ def publish_failure_reference_binding(
             "Reference binding input and output must not be symlinks"
         )
     audit_directory = audit_argument.resolve()
-    output = output_argument.resolve()
+    output = no_replace_destination(output_argument)
     try:
         snapshots = _validated_audit_snapshots(audit_directory)
         artifacts = _binding_artifacts(audit_directory, snapshots)

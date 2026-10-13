@@ -37,7 +37,6 @@ from vntts.authoring.publication import (
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     WorkspaceCreationResult,
-    contained_workspace_path,
     default_workspaces_root,
     load_workspace_authority,
     load_workspace_json,
@@ -55,6 +54,7 @@ from vntts.authoring.workspace_foundation import (
 )
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 from vntts.document_identity import file_sha256
+from vntts.path_safety import contained_no_replace_destination
 
 _copy_base_wavs = partial(
     copy_generation_wavs,
@@ -299,8 +299,11 @@ def _explicit_fallback_identity(
     workspace_id = workspace_id_for_config(import_id, config_fingerprint)
     root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    destination = contained_workspace_path(
-        root, Path(workspace_id), "Explicit fallback destination"
+    destination = contained_no_replace_destination(
+        root,
+        Path(workspace_id),
+        "Explicit fallback destination",
+        error_type=AuthoringWorkbenchError,
     )
     return _MergeIdentity(root, destination, workspace_id, config_fingerprint)
 

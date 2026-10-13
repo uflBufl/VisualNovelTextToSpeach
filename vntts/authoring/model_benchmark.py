@@ -31,6 +31,7 @@ from vntts.authoring.generation_state import (
 )
 from vntts.authoring.publication import (
     AtomicPublicationError,
+    no_replace_destination,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -692,16 +693,10 @@ def benchmark_renderer(
     voice_controls_content_sha256: str | None = None,
 ) -> JsonDocument:
     """Render a common corpus through one typed backend without playback."""
-    output_directory = Path(output_directory).expanduser().resolve()
+    output_directory = _benchmark_output_directory(output_directory, label="Model")
     reported_output_directory = (
         Path(reported_output_directory or output_directory).expanduser().resolve()
     )
-    if output_directory.exists() and (
-        not output_directory.is_dir() or any(output_directory.iterdir())
-    ):
-        raise ModelBenchmarkError(
-            f"Model output already exists; refusing to overwrite: {output_directory}"
-        )
     output_directory.parent.mkdir(parents=True, exist_ok=True)
     with staged_directory(
         output_directory.parent, prefix=f".{output_directory.name}-"
@@ -971,13 +966,16 @@ def _validate_benchmark_variant(
         )
 
 
-def _benchmark_output_directory(output_directory: str | Path) -> Path:
-    output_directory = Path(output_directory).expanduser().resolve()
-    if output_directory.exists() and (
-        not output_directory.is_dir() or any(output_directory.iterdir())
+def _benchmark_output_directory(
+    output_directory: str | Path, *, label: str = "Benchmark"
+) -> Path:
+    output_directory = no_replace_destination(output_directory)
+    if output_directory.is_symlink() or (
+        output_directory.exists()
+        and (not output_directory.is_dir() or any(output_directory.iterdir()))
     ):
         raise ModelBenchmarkError(
-            f"Benchmark output already exists; refusing to overwrite: {output_directory}"
+            f"{label} output already exists; refusing to overwrite: {output_directory}"
         )
     return output_directory
 

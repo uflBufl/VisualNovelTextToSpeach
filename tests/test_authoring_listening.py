@@ -23,6 +23,7 @@ from tests.listening_fixtures import (
     write_model_reports,
 )
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
+from tests.symlink_support import symlink_or_skip
 from vntts.authoring.listening import (
     REPORT_SCHEMA,
     ModelListeningError,
@@ -61,6 +62,51 @@ except ModuleNotFoundError as error:
 
 
 class AuthoringListeningTest(unittest.TestCase):
+    def test_session_output_symlinks_are_refused_without_redirecting(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            reports = write_model_reports(root, item_count=1)
+            benchmark = root / "benchmark.json"
+            benchmark.write_text(
+                json.dumps(
+                    {
+                        "schema": "vntts.voice-model-benchmark",
+                        "schema_version": 1,
+                        "reports": [str(report) for report in reports],
+                    }
+                )
+            )
+            for aggregate in (False, True):
+                for state in ("missing", "empty", "occupied"):
+                    with self.subTest(aggregate=aggregate, target=state):
+                        target = root / f"target-{aggregate}-{state}"
+                        if state != "missing":
+                            target.mkdir()
+                        if state == "occupied":
+                            (target / "keep").write_bytes(b"unchanged")
+                        output = root / f"output-{aggregate}-{state}"
+                        symlink_or_skip(output, target, target_is_directory=True)
+                        with self.assertRaisesRegex(
+                            ModelListeningError, "Listening session directory"
+                        ):
+                            if aggregate:
+                                create_listening_session(benchmark, output)
+                            else:
+                                create_listening_session_from_reports(reports, output)
+                        self.assertTrue(output.is_symlink())
+                        self.assertEqual(output.readlink(), target)
+                        self.assertEqual(target.exists(), state != "missing")
+                        if target.exists():
+                            self.assertEqual(
+                                list(target.iterdir()),
+                                [target / "keep"] if state == "occupied" else [],
+                            )
+                        if state == "occupied":
+                            self.assertEqual(
+                                (target / "keep").read_bytes(), b"unchanged"
+                            )
+                        self.assertEqual(list(root.glob(f".{output.name}-*")), [])
+
     def test_blind_audio_hardlink_and_copy_fallback_preserve_source(self):
         for fallback in (False, True):
             with self.subTest(fallback=fallback), TemporaryDirectory() as directory:

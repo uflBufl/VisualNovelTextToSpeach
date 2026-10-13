@@ -113,6 +113,76 @@ class FailureReferenceBindingTest(unittest.TestCase):
         )
         return audit, workspace, queue_id, group, candidate, decisions
 
+    def test_output_symlinks_are_refused_before_and_during_resolution(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            audit, *_rest = self.create_decided_audit(root)
+            for swapped in (False, True):
+                for state in ("missing", "empty", "occupied"):
+                    with self.subTest(swapped=swapped, target=state):
+                        target = root / f"target-{swapped}-{state}"
+                        if state != "missing":
+                            target.mkdir()
+                        if state == "occupied":
+                            (target / "keep").write_bytes(b"unchanged")
+                        output = root / f"output-{swapped}-{state}"
+                        armed = swapped
+                        original_resolve = Path.resolve
+
+                        def resolve(path, *args, **kwargs):
+                            nonlocal armed
+                            if armed and path in (root, output):
+                                armed = False
+                                symlink_or_skip(
+                                    output, target, target_is_directory=True
+                                )
+                            return original_resolve(path, *args, **kwargs)
+
+                        if not swapped:
+                            symlink_or_skip(output, target, target_is_directory=True)
+                        with (
+                            patch.object(Path, "resolve", resolve),
+                            self.assertRaisesRegex(
+                                FailureReferenceBindingError, "symlink"
+                            ),
+                        ):
+                            publish_failure_reference_binding(audit, output)
+                        self.assertFalse(armed)
+                        self.assertTrue(output.is_symlink())
+                        self.assertEqual(output.readlink(), target)
+                        self.assertEqual(target.exists(), state != "missing")
+                        if target.exists():
+                            self.assertEqual(
+                                list(target.iterdir()),
+                                [target / "keep"] if state == "occupied" else [],
+                            )
+                        if state == "occupied":
+                            self.assertEqual(
+                                (target / "keep").read_bytes(), b"unchanged"
+                            )
+                        self.assertEqual(
+                            list(root.glob(f".{output.name}.staging-*")), []
+                        )
+
+    def test_output_parent_alias_preserves_publication_and_idempotency(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            audit, *_rest = self.create_decided_audit(root)
+            parent = root / "bindings"
+            parent.mkdir()
+            alias = root / "bindings-alias"
+            symlink_or_skip(alias, parent, target_is_directory=True)
+            output = alias / "binding"
+            created = publish_failure_reference_binding(audit, output)
+            repeated = publish_failure_reference_binding(audit, output)
+            self.assertTrue(created.created)
+            self.assertFalse(repeated.created)
+            self.assertEqual(created.directory, parent / "binding")
+            self.assertEqual(created.binding_id, repeated.binding_id)
+            self.assertEqual(
+                load_failure_reference_binding(output).binding_id, created.binding_id
+            )
+
     def test_publish_is_self_contained_exact_and_idempotent(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -15,7 +15,7 @@ import numpy as np
 from durable_file import atomic_write_json
 from vntts_artifacts.audio import write_pcm16_wav
 
-from vntts.authoring.publication import staged_directory
+from vntts.authoring.publication import no_replace_destination, staged_directory
 from vntts.cleanup import attempt_cleanup, temporary_directory
 from vntts.cli import cli_error, cli_messages
 from vntts.document_identity import sha256_file
@@ -584,10 +584,8 @@ def benchmark_backend(
             staged = Path(sample["audio"]).resolve()
             if staged.parent != staging_root or not staged.is_file():
                 raise RuntimeError("Benchmark staging produced an unsafe WAV path")
-            destination = _contained_child(
-                output_directory, staged.name, "Benchmark WAV"
-            )
-            if destination.exists():
+            destination = no_replace_destination(output_directory / staged.name)
+            if destination.exists() or destination.is_symlink():
                 raise FileExistsError(
                     f"Benchmark WAV already exists; refusing to overwrite: {destination}"
                 )

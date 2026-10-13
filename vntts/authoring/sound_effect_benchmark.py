@@ -19,6 +19,7 @@ from numpy.typing import NDArray
 
 from vntts.authoring.publication import (
     AtomicPublicationError,
+    no_replace_destination,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -176,8 +177,8 @@ def benchmark_sound_effects(
                 "MOSS-SoundEffect v2 is not installed in this runtime"
             ) from error
         pipeline_factory = MossSoundEffectPipeline.from_pretrained
-    output_directory = Path(output_directory).expanduser().resolve()
-    if output_directory.exists():
+    output_directory = no_replace_destination(output_directory)
+    if output_directory.exists() or output_directory.is_symlink():
         raise SoundEffectBenchmarkError(
             f"Benchmark output already exists; refusing to overwrite: {output_directory}"
         )

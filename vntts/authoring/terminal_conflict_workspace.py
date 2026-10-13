@@ -77,6 +77,7 @@ from vntts.authoring.workspace_foundation import (
 )
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 from vntts.document_identity import sha256_file
+from vntts.path_safety import contained_no_replace_destination
 
 
 def merge_terminal_conflict_resolution(
@@ -113,8 +114,11 @@ def merge_terminal_conflict_resolution(
     workspace_id = workspace_id_for_config(import_id, config_fingerprint)
     root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    destination = contained_workspace_path(
-        root, Path(workspace_id), "Conflict merge destination"
+    destination = contained_no_replace_destination(
+        root,
+        Path(workspace_id),
+        "Conflict merge destination",
+        error_type=AuthoringWorkbenchError,
     )
     try:
         with staged_directory(root, prefix=".conflict-merge-staging-") as staging:

@@ -464,6 +464,53 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
                 self.assertEqual(list(root.glob(".output-*")), [])
                 self.assertEqual(backend.shutdown_calls, 1 if multiple else 0)
 
+    def test_model_output_symlinks_are_refused_before_rendering(self):
+        for multiple in (False, True):
+            for target_state in ("missing", "empty", "occupied"):
+                with (
+                    self.subTest(multiple=multiple, target=target_state),
+                    TemporaryDirectory() as directory,
+                ):
+                    root = Path(directory)
+                    target = root / "target"
+                    if target_state != "missing":
+                        target.mkdir()
+                    if target_state == "occupied":
+                        (target / "sentinel").write_bytes(b"keep")
+                    output = root / "output"
+                    symlink_or_skip(output, target, target_is_directory=True)
+                    link_identity = output.lstat().st_ino
+                    corpus = self._write_strict_corpus(root)
+                    backend = FakeRenderBackend()
+                    with self.assertRaisesRegex(ModelBenchmarkError, "already exists"):
+                        if multiple:
+                            benchmark_model_variants(
+                                corpus,
+                                (ModelVariant("fake", "fake"),),
+                                CharacterVoiceRegistry(),
+                                output,
+                                backend_factory=lambda *_args, **_kw: self.fail(
+                                    "An occupied output must not load a model"
+                                ),
+                            )
+                        else:
+                            benchmark_renderer(
+                                ModelVariant("fake", "fake"),
+                                backend,
+                                [{"id": "one", "character": "Voice", "text": "Exact."}],
+                                output,
+                            )
+                    self.assertEqual(backend.requests, [])
+                    self.assertTrue(output.is_symlink())
+                    self.assertEqual(output.lstat().st_ino, link_identity)
+                    self.assertEqual(target.exists(), target_state != "missing")
+                    if target_state == "occupied":
+                        self.assertEqual((target / "sentinel").read_bytes(), b"keep")
+                        self.assertEqual(list(target.iterdir()), [target / "sentinel"])
+                    elif target_state == "empty":
+                        self.assertEqual(list(target.iterdir()), [])
+                    self.assertEqual(list(root.glob(".output-*")), [])
+
     def test_model_batch_publishes_once_after_all_backends_stop(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

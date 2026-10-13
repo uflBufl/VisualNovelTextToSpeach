@@ -29,6 +29,7 @@ from vntts.authoring.authority import (
 from vntts.authoring.private_files import private_file_is_restricted
 from vntts.authoring.publication import (
     AtomicPublicationError,
+    no_replace_destination,
     rename_directory_no_replace,
     staged_directory,
 )
@@ -473,9 +474,10 @@ def _write_listening_session(
     seed: int,
     authority_hashes: Mapping[Path, str] | None = None,
 ) -> Path:
-    output_directory = Path(output_directory).expanduser().resolve()
-    if output_directory.exists() and (
-        not output_directory.is_dir() or any(output_directory.iterdir())
+    output_directory = no_replace_destination(output_directory)
+    if output_directory.is_symlink() or (
+        output_directory.exists()
+        and (not output_directory.is_dir() or any(output_directory.iterdir()))
     ):
         raise ModelListeningError(
             f"Listening session directory is not empty: {output_directory}"

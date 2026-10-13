@@ -70,6 +70,7 @@ from vntts.authoring.workspace_voice_runtime import (
 )
 from vntts.document_identity import sha256_file
 from vntts.json_types import decode_json, has_schema_version, is_json_object
+from vntts.path_safety import contained_no_replace_destination
 from vntts.voices import CharacterVoiceRegistry, load_voice_manifest
 
 CONFIG_REBASE_SCHEMA = "vntts.authoring-workspace-config-rebase"
@@ -267,8 +268,11 @@ def _publish_rebase_workspace(
     rebase = _rebase_ledger(selection, state, routes.target_voice, records)
     fingerprint = _rebase_config_fingerprint(selection, rebase, composition)
     workspace_id = workspace_id_for_config(selection.target_import_id, fingerprint)
-    destination = contained_workspace_path(
-        root, Path(workspace_id), "Config rebase destination"
+    destination = contained_no_replace_destination(
+        root,
+        Path(workspace_id),
+        "Config rebase destination",
+        error_type=AuthoringWorkbenchError,
     )
     with staged_directory(root, prefix=".config-rebase-staging-") as staging:
         workspace, snapshots = _stage_rebase_workspace(

@@ -36,6 +36,7 @@ from vntts.authoring.missing_voice_live_fallback import (
     _validated_targets,
 )
 from vntts.authoring.publication import (
+    no_replace_destination,
     publication_errors,
     rename_directory_no_replace,
     staged_directory,
@@ -235,7 +236,9 @@ def _publish_inputs(
 ) -> tuple[Path, Path, Path, str, str]:
     workspace_path = Path(workspace).expanduser().resolve()
     unresolved_path = Path(unresolved_directory).expanduser().resolve()
-    output_path = Path(output).expanduser().resolve()
+    output_path = no_replace_destination(output)
+    if output_path.is_symlink():
+        raise KnownRoleReuseError("Known-role reuse output must not be a symlink")
     source = _required_text(source_character, "Known source character")
     reuse = _required_text(reuse_character, "Known reuse voice character")
     if normalize_character_name(source) == normalize_character_name(reuse):

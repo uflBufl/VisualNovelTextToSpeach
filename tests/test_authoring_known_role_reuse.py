@@ -34,6 +34,86 @@ class AuthoringKnownRoleReuseTest(unittest.TestCase):
         )
         return workspace, unresolved, queue_id
 
+    def test_output_symlinks_are_refused_in_preflight_and_publication(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            workspace, unresolved, _queue_id = self.fixture(root)
+            before = tree_hashes(workspace)
+            for state in ("missing", "empty", "occupied"):
+                target = root / f"target-{state}"
+                if state != "missing":
+                    target.mkdir()
+                if state == "occupied":
+                    (target / "keep").write_bytes(b"unchanged")
+                output = root / f"output-{state}"
+                symlink_or_skip(output, target, target_is_directory=True)
+                for accepted in (False, True):
+                    with (
+                        self.subTest(target=state, accepted=accepted),
+                        self.assertRaisesRegex(KnownRoleReuseError, "symlink"),
+                    ):
+                        publish_known_role_reuse_binding(
+                            workspace,
+                            unresolved,
+                            "Aderyn",
+                            "Rhiannon",
+                            output,
+                            accept_known_role_reuse=accepted,
+                        )
+                    self.assertTrue(output.is_symlink())
+                    self.assertEqual(output.readlink(), target)
+                    self.assertEqual(target.exists(), state != "missing")
+                    if target.exists():
+                        self.assertEqual(
+                            list(target.iterdir()),
+                            [target / "keep"] if state == "occupied" else [],
+                        )
+                    if state == "occupied":
+                        self.assertEqual((target / "keep").read_bytes(), b"unchanged")
+                    self.assertEqual(tree_hashes(workspace), before)
+                    self.assertEqual(list(root.glob(".known-role-reuse-*")), [])
+
+    def test_parent_and_source_aliases_preserve_preflight_and_idempotency(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            workspace, unresolved, _queue_id = self.fixture(root)
+            workspace_alias = root / "workspace-alias"
+            unresolved_alias = root / "unresolved-alias"
+            parent = root / "bindings"
+            parent.mkdir()
+            parent_alias = root / "bindings-alias"
+            symlink_or_skip(workspace_alias, workspace, target_is_directory=True)
+            symlink_or_skip(unresolved_alias, unresolved, target_is_directory=True)
+            symlink_or_skip(parent_alias, parent, target_is_directory=True)
+            output = parent_alias / "known-role"
+            preflight = publish_known_role_reuse_binding(
+                workspace_alias, unresolved_alias, "Aderyn", "Rhiannon", output
+            )
+            self.assertFalse(preflight.created)
+            self.assertFalse(preflight.applied)
+            self.assertFalse(output.exists())
+            created = publish_known_role_reuse_binding(
+                workspace_alias,
+                unresolved_alias,
+                "Aderyn",
+                "Rhiannon",
+                output,
+                accept_known_role_reuse=True,
+            )
+            repeated = publish_known_role_reuse_binding(
+                workspace_alias,
+                unresolved_alias,
+                "Aderyn",
+                "Rhiannon",
+                output,
+                accept_known_role_reuse=True,
+            )
+            self.assertTrue(created.created)
+            self.assertFalse(repeated.created)
+            self.assertEqual(created.directory, parent / "known-role")
+            self.assertEqual(preflight.decision_id, created.decision_id)
+            self.assertEqual(created.decision_id, repeated.decision_id)
+
     def test_preflight_publish_and_repeat_are_exact_and_idempotent(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

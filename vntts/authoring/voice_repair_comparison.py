@@ -53,6 +53,7 @@ from vntts.authoring.workspace_state import load_stable_workspace_generation_sta
 from vntts.document_identity import is_lowercase_sha256, sha256_file
 from vntts.json_types import decode_json, has_schema_version
 from vntts.path_safety import (
+    contained_no_replace_destination,
     contained_regular_file,
     read_regular_bytes,
     read_regular_text,
@@ -648,12 +649,11 @@ def _candidate_input_destination(
         candidate.get("candidate_id"), "Comparison candidate ID"
     )
     name = f"voice-repair-{plan_id[:24]}-{candidate_key[:16]}"
-    if (root / name).is_symlink():
-        raise VoiceRepairComparisonError(
-            "Voice repair candidate input is a symbolic link"
-        )
-    return root, contained_workspace_path(
-        root, Path(name), "Voice repair candidate input"
+    return root, contained_no_replace_destination(
+        root,
+        Path(name),
+        "Voice repair candidate input",
+        error_type=VoiceRepairComparisonError,
     )
 
 

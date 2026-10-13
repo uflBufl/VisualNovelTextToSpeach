@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
+from tests.symlink_support import symlink_or_skip
 from vntts.audio_cache import BoundedCache
 from vntts.speech_backend import SpeechBackendCapabilities
 from vntts.synthesis import (
@@ -453,6 +454,58 @@ class TTSBenchmarkTest(unittest.TestCase):
             wavs = list(output.glob("*.wav"))
             self.assertEqual(len(wavs), 1)
             self.assertEqual(wavs[0].read_bytes(), b"published elsewhere")
+
+    def test_wav_symlink_is_not_followed_and_retry_keeps_other_outputs(self):
+        registry = CharacterVoiceRegistry(
+            [CharacterVoice("Kamuta", "kamuta", references=(Path("voice.wav"),))]
+        )
+        for target_exists in (False, True):
+            with (
+                self.subTest(target_exists=target_exists),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                output = root / "output"
+                output.mkdir()
+                sentinel = output / "existing.txt"
+                sentinel.write_bytes(b"keep")
+                target = output / "target.wav"
+                if target_exists:
+                    target.write_bytes(b"original")
+                destination = output / "fake-Kamuta-Kamuta.wav"
+                symlink_or_skip(destination, target)
+                backend = FakeRenderingBackend()
+                with self.assertRaisesRegex(FileExistsError, "refusing to overwrite"):
+                    benchmark_backend(
+                        "fake",
+                        registry,
+                        ["Kamuta"],
+                        "A line.",
+                        output,
+                        backend_factory=lambda *_args: backend,
+                    )
+                self.assertEqual(backend.stop_calls, 1)
+                self.assertTrue(destination.is_symlink())
+                self.assertEqual(target.exists(), target_exists)
+                if target_exists:
+                    self.assertEqual(target.read_bytes(), b"original")
+                self.assertEqual(sentinel.read_bytes(), b"keep")
+                self.assertEqual(list(root.glob(".tts-benchmark-*")), [])
+                destination.unlink()
+                report = benchmark_backend(
+                    "fake",
+                    registry,
+                    ["Kamuta"],
+                    "A line.",
+                    output,
+                    backend_factory=lambda *_args: FakeRenderingBackend(),
+                )
+                self.assertEqual(
+                    Path(report["samples"][0]["audio"]), destination.resolve()
+                )
+                self.assertTrue(destination.is_file())
+                self.assertEqual(sentinel.read_bytes(), b"keep")
+                self.assertEqual(target.exists(), target_exists)
 
     def test_failed_staging_cleanup_removes_published_wav(self):
         registry = CharacterVoiceRegistry(

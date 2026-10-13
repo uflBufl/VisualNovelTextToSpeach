@@ -72,6 +72,7 @@ from vntts.authoring.workspace_creation import (
 )
 from vntts.authoring.workspace_foundation import copy_generation_wavs
 from vntts.document_identity import sha256_file
+from vntts.path_safety import contained_no_replace_destination
 
 _terminal_review_outcome = is_terminal_review_outcome
 
@@ -661,7 +662,12 @@ def _merge_workspace_outcomes(
     )
     root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    destination = _within(root, Path(workspace_id), "Outcome merge destination")
+    destination = contained_no_replace_destination(
+        root,
+        Path(workspace_id),
+        "Outcome merge destination",
+        error_type=AuthoringWorkbenchError,
+    )
     with staged_directory(root, prefix=".merge-staging-") as staging:
         output, target_state, path_owners, base_snapshots = _stage_outcome_merge_base(
             base, staging

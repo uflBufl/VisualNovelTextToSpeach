@@ -10,6 +10,7 @@ from unittest.mock import patch
 import vntts.authoring.terminal_conflict_workspace as terminal_workspace_module
 import vntts.authoring.workbench as workbench_module
 from tests.authoring_fixtures import tree_hashes
+from tests.symlink_support import symlink_or_skip
 from tests.terminal_conflict_fixtures import create_terminal_conflict_fixture
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
@@ -45,6 +46,44 @@ from vntts.authoring.workbench import (
 
 
 class TerminalConflictWorkspaceTest(unittest.TestCase):
+    def test_successor_refuses_derived_output_symlinks(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            primary, _secondary, _queue_id, _report, _review, successor = (
+                self.create_successor(root, "approved")
+            )
+            workspaces = root / "workspaces"
+            created = merge_terminal_conflict_resolution(primary, successor, workspaces)
+            self.assertTrue(created.created)
+            self.assertFalse(
+                merge_terminal_conflict_resolution(
+                    primary, successor, workspaces
+                ).created
+            )
+            destination = created.directory
+            saved = destination.with_name("saved-successor")
+            destination.rename(saved)
+            empty = destination.with_name("empty-target")
+            empty.mkdir()
+            for target in (destination.with_name("missing-target"), empty, saved):
+                with self.subTest(target=target.name):
+                    symlink_or_skip(destination, target, target_is_directory=True)
+                    before = tree_hashes(root)
+                    paths = set(workspaces.iterdir())
+                    with self.assertRaisesRegex(
+                        AuthoringWorkbenchError, "symbolic link"
+                    ):
+                        merge_terminal_conflict_resolution(
+                            primary, successor, workspaces
+                        )
+                    self.assertEqual(tree_hashes(root), before)
+                    self.assertEqual(set(workspaces.iterdir()), paths)
+                    self.assertTrue(destination.is_symlink())
+                    self.assertEqual(destination.readlink(), target)
+                    destination.unlink()
+            self.assertFalse(destination.with_name("missing-target").exists())
+            self.assertEqual(list(empty.iterdir()), [])
+
     def create_successor(self, root, authority):
         primary, secondary, queue_id, report_path = create_terminal_conflict_fixture(
             root

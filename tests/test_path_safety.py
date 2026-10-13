@@ -48,6 +48,7 @@ from vntts.live_replay import _read_contained_file
 from vntts.live_replay_sequence_seal import SequenceReplaySealError, _read_regular_file
 from vntts.live_speaker_corpus import LiveSpeakerCorpus
 from vntts.path_safety import (
+    contained_no_replace_destination,
     contained_regular_file,
     copy_regular_file,
     open_regular_text,
@@ -65,6 +66,79 @@ class PathBoundaryError(RuntimeError):
 
 
 class PathSafetyTest(unittest.TestCase):
+    def test_no_replace_destination_rejects_symlink_leaves_without_changing_targets(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            owner = root / "owner"
+            owner.mkdir()
+            for inside in (False, True):
+                for state in ("missing", "empty", "occupied"):
+                    with self.subTest(inside=inside, state=state):
+                        target = (owner if inside else root) / f"target-{state}"
+                        if state != "missing":
+                            target.mkdir()
+                        if state == "occupied":
+                            (target / "sentinel").write_bytes(b"existing output")
+                        link = owner / "output"
+                        symlink_or_skip(link, target, target_is_directory=True)
+                        with self.assertRaisesRegex(PathBoundaryError, "symbolic link"):
+                            contained_no_replace_destination(
+                                owner, "output", "Output", error_type=PathBoundaryError
+                            )
+                        self.assertTrue(link.is_symlink())
+                        self.assertEqual(link.readlink(), target)
+                        self.assertEqual(target.exists(), state != "missing")
+                        if state == "occupied":
+                            self.assertEqual(
+                                (target / "sentinel").read_bytes(), b"existing output"
+                            )
+                        link.unlink()
+
+    def test_no_replace_destination_rejects_escapes_and_accepts_owned_alias_parents(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            owner = root / "owner"
+            nested = owner / "nested"
+            nested.mkdir(parents=True)
+            root_alias = root / "owner-alias"
+            parent_alias = owner / "parent-alias"
+            outside_alias = owner / "outside-alias"
+            symlink_or_skip(root_alias, owner, target_is_directory=True)
+            symlink_or_skip(parent_alias, nested, target_is_directory=True)
+            symlink_or_skip(outside_alias, root, target_is_directory=True)
+            for relative in (
+                "../escape",
+                "..",
+                root / "absolute",
+                "outside-alias/escape",
+                "nested\\output",
+            ):
+                with (
+                    self.subTest(relative=relative),
+                    self.assertRaises(PathBoundaryError),
+                ):
+                    contained_no_replace_destination(
+                        owner, relative, "Output", error_type=PathBoundaryError
+                    )
+            self.assertEqual(
+                contained_no_replace_destination(
+                    root_alias, Path("parent-alias/output"), "Output"
+                ),
+                nested / "output",
+            )
+            output = nested / "output"
+            output.mkdir()
+            (output / "sentinel").write_bytes(b"existing output")
+            self.assertEqual(
+                contained_no_replace_destination(owner, "nested/output", "Output"),
+                output,
+            )
+            self.assertEqual((output / "sentinel").read_bytes(), b"existing output")
+
     def test_generation_relative_path_rejects_nul_with_its_domain_error(self):
         self.assertEqual(
             safe_generation_relative_path("./nested//voice.wav", "Audio"),

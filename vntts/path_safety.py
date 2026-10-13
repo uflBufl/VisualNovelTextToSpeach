@@ -114,6 +114,28 @@ def contained_path(
     return path
 
 
+def contained_no_replace_destination(
+    root: str | Path,
+    relative: str | PurePath,
+    label: str,
+    *,
+    error_type: type[Exception] = ValueError,
+) -> Path:
+    """Admit an immutable destination without following its final symlink."""
+    if isinstance(relative, PurePath):
+        relative = relative.as_posix()
+    relative = safe_relative_path(relative, label, error_type=error_type)
+    root = Path(root).resolve()
+    path = no_replace_destination(root / relative)
+    try:
+        path.relative_to(root)
+    except ValueError as error:
+        raise error_type(f"{label} leaves its owning directory") from error
+    if path.is_symlink():
+        raise error_type(f"{label} must not be a symbolic link")
+    return path
+
+
 def contained_regular_file(
     root: str | Path,
     relative: object,
@@ -143,6 +165,7 @@ def contained_regular_file(
 
 
 __all__ = [
+    "contained_no_replace_destination",
     "contained_path",
     "contained_regular_file",
     "copy_regular_file",

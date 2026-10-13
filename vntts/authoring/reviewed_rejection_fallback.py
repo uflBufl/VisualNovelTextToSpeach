@@ -62,6 +62,7 @@ from vntts.authoring.workspace_foundation import (
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 from vntts.document_identity import sha256_file
 from vntts.json_types import has_schema_version
+from vntts.path_safety import contained_no_replace_destination
 from vntts.voices import load_voice_manifest, synthesis_character_for_line
 
 SCHEMA = "vntts.authoring-reviewed-rejection-live-fallback-batch"
@@ -283,8 +284,11 @@ def _rejection_identity(
     workspace_id = workspace_id_for_config(selection.import_id, config_fingerprint)
     root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    destination = contained_workspace_path(
-        root, Path(workspace_id), "Reviewed-rejection fallback destination"
+    destination = contained_no_replace_destination(
+        root,
+        Path(workspace_id),
+        "Reviewed-rejection fallback destination",
+        error_type=AuthoringWorkbenchError,
     )
     return _RejectionIdentity(
         batch, config_fingerprint, root, destination, workspace_id
