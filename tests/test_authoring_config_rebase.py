@@ -24,7 +24,6 @@ from tests.authoring_fixtures import (
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
-    authorize_live_fallback,
     load_generation_state,
     publish_generated_manifest,
 )
@@ -37,6 +36,9 @@ from vntts.authoring.config_rebase import (
     _target_route_status,
     rebase_workspace_config,
     validate_config_rebase_workspace,
+)
+from vntts.authoring.generation_fallback import (
+    authorize_live_fallback,
 )
 from vntts.authoring.generation_review import review_generation_item
 from vntts.authoring.queue_extension import publish_additive_generation_queue

@@ -24,8 +24,8 @@ from vntts_artifacts.story_index import write_story_index_document
 from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 from vntts_artifacts.voice_manifest import write_voice_manifest
 
-import vntts.authoring.bulk_generation as bulk_generation_module
 import vntts.authoring.game_pack as game_pack_module
+import vntts.authoring.generation_fallback as fallback_module
 from tests.authoring_fixtures import tree_hashes
 from tests.bulk_generation_fixtures import audio_samples
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
@@ -37,12 +37,14 @@ from tests.symlink_support import symlink_or_skip
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     _canonical_sha256,
-    authorize_live_fallback,
     run_bulk_generation,
 )
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_repair import FailureRepairPolicy
 from vntts.authoring.game_pack import FinalGamePackError, publish_final_game_pack
+from vntts.authoring.generation_fallback import (
+    authorize_live_fallback,
+)
 from vntts.authoring.generation_manifest import (
     RUNTIME_PROGRESS_MANIFEST_NAME,
     write_runtime_progress_manifest_from_state,
@@ -1237,7 +1239,7 @@ class AuthoringGamePackTest(unittest.TestCase):
                 root
             )
             before = fixture["state"].read_bytes()
-            real_write = bulk_generation_module._write_generated_manifest_from_state
+            real_write = fallback_module._write_generated_manifest_from_state
 
             def mutate_evidence(*args, **kwargs):
                 result = real_write(*args, **kwargs)
@@ -1249,7 +1251,7 @@ class AuthoringGamePackTest(unittest.TestCase):
                 return result
 
             with patch.object(
-                bulk_generation_module,
+                fallback_module,
                 "_write_generated_manifest_from_state",
                 side_effect=mutate_evidence,
             ):
@@ -1343,7 +1345,7 @@ class AuthoringGamePackTest(unittest.TestCase):
                 self.prepare_rejected_render_hypothesis_fixture(root)
             )
             before = state.read_bytes()
-            real_write = bulk_generation_module._write_generated_manifest_from_state
+            real_write = fallback_module._write_generated_manifest_from_state
 
             def mutate_review(*args, **kwargs):
                 result = real_write(*args, **kwargs)
@@ -1355,7 +1357,7 @@ class AuthoringGamePackTest(unittest.TestCase):
                 return result
 
             with patch.object(
-                bulk_generation_module,
+                fallback_module,
                 "_write_generated_manifest_from_state",
                 side_effect=mutate_review,
             ):
@@ -1402,7 +1404,7 @@ class AuthoringGamePackTest(unittest.TestCase):
             fixture = prepare_authoring_fixture(root / "source", names=("one",))
             queue_id = fixture["items"][0]["queue_id"]
             review_generation_item(fixture["state"], queue_id, "rejected")
-            real_write = bulk_generation_module._write_generated_manifest_from_state
+            real_write = fallback_module._write_generated_manifest_from_state
 
             def mutate_state(*args, **kwargs):
                 result = real_write(*args, **kwargs)
@@ -1414,7 +1416,7 @@ class AuthoringGamePackTest(unittest.TestCase):
                 return result
 
             with patch.object(
-                bulk_generation_module,
+                fallback_module,
                 "_write_generated_manifest_from_state",
                 side_effect=mutate_state,
             ):

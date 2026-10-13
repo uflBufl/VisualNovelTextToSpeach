@@ -9,6 +9,7 @@ from pathlib import Path
 import vntts.authoring.bulk_generation as bulk_generation_module
 import vntts.authoring.game_pack as game_pack_module
 import vntts.authoring.generation_failures as failure_module
+import vntts.authoring.generation_fallback as fallback_module
 import vntts.authoring.generation_lease as lease_module
 import vntts.authoring.generation_review as review_module
 import vntts.authoring.terminal_conflict_workspace as terminal_workspace_module
@@ -384,6 +385,43 @@ print(json.dumps([name for name in blocked if name in sys.modules]))
                 "vntts.authoring.generation_state",
                 "vntts.authoring.bulk_generation",
             )
+        )
+
+    def test_generation_fallback_has_direct_consumers_and_compatible_exports(self):
+        for name in (
+            "authorize_live_fallback",
+            "AUTOMATIC_RECOVERY_LIVE_FALLBACK_ACTIONS",
+        ):
+            with self.subTest(name=name):
+                self.assertIs(
+                    getattr(bulk_generation_module, name),
+                    getattr(fallback_module, name),
+                )
+                self.assertEqual(
+                    _production_importers("vntts.authoring.bulk_generation", name), []
+                )
+        self.assertFalse(
+            _reachable(
+                _authoring_import_graph(),
+                "vntts.authoring.generation_fallback",
+                "vntts.authoring.bulk_generation",
+            )
+        )
+        self.assertIs(
+            fallback_module.generation_failure_repair_plan,
+            failure_module.generation_failure_repair_plan,
+        )
+
+    def test_generation_fallback_import_does_not_load_bulk_execution(self):
+        subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import sys; import vntts.authoring.generation_fallback; assert 'vntts.authoring.bulk_generation' not in sys.modules",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
         )
 
     def test_generation_failures_has_direct_consumers_and_compatible_exports(self):

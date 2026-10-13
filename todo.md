@@ -1,10 +1,5 @@
 # TODO
 
-## Active - Separate authoring outcome planning and fallback transactions
-
-- [ ] Give read-only outcome reporting/repair selection one owner used by `pregeneration_recovery`, failure regeneration, reference audit, CLI reporting and automatic fallback evidence. Include shared failure normalization and sentence/inline-pause predicates consumed by workspace creation/inspection and robustness corpus; preserve stable state/queue digest bindings, deterministic cohorts/actions, legacy state and provider/repair budgets. Reuse shared state admission and lease errors, keep compatible exports, and prevent a backward import of `bulk_generation` or a duplicated repair selector. Run the local selector first, independent review and fresh-main branch validation before completing this stage.
-- [ ] After the common read-only planner is in place, move live-fallback evidence/proposed-state/leased commit to its own owner. Preserve source-change refusal, exact evidence/result/control digests, generation retry/cancellation/resume, manifest publication order and cleanup. Execution context and per-item execution already have separate owners and need no wholesale relocation. Validate affected callers and failure gates, commit separately, then normal main push.
-
 ## Continue regular-file admission through remaining integrity owners
 
 - [ ] On Windows, qualify persistent NPY1/2/3 cache reads with the pinned NumPy internal header parser: malformed declared extents must miss before allocation, valid mono/stereo/Fortran/endian entries must retain conversion, and truncation must close the source without recency changes. Qualify candidate-directory replacement/alias refusal before cleanup, active claims and normal retry with native directory identities/locking/rmtree. Mac proofs do not establish Windows behavior.

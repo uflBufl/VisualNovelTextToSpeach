@@ -15,15 +15,17 @@ from vntts_artifacts.voice_generation_queue import (
 from vntts_artifacts.voice_manifest import VoiceManifestError
 
 from vntts.authoring.bulk_generation import (
-    AUTOMATIC_RECOVERY_LIVE_FALLBACK_ACTIONS,
     BulkGenerationError,
     _state_items,
-    authorize_live_fallback,
     is_spoken_queue_item,
     load_generation_state,
 )
 from vntts.authoring.generation_failures import (
     generation_failure_repair_plan,
+)
+from vntts.authoring.generation_fallback import (
+    AUTOMATIC_RECOVERY_LIVE_FALLBACK_ACTIONS,
+    authorize_live_fallback,
 )
 from vntts.authoring.generation_state import (
     LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED,

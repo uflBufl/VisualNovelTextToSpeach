@@ -19,6 +19,7 @@ from vntts_artifacts.generated_audio import GeneratedAudioIndex
 
 import vntts.authoring.bulk_generation as bulk_module
 import vntts.authoring.generation_failures as failure_module
+import vntts.authoring.generation_fallback as fallback_module
 import vntts.authoring.generation_lease as generation_lease_module
 import vntts.authoring.generation_review as review_module
 import vntts.authoring.workspace_foundation as foundation_module
@@ -36,7 +37,6 @@ from vntts.authoring.bulk_generation import (
     LEGACY_STATE_SCHEMA,
     STATE_SCHEMA,
     BulkGenerationError,
-    authorize_live_fallback,
     load_generation_state,
     publish_generated_manifest,
     run_bulk_generation,
@@ -46,6 +46,9 @@ from vntts.authoring.failure_repair import FailureRepairPolicy
 from vntts.authoring.generation_failures import (
     generation_failure_repair_plan,
     generation_failure_report,
+)
+from vntts.authoring.generation_fallback import (
+    authorize_live_fallback,
 )
 from vntts.authoring.generation_manifest import RUNTIME_PROGRESS_MANIFEST_NAME
 from vntts.authoring.generation_review import (
@@ -771,15 +774,15 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             )
             before = tree_hashes(root)
             failure = PermissionError("Fallback authority recheck was blocked")
-            check = bulk_module._assert_live_fallback_commit_sources
+            check = fallback_module._assert_live_fallback_commit_sources
 
             def fail_final_check(*args, **kwargs):
-                with patch.object(bulk_module, "sha256_file", side_effect=failure):
+                with patch.object(fallback_module, "sha256_file", side_effect=failure):
                     return check(*args, **kwargs)
 
             with (
                 patch.object(
-                    bulk_module,
+                    fallback_module,
                     "_assert_live_fallback_commit_sources",
                     side_effect=fail_final_check,
                 ),

@@ -43,6 +43,7 @@ from vntts.authoring.cohort_review import (
     build_cohort_review_plan,
     write_cohort_review_plan,
 )
+from vntts.authoring.generation_fallback import authorize_live_fallback
 from vntts.authoring.generation_manifest import write_generated_manifest_from_state
 from vntts.authoring.legacy_import import import_legacy_job
 from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
@@ -803,7 +804,7 @@ def create_explicit_fallback_merge_fixture(root: Path) -> tuple[Path, Path, str]
         source / "generated-audio",
         source / "generated-audio/manifest.json",
     )
-    bulk_generation_module.authorize_live_fallback(
+    authorize_live_fallback(
         source_state,
         source / "queue.jsonl",
         queue_id,

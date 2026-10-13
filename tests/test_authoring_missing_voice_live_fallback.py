@@ -7,8 +7,10 @@ from tests.missing_voice_reuse_fixtures import (
     create_missing_voice_live_fallback_fixture,
 )
 from vntts.authoring.bulk_generation import (
-    authorize_live_fallback,
     load_generation_state,
+)
+from vntts.authoring.generation_fallback import (
+    authorize_live_fallback,
 )
 from vntts.authoring.generation_manifest import (
     RUNTIME_PROGRESS_MANIFEST_NAME,

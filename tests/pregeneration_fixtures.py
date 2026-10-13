@@ -23,9 +23,11 @@ from tests.story_fixtures import write_content
 from tests.voice_manifest_fixtures import write_manifest
 from vntts.authoring.audio_events import audio_event_plan_for_record
 from vntts.authoring.bulk_generation import (
-    authorize_live_fallback,
     is_spoken_queue_item,
     run_bulk_generation,
+)
+from vntts.authoring.generation_fallback import (
+    authorize_live_fallback,
 )
 from vntts.authoring.generation_review import review_generation_item
 from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy

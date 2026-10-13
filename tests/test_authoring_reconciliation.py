@@ -31,10 +31,12 @@ from tests.terminal_conflict_fixtures import (
     create_parallel_review_workspaces,
     decide_parallel_review_bundle,
 )
-from vntts.authoring.bulk_generation import authorize_live_fallback
 from vntts.authoring.cohort_bundle import (
     build_cohort_review_bundle,
     write_cohort_review_bundle,
+)
+from vntts.authoring.generation_fallback import (
+    authorize_live_fallback,
 )
 from vntts.authoring.legacy_import import import_legacy_job
 from vntts.authoring.reconciliation import (
