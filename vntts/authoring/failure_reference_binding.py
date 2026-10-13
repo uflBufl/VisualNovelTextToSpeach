@@ -264,21 +264,20 @@ def publish_failure_reference_binding(
 def _validated_audit_snapshots(audit_directory: Path) -> _AuditSnapshots:
     from vntts.authoring.failure_reference_audit import (
         FailureReferenceAuditError,
-        load_failure_reference_audit,
         load_failure_reference_decisions,
     )
 
     try:
-        validated_audit = load_failure_reference_audit(audit_directory)
         validated_decisions = load_failure_reference_decisions(audit_directory)
     except FailureReferenceAuditError as error:
         raise FailureReferenceBindingError(str(error)) from error
     snapshots = _load_audit_snapshots(audit_directory)
     audit = snapshots["audit"]
     decisions = snapshots["decisions"]
-    if validated_audit.audit_id != audit["audit_id"] or validated_decisions.get(
-        "decision_set_id"
-    ) != decisions.get("decision_set_id"):
+    if (
+        validated_decisions.get("audit_id") != audit["audit_id"]
+        or validated_decisions.get("decision_set_id") != decisions["decision_set_id"]
+    ):
         raise FailureReferenceBindingError(
             "Reference audit changed while binding inputs were captured"
         )
@@ -467,18 +466,16 @@ def _assert_binding_sources(
 ) -> None:
     from vntts.authoring.failure_reference_audit import (
         FailureReferenceAuditError,
-        load_failure_reference_audit,
         load_failure_reference_decisions,
     )
 
     _assert_audit_snapshots_unchanged(snapshots)
     try:
-        final_audit = load_failure_reference_audit(directory)
         final_decisions = load_failure_reference_decisions(directory)
     except FailureReferenceAuditError as error:
         raise FailureReferenceBindingError(str(error)) from error
     if (
-        final_audit.audit_id != snapshots["audit"]["audit_id"]
+        final_decisions.get("audit_id") != snapshots["audit"]["audit_id"]
         or final_decisions.get("decision_set_id")
         != snapshots["decisions"]["decision_set_id"]
     ):

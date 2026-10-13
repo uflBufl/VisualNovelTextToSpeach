@@ -159,6 +159,24 @@ class FailureReferenceBindingTest(unittest.TestCase):
             self.assertEqual(selected["cases"][0]["queue_id"], queue_id)
             self.assertEqual(selected["group_id"], group["group_id"])
 
+    def test_fresh_and_repeated_publication_validate_each_audit_phase_once(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit, *_rest = self.create_decided_audit(root)
+            load_audit = failure_audit_module.load_failure_reference_audit
+            for created in (True, False):
+                with (
+                    self.subTest(created=created),
+                    patch.object(
+                        failure_audit_module,
+                        "load_failure_reference_audit",
+                        wraps=load_audit,
+                    ) as audit_loader,
+                ):
+                    result = publish_failure_reference_binding(audit, root / "binding")
+                    self.assertEqual(result.created, created)
+                    self.assertEqual(audit_loader.call_count, 2)
+
     def test_binding_loaders_normalize_encoding_and_canonical_errors(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
