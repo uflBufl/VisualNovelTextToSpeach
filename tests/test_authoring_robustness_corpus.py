@@ -141,6 +141,63 @@ class AuthoringRobustnessCorpusTest(unittest.TestCase):
                     self.assertEqual(loaded.document, document)
                     self.assertEqual(loaded.sample_count, 1)
 
+    def test_corpus_summary_projects_each_sample_once(self):
+        class CountedRecords(list):
+            iterations = 0
+
+            def __iter__(self):
+                self.iterations += 1
+                return super().__iter__()
+
+        for version in (1, 2, 3):
+            with self.subTest(version=version):
+                samples = CountedRecords(
+                    {
+                        "human_label": label,
+                        "synthesis": {"provider": provider},
+                        "analysis": {"signals": signals},
+                        "technical_flags": ["flag"],
+                        **(
+                            {"text_timing": {"signals": ["pause"]}}
+                            if version >= 2
+                            else {}
+                        ),
+                        **({"human_defect_reasons": reasons} if version >= 3 else {}),
+                    }
+                    for label, provider, signals, reasons in (
+                        ("bad", "z", ["repeat"], ["pause_or_pacing"]),
+                        ("acceptable", "a", [], []),
+                        ("bad", "z", [], ["pause_or_pacing"]),
+                    )
+                )
+                summary = robustness_corpus._counts(
+                    samples, [{"failure": {"kind": "decoder"}}], version=version
+                )
+                expected = {
+                    "sample_count": 3,
+                    "failure_count": 1,
+                    "human_labels": {"acceptable": 1, "bad": 2},
+                    "providers": {"a": 1, "z": 2},
+                    "provider_labels": {"a:acceptable": 1, "z:bad": 2},
+                    "diagnostic_signals": {"repeat": 1},
+                    "diagnostic_signal_human_labels": {"repeat:bad": 1},
+                    "technical_flags": {"flag": 3},
+                    "failure_kinds": {"decoder": 1},
+                    "bad_without_diagnostic_signal": 1,
+                }
+                if version >= 2:
+                    expected.update(
+                        text_timing_signals={"pause": 3},
+                        text_timing_signal_human_labels={
+                            "pause:acceptable": 1,
+                            "pause:bad": 2,
+                        },
+                    )
+                if version >= 3:
+                    expected["human_defect_reasons"] = {"pause_or_pacing": 2}
+                self.assertEqual(samples.iterations, 1)
+                self.assertEqual(summary, expected)
+
     def test_asr_summary_counts_and_groups_share_one_traversal(self):
         class CountedRecords(list):
             iterations = 0

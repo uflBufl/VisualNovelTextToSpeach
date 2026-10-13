@@ -1032,73 +1032,49 @@ def _counts(
     *,
     version: int = SPEECH_ROBUSTNESS_CORPUS_VERSION,
 ) -> JsonDocument:
-    labels = Counter(
-        _required_text(row.get("human_label"), "Human label") for row in samples
-    )
-    providers = Counter(
-        str(
+    labels: Counter[str] = Counter()
+    providers: Counter[str] = Counter()
+    provider_labels: Counter[tuple[str, str]] = Counter()
+    signals: Counter[str] = Counter()
+    signal_labels: Counter[tuple[str, str]] = Counter()
+    timing_signals: Counter[str] = Counter()
+    timing_signal_labels: Counter[tuple[str, str]] = Counter()
+    defect_reasons: Counter[str] = Counter()
+    technical_flags: Counter[str] = Counter()
+    bad_without_signal = 0
+    has_timing = False
+    has_reasons = False
+    for row in samples:
+        label = _required_text(row.get("human_label"), "Human label")
+        provider = str(
             _object_field(row, "synthesis", "Sample synthesis").get("provider")
             or "unknown"
         )
-        for row in samples
-    )
-    provider_labels = Counter(
-        (
-            str(
-                _object_field(row, "synthesis", "Sample synthesis").get("provider")
-                or "unknown"
-            ),
-            _required_text(row.get("human_label"), "Human label"),
-        )
-        for row in samples
-    )
-    signals = Counter(
-        signal
-        for row in samples
-        for signal in _string_list(
+        row_signals = _string_list(
             _object_field(row, "analysis", "Sample analysis").get("signals"),
             "Analysis signals",
         )
-    )
-    signal_labels = Counter(
-        (signal, _required_text(row.get("human_label"), "Human label"))
-        for row in samples
-        for signal in _string_list(
-            _object_field(row, "analysis", "Sample analysis").get("signals"),
-            "Analysis signals",
-        )
-    )
-    timing_signals: Counter[str] = Counter()
-    timing_signal_labels: Counter[tuple[str, str]] = Counter()
-    if version >= 2:
-        timing_signals = Counter(
-            signal
-            for row in samples
-            for signal in _string_list(
+        labels[label] += 1
+        providers[provider] += 1
+        provider_labels[provider, label] += 1
+        signals.update(row_signals)
+        signal_labels.update((signal, label) for signal in row_signals)
+        bad_without_signal += label == "bad" and not row_signals
+        has_timing |= "text_timing" in row
+        has_reasons |= "human_defect_reasons" in row
+        if version >= 2:
+            row_timing = _string_list(
                 _object_field(row, "text_timing", "Sample text timing").get("signals"),
                 "Timing signals",
             )
+            timing_signals.update(row_timing)
+            timing_signal_labels.update((signal, label) for signal in row_timing)
+        defect_reasons.update(
+            _string_list(row.get("human_defect_reasons", ()), "Human defect reasons")
         )
-        timing_signal_labels = Counter(
-            (signal, _required_text(row.get("human_label"), "Human label"))
-            for row in samples
-            for signal in _string_list(
-                _object_field(row, "text_timing", "Sample text timing").get("signals"),
-                "Timing signals",
-            )
+        technical_flags.update(
+            _string_list(row.get("technical_flags"), "Technical flags")
         )
-    defect_reasons = Counter(
-        reason
-        for row in samples
-        for reason in _string_list(
-            row.get("human_defect_reasons", ()), "Human defect reasons"
-        )
-    )
-    technical_flags = Counter(
-        flag
-        for row in samples
-        for flag in _string_list(row.get("technical_flags"), "Technical flags")
-    )
     failure_kinds = Counter(
         _required_text(
             _object_field(row, "failure", "Failure record").get("kind"), "Failure kind"
@@ -1121,22 +1097,15 @@ def _counts(
         },
         "technical_flags": dict(sorted(technical_flags.items())),
         "failure_kinds": dict(sorted(failure_kinds.items())),
-        "bad_without_diagnostic_signal": sum(
-            row.get("human_label") == "bad"
-            and not _string_list(
-                _object_field(row, "analysis", "Sample analysis").get("signals"),
-                "Analysis signals",
-            )
-            for row in samples
-        ),
+        "bad_without_diagnostic_signal": bad_without_signal,
     }
-    if any("text_timing" in row for row in samples):
+    if has_timing:
         summary["text_timing_signals"] = dict(sorted(timing_signals.items()))
         summary["text_timing_signal_human_labels"] = {
             f"{signal}:{label}": count
             for (signal, label), count in sorted(timing_signal_labels.items())
         }
-    if any("human_defect_reasons" in row for row in samples):
+    if has_reasons:
         summary["human_defect_reasons"] = dict(sorted(defect_reasons.items()))
     return summary
 
