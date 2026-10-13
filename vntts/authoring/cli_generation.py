@@ -19,8 +19,6 @@ from vntts.authoring.bulk_generation import (
     BulkGenerationResult,
     audio_event_spoken_projection,
     authorize_live_fallback,
-    generation_failure_repair_plan,
-    generation_failure_report,
     is_spoken_queue_item,
     load_generation_state,
     normalize_short_trailing_ellipsis,
@@ -35,6 +33,10 @@ from vntts.authoring.cli_generation_options import (
     missing_voice_policy,
 )
 from vntts.authoring.failure_repair import FailureRepairPolicy
+from vntts.authoring.generation_failures import (
+    generation_failure_repair_plan,
+    generation_failure_report,
+)
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_review import review_generation_item
 from vntts.authoring.generation_state import LIVE_FALLBACK_REASONS

@@ -18,6 +18,7 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import GeneratedAudioIndex
 
 import vntts.authoring.bulk_generation as bulk_module
+import vntts.authoring.generation_failures as failure_module
 import vntts.authoring.generation_lease as generation_lease_module
 import vntts.authoring.generation_review as review_module
 import vntts.authoring.workspace_foundation as foundation_module
@@ -36,14 +37,16 @@ from vntts.authoring.bulk_generation import (
     STATE_SCHEMA,
     BulkGenerationError,
     authorize_live_fallback,
-    generation_failure_repair_plan,
-    generation_failure_report,
     load_generation_state,
     publish_generated_manifest,
     run_bulk_generation,
 )
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_repair import FailureRepairPolicy
+from vntts.authoring.generation_failures import (
+    generation_failure_repair_plan,
+    generation_failure_report,
+)
 from vntts.authoring.generation_manifest import RUNTIME_PROGRESS_MANIFEST_NAME
 from vntts.authoring.generation_review import (
     generation_review_authorities,
@@ -204,14 +207,14 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 retries=0,
             )
             state_payload = result.state.read_bytes()
-            original_normalize = bulk_module.normalized_failure_record
+            original_normalize = failure_module.normalized_failure_record
 
             def replace_state_after_read(item, *, text):
                 result.state.write_bytes(state_payload + b" ")
                 return original_normalize(item, text=text)
 
             with patch.object(
-                bulk_module,
+                failure_module,
                 "normalized_failure_record",
                 side_effect=replace_state_after_read,
             ):
@@ -3521,7 +3524,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             ],
         }
         with patch.object(
-            bulk_module, "generation_failure_report", return_value=report
+            failure_module, "generation_failure_report", return_value=report
         ):
             plan = generation_failure_repair_plan("state.json", "queue.jsonl")
 

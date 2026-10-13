@@ -19,9 +19,11 @@ from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     _state_items,
     authorize_live_fallback,
-    generation_failure_repair_plan,
     is_spoken_queue_item,
     load_generation_state,
+)
+from vntts.authoring.generation_failures import (
+    generation_failure_repair_plan,
 )
 from vntts.authoring.generation_state import (
     LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED,

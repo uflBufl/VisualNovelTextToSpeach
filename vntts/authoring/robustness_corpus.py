@@ -34,12 +34,14 @@ from vntts.authoring.authority import (
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     load_generation_state,
-    normalized_failure_record,
 )
 from vntts.authoring.cohort_review import (
     COHORT_REVIEW_DEFECT_REASONS,
     CohortReviewError,
     load_cohort_review_decision,
+)
+from vntts.authoring.generation_failures import (
+    normalized_failure_record,
 )
 from vntts.authoring.publication import (
     AtomicPublicationError,

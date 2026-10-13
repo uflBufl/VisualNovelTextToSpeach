@@ -8,6 +8,7 @@ from pathlib import Path
 
 import vntts.authoring.bulk_generation as bulk_generation_module
 import vntts.authoring.game_pack as game_pack_module
+import vntts.authoring.generation_failures as failure_module
 import vntts.authoring.generation_lease as lease_module
 import vntts.authoring.generation_review as review_module
 import vntts.authoring.terminal_conflict_workspace as terminal_workspace_module
@@ -383,6 +384,57 @@ print(json.dumps([name for name in blocked if name in sys.modules]))
                 "vntts.authoring.generation_state",
                 "vntts.authoring.bulk_generation",
             )
+        )
+
+    def test_generation_failures_has_direct_consumers_and_compatible_exports(self):
+        for name in (
+            "IncompleteSynthesisError",
+            "generation_failure_report",
+            "generation_failure_repair_plan",
+            "normalized_failure_record",
+            "sentence_repair_matches_failure",
+            "inline_pause_matches_failure",
+        ):
+            with self.subTest(name=name):
+                self.assertIs(
+                    getattr(bulk_generation_module, name), getattr(failure_module, name)
+                )
+                self.assertEqual(
+                    _production_importers("vntts.authoring.bulk_generation", name), []
+                )
+        for old, new in (
+            ("_failure_kind", "failure_kind"),
+            ("_failure_record", "failure_record"),
+            ("_silence_durations", "silence_durations"),
+            ("_edge_silence_only", "edge_silence_only"),
+            ("_failure_repair_history", "_failure_repair_history"),
+        ):
+            with self.subTest(alias=old):
+                self.assertIs(
+                    getattr(bulk_generation_module, old), getattr(failure_module, new)
+                )
+        self.assertEqual(
+            failure_module.IncompleteSynthesisError.__module__,
+            "vntts.authoring.bulk_generation",
+        )
+        self.assertFalse(
+            _reachable(
+                _authoring_import_graph(),
+                "vntts.authoring.generation_failures",
+                "vntts.authoring.bulk_generation",
+            )
+        )
+
+    def test_generation_failures_import_does_not_load_bulk_execution(self):
+        subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import sys; import vntts.authoring.generation_failures; assert 'vntts.authoring.bulk_generation' not in sys.modules",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
         )
 
     def test_generation_review_has_direct_consumers_and_compatible_exports(self):

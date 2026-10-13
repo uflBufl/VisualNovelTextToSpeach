@@ -28,7 +28,7 @@ from vntts.authoring.advisory_lock import (
     exclusive_advisory_lock,
 )
 from vntts.authoring.authority import canonical_document_sha256
-from vntts.authoring.bulk_generation import (
+from vntts.authoring.generation_failures import (
     generation_failure_repair_plan,
     normalized_failure_record,
 )

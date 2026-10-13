@@ -34,12 +34,14 @@ from vntts.authoring.bulk_generation import (
     JsonDocument,
     StateItems,
     is_spoken_queue_item,
-    normalized_failure_record,
-    sentence_repair_matches_failure,
 )
 from vntts.authoring.failure_repair import (
     FailureRepairPolicy,
     FailureRepairPolicyError,
+)
+from vntts.authoring.generation_failures import (
+    normalized_failure_record,
+    sentence_repair_matches_failure,
 )
 from vntts.authoring.generation_lease import (
     LEASE_SCHEMA,

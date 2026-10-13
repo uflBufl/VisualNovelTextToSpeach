@@ -44,12 +44,9 @@ from vntts.authoring.bulk_generation import (
     NO_PROMPT_SHA256,
     BulkGenerationError,
     JsonDocument,
-    inline_pause_matches_failure,
     load_generation_state,
     normalize_short_trailing_ellipsis,
-    normalized_failure_record,
     publish_generated_manifest,
-    sentence_repair_matches_failure,
     sha256_control_path,
     snapshot_generation_control_files,
 )
@@ -72,6 +69,11 @@ from vntts.authoring.failure_repair import (
     FailureRepairPolicyError,
 )
 from vntts.authoring.game_pack import FinalGamePackError
+from vntts.authoring.generation_failures import (
+    inline_pause_matches_failure,
+    normalized_failure_record,
+    sentence_repair_matches_failure,
+)
 from vntts.authoring.generation_lease import (
     GenerationLease,
     process_is_alive,

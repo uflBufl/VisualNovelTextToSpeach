@@ -46,6 +46,7 @@ from tests.symlink_support import symlink_or_skip
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_repair import FailureRepairPolicy
+from vntts.authoring.generation_failures import generation_failure_repair_plan
 from vntts.authoring.legacy_import import import_legacy_job
 from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
 from vntts.authoring.publication import AtomicPublicationError
@@ -1829,7 +1830,6 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             audio_samples,
         )
         from vntts.authoring.bulk_generation import (
-            generation_failure_repair_plan,
             load_generation_state,
             publish_generated_manifest,
             run_bulk_generation,
@@ -2037,7 +2037,6 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             audio_samples,
         )
         from vntts.authoring.bulk_generation import (
-            generation_failure_repair_plan,
             load_generation_state,
             publish_generated_manifest,
             run_bulk_generation,

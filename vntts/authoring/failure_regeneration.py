@@ -17,8 +17,10 @@ from vntts.authoring.authority import (
 )
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
-    generation_failure_repair_plan,
     load_generation_state,
+)
+from vntts.authoring.generation_failures import (
+    generation_failure_repair_plan,
 )
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
