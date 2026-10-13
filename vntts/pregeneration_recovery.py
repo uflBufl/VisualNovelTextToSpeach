@@ -160,7 +160,6 @@ def plan_automatic_recovery(
     if not isinstance(records, list):
         raise OfflineRecoveryError("Offline recovery plan is malformed")
     grouped: dict[str, list[str]] = {action: [] for action in AUTOMATIC_ACTION_ORDER}
-    deferred: Counter[str] = Counter()
     deferred_queue_ids: dict[str, list[str]] = {}
     live_fallback_queue_ids: list[str] = []
     seen_queue_ids: set[str] = set()
@@ -186,7 +185,6 @@ def plan_automatic_recovery(
         ):
             grouped[action].append(queue_id)
         else:
-            deferred[action] += 1
             deferred_queue_ids.setdefault(action, []).append(queue_id)
             if (
                 provider is not None
@@ -210,7 +208,10 @@ def plan_automatic_recovery(
             for action in AUTOMATIC_ACTION_ORDER
             if grouped[action]
         ),
-        deferred_action_counts=tuple(sorted(deferred.items())),
+        deferred_action_counts=tuple(
+            (action, len(queue_ids))
+            for action, queue_ids in sorted(deferred_queue_ids.items())
+        ),
         deferred_batches=tuple(
             OfflineRecoveryBatch(action, tuple(sorted(queue_ids)))
             for action, queue_ids in sorted(deferred_queue_ids.items())
