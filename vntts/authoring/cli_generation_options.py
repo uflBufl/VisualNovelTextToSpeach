@@ -5,7 +5,12 @@ from __future__ import annotations
 import argparse
 
 from vntts.authoring.bulk_generation import BulkGenerationError
-from vntts.authoring.failure_repair import FailureRepairPolicy, FailureRepairPolicyError
+from vntts.authoring.failure_repair import (
+    DEFAULT_INLINE_PAUSE_MS,
+    DEFAULT_SEGMENT_PAUSE_MS,
+    FailureRepairPolicy,
+    FailureRepairPolicyError,
+)
 from vntts.authoring.missing_voice_policy import (
     NARRATOR_ALL_UNRESOLVED,
     NARRATOR_ROLES,
@@ -48,13 +53,13 @@ def add_missing_voice_policy_arguments(parser: argparse.ArgumentParser) -> None:
 def failure_repair_policy(arguments: argparse.Namespace) -> FailureRepairPolicy:
     try:
         return FailureRepairPolicy(
-            tuple(arguments.sentence_segment_failed or ()),
-            tuple(arguments.trim_edge_silence_failed or ()),
-            arguments.segment_pause_ms,
-            tuple(arguments.bounded_seed_failed or ()),
-            tuple(arguments.offline_fallback_failed or ()),
-            tuple(arguments.inline_pause_failed or ()),
-            arguments.inline_pause_ms,
+            sentence_segment_queue_ids=tuple(arguments.sentence_segment_failed or ()),
+            edge_silence_queue_ids=tuple(arguments.trim_edge_silence_failed or ()),
+            segment_pause_ms=arguments.segment_pause_ms,
+            bounded_seed_retry_queue_ids=tuple(arguments.bounded_seed_failed or ()),
+            offline_fallback_queue_ids=tuple(arguments.offline_fallback_failed or ()),
+            inline_pause_queue_ids=tuple(arguments.inline_pause_failed or ()),
+            inline_pause_ms=arguments.inline_pause_ms,
         )
     except FailureRepairPolicyError as error:
         raise BulkGenerationError(str(error)) from error
@@ -98,12 +103,12 @@ def add_failure_repair_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--segment-pause-ms",
         type=int,
-        default=180,
+        default=DEFAULT_SEGMENT_PAUSE_MS,
         help="Bounded silence inserted only between authorized sentence segments",
     )
     parser.add_argument(
         "--inline-pause-ms",
         type=int,
-        default=180,
+        default=DEFAULT_INLINE_PAUSE_MS,
         help="MOSS inline pause duration for exact authorized comparison items",
     )

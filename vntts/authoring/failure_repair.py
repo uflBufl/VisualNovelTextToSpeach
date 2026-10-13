@@ -268,13 +268,13 @@ class FailureRepairPolicy:
                 "Failure-repair queue IDs must be JSON lists"
             )
         return cls(
-            tuple(sentence),
-            tuple(edge),
-            _policy_pause(document.get("segment_pause_ms")),
-            tuple(seed),
-            tuple(fallback),
-            tuple(inline),
-            document.get("inline_pause_ms", DEFAULT_INLINE_PAUSE_MS),
+            sentence_segment_queue_ids=tuple(sentence),
+            edge_silence_queue_ids=tuple(edge),
+            segment_pause_ms=_policy_pause(document.get("segment_pause_ms")),
+            bounded_seed_retry_queue_ids=tuple(seed),
+            offline_fallback_queue_ids=tuple(fallback),
+            inline_pause_queue_ids=tuple(inline),
+            inline_pause_ms=document.get("inline_pause_ms", DEFAULT_INLINE_PAUSE_MS),
         )
 
 

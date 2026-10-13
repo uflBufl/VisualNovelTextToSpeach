@@ -36,6 +36,8 @@ from vntts.authoring.bulk_generation import (
     is_spoken_queue_item,
 )
 from vntts.authoring.failure_repair import (
+    DEFAULT_INLINE_PAUSE_MS,
+    DEFAULT_SEGMENT_PAUSE_MS,
     FailureRepairPolicy,
     FailureRepairPolicyError,
 )
@@ -1588,9 +1590,9 @@ def _append_repair_options(
     _append_repair(
         command, "--inline-pause-failed", repair_policy.inline_pause_queue_ids
     )
-    if repair_policy.segment_pause_ms != 180:
+    if repair_policy.segment_pause_ms != DEFAULT_SEGMENT_PAUSE_MS:
         command.extend(("--segment-pause-ms", str(repair_policy.segment_pause_ms)))
-    if repair_policy.inline_pause_ms != 180:
+    if repair_policy.inline_pause_ms != DEFAULT_INLINE_PAUSE_MS:
         command.extend(("--inline-pause-ms", str(repair_policy.inline_pause_ms)))
 
 
