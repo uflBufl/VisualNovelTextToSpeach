@@ -23,6 +23,134 @@ from vntts.authoring.queue_extension import (
 
 
 class QueueExtensionTest(unittest.TestCase):
+    def test_publication_rejects_surrogate_extensions_without_writes(self):
+        for phase in ("added-item", "base-item", "metadata"):
+            with self.subTest(phase=phase), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                metadata = {"game": "Reverse: 1999", "language": "en"}
+                base = write_voice_generation_queue(
+                    root / "base.jsonl", metadata, [item(1)]
+                )
+                addition = write_voice_generation_queue(
+                    root / "addition.jsonl", metadata, [item(2)]
+                )
+                source = base if phase == "base-item" else addition
+                rows = [json.loads(row) for row in source.read_text().splitlines()]
+                rows[0 if phase == "metadata" else 1]["producer_extension"] = {
+                    "label": "\ud800"
+                }
+                source.write_text(
+                    "\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n",
+                    encoding="utf-8",
+                )
+                before = {path: path.read_bytes() for path in (base, addition)}
+                output = root / "combined.jsonl"
+
+                expected = (
+                    "invalid UTF-8 text"
+                    if phase == "added-item"
+                    else "Could not publish queue extension"
+                )
+                with self.assertRaisesRegex(QueueExtensionError, expected) as caught:
+                    publish_additive_generation_queue(base, addition, output)
+
+                self.assertIsInstance(caught.exception.__cause__, UnicodeEncodeError)
+                self.assertFalse(output.exists())
+                self.assertEqual(set(root.iterdir()), set(before))
+                self.assertEqual({path: path.read_bytes() for path in before}, before)
+
+    def test_public_readers_reject_surrogate_item_and_ledger_metadata_without_writes(
+        self,
+    ):
+        for phase in ("item", "ledger"):
+            with self.subTest(phase=phase), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                metadata = {"game": "Reverse: 1999", "language": "en"}
+                base = write_voice_generation_queue(
+                    root / "base.jsonl", metadata, [item(1)]
+                )
+                addition = write_voice_generation_queue(
+                    root / "addition.jsonl", metadata, [item(2)]
+                )
+                output = publish_additive_generation_queue(
+                    base, addition, root / "combined.jsonl"
+                )
+                rows = [json.loads(row) for row in output.read_text().splitlines()]
+                if phase == "ledger":
+                    rows[0][FIELD]["added_items"][0]["queue_id"] = "\ud800"
+                else:
+                    rows[-1]["producer_extension"] = {"label": "\ud800"}
+                output.write_text(
+                    "\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n",
+                    encoding="utf-8",
+                )
+                before = {path: path.read_bytes() for path in (base, addition, output)}
+
+                for reader in (
+                    validate_additive_generation_queue,
+                    workspace_queue_extension,
+                ):
+                    with (
+                        self.subTest(reader=reader.__name__),
+                        self.assertRaisesRegex(
+                            QueueExtensionError, "invalid UTF-8 text"
+                        ) as caught,
+                    ):
+                        reader(output, base_queue=base)
+                    self.assertIsInstance(
+                        caught.exception.__cause__, UnicodeEncodeError
+                    )
+                    self.assertEqual(
+                        {path: path.read_bytes() for path in before}, before
+                    )
+
+    def test_unicode_extensions_preserve_documents_and_canonical_hashes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            metadata = {
+                "game": "Reverse: 1999",
+                "language": "en",
+                "producer_extension": {"label": "источник 音声"},
+            }
+            base_item = {**item(1), "producer_extension": {"label": "основа 音声"}}
+            added_item = {**item(2), "producer_extension": {"label": "добавление 音声"}}
+            base = write_voice_generation_queue(
+                root / "base.jsonl", metadata, [base_item]
+            )
+            addition = write_voice_generation_queue(
+                root / "addition.jsonl", metadata, [added_item]
+            )
+            before = {path: path.read_bytes() for path in (base, addition)}
+
+            output = publish_additive_generation_queue(
+                base, addition, root / "combined.jsonl"
+            )
+            queue, ledger = validate_additive_generation_queue(output, base_queue=base)
+            binding = workspace_queue_extension(output, base_queue=base)
+
+            self.assertEqual(
+                [entry.document for entry in queue.items], [base_item, added_item]
+            )
+            self.assertEqual(
+                queue.metadata["producer_extension"], metadata["producer_extension"]
+            )
+            self.assertEqual(
+                ledger["added_items"][0]["item_sha256"],
+                canonical_document_sha256(added_item),
+            )
+            self.assertEqual(
+                ledger["extension_id"],
+                canonical_document_sha256(
+                    {
+                        key: value
+                        for key, value in ledger.items()
+                        if key != "extension_id"
+                    }
+                ),
+            )
+            self.assertEqual(binding["extension_id"], ledger["extension_id"])
+            self.assertEqual({path: path.read_bytes() for path in before}, before)
+
     def test_workspace_binding_matches_validated_queue_and_preserves_public_contract(
         self,
     ):

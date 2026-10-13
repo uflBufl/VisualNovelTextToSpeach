@@ -52,6 +52,15 @@ class QueueExtensionLedger(TypedDict):
 _file_sha256 = partial(file_sha256, error_type=QueueExtensionError)
 
 
+def _document_sha256(document: object, label: str) -> str:
+    try:
+        return canonical_document_sha256(document)
+    except UnicodeEncodeError as error:
+        raise QueueExtensionError(
+            f"Queue extension {label} contains invalid UTF-8 text"
+        ) from error
+
+
 @publication_errors(QueueExtensionError)
 def publish_additive_generation_queue(
     base_queue: str | PathLike[str],
@@ -85,7 +94,7 @@ def publish_additive_generation_queue(
     added = [
         {
             "queue_id": queue_id,
-            "item_sha256": canonical_document_sha256(document),
+            "item_sha256": _document_sha256(document, f"item {queue_id!r}"),
         }
         for queue_id, document in sorted(extension_by_id.items())
     ]
@@ -98,7 +107,7 @@ def publish_additive_generation_queue(
         "added_item_count": len(added),
         "added_items": added,
     }
-    ledger["extension_id"] = canonical_document_sha256(ledger)
+    ledger["extension_id"] = _document_sha256(ledger, "ledger")
     metadata = dict(extension.metadata)
     for derived_field in (
         "action_counts",
@@ -122,8 +131,10 @@ def publish_additive_generation_queue(
     try:
         write_voice_generation_queue(output_path, metadata, ordered)
         result = VoiceGenerationQueue.load(output_path)
-    except VoiceGenerationQueueError as error:
-        raise QueueExtensionError(str(error)) from error
+    except (VoiceGenerationQueueError, UnicodeEncodeError) as error:
+        raise QueueExtensionError(
+            f"Could not publish queue extension: {error}"
+        ) from error
     observed = {item.queue_id: item.document for item in result.items}
     if observed != {**base_by_id, **extension_by_id}:
         raise QueueExtensionError("Published queue extension changed item documents")
@@ -179,7 +190,7 @@ def _validate_extension_ledger(
     ):
         return False
     body = {key: value for key, value in ledger.items() if key != "extension_id"}
-    if ledger.get("extension_id") != canonical_document_sha256(body):
+    if ledger.get("extension_id") != _document_sha256(body, "ledger"):
         raise QueueExtensionError("Generation queue extension identity changed")
     base_sha256 = _sha256(ledger.get("base_queue_sha256"), "Base queue SHA-256")
     _sha256(ledger.get("extension_queue_sha256"), "Extension queue SHA-256")
@@ -202,7 +213,7 @@ def _validate_extension_ledger(
     if set(added_by_id) - set(observed):
         raise QueueExtensionError("Generation queue added item is absent")
     for queue_id, digest in added_by_id.items():
-        if canonical_document_sha256(observed[queue_id]) != digest:
+        if _document_sha256(observed[queue_id], f"item {queue_id!r}") != digest:
             raise QueueExtensionError("Generation queue added item changed")
     base_ids = set(observed) - set(added_by_id)
     if (
