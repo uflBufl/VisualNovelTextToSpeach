@@ -573,6 +573,57 @@ class SpeakerIdentityTest(unittest.TestCase):
             with self.assertRaises(SpeakerIdentityError):
                 load_labelled_pairs(source, inventory)
 
+    def test_report_writer_checks_integrity_before_publication(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            inventory = build_reference_inventory(_fixture(root))
+            ids = [item["reference_id"] for item in inventory["references"]]
+            labels = build_labelled_pairs(
+                inventory,
+                [
+                    {
+                        "left_reference_id": ids[0],
+                        "right_reference_id": ids[1],
+                        "partition": "fit",
+                        "relationship": "same-speaker",
+                    }
+                ],
+            )
+            report = build_speaker_identity_report(
+                inventory, labels, lambda payload: (1, 0), {}
+            )
+            for field, value, rehash in (
+                ("schema_version", 2, True),
+                ("schema_version", True, True),
+                ("schema_version", 1.0, True),
+                ("authority", "approved", True),
+                ("report_id", None, False),
+                ("threshold", 0.5, False),
+            ):
+                with self.subTest(field=field, value=value):
+                    invalid = {**report, field: value}
+                    if value is None:
+                        del invalid[field]
+                    if rehash:
+                        invalid["report_id"] = speaker_identity._document_sha256(
+                            {
+                                key: value
+                                for key, value in invalid.items()
+                                if key != "report_id"
+                            }
+                        )
+                    output = root / "invalid-output" / "report.json"
+                    with self.assertRaises(SpeakerIdentityError):
+                        speaker_identity.write_speaker_identity_report(invalid, output)
+                    self.assertFalse(output.parent.exists())
+            output = root / "report.json"
+            speaker_identity.write_speaker_identity_report(report, output)
+            self.assertEqual(json.loads(output.read_text("utf-8")), report)
+            before = output.read_bytes()
+            with self.assertRaises(SpeakerIdentityError):
+                speaker_identity.write_speaker_identity_report(report, output)
+            self.assertEqual(output.read_bytes(), before)
+
     def test_invalid_model_embeddings_use_the_domain_error(self):
         with TemporaryDirectory() as directory:
             inventory = build_reference_inventory(_fixture(Path(directory)))

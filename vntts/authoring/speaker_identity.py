@@ -379,7 +379,15 @@ def build_speaker_identity_report(
 def write_speaker_identity_report(
     document: Mapping[str, object], output: str | Path
 ) -> Path:
-    if document.get("schema") != REPORT_SCHEMA:
+    if (
+        document.get("schema") != REPORT_SCHEMA
+        or not has_schema_version(document, SCHEMA_VERSION)
+        or document.get("authority") != "diagnostic-only"
+        or document.get("report_id")
+        != _document_sha256(
+            {key: value for key, value in document.items() if key != "report_id"}
+        )
+    ):
         raise SpeakerIdentityError("Unsupported speaker-identity report")
     return _write_no_replace(output, document, "speaker-identity report")
 
