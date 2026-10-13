@@ -262,6 +262,49 @@ class LegacyAuthoringImportTest(unittest.TestCase):
                 self.assertEqual(stdout.getvalue(), "")
             self.assertEqual(tree_hashes(root), before)
 
+    def test_initial_standalone_read_failure_preserves_cause_cli_and_discovery_error(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = write_legacy_fixture(root)
+            before = tree_hashes(root)
+            failure = PermissionError("Initial standalone source read was blocked")
+            with patch.object(legacy_module, "sha256_file", side_effect=failure):
+                with self.assertRaises(LegacyAuthoringImportError) as caught:
+                    inspect_standalone_generation(
+                        fixture["queue"], fixture["state"].parent
+                    )
+                self.assertIs(caught.exception.__cause__, failure)
+                candidates = discover_legacy_jobs(fixture["jobs"])
+                selected = next(
+                    item
+                    for item in candidates
+                    if item.job_directory.resolve()
+                    == fixture["job_directory"].resolve()
+                )
+                self.assertFalse(selected.compatible)
+                self.assertIn(str(failure), selected.compatibility_error)
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with (
+                    redirect_stdout(stdout),
+                    redirect_stderr(stderr),
+                    self.assertRaises(SystemExit) as exited,
+                ):
+                    main(
+                        [
+                            "inspect-standalone",
+                            "--queue",
+                            str(fixture["queue"]),
+                            "--output",
+                            str(fixture["state"].parent),
+                        ]
+                    )
+                self.assertEqual(exited.exception.code, 2)
+                self.assertIn(str(failure), stderr.getvalue())
+                self.assertEqual(stdout.getvalue(), "")
+            self.assertEqual(tree_hashes(root), before)
+
     def test_atomic_publication_failure_is_translated_and_cleans_staging(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

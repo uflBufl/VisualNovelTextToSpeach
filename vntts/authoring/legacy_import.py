@@ -279,6 +279,7 @@ def _publish_import_plan(
     return LegacyImportResult(destination, manifest, True)
 
 
+@publication_errors(LegacyAuthoringImportError)
 def _build_standalone_import_plan(
     queue_path: str | Path, output_directory: str | Path
 ) -> _ImportPlan:
@@ -401,6 +402,7 @@ def _build_standalone_import_plan(
     return plan
 
 
+@publication_errors(LegacyAuthoringImportError)
 def _build_import_plan(job_directory: str | Path) -> _ImportPlan:
     job_directory = Path(job_directory).expanduser().resolve()
     job_path = job_directory / "job.json"

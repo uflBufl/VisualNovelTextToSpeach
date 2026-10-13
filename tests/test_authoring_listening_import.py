@@ -15,6 +15,7 @@ from tests.listening_fixtures import write_listening_fixture
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.authoring import listening_import as listening_import_module
 from vntts.authoring.cli import main
+from vntts.authoring.legacy_import import discover_legacy_jobs
 from vntts.authoring.listening_import import (
     IMPORT_SCHEMA,
     ListeningImportError,
@@ -189,6 +190,41 @@ class ListeningImportTest(unittest.TestCase):
                 self.assertEqual(exited.exception.code, 2)
                 self.assertIn(str(failure), stderr.getvalue())
                 self.assertEqual(stdout.getvalue(), "")
+            self.assertEqual(tree_hashes(root), before)
+
+    def test_initial_inspection_read_failure_preserves_cause_and_user_errors(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = write_listening_fixture(root)
+            jobs_root = root / "jobs"
+            jobs_root.mkdir()
+            before = tree_hashes(root)
+            failure = PermissionError("Initial listening audio read was blocked")
+            with patch.object(
+                listening_import_module, "sha256_file", side_effect=failure
+            ):
+                with self.assertRaises(ListeningImportError) as caught:
+                    inspect_listening_session(source)
+                self.assertIs(caught.exception.__cause__, failure)
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with (
+                    redirect_stdout(stdout),
+                    redirect_stderr(stderr),
+                    self.assertRaises(SystemExit) as exited,
+                ):
+                    main(["inspect-listening", str(source)])
+                self.assertEqual(exited.exception.code, 2)
+                self.assertIn(str(failure), stderr.getvalue())
+                self.assertEqual(stdout.getvalue(), "")
+                candidates = discover_legacy_jobs(jobs_root)
+                listening = [
+                    candidate
+                    for candidate in candidates
+                    if candidate.kind == "model-listening-session"
+                ]
+                self.assertEqual(len(listening), 1)
+                self.assertEqual(listening[0].status, "incompatible")
+                self.assertIn(str(failure), listening[0].compatibility_error)
             self.assertEqual(tree_hashes(root), before)
 
     def test_atomic_publication_failure_is_translated_and_cleans_staging(self):

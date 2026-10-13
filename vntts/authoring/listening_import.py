@@ -84,6 +84,7 @@ class ListeningImportResult:
     created: bool
 
 
+@publication_errors(ListeningImportError)
 def inspect_listening_session(
     session_directory: PathInput,
 ) -> ListeningImportInspection:
