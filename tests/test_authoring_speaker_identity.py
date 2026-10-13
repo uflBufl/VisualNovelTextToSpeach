@@ -5,11 +5,16 @@ import unittest
 import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import Mock, patch
+from unittest.mock import DEFAULT, Mock, patch
 
 import numpy as np
 
-from vntts.authoring import managed_model_installation, speaker_identity
+from tests.symlink_support import symlink_or_skip
+from vntts.authoring import (
+    cli_speaker_identity,
+    managed_model_installation,
+    speaker_identity,
+)
 from vntts.authoring.cli import create_parser
 from vntts.authoring.speaker_identity import (
     SpeakerIdentityError,
@@ -60,6 +65,91 @@ def _fixture(root):
 
 
 class SpeakerIdentityTest(unittest.TestCase):
+    def test_cli_reports_stay_outside_managed_model_for_online_and_offline_routes(self):
+        parser = create_parser()
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            model = root / "model"
+            model.mkdir()
+            alias = root / "model-alias"
+            external = root / "report.json"
+            for offline in (False, True):
+                for output in (
+                    model / "report.json",
+                    model / "sub" / "report.json",
+                    alias / "report.json",
+                    external,
+                ):
+                    with self.subTest(offline=offline, output=output):
+                        if output.parent == alias and not alias.is_symlink():
+                            symlink_or_skip(alias, model, target_is_directory=True)
+                        arguments = parser.parse_args(
+                            [
+                                "speaker-identity-evaluate",
+                                str(root / "inventory.json"),
+                                str(root / "labels.json"),
+                                "--output",
+                                str(output),
+                                *(["--offline"] if offline else []),
+                            ]
+                        )
+                        with patch.multiple(
+                            cli_speaker_identity,
+                            load_reference_inventory=DEFAULT,
+                            load_labelled_pairs=DEFAULT,
+                            require_speechbrain_runtime=DEFAULT,
+                            resolve_managed_speaker_identity_model=DEFAULT,
+                            install_managed_speaker_identity_model=DEFAULT,
+                            make_speechbrain_embedder=DEFAULT,
+                            installed_model_descriptor=DEFAULT,
+                            build_speaker_identity_report=DEFAULT,
+                            write_speaker_identity_report=DEFAULT,
+                            print_json=DEFAULT,
+                        ) as operations:
+                            operations[
+                                "resolve_managed_speaker_identity_model"
+                            ].return_value = model
+                            operations[
+                                "install_managed_speaker_identity_model"
+                            ].return_value = {"model_directory": str(model)}
+                            report = {"report_id": "report-id", "pair_count": 2}
+                            operations[
+                                "build_speaker_identity_report"
+                            ].return_value = report
+                            if output == external:
+                                self.assertEqual(
+                                    cli_speaker_identity.handle(arguments), 0
+                                )
+                                operations[
+                                    "make_speechbrain_embedder"
+                                ].assert_called_once_with(model, device="cpu")
+                                operations[
+                                    "write_speaker_identity_report"
+                                ].assert_called_once_with(report, output)
+                                operations["print_json"].assert_called_once_with(
+                                    {"output": str(output), **report}
+                                )
+                            else:
+                                with self.assertRaisesRegex(
+                                    SpeakerIdentityError,
+                                    "outside the immutable model",
+                                ):
+                                    cli_speaker_identity.handle(arguments)
+                                for operation in (
+                                    "make_speechbrain_embedder",
+                                    "build_speaker_identity_report",
+                                    "write_speaker_identity_report",
+                                ):
+                                    operations[operation].assert_not_called()
+                            selected = (
+                                "resolve_managed_speaker_identity_model"
+                                if offline
+                                else "install_managed_speaker_identity_model"
+                            )
+                            operations[selected].assert_called_once_with()
+            self.assertEqual(list(model.iterdir()), [])
+            self.assertFalse(external.exists())
+
     def test_inventory_labels_and_held_out_threshold_are_checksum_bound(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

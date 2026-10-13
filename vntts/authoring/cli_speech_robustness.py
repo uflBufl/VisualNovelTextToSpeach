@@ -11,6 +11,7 @@ from vntts.authoring.asr_model import (
     managed_asr_status,
     resolve_managed_asr_model,
 )
+from vntts.authoring.publication import no_replace_destination
 from vntts.authoring.robustness_asr import (
     SpeechRobustnessAsrError,
     build_speech_robustness_asr_report,
@@ -136,7 +137,7 @@ def _handle(arguments: argparse.Namespace) -> int:
         return 0
     if arguments.command == "speech-robustness-asr":
         corpus_root = arguments.corpus.expanduser().resolve()
-        output = arguments.output.expanduser().resolve()
+        output = no_replace_destination(arguments.output)
         if output.is_relative_to(corpus_root):
             raise SpeechRobustnessAsrError(
                 "ASR report must be outside the immutable corpus directory"
@@ -147,6 +148,10 @@ def _handle(arguments: argparse.Namespace) -> int:
                 resolve_managed_asr_model()
                 if arguments.offline
                 else Path(install_managed_asr_model()["model_directory"])
+            )
+        if output.is_relative_to(model.expanduser().resolve()):
+            raise SpeechRobustnessAsrError(
+                "ASR report must be outside the immutable model directory"
             )
         report = build_speech_robustness_asr_report(
             arguments.corpus,

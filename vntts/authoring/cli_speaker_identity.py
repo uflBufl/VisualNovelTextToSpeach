@@ -6,6 +6,7 @@ import argparse
 from collections.abc import Mapping
 from pathlib import Path
 
+from vntts.authoring.publication import no_replace_destination
 from vntts.authoring.speaker_identity import (
     SpeakerIdentityError,
     build_labelled_pairs,
@@ -118,6 +119,12 @@ def handle(arguments: argparse.Namespace) -> int:
             if arguments.offline
             else Path(install_managed_speaker_identity_model()["model_directory"])
         )
+        if no_replace_destination(arguments.output).is_relative_to(
+            model_directory.expanduser().resolve()
+        ):
+            raise SpeakerIdentityError(
+                "Speaker-identity report must be outside the immutable model directory"
+            )
         report_document = build_speaker_identity_report(
             inventory,
             labels,

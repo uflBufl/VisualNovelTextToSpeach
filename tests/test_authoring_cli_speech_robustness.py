@@ -4,9 +4,12 @@ import json
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from tests.symlink_support import symlink_or_skip
+from tests.test_authoring_robustness_asr_publication import _report
 from vntts.authoring.asr_model import ManagedAsrModelError
 from vntts.authoring.cli import create_parser
 from vntts.authoring.cli_speech_robustness import (
@@ -67,6 +70,62 @@ class SpeechRobustnessCliFamilyTest(unittest.TestCase):
                     )
                 )
         install.assert_not_called()
+
+    @patch("vntts.authoring.cli_speech_robustness.build_speech_robustness_asr_report")
+    @patch("vntts.authoring.cli_speech_robustness.resolve_managed_asr_model")
+    def test_model_containment_is_rejected_before_asr_with_external_progress(
+        self, resolve, build
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            model = root / "model"
+            model.mkdir()
+            resolve.return_value = model
+            for selected_model in (model, None):
+                with (
+                    self.subTest(model=selected_model),
+                    self.assertRaisesRegex(
+                        SpeechRobustnessCommandError, "outside the immutable model"
+                    ),
+                ):
+                    handle(
+                        argparse.Namespace(
+                            command="speech-robustness-asr",
+                            corpus=root / "corpus",
+                            model=selected_model,
+                            output=model / "report.json",
+                            device="cpu",
+                            offline=True,
+                            progress=root / "progress.json",
+                        )
+                    )
+            self.assertEqual(list(model.iterdir()), [])
+            self.assertFalse((root / "progress.json").exists())
+        build.assert_not_called()
+
+    @patch("vntts.authoring.cli_speech_robustness.build_speech_robustness_asr_report")
+    def test_dangling_output_symlink_cannot_publish_to_its_target(self, build):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            report = _report(root)
+            build.return_value = report
+            output = root / "report.json"
+            target = root / "target.json"
+            symlink_or_skip(output, target)
+            with self.assertRaisesRegex(SpeechRobustnessCommandError, "output exists"):
+                handle(
+                    argparse.Namespace(
+                        command="speech-robustness-asr",
+                        corpus=report.corpus_directory,
+                        model=report.model_directory,
+                        output=output,
+                        device="cpu",
+                        offline=True,
+                        progress=root / "progress.json",
+                    )
+                )
+            self.assertTrue(output.is_symlink())
+            self.assertFalse(target.exists())
 
     def test_family_owns_every_speech_robustness_command(self):
         self.assertEqual(

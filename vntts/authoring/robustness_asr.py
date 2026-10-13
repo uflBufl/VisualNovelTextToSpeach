@@ -105,6 +105,7 @@ class SpeechRobustnessAsrReport:
     report_id: str
     document: JsonDocument
     corpus_directory: Path
+    model_directory: Path
 
     def to_dict(self) -> JsonDocument:
         return copy.deepcopy(self.document)
@@ -642,6 +643,7 @@ def build_speech_robustness_asr_report(
         _text_field(validated, "report_id", "Report ID"),
         validated,
         corpus.directory,
+        model,
     )
 
 
@@ -655,10 +657,14 @@ def write_speech_robustness_asr_report(
             "ASR report publication requires validated corpus authority"
         )
     output = no_replace_destination(output_path)
-    if output.is_relative_to(report.corpus_directory):
-        raise SpeechRobustnessAsrError(
-            "ASR report must be outside the immutable corpus directory"
-        )
+    for directory, label in (
+        (report.corpus_directory, "corpus"),
+        (report.model_directory, "model"),
+    ):
+        if output.is_relative_to(directory):
+            raise SpeechRobustnessAsrError(
+                f"ASR report must be outside the immutable {label} directory"
+            )
     document = report.document
     _validate_document(document)
     try:
