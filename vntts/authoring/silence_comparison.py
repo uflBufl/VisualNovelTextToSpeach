@@ -227,8 +227,6 @@ def publish_silence_comparison(
 @dataclass(frozen=True)
 class _StagedSilenceComparison:
     records: list[dict[str, object]]
-    segmented_report_samples: list[dict[str, object]]
-    compressed_report_samples: list[dict[str, object]]
     checked_sources: list[tuple[Path, str, str]]
 
 
@@ -260,14 +258,12 @@ def _silence_comparison_output_directory(output_directory: str | Path) -> Path:
 def _stage_silence_comparison_samples(
     values: Iterable[SilenceComparisonSample], staging: Path, target_seconds: float
 ) -> _StagedSilenceComparison:
-    staged = _StagedSilenceComparison([], [], [], [])
+    staged = _StagedSilenceComparison([], [])
     for value in values:
-        record, segmented_report, compressed_report, checked_sources = (
-            _stage_silence_comparison_sample(value, staging, target_seconds)
+        record, checked_sources = _stage_silence_comparison_sample(
+            value, staging, target_seconds
         )
         staged.records.append(record)
-        staged.segmented_report_samples.append(segmented_report)
-        staged.compressed_report_samples.append(compressed_report)
         staged.checked_sources.extend(checked_sources)
     return staged
 
@@ -275,8 +271,6 @@ def _stage_silence_comparison_samples(
 def _stage_silence_comparison_sample(
     value: SilenceComparisonSample, staging: Path, target_seconds: float
 ) -> tuple[
-    dict[str, object],
-    dict[str, object],
     dict[str, object],
     tuple[tuple[Path, str, str], tuple[Path, str, str]],
 ]:
@@ -309,12 +303,6 @@ def _stage_silence_comparison_sample(
     write_pcm16_wav(staging / compressed_relative, compression.pcm, raw_rate)
     compressed_sha256 = sha256_file(staging / compressed_relative)
     text_sha256 = hashlib.sha256(value.text.encode("utf-8")).hexdigest()
-    common = {
-        "id": value.queue_id,
-        "line_id": value.line_id,
-        "text": value.text,
-        "text_sha256": text_sha256,
-    }
     return (
         {
             "queue_id": value.queue_id,
@@ -331,16 +319,6 @@ def _stage_silence_comparison_sample(
             "compressed_audio_sha256": compressed_sha256,
             "sample_rate": raw_rate,
             "transform": _compression_metadata(compression),
-        },
-        {
-            **common,
-            "audio": f"../{segmented_relative}",
-            "audio_sha256": segmented_sha256,
-        },
-        {
-            **common,
-            "audio": f"../{compressed_relative}",
-            "audio_sha256": compressed_sha256,
         },
         (
             (raw_path, raw_sha256, "raw comparison audio"),
@@ -408,7 +386,12 @@ def _write_silence_comparison_reports(
         _model_report(
             "sentence-segmentation",
             "independently rendered sentence segments",
-            staged.segmented_report_samples,
+            [
+                _comparison_report_sample(
+                    sample, "segmented_copy", "segmented_source_sha256"
+                )
+                for sample in staged.records
+            ],
         ),
         sort_keys=True,
     )
@@ -417,7 +400,12 @@ def _write_silence_comparison_reports(
         _model_report(
             "silence-compression",
             "center-only compression of one verified silent span",
-            staged.compressed_report_samples,
+            [
+                _comparison_report_sample(
+                    sample, "compressed_audio", "compressed_audio_sha256"
+                )
+                for sample in staged.records
+            ],
         ),
         sort_keys=True,
     )
@@ -844,15 +832,7 @@ def _validate_comparison_report(
                 "Silence comparison report sample identity is invalid"
             )
         seen.add(queue_id)
-        expected_audio = f"../{source[audio_field]}"
-        if record != {
-            "id": queue_id,
-            "line_id": source["line_id"],
-            "text": source["text"],
-            "text_sha256": source["text_sha256"],
-            "audio": expected_audio,
-            "audio_sha256": source[digest_field],
-        }:
+        if record != _comparison_report_sample(source, audio_field, digest_field):
             raise SilenceComparisonError(
                 "Silence comparison report diverges from its sample ledger"
             )
@@ -867,6 +847,19 @@ def _validate_comparison_report(
             "Silence comparison report sample inventory is incomplete"
         )
     return snapshot
+
+
+def _comparison_report_sample(
+    sample: Mapping[str, object], audio_field: str, digest_field: str
+) -> dict[str, object]:
+    return {
+        "id": sample["queue_id"],
+        "line_id": sample["line_id"],
+        "text": sample["text"],
+        "text_sha256": sample["text_sha256"],
+        "audio": f"../{sample[audio_field]}",
+        "audio_sha256": sample[digest_field],
+    }
 
 
 def _comparison_report_records(

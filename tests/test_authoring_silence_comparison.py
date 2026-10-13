@@ -3,6 +3,7 @@ import json
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -93,6 +94,42 @@ class AuthoringSilenceComparisonTest(unittest.TestCase):
             loaded_session = load_listening_session(session)
             self.assertEqual(loaded_session["trial_count"], 1)
             self.assertEqual(set(loaded_session["trials"][0]["audio"]), {"a", "b"})
+
+    def test_reports_preserve_sample_order_and_share_the_comparison_ledger(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first = write_silence_comparison_sample(root)
+            second = replace(first, queue_id="second-sample", line_id="second-line")
+            result = publish_silence_comparison((second, first), root / "comparison")
+            document = load_silence_comparison(result.directory)
+            self.assertEqual(
+                [sample["queue_id"] for sample in document["samples"]],
+                [second.queue_id, first.queue_id],
+            )
+            for path, audio_field, digest_field in (
+                (result.report_paths[0], "segmented_copy", "segmented_source_sha256"),
+                (result.report_paths[1], "compressed_audio", "compressed_audio_sha256"),
+            ):
+                with self.subTest(report=path.name):
+                    report = json.loads(path.read_text(encoding="utf-8"))
+                    self.assertEqual(
+                        report["samples"],
+                        [
+                            {
+                                "id": sample["queue_id"],
+                                "line_id": sample["line_id"],
+                                "text": sample["text"],
+                                "text_sha256": sample["text_sha256"],
+                                "audio": f"../{sample[audio_field]}",
+                                "audio_sha256": sample[digest_field],
+                            }
+                            for sample in document["samples"]
+                        ],
+                    )
+            session = create_silence_comparison_session(
+                result.directory, root / "listening", seed=7
+            )
+            self.assertEqual(load_listening_session(session)["trial_count"], 2)
 
     def test_racing_publication_preserves_competitor_and_uses_domain_error(self):
         with tempfile.TemporaryDirectory() as temporary:
