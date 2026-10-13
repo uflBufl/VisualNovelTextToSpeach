@@ -763,10 +763,8 @@ def _require_sha256(value: object, label: str) -> str:
     return require_sha256(value, label, error_type=ListeningImportError)
 
 
-def _canonical(value: object) -> bytes:
-    return json.dumps(
-        value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-    ).encode("utf-8")
+def _canonical(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
 def _object_list(value: object, label: str) -> list[JsonObject]:

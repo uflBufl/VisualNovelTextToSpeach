@@ -374,6 +374,24 @@ class ListeningImportTest(unittest.TestCase):
                     tree_hashes(source),
                 )
 
+    def test_reimport_reports_surrogate_manifest_metadata_as_domain_error(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = write_listening_fixture(root)
+            destination = import_listening_session(
+                source, root / "app-data"
+            ).destination
+            manifest_path = destination / "import.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["source"]["metadata"] = {"label": "\ud800"}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            before = tree_hashes(root)
+
+            with self.assertRaisesRegex(ListeningImportError, "manifest was modified"):
+                import_listening_session(source, root / "app-data")
+
+            self.assertEqual(tree_hashes(root), before)
+
     def test_rejects_non_integer_schema_versions_and_session_counts(self):
         mutations = (
             ("session.json", "schema_version", True),
