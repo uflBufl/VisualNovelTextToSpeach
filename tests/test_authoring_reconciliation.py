@@ -69,6 +69,64 @@ class AuthoringReconciliationTest(unittest.TestCase):
     def decide_parallel_bundle(self, publication, decisions):
         return decide_parallel_review_bundle(publication, decisions)
 
+    def test_snapshot_registration_reuses_capture_digest_and_detects_changes(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "authority.json"
+            payload = b'{"value": 1}\n'
+            path.write_bytes(payload)
+            snapshot, document = reconciliation_module._read_json_snapshot(
+                path, "test authority"
+            )
+            self.assertEqual(snapshot.payload, payload)
+            self.assertEqual(document, {"value": 1})
+            self.assertEqual(snapshot.sha256, sha256_file(path))
+            snapshots = {}
+            with patch("hashlib.sha256", side_effect=AssertionError("Repeated hash")):
+                reconciliation_module._remember_snapshot(
+                    snapshots, path, snapshot.sha256
+                )
+                reconciliation_module._remember_snapshot(
+                    snapshots, path, snapshot.sha256
+                )
+            self.assertEqual(snapshots, {path.resolve(): snapshot.sha256})
+
+            path.write_bytes(b'{"value": 2}\n')
+            changed = reconciliation_module._capture_snapshot(path, "test authority")
+            with self.assertRaisesRegex(
+                AuthoringReconciliationError, "Authority changed while reading"
+            ):
+                reconciliation_module._remember_snapshot(
+                    snapshots, path, changed.sha256
+                )
+            self.assertEqual(snapshots, {path.resolve(): snapshot.sha256})
+            path.unlink()
+            with self.assertRaisesRegex(
+                AuthoringReconciliationError, "Authority changed during reconciliation"
+            ):
+                reconciliation_module._assert_snapshots_unchanged(snapshots)
+
+    def test_json_snapshot_preserves_decode_error_causes(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "authority.json"
+            for payload, cause in (
+                (b"{", json.JSONDecodeError),
+                (b"\xff", UnicodeDecodeError),
+            ):
+                with self.subTest(payload=payload):
+                    path.write_bytes(payload)
+                    with self.assertRaisesRegex(
+                        AuthoringReconciliationError, "Unable to read test authority"
+                    ) as caught:
+                        reconciliation_module._read_json_snapshot(
+                            path, "test authority"
+                        )
+                    self.assertIsInstance(caught.exception.__cause__, cause)
+            path.write_bytes(b"[]")
+            with self.assertRaisesRegex(
+                AuthoringReconciliationError, "Test authority must be an object"
+            ):
+                reconciliation_module._read_json_snapshot(path, "test authority")
+
     def test_primary_unbundled_spoken_admission_is_reused(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

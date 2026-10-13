@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
@@ -99,7 +98,7 @@ class _WorkspaceSnapshot:
     directory: Path
     configuration: JsonObject
     summary: WorkspaceSummary
-    queue_payload: bytes
+    queue_sha256: str
     queue: VoiceGenerationQueue
     state: StateObject
     state_items: dict[str, JsonObject]
@@ -124,8 +123,8 @@ class _WorkspaceScope:
 
 def _load_review_bundle(
     path: Path, *, required: bool, snapshots: SnapshotHashes
-) -> tuple[bytes, str | None, CohortReviewResume] | None:
-    payload, candidate = _read_json_snapshot(path, "review bundle")
+) -> tuple[AuthoritySnapshot, str | None, CohortReviewResume] | None:
+    snapshot, candidate = _read_json_snapshot(path, "review bundle")
     if (
         candidate.get("schema") != COHORT_REVIEW_BUNDLE_SCHEMA
         or candidate.get("schema_version") != COHORT_REVIEW_BUNDLE_VERSION
@@ -135,7 +134,7 @@ def _load_review_bundle(
                 f"Unsupported selected review bundle: {path}"
             )
         return None
-    _remember_snapshot(snapshots, path, payload)
+    _remember_snapshot(snapshots, path, snapshot.sha256)
     try:
         original = validate_cohort_review_bundle_document(candidate)
         current = reconcile_cohort_review_bundle(original)
@@ -147,11 +146,11 @@ def _load_review_bundle(
     progress_sha256 = None
     progress_current = False
     if progress.is_file():
-        progress_payload, progress_document = _read_json_snapshot(
+        progress_snapshot, progress_document = _read_json_snapshot(
             progress, "review bundle progress"
         )
-        _remember_snapshot(snapshots, progress, progress_payload)
-        progress_sha256 = hashlib.sha256(progress_payload).hexdigest()
+        _remember_snapshot(snapshots, progress, progress_snapshot.sha256)
+        progress_sha256 = progress_snapshot.sha256
         try:
             saved = validate_cohort_review_progress_document(
                 progress_document, original
@@ -164,7 +163,7 @@ def _load_review_bundle(
     else:
         _remember_absence(snapshots, progress)
     return (
-        payload,
+        snapshot,
         progress_sha256,
         CohortReviewResume(
             path,
@@ -239,7 +238,7 @@ def _inspect_review_bundles(
         )
         if loaded is None:
             continue
-        payload, progress_sha256, resume = loaded
+        snapshot, progress_sha256, resume = loaded
         _index_review_bundle(
             resume,
             path,
@@ -251,7 +250,7 @@ def _inspect_review_bundles(
         bundle_reports.append(
             {
                 "publication": path.name,
-                "publication_sha256": hashlib.sha256(payload).hexdigest(),
+                "publication_sha256": snapshot.sha256,
                 "progress_sha256": progress_sha256,
                 **resume.to_dict(),
             }
@@ -286,7 +285,7 @@ def _inspect_quality_reviews(
             raise AuthoringReconciliationError(
                 "Source-reference quality review must be a review.json document"
             )
-        payload, candidate = _read_json_snapshot(path, "quality review")
+        snapshot, candidate = _read_json_snapshot(path, "quality review")
         if (
             candidate.get("schema") != QUALITY_REVIEW_SCHEMA
             or candidate.get("schema_version") != QUALITY_REVIEW_VERSION
@@ -302,7 +301,7 @@ def _inspect_quality_reviews(
             raise AuthoringReconciliationError(
                 f"Source-reference quality review is invalid: {path}: {error}"
             ) from error
-        _remember_snapshot(snapshots, path, payload)
+        _remember_snapshot(snapshots, path, snapshot.sha256)
         pending: list[str] = []
         decisions: Counter[str] = Counter()
         for card in _json_objects(session.get("variants"), "Quality review variants"):
@@ -339,7 +338,7 @@ def _inspect_quality_reviews(
         quality_reports.append(
             {
                 "review": str(path),
-                "review_sha256": hashlib.sha256(payload).hexdigest(),
+                "review_sha256": snapshot.sha256,
                 "variant_count": session["variant_count"],
                 "completed_count": session["completed_count"],
                 "pending_variant_ids": pending,
@@ -361,32 +360,32 @@ def _load_workspace_snapshot(
         )
     directory, workspace, workspace_sha256 = load_workspace_authority(workspace_path)
     summary = inspect_workspace(directory)
-    queue_payload = _read_bytes(summary.queue, "workspace queue")
-    queue = _load_queue_snapshot(queue_payload)
-    _remember_snapshot(snapshots, summary.queue, queue_payload)
+    queue_snapshot = _capture_snapshot(summary.queue, "workspace queue")
+    queue = _load_queue_snapshot(queue_snapshot.payload)
+    _remember_snapshot(snapshots, summary.queue, queue_snapshot.sha256)
     configuration = directory / "workspace.json"
-    configuration_payload = _read_bytes(configuration, "workspace configuration")
-    if hashlib.sha256(configuration_payload).hexdigest() != workspace_sha256:
+    configuration_snapshot = _capture_snapshot(configuration, "workspace configuration")
+    if configuration_snapshot.sha256 != workspace_sha256:
         raise AuthoringReconciliationError(
             "Workspace configuration changed after validation"
         )
-    _remember_snapshot(snapshots, configuration, configuration_payload)
+    _remember_snapshot(snapshots, configuration, configuration_snapshot.sha256)
     _snapshot_workspace_voice_controls(directory, workspace, snapshots)
 
     state: StateObject = {"active": None, "items": {}}
     state_sha256 = None
     if summary.state is not None:
-        state_payload, state_document = _read_json_snapshot(
+        state_snapshot, state_document = _read_json_snapshot(
             summary.state, "workspace state"
         )
-        _remember_snapshot(snapshots, summary.state, state_payload)
-        state_sha256 = hashlib.sha256(state_payload).hexdigest()
+        _remember_snapshot(snapshots, summary.state, state_snapshot.sha256)
+        state_sha256 = state_snapshot.sha256
         try:
             state = validate_generation_state_document(
                 state_document,
                 summary.output,
                 queue,
-                hashlib.sha256(queue_payload).hexdigest(),
+                queue_snapshot.sha256,
             )
         except Exception as error:
             raise AuthoringReconciliationError(str(error)) from error
@@ -396,16 +395,16 @@ def _load_workspace_snapshot(
     manifest = summary.output / "manifest.json"
     manifest_sha256 = None
     if manifest.is_file():
-        manifest_payload = _read_bytes(manifest, "generated manifest")
-        _remember_snapshot(snapshots, manifest, manifest_payload)
-        manifest_sha256 = hashlib.sha256(manifest_payload).hexdigest()
+        manifest_snapshot = _capture_snapshot(manifest, "generated manifest")
+        _remember_snapshot(snapshots, manifest, manifest_snapshot.sha256)
+        manifest_sha256 = manifest_snapshot.sha256
     else:
         _remember_absence(snapshots, manifest)
     return _WorkspaceSnapshot(
         directory,
         workspace,
         summary,
-        queue_payload,
+        queue_snapshot.sha256,
         queue,
         state,
         _state_items(state),
@@ -705,7 +704,6 @@ def _inspect_workspaces(
         directory = snapshot.directory
         workspace = snapshot.configuration
         summary = snapshot.summary
-        queue_payload = snapshot.queue_payload
         state = snapshot.state
         state_sha256 = snapshot.state_sha256
         manifest_sha256 = snapshot.manifest_sha256
@@ -745,7 +743,7 @@ def _inspect_workspaces(
                 "workspace": str(directory),
                 "workspace_id": workspace["workspace_id"],
                 "config_fingerprint": workspace["config_fingerprint"],
-                "queue_sha256": hashlib.sha256(queue_payload).hexdigest(),
+                "queue_sha256": snapshot.queue_sha256,
                 "state_sha256": state_sha256,
                 "manifest_sha256": manifest_sha256,
                 "runtime_status": summary.runtime_status.value,
@@ -1105,10 +1103,10 @@ def _snapshot_workspace_voice_controls(
             )
         relative = safe_workspace_relative_path(value, f"Workspace {label}")
         path = contained_workspace_path(directory, relative, f"Workspace {label}")
-        payload = _read_bytes(path, f"workspace {label}")
-        if hashlib.sha256(payload).hexdigest() != expected:
+        snapshot = _capture_snapshot(path, f"workspace {label}")
+        if snapshot.sha256 != expected:
             raise AuthoringReconciliationError(f"Workspace {label} changed")
-        _remember_snapshot(snapshots, path, payload)
+        _remember_snapshot(snapshots, path, snapshot.sha256)
 
 
 def _snapshot_state_audio(
@@ -1128,11 +1126,11 @@ def _snapshot_state_audio(
         result.get("path"), f"Generated item {item.queue_id} WAV"
     )
     path = contained_workspace_path(output, relative, "Generated WAV")
-    payload = _read_bytes(path, "generated WAV")
-    digest = hashlib.sha256(payload).hexdigest()
+    snapshot = _capture_snapshot(path, "generated WAV")
+    digest = snapshot.sha256
     if digest != expected:
         raise AuthoringReconciliationError(f"Generated WAV changed: {item.queue_id}")
-    _remember_snapshot(snapshots, path, payload)
+    _remember_snapshot(snapshots, path, snapshot.sha256)
     return path, digest
 
 
@@ -1158,12 +1156,12 @@ def _snapshot_quality_card(
             raise AuthoringReconciliationError("Quality review artifact is malformed")
         path = (root / relative).resolve()
         _require_contained_file(root, path, "Quality review artifact")
-        payload = _read_bytes(path, "quality review artifact")
-        if hashlib.sha256(payload).hexdigest() != expected:
+        snapshot = _capture_snapshot(path, "quality review artifact")
+        if snapshot.sha256 != expected:
             raise AuthoringReconciliationError(
                 f"Quality review artifact changed: {path}"
             )
-        _remember_snapshot(snapshots, path, payload)
+        _remember_snapshot(snapshots, path, snapshot.sha256)
 
 
 def _load_queue_snapshot(payload: bytes) -> VoiceGenerationQueue:
@@ -1176,32 +1174,32 @@ def _load_queue_snapshot(payload: bytes) -> VoiceGenerationQueue:
         raise AuthoringReconciliationError(str(error)) from error
 
 
-def _read_json_snapshot(path: str | Path, label: str) -> tuple[bytes, JsonObject]:
-    payload = _read_bytes(path, label)
+def _read_json_snapshot(
+    path: str | Path, label: str
+) -> tuple[AuthoritySnapshot, JsonObject]:
+    snapshot = _capture_snapshot(path, label)
     try:
-        document = decode_json(payload.decode("utf-8"))
+        document = decode_json(snapshot.payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise AuthoringReconciliationError(
             f"Unable to read {label}: {error}"
         ) from error
     if not isinstance(document, dict):
         raise AuthoringReconciliationError(f"{label.capitalize()} must be an object")
-    return payload, document
+    return snapshot, document
 
 
-def _read_bytes(path: str | Path, label: str) -> bytes:
+def _capture_snapshot(path: str | Path, label: str) -> AuthoritySnapshot:
     try:
-        snapshot: AuthoritySnapshot = capture_authority_file(path, label)
-        return bytes(snapshot.payload)
+        return capture_authority_file(path, label)
     except AuthoringAuthorityError as error:
         raise AuthoringReconciliationError(str(error)) from error
 
 
 def _remember_snapshot(
-    snapshots: SnapshotHashes, path: str | Path, payload: bytes
+    snapshots: SnapshotHashes, path: str | Path, digest: str
 ) -> None:
     path = Path(path).resolve()
-    digest = hashlib.sha256(payload).hexdigest()
     previous = snapshots.setdefault(path, digest)
     if previous != digest:
         raise AuthoringReconciliationError(f"Authority changed while reading: {path}")
