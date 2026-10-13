@@ -1158,6 +1158,16 @@ def _generation_item_text(
         raise BulkGenerationError(
             f"Text transform returned no speech for queue item {queue_id!r}"
         )
+    if (
+        repair_strategy == SENTENCE_BOUNDARY_SEGMENTATION
+        and repair_document is not None
+        and list(safe_sentence_segments(synthesis_text))
+        != repair_document.get("segments")
+    ):
+        raise BulkGenerationError(
+            "Sentence repair text transform changed authorized segments for "
+            f"{queue_id!r}"
+        )
     if repair_strategy == INLINE_PAUSE_MARKER and repair_document is not None:
         if synthesis_text != item.text:
             raise BulkGenerationError(

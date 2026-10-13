@@ -3261,6 +3261,9 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             renderer = SyntheticRenderer()
             policy = FailureRepairPolicy((item["queue_id"],))
 
+            def equivalent_text(text):
+                return " \n" + text.replace(". ", ".  \n ") + " \t"
+
             repaired = self.run_generation(
                 queue,
                 output,
@@ -3269,6 +3272,8 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 seed=0,
                 include_queue_ids=[item["queue_id"]],
                 failure_repair_policy=policy,
+                text_transform=equivalent_text,
+                text_transform_id="equivalent-sentence-whitespace-v1",
             )
             state = load_generation_state(repaired.state, queue)
             result = state["items"][item["queue_id"]]
@@ -3292,6 +3297,66 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertEqual(
             manifest["entries"][0]["failure_repair"], result["failure_repair"]
         )
+
+    def test_sentence_repair_rejects_transformed_segments_before_attempt_or_archive(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item(
+                text="The gate is already open. We should leave before dawn."
+            )
+            queue = write_queue(root / "queue.jsonl", [item])
+            output = root / "output"
+            failed = self.run_generation(
+                queue,
+                output,
+                SyntheticRenderer([SynthesisCompletion.LIMITED]),
+                retries=0,
+                seed=0,
+            )
+            original_item = load_generation_state(failed.state, queue)["items"][
+                item["queue_id"]
+            ]
+            destination = output / bulk_module._audio_relative_path(
+                item["voice_character"], item["queue_id"]
+            )
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            write_pcm16_wav(destination, audio_samples(), 16_000)
+            original_wav = destination.read_bytes()
+            policy = FailureRepairPolicy((item["queue_id"],))
+
+            for transformed in (
+                item["text"] + " The guards will return soon.",
+                item["text"].replace("already open", "firmly closed"),
+            ):
+                with self.subTest(transformed=transformed):
+                    renderer = SyntheticRenderer()
+                    with (
+                        patch.object(
+                            bulk_module, "_archive_interrupted_artifact"
+                        ) as archive,
+                        self.assertRaisesRegex(
+                            BulkGenerationError, "changed authorized segments"
+                        ),
+                    ):
+                        self.run_generation(
+                            queue,
+                            output,
+                            renderer,
+                            retries=0,
+                            seed=0,
+                            include_queue_ids=[item["queue_id"]],
+                            failure_repair_policy=policy,
+                            text_transform=lambda _text: transformed,
+                            text_transform_id="changed-sentence-text-v1",
+                        )
+                    archive.assert_not_called()
+                    self.assertEqual(renderer.requests, [])
+                    state = load_generation_state(failed.state, queue)
+                    self.assertIsNone(state["active"])
+                    self.assertEqual(state["items"][item["queue_id"]], original_item)
+                    self.assertEqual(destination.read_bytes(), original_wav)
 
     def test_failed_sentence_repair_transitions_and_cannot_repeat(self):
         with TemporaryDirectory() as directory:
