@@ -201,7 +201,6 @@ def build_labelled_pairs(inventory: _Inventory, pairs: Iterable[object]) -> _Lab
     """Bind human labels to exact inventory references and non-overlapping splits."""
     _validate_inventory_shape(inventory)
     by_id = {item["reference_id"]: item for item in inventory["references"]}
-    known = set(by_id)
     normalized: list[_Pair] = []
     seen: set[tuple[str, str]] = set()
     checksum_partitions: dict[str, str] = {}
@@ -212,7 +211,7 @@ def build_labelled_pairs(inventory: _Inventory, pairs: Iterable[object]) -> _Lab
         right = _required_text(pair.get("right_reference_id"), f"pair {index} right")
         if left == right:
             raise SpeakerIdentityError(f"Labelled pair {index} repeats one reference")
-        if left not in known or right not in known:
+        if left not in by_id or right not in by_id:
             raise SpeakerIdentityError(
                 f"Labelled pair {index} uses an unknown reference"
             )
@@ -283,7 +282,7 @@ def _admit_labelled_pairs(
     document: Mapping[str, object], inventory: _Inventory
 ) -> _Labels:
     _validate_labels_shape(document)
-    if document.get("inventory_id") != inventory["inventory_id"]:
+    if document.get("inventory_id") != inventory.get("inventory_id"):
         raise SpeakerIdentityError("Labels belong to a different reference inventory")
     rebuilt = build_labelled_pairs(inventory, _pairs(document.get("pairs")))
     if rebuilt != document:
@@ -298,7 +297,6 @@ def build_speaker_identity_report(
     model: Mapping[str, object],
 ) -> JsonDocument:
     """Fit one safe threshold and report held-out evidence without applying it."""
-    _validate_inventory_shape(inventory)
     labels = _admit_labelled_pairs(labels, inventory)
     by_id = {item["reference_id"]: item for item in inventory["references"]}
     required_ids = sorted(

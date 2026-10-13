@@ -547,6 +547,32 @@ class SpeakerIdentityTest(unittest.TestCase):
                     with self.assertRaises(SpeakerIdentityError):
                         load_reference_inventory(source)
 
+    def test_report_and_label_loader_reject_missing_inventory_identity(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            inventory = build_reference_inventory(_fixture(root))
+            ids = [item["reference_id"] for item in inventory["references"]]
+            labels = build_labelled_pairs(
+                inventory,
+                [
+                    {
+                        "left_reference_id": ids[0],
+                        "right_reference_id": ids[1],
+                        "partition": "fit",
+                        "relationship": "same-speaker",
+                    }
+                ],
+            )
+            source = root / "labels.json"
+            source.write_text(json.dumps(labels), "utf-8")
+            del inventory["inventory_id"]
+            embed = Mock()
+            with self.assertRaises(SpeakerIdentityError):
+                build_speaker_identity_report(inventory, labels, embed, {})
+            embed.assert_not_called()
+            with self.assertRaises(SpeakerIdentityError):
+                load_labelled_pairs(source, inventory)
+
     def test_invalid_model_embeddings_use_the_domain_error(self):
         with TemporaryDirectory() as directory:
             inventory = build_reference_inventory(_fixture(Path(directory)))
