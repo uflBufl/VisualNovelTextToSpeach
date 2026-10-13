@@ -464,6 +464,55 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
                 self.assertEqual(list(root.glob(".output-*")), [])
                 self.assertEqual(backend.shutdown_calls, 1 if multiple else 0)
 
+    def test_model_batch_publishes_once_after_all_backends_stop(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = self._write_strict_corpus(root)
+            output = (root / "output").resolve()
+            output.mkdir()
+            backends = []
+            publications = []
+
+            def factory(*_args, **_kwargs):
+                backend = ShutdownRenderBackend()
+                backends.append(backend)
+                return backend
+
+            def publish(source, destination):
+                publications.append(Path(destination))
+                self.assertEqual(Path(destination), output)
+                self.assertEqual(len(backends), 2)
+                self.assertTrue(
+                    all(backend.shutdown_calls == 1 for backend in backends)
+                )
+                for model in ("first", "second"):
+                    report = json.loads(
+                        (Path(source) / model / "report.json").read_text()
+                    )
+                    self.assertEqual(report["summary"]["complete"], 1)
+                    self.assertEqual(
+                        Path(report["samples"][0]["audio"]).parent,
+                        output / model / "audio",
+                    )
+                    self.assertEqual(
+                        len(list((Path(source) / model / "audio").glob("*.wav"))), 1
+                    )
+                return rename_directory_no_replace(source, destination)
+
+            with patch.object(
+                benchmark_module, "rename_directory_no_replace", side_effect=publish
+            ):
+                aggregate = benchmark_model_variants(
+                    corpus,
+                    (ModelVariant("first", "fake"), ModelVariant("second", "fake")),
+                    CharacterVoiceRegistry(),
+                    output,
+                    backend_factory=factory,
+                )
+            self.assertEqual(publications, [output])
+            self.assertEqual(len(aggregate["reports"]), 2)
+            self.assertEqual(list(root.glob(".output-*")), [])
+
     def test_mixed_render_outcomes_keep_order_groups_and_exact_sample_records(self):
         class MixedBackend(FakeRenderBackend):
             def render(self, request):

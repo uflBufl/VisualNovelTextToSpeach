@@ -1146,7 +1146,7 @@ def _render_benchmark_variant(
         raise ModelBenchmarkError(str(error)) from error
     primary_error: BaseException | None = None
     try:
-        report = benchmark_renderer(
+        report = _benchmark_renderer_staged(
             variant,
             backend,
             samples,
