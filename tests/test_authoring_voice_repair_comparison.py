@@ -54,6 +54,35 @@ class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
                             workspace, "Rhiannon", generation_profiles=iter(profiles)
                         )
 
+    def test_reference_paths_share_canonical_admission(self):
+        variant = {
+            "voice_character": "Voice",
+            "voice_speaker": "voice",
+            "ordered_references": [],
+        }
+        for path in (
+            "C:/voice.wav",
+            "C:voice.wav",
+            "../voice.wav",
+            "audio/./voice.wav",
+            "audio/bad\x00.wav",
+        ):
+            with self.subTest(path=path):
+                variant["ordered_references"] = [{"path": path, "sha256": "a" * 64}]
+                with self.assertRaisesRegex(
+                    VoiceRepairComparisonError, "path is unsafe"
+                ):
+                    comparison_module._validate_variants([variant])
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "reference.wav"
+            reference.write_bytes(b"reference")
+            symlink_or_skip(root / "linked", root, target_is_directory=True)
+            with self.assertRaisesRegex(VoiceRepairComparisonError, "symlink"):
+                comparison_module._regular_contained_file(
+                    root, "linked/reference.wav", "Reference"
+                )
+
     def test_captured_manifest_validates_original_reference_root(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -553,7 +582,7 @@ class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
             reference.unlink()
             symlink_or_skip(reference, prepared.input_directory / "manifest.json")
 
-            with self.assertRaisesRegex(VoiceRepairComparisonError, "symbolic link"):
+            with self.assertRaisesRegex(VoiceRepairComparisonError, "symlink"):
                 prepare_voice_repair_candidate_workspace(
                     plan,
                     candidate_id,

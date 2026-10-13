@@ -52,7 +52,12 @@ from vntts.authoring.workspace_inspection import generation_failure_category
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 from vntts.document_identity import is_lowercase_sha256, sha256_file
 from vntts.json_types import decode_json
-from vntts.path_safety import read_regular_bytes, read_regular_text
+from vntts.path_safety import (
+    contained_regular_file,
+    read_regular_bytes,
+    read_regular_text,
+    safe_relative_path,
+)
 from vntts.speech_backend import get_moss_tts_generation_profile
 from vntts.voices import voice_manifest_entries_at_path
 
@@ -917,16 +922,9 @@ def _validate_candidate_manifest(
 
 
 def _regular_contained_file(root: str | Path, relative: str | Path, label: str) -> Path:
-    root = Path(root).resolve()
-    current = root
-    for part in Path(relative).parts:
-        current /= part
-        if current.is_symlink():
-            raise VoiceRepairComparisonError(f"{label} contains a symbolic link")
-    path = contained_workspace_path(root, Path(relative), label)
-    if not path.is_file():
-        raise VoiceRepairComparisonError(f"{label} is missing or is not a file")
-    return Path(path)
+    return contained_regular_file(
+        root, relative, label, error_type=VoiceRepairComparisonError
+    )
 
 
 def _selected_variant(
@@ -1472,13 +1470,12 @@ def _validate_variants(variants: Sequence[JsonObject]) -> None:
             if not isinstance(reference, dict) or set(reference) != {"path", "sha256"}:
                 raise VoiceRepairComparisonError("Comparison reference is malformed")
             value = _required_text(reference.get("path"), "Comparison reference path")
-            if (
-                "\\" in value
-                or "\x00" in value
-                or Path(value).is_absolute()
-                or any(part in {"", ".", ".."} for part in value.split("/"))
-            ):
-                raise VoiceRepairComparisonError("Comparison reference path is unsafe")
+            try:
+                safe_relative_path(value, "Comparison reference")
+            except ValueError as error:
+                raise VoiceRepairComparisonError(
+                    "Comparison reference path is unsafe"
+                ) from error
             _required_sha256(reference.get("sha256"), "Comparison reference SHA-256")
 
 
