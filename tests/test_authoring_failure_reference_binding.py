@@ -97,6 +97,34 @@ class FailureReferenceBindingTest(unittest.TestCase):
             self.assertEqual(list((root / "successors").iterdir()), [])
             self.assertFalse(list(root.rglob(".generation-lease.json")))
 
+    def test_staged_reference_corruption_is_rejected_before_publication(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit, *_rest = self.create_decided_audit(root)
+            output = root / "binding"
+            original_write = Path.write_text
+
+            def corrupt_copy(path, text, *args, **kwargs):
+                result = original_write(path, text, *args, **kwargs)
+                if path.name == "binding.json" and path.parent.name.startswith(
+                    ".binding.staging-"
+                ):
+                    document = json.loads(text)
+                    reference = path.parent / document["groups"][0]["reference"]
+                    payload = reference.read_bytes()
+                    reference.write_bytes(payload[:-1] + bytes((payload[-1] ^ 1,)))
+                return result
+
+            with patch.object(Path, "write_text", new=corrupt_copy):
+                with self.assertRaisesRegex(
+                    FailureReferenceBindingError, "Selected reference changed"
+                ):
+                    publish_failure_reference_binding(audit, output)
+            self.assertFalse(output.exists())
+            self.assertFalse(list(root.glob(".binding.staging-*")))
+            publish_failure_reference_binding(audit, output)
+            self.assertEqual(load_failure_reference_binding(output).group_count, 1)
+
     def create_decided_audit(self, root):
         workspace, queue_id = create_failed_reference_workspace(root)
         state_path = workspace / "generated-audio/generation-state.json"

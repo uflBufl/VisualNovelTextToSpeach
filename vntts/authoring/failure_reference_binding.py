@@ -37,7 +37,6 @@ from vntts.authoring.publication import (
     staged_directory,
 )
 from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
-from vntts.document_identity import sha256_file
 from vntts.json_types import has_schema_version, is_json_object
 
 _AUDIT_SCHEMA = "vntts.authoring-failure-reference-audit"
@@ -441,10 +440,6 @@ def _publish_binding(
             target = staging / reference.relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(reference.snapshot.payload)
-            if sha256_file(target) != reference.snapshot.sha256:
-                raise FailureReferenceBindingError(
-                    "Selected reference changed while it was copied"
-                )
         (staging / "binding.json").write_text(
             json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",

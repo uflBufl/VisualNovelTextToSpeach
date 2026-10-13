@@ -19,7 +19,6 @@ from vntts.authoring.publication import (
 from vntts.document_identity import (
     canonical_document_sha256,
     is_lowercase_sha256,
-    sha256_file,
 )
 from vntts.json_types import decode_json, has_schema_version
 from vntts.path_safety import read_regular_bytes, read_regular_text
@@ -51,10 +50,6 @@ def publish_silence_failure_evidence(
         wav = staging / "rejected.wav"
         wav.write_bytes(wav_payload)
         wav_sha256 = hashlib.sha256(wav_payload).hexdigest()
-        if sha256_file(wav) != wav_sha256:
-            raise SilenceFailureEvidenceError(
-                "Copied silence-failure WAV checksum changed"
-            )
         document = {
             "schema": SILENCE_FAILURE_EVIDENCE_SCHEMA,
             "schema_version": SILENCE_FAILURE_EVIDENCE_VERSION,
