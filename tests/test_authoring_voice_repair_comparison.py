@@ -764,6 +764,27 @@ class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
                     root / "candidate-workspaces",
                 )
 
+    def test_candidate_reuse_rejects_unlisted_nested_bundle_document(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, imported, _source, plan, candidate, prepared = (
+                self.create_candidate(root)
+            )
+            nested = prepared.input_directory / "unlisted/bundle.json"
+            nested.parent.mkdir()
+            nested.write_text("{}", encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                VoiceRepairComparisonError, "inventory is incomplete"
+            ):
+                prepare_voice_repair_candidate_workspace(
+                    plan,
+                    candidate["candidate_id"],
+                    imported,
+                    root / "candidate-inputs",
+                    root / "candidate-workspaces",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -632,6 +632,34 @@ class AuthoringMissingVoiceReuseTest(unittest.TestCase):
                     invalid, {"plan_id": "plan"}, {"candidate_id": "candidate"}
                 )
 
+    def test_candidate_reuse_rejects_unlisted_nested_bundle_document(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, imported, workspace = self.create_workspace(root)
+            plan = self.build_plan(workspace)
+            candidate = plan.document["candidates"][0]
+            prepared = prepare_missing_voice_reuse_candidate_workspace(
+                plan,
+                candidate["candidate_id"],
+                imported,
+                root / "candidate-inputs",
+                root / "candidate-workspaces",
+            )
+            nested = prepared.input_directory / "unlisted/bundle.json"
+            nested.parent.mkdir()
+            nested.write_text("{}", encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                MissingVoiceReuseError, "inventory is incomplete"
+            ):
+                prepare_missing_voice_reuse_candidate_workspace(
+                    plan,
+                    candidate["candidate_id"],
+                    imported,
+                    root / "candidate-inputs",
+                    root / "candidate-workspaces",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1061,7 +1061,7 @@ def _validate_candidate_bundle_inventory(directory: Path, bundle: JsonObject) ->
     actual = {
         path.relative_to(directory).as_posix()
         for path in directory.rglob("*")
-        if path.is_file() and path.name != "bundle.json"
+        if path.is_file() and path != directory / "bundle.json"
     }
     if declared != actual:
         raise MissingVoiceReuseError("Missing-voice candidate inventory is incomplete")

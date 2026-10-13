@@ -368,6 +368,34 @@ class AuthoringSilenceComparisonTest(unittest.TestCase):
             with self.assertRaisesRegex(SilenceComparisonError, "not exact"):
                 load_silence_comparison(result.directory)
 
+    def test_artifact_writer_excludes_only_root_comparison_document(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "comparison.json").write_text("{}", encoding="utf-8")
+            nested = root / "audio/comparison.json"
+            nested.parent.mkdir()
+            nested.write_text("{}", encoding="utf-8")
+
+            self.assertEqual(
+                comparison_module._silence_comparison_artifacts(root),
+                [{"path": "audio/comparison.json", "sha256": sha256_file(nested)}],
+            )
+
+    def test_loader_rejects_unlisted_nested_comparison_document(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            result = publish_silence_comparison(
+                (write_silence_comparison_sample(root),), root / "comparison"
+            )
+            (result.directory / "audio/comparison.json").write_text(
+                "{}", encoding="utf-8"
+            )
+
+            with self.assertRaisesRegex(
+                SilenceComparisonError, "inventory is not exact"
+            ):
+                load_silence_comparison(result.directory)
+
 
 if __name__ == "__main__":
     unittest.main()

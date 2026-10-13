@@ -462,7 +462,7 @@ def _silence_comparison_artifacts(staging: Path) -> list[dict[str, str]]:
         for path in sorted(
             value
             for value in staging.rglob("*")
-            if value.is_file() and value.name != "comparison.json"
+            if value.is_file() and value != staging / "comparison.json"
         )
     ]
 
@@ -653,7 +653,7 @@ def _validate_silence_comparison_inventory(
             raise SilenceComparisonError(
                 "Silence comparison artifacts must not use symlinks"
             )
-        if path.is_file() and path.name != "comparison.json":
+        if path.is_file() and path != root / "comparison.json":
             actual_inventory.add(path.relative_to(root).as_posix())
     if set(seen) != actual_inventory:
         raise SilenceComparisonError(

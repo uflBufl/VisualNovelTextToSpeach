@@ -477,6 +477,33 @@ class AuthoringMissingVoiceReuseBindingTest(unittest.TestCase):
                     for restore_path, payload in originals.items():
                         restore_path.write_bytes(payload)
 
+    def test_existing_binding_rejects_unlisted_nested_bundle_document(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan_path, session_path, queue_id = (
+                create_missing_voice_reuse_binding_review(root)
+            )
+            bundle, _session = load_missing_voice_reuse_review(session_path)
+            cohort = bundle["cohorts"][0]
+            selected = cohort["complete_candidate_labels"][0]
+            record_missing_voice_reuse_heard(
+                session_path, cohort["cohort_id"], queue_id, selected
+            )
+            record_missing_voice_reuse_decision(
+                session_path, cohort["cohort_id"], selected
+            )
+            output = publish_missing_voice_reuse_binding(
+                plan_path, session_path, root / "binding"
+            ).directory
+            nested = output / "unlisted/bundle.json"
+            nested.parent.mkdir()
+            nested.write_text("{}", encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                MissingVoiceReuseBindingError, "inventory is incomplete"
+            ):
+                publish_missing_voice_reuse_binding(plan_path, session_path, output)
+
 
 if __name__ == "__main__":
     unittest.main()
