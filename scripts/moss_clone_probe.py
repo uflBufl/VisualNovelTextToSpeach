@@ -9,10 +9,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import mlx.core as mx
 import numpy as np
-from mlx_audio.audio_io import write as write_audio
-from mlx_audio.tts import load
 from numpy.typing import NDArray
 
 from vntts.moss_compat import install_moss_quantized_codec_compat
@@ -47,7 +44,12 @@ def main() -> int:
     parser.add_argument("--cached-prompt", type=Path)
     options = parser.parse_args()
 
-    options.output.mkdir(parents=True, exist_ok=True)
+    options.output.mkdir(parents=True)
+
+    import mlx.core as mx
+    from mlx_audio.audio_io import write as write_audio
+    from mlx_audio.tts import load
+
     install_moss_quantized_codec_compat()
     model = load(str(options.model.expanduser().resolve()), lazy=False)
     codes = model.encode_reference_audio(str(options.reference.expanduser().resolve()))
