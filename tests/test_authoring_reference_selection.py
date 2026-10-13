@@ -97,22 +97,18 @@ class AuthoringReferenceSelectionTest(unittest.TestCase):
                     refused.append(caught.exception)
                     raise caught.exception
 
-                error_type = (
-                    OSError if phase == "provenance" else ReferenceSelectionError
-                )
                 with (
                     patch.object(selection_module, "sha256_file", checksum),
-                    self.assertRaisesRegex(error_type, "regular file") as caught,
+                    self.assertRaisesRegex(
+                        ReferenceSelectionError, "regular file"
+                    ) as caught,
                 ):
                     if phase == "provenance":
                         validate_reference_selection_provenance(output, document)
                     else:
                         select_voice_reference(manifest, "Hero", 2, output)
                 self.assertEqual(len(refused), 1)
-                if phase == "provenance":
-                    self.assertIs(caught.exception, refused[0])
-                else:
-                    self.assertIs(caught.exception.__cause__, refused[0])
+                self.assertIs(caught.exception.__cause__, refused[0])
                 self.assertEqual(tree_hashes(root), before)
                 if phase != "provenance":
                     self.assertFalse(output.exists())

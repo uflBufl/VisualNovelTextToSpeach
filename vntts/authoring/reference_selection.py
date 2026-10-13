@@ -15,7 +15,7 @@ from vntts_artifacts.voice_manifest import (
 )
 
 from vntts.authoring.authority import write_json_document_no_replace
-from vntts.authoring.publication import no_replace_destination
+from vntts.authoring.publication import no_replace_destination, publication_errors
 from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.document_identity import is_lowercase_sha256, sha256_file
 from vntts.json_types import decode_json
@@ -171,6 +171,7 @@ def select_voice_reference(
     )
 
 
+@publication_errors(ReferenceSelectionError)
 def validate_reference_selection_provenance(
     manifest_path: PathInput, document: JsonDocument
 ) -> None:
