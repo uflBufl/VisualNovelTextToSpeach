@@ -20,6 +20,7 @@ from vntts.authoring.voice_repair_comparison import (
     prepare_voice_repair_candidate_workspace,
     write_voice_repair_comparison_plan,
 )
+from vntts.authoring.workbench import create_resume_workspace
 
 
 class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
@@ -33,6 +34,26 @@ class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
         result["review_status"] = "rejected"
         state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
         return fixture, workspace.directory, state_path
+
+    def create_candidate(self, root):
+        fixture, imported, workspace = create_test_workspace(root / "seed")
+        state_path = workspace.directory / "generated-audio/generation-state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["active"] = None
+        result = state["items"][fixture["queue_id"]]
+        result["status"] = "generated"
+        result["review_status"] = "rejected"
+        state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+        plan = build_voice_repair_comparison_plan(workspace.directory, "Rhiannon")
+        candidate = plan.document["candidates"][0]
+        prepared = prepare_voice_repair_candidate_workspace(
+            plan,
+            candidate["candidate_id"],
+            imported,
+            root / "candidate-inputs",
+            root / "candidate-workspaces",
+        )
+        return fixture, imported, workspace.directory, plan, candidate, prepared
 
     def test_profile_iterators_preserve_plan_identity_and_validation(self):
         with TemporaryDirectory() as directory:
@@ -96,6 +117,74 @@ class AuthoringVoiceRepairComparisonTest(unittest.TestCase):
                     output.write_text(json.dumps(document), encoding="utf-8")
                     with self.assertRaisesRegex(VoiceRepairComparisonError, message):
                         load_voice_repair_comparison_plan(output)
+
+    def test_rehashed_candidate_controls_fail_before_reuse_or_command(self):
+        for changed_control in ("reference", "manifest", "numeric-binding"):
+            with (
+                self.subTest(changed_control=changed_control),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                fixture, imported, source, plan, candidate, prepared = (
+                    self.create_candidate(root)
+                )
+                manifest_path = prepared.input_directory / "manifest.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if changed_control == "reference":
+                    changed_path = (
+                        prepared.input_directory
+                        / manifest["voices"][0]["references"][0]
+                    )
+                    changed_path.write_bytes(b"different reference")
+                    message = "reference differs from the plan"
+                else:
+                    if changed_control == "numeric-binding":
+                        manifest[
+                            comparison_module.VOICE_REPAIR_CANDIDATE_MANIFEST_FIELD
+                        ]["schema_version"] = 1.0
+                    else:
+                        manifest["voices"][0]["references"].reverse()
+                    changed_path = manifest_path
+                    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                    message = "manifest differs from the plan"
+                bundle_path = prepared.input_directory / "bundle.json"
+                bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+                for entry in bundle["inventory"]:
+                    if prepared.input_directory / entry["path"] == changed_path:
+                        entry["sha256"] = hashlib.sha256(
+                            changed_path.read_bytes()
+                        ).hexdigest()
+                bundle["bundle_id"] = _canonical_sha256(
+                    {key: value for key, value in bundle.items() if key != "bundle_id"}
+                )
+                bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+                with self.assertRaisesRegex(VoiceRepairComparisonError, message):
+                    prepare_voice_repair_candidate_workspace(
+                        plan,
+                        candidate["candidate_id"],
+                        imported,
+                        root / "candidate-inputs",
+                        root / "other-workspaces",
+                    )
+                changed_workspace = create_resume_workspace(
+                    imported,
+                    root / "changed-workspaces",
+                    story_index=source / "inputs/story-index.jsonl",
+                    voice_manifest=manifest_path,
+                    narrator_character="Rhiannon",
+                    backend=candidate["provider"],
+                    model=candidate["model"],
+                    generation_profile=candidate["generation_profile"],
+                ).directory
+                state_path = changed_workspace / "generated-audio/generation-state.json"
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                state["active"] = None
+                state["items"].pop(fixture["queue_id"], None)
+                state_path.write_text(json.dumps(state), encoding="utf-8")
+                with self.assertRaisesRegex(VoiceRepairComparisonError, message):
+                    build_voice_repair_candidate_command(
+                        plan, candidate["candidate_id"], changed_workspace
+                    )
 
     def test_reference_paths_share_canonical_admission(self):
         variant = {

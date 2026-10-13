@@ -519,21 +519,7 @@ def build_voice_repair_candidate_command(
         raise VoiceRepairComparisonError(
             "Candidate workspace run configuration differs from the plan"
         )
-    manifest_path = directory / "inputs/voice/manifest.json"
-    manifest_payload = _read(manifest_path, "candidate voice manifest")
-    try:
-        manifest = decode_json(manifest_payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise VoiceRepairComparisonError(str(error)) from error
-    binding = (
-        manifest.get(VOICE_REPAIR_CANDIDATE_MANIFEST_FIELD)
-        if isinstance(manifest, dict)
-        else None
-    )
-    if binding != _candidate_manifest_binding(document, candidate):
-        raise VoiceRepairComparisonError(
-            "Candidate workspace manifest is not bound to the requested plan"
-        )
+    _validate_candidate_manifest(directory / "inputs/voice", document, candidate)
     model = _required_text(candidate.get("model"), "Comparison model")
     model_path = Path(model).expanduser()
     model_control = _required_object(
@@ -902,6 +888,7 @@ def _validate_candidate_inventory_item(
     ordered.append(key)
 
 
+@publication_errors(VoiceRepairComparisonError)
 def _validate_candidate_manifest(
     directory: Path, document: JsonObject, candidate: JsonObject
 ) -> None:
@@ -919,6 +906,35 @@ def _validate_candidate_manifest(
         _candidate_manifest_binding(document, candidate)
     ):
         raise VoiceRepairComparisonError("Candidate manifest binding changed")
+    source = _required_object(document.get("source"), "Comparison source")
+    source_manifest = (
+        Path(_required_text(source.get("workspace"), "Comparison source workspace"))
+        / "inputs/voice/manifest.json"
+    )
+    expected_manifest, _voices = _candidate_source_manifest(source_manifest, document)
+    expected_manifest[VOICE_REPAIR_CANDIDATE_MANIFEST_FIELD] = (
+        _candidate_manifest_binding(document, candidate)
+    )
+    if canonical_document_sha256(manifest, allow_nan=True) != canonical_document_sha256(
+        expected_manifest, allow_nan=True
+    ):
+        raise VoiceRepairComparisonError(
+            "Candidate voice manifest differs from the plan"
+        )
+    for variant in _object_list(document.get("variants"), "Comparison variants"):
+        for reference in _object_list(
+            variant.get("ordered_references"), "Comparison references"
+        ):
+            path = contained_regular_file(
+                directory,
+                _required_text(reference.get("path"), "Comparison reference path"),
+                "Candidate voice reference",
+                error_type=VoiceRepairComparisonError,
+            )
+            if sha256_file(path) != reference.get("sha256"):
+                raise VoiceRepairComparisonError(
+                    "Candidate voice reference differs from the plan"
+                )
 
 
 def _regular_contained_file(root: str | Path, relative: str | Path, label: str) -> Path:
