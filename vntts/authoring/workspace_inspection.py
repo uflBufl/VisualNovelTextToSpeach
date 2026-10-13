@@ -745,7 +745,7 @@ def _list_review_items_from_read(
                             _required_text(state.get("queue_sha256"), "Queue SHA-256")
                         ),
                         state_sha256=state_sha256,
-                        item_sha256=canonical_document_sha256(result, allow_nan=True),
+                        item_sha256=_review_result_sha256(result, item.queue_id),
                         audio_sha256=str(result["file_sha256"]),
                     )
                     if status in {"generated", "approved"}
@@ -778,6 +778,15 @@ def _list_review_items_from_read(
                 f"Requested review outcomes are unavailable: {missing}"
             )
     return _annotate_pace_advisories(records)
+
+
+def _review_result_sha256(result: JsonDocument, queue_id: str) -> str:
+    try:
+        return canonical_document_sha256(result, allow_nan=True)
+    except ValueError as error:
+        raise AuthoringWorkbenchError(
+            f"Review outcome authority is invalid: {queue_id}"
+        ) from error
 
 
 def inspect_generation_readiness(

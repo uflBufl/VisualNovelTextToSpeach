@@ -3568,6 +3568,84 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertIsInstance(items[0].technical_flags, tuple)
         self.assertEqual(source_hash_after, source_hash)
 
+    def test_review_projection_rejects_unencodable_result_extensions_without_mutation(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, _imported, created = self.create_workspace(root)
+            state_path = created.directory / "generated-audio/generation-state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            queue_id = next(iter(state["items"]))
+            result = state["items"][queue_id]
+            for status in ("generated", "approved"):
+                for extension in (
+                    json.loads(r'{"nested": ["\ud800"]}'),
+                    json.loads(r'{"\ud800": "label"}'),
+                ):
+                    with self.subTest(status=status, extension=extension):
+                        result["status"] = status
+                        result["review_status"] = (
+                            "pending_review" if status == "generated" else "approved"
+                        )
+                        result["provider_extension"] = extension
+                        state_path.write_text(json.dumps(state), encoding="utf-8")
+                        self.assertIn(b"\\ud800", state_path.read_bytes())
+                        before = tree_hashes(root)
+                        for read in (
+                            list_review_items,
+                            workspace_inspection_module.load_workbench_projection_data,
+                        ):
+                            with (
+                                self.subTest(read=read.__name__),
+                                self.assertRaisesRegex(
+                                    AuthoringWorkbenchError,
+                                    f"Review outcome authority is invalid: {queue_id}",
+                                ) as caught,
+                            ):
+                                read(created.directory)
+                            self.assertIsInstance(
+                                caught.exception.__cause__, UnicodeEncodeError
+                            )
+                            self.assertEqual(tree_hashes(root), before)
+
+    def test_review_projection_keeps_full_unicode_result_authority_hash(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, _imported, created = self.create_workspace(root)
+            state_path = created.directory / "generated-audio/generation-state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            queue_id = next(iter(state["items"]))
+            result = state["items"][queue_id]
+            result["provider_extension"] = {"nested": ["证据 🦉", float("nan")]}
+            for status in ("generated", "approved"):
+                with self.subTest(status=status):
+                    result["status"] = status
+                    result["review_status"] = (
+                        "pending_review" if status == "generated" else "approved"
+                    )
+                    state_path.write_text(json.dumps(state), encoding="utf-8")
+                    expected = hashlib.sha256(
+                        json.dumps(
+                            result,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest()
+                    before = tree_hashes(root)
+                    item = list_review_items(created.directory)[0]
+                    self.assertEqual(item.authority.item_sha256, expected)
+                    projection = (
+                        workspace_inspection_module.load_workbench_projection_data(
+                            created.directory
+                        )
+                    )
+                    self.assertEqual(
+                        projection.reviews[0].authority.item_sha256, expected
+                    )
+                    self.assertEqual(tree_hashes(root), before)
+
     def test_failed_review_ignores_invalid_optional_metrics_without_rewriting_state(
         self,
     ):
