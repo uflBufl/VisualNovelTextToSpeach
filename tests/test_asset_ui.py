@@ -9,7 +9,13 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt, QThreadPool, QTimer  # noqa: E402
+from PySide6.QtCore import (  # noqa: E402
+    QCoreApplication,
+    QEvent,
+    Qt,
+    QThreadPool,
+    QTimer,
+)
 from PySide6.QtGui import QCloseEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
@@ -19,6 +25,7 @@ from PySide6.QtWidgets import (  # noqa: E402
     QFileDialog,
     QMessageBox,
 )
+from shiboken6 import isValid  # noqa: E402
 from vntts_artifacts.file_integrity import sha256_file  # noqa: E402
 
 from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
@@ -32,6 +39,12 @@ from vntts.model_assets import ModelDownloadCancelled  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
 
 
+def delete_dialog(dialog):
+    dialog.close()
+    dialog.deleteLater()
+    QCoreApplication.sendPostedEvents(dialog, QEvent.Type.DeferredDelete)
+
+
 class VoiceImportDialogTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -39,6 +52,7 @@ class VoiceImportDialogTest(unittest.TestCase):
 
     def test_audio_selection_can_be_replaced_before_adding_voice(self):
         dialog = VoiceImportDialog()
+        self.addCleanup(delete_dialog, dialog)
         self.assertFalse(dialog.add_button.isEnabled())
         dialog.character.setText("Believer IV")
         dialog.aliases.setText("Believer, Faithful")
@@ -80,6 +94,23 @@ class AssetManagerDialogTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
+    def setUp(self):
+        self.thread_pool = QThreadPool()
+        self.dialogs = []
+        self.addCleanup(self._finish_dialogs)
+
+    def create_dialog(self, *args, **kwargs):
+        kwargs.setdefault("thread_pool", self.thread_pool)
+        dialog = AssetManagerDialog(*args, **kwargs)
+        self.dialogs.append(dialog)
+        return dialog
+
+    def _finish_dialogs(self):
+        self.assertTrue(self.thread_pool.waitForDone(3000))
+        self.application.processEvents()
+        for dialog in self.dialogs:
+            delete_dialog(dialog)
+
     def _owned_pool(self) -> QThreadPool:
         pool = QThreadPool()
         self.addCleanup(lambda: self.assertTrue(pool.waitForDone(3000)))
@@ -119,6 +150,28 @@ class AssetManagerDialogTest(unittest.TestCase):
                 self.assertEqual(len(pools), 1)
                 self.assertEqual(pools[0].activeThreadCount(), 0)
                 self.assertTrue(pools[0].waitForDone(0))
+                self.assertTrue(case.dialogs)
+                self.assertTrue(all(not isValid(dialog) for dialog in case.dialogs))
+                self.assertTrue(
+                    all(not isValid(dialog.models_tab) for dialog in case.dialogs)
+                )
+
+    def test_completed_cases_delete_owned_dialogs_and_hidden_model_pages(self):
+        for method in (
+            "test_default_pocket_backend_offers_only_character_voice_assets",
+            "test_manifest_browse_validates_inline_and_supports_keyboard",
+        ):
+            with self.subTest(method=method):
+                case = AssetManagerDialogTest(method)
+                result = unittest.TestResult()
+                case.run(result)
+                self.assertEqual(result.errors, [])
+                self.assertEqual(result.failures, [])
+                self.assertTrue(case.dialogs)
+                self.assertTrue(all(not isValid(dialog) for dialog in case.dialogs))
+                self.assertTrue(
+                    all(not isValid(dialog.models_tab) for dialog in case.dialogs)
+                )
 
     def wait_for(self, predicate, timeout=3.0):
         deadline = time.monotonic() + timeout
@@ -139,7 +192,7 @@ class AssetManagerDialogTest(unittest.TestCase):
             return Path("managed/model")
 
         model_manager.download.side_effect = download
-        dialog = AssetManagerDialog(
+        dialog = self.create_dialog(
             AppSettings(speech_backend="coqui-xtts", xtts_terms_accepted=True),
             model_manager=model_manager,
             voice_manager=Mock(),
@@ -163,7 +216,7 @@ class AssetManagerDialogTest(unittest.TestCase):
             return Path("managed") / name
 
         model_manager.model_path.side_effect = model_path
-        dialog = AssetManagerDialog(
+        dialog = self.create_dialog(
             AppSettings(speech_backend="coqui-xtts", tts_model=".."),
             model_manager=model_manager,
             voice_manager=Mock(),
@@ -179,7 +232,7 @@ class AssetManagerDialogTest(unittest.TestCase):
     def test_empty_model_selection_does_not_start_verification(self):
         model_manager = Mock()
         model_manager.model_path.return_value = Path("managed/model")
-        dialog = AssetManagerDialog(
+        dialog = self.create_dialog(
             AppSettings(speech_backend="coqui-xtts"),
             model_manager=model_manager,
             voice_manager=Mock(),
@@ -199,7 +252,7 @@ class AssetManagerDialogTest(unittest.TestCase):
         pool = ManualThreadPool()
         model_manager = Mock()
         model_manager.model_path.return_value = Path("managed/model")
-        dialog = AssetManagerDialog(
+        dialog = self.create_dialog(
             AppSettings(speech_backend="coqui-xtts"),
             model_manager=model_manager,
             voice_manager=Mock(),
@@ -224,7 +277,7 @@ class AssetManagerDialogTest(unittest.TestCase):
     ):
         model_manager = Mock()
         model_manager.model_path.side_effect = lambda name: Path("managed") / name
-        dialog = AssetManagerDialog(
+        dialog = self.create_dialog(
             AppSettings(speech_backend="coqui-xtts"),
             model_manager=model_manager,
             voice_manager=Mock(),
@@ -258,7 +311,7 @@ class AssetManagerDialogTest(unittest.TestCase):
             return Path("managed/model")
 
         model_manager.validate.side_effect = validate
-        dialog = AssetManagerDialog(
+        dialog = self.create_dialog(
             AppSettings(speech_backend="coqui-xtts"),
             model_manager=model_manager,
             voice_manager=Mock(),
@@ -279,7 +332,7 @@ class AssetManagerDialogTest(unittest.TestCase):
     def test_default_pocket_backend_offers_only_character_voice_assets(self):
         model_manager = Mock()
         model_manager.model_path.return_value = Path("managed/model")
-        dialog = AssetManagerDialog(
+        dialog = self.create_dialog(
             AppSettings(),
             model_manager=model_manager,
             voice_manager=Mock(),
@@ -304,7 +357,7 @@ class AssetManagerDialogTest(unittest.TestCase):
         model_manager = Mock()
         model_manager.model_path.return_value = Path("managed/model")
         voice_manager = Mock()
-        dialog = AssetManagerDialog(
+        dialog = self.create_dialog(
             AppSettings(), model_manager=model_manager, voice_manager=voice_manager
         )
         with patch.object(
@@ -322,11 +375,11 @@ class AssetManagerDialogTest(unittest.TestCase):
         model_manager.model_path.return_value = Path("managed/model")
         voice_manager = Mock()
         voice_manager.import_voice.side_effect = OSError("bad audio file")
-        dialog = AssetManagerDialog(
+        dialog = self.create_dialog(
             AppSettings(), model_manager=model_manager, voice_manager=voice_manager
         )
 
-        initial_dialog = VoiceImportDialog()
+        initial_dialog = VoiceImportDialog(dialog)
         initial_dialog.character.setText("Believer IV")
         initial_dialog.aliases.setText("Believer")
         initial_dialog.set_references(["/voices/bad.wav"])
@@ -340,7 +393,7 @@ class AssetManagerDialogTest(unittest.TestCase):
         self.wait_for(lambda: not dialog.operation_running)
         self.assertIn("revise and retry", dialog.voice_status.text())
 
-        retry_dialog = VoiceImportDialog()
+        retry_dialog = VoiceImportDialog(dialog)
         with (
             patch("vntts.asset_ui.VoiceImportDialog", return_value=retry_dialog),
             patch.object(
@@ -358,7 +411,7 @@ class AssetManagerDialogTest(unittest.TestCase):
     def test_cancel_button_sets_download_event(self):
         model_manager = Mock()
         model_manager.model_path.return_value = Path("managed/model")
-        dialog = AssetManagerDialog(
+        dialog = self.create_dialog(
             AppSettings(xtts_terms_accepted=True),
             model_manager=model_manager,
             voice_manager=Mock(),
@@ -381,7 +434,7 @@ class AssetManagerDialogTest(unittest.TestCase):
             raise ModelDownloadCancelled("Model download cancelled")
 
         model_manager.download.side_effect = download
-        dialog = AssetManagerDialog(
+        dialog = self.create_dialog(
             AppSettings(speech_backend="coqui-xtts", xtts_terms_accepted=True),
             model_manager=model_manager,
             voice_manager=Mock(),
@@ -423,7 +476,7 @@ class AssetManagerDialogTest(unittest.TestCase):
             voice_manager.import_pack.side_effect = import_pack
             model_manager = Mock()
             model_manager.model_path.return_value = Path("managed/model")
-            dialog = AssetManagerDialog(
+            dialog = self.create_dialog(
                 AppSettings(),
                 model_manager=model_manager,
                 voice_manager=voice_manager,
@@ -463,7 +516,7 @@ class AssetManagerDialogTest(unittest.TestCase):
         model_manager.model_path.return_value = Path("managed/model")
         voice_manager = Mock()
         voice_manager.import_pack.side_effect = OSError("temporary copy failure")
-        dialog = AssetManagerDialog(
+        dialog = self.create_dialog(
             AppSettings(),
             model_manager=model_manager,
             voice_manager=voice_manager,
@@ -490,7 +543,7 @@ class AssetManagerDialogTest(unittest.TestCase):
             model_manager.model_path.return_value = Path("managed/model")
             voice_manager = Mock()
             voice_manager.validate.return_value = manifest
-            dialog = AssetManagerDialog(
+            dialog = self.create_dialog(
                 AppSettings(),
                 model_manager=model_manager,
                 voice_manager=voice_manager,
@@ -529,7 +582,7 @@ class AssetManagerDialogTest(unittest.TestCase):
             model_manager.model_path.return_value = Path("managed/model")
             voice_manager = Mock()
             voice_manager.validate.side_effect = ValueError("checksum mismatch")
-            dialog = AssetManagerDialog(
+            dialog = self.create_dialog(
                 AppSettings(voice_manifest=str(manifest)),
                 model_manager=model_manager,
                 voice_manager=voice_manager,
@@ -562,7 +615,7 @@ class AssetManagerDialogTest(unittest.TestCase):
                 voice_manager.validate.return_value = manifest
                 settings = AppSettings(voice_manifest=str(manifest))
                 pool = ManualThreadPool()
-                dialog = AssetManagerDialog(
+                dialog = self.create_dialog(
                     settings,
                     model_manager=model_manager,
                     voice_manager=voice_manager,
@@ -603,7 +656,7 @@ class AssetManagerDialogTest(unittest.TestCase):
     def test_selected_manifest_starts_unchecked_and_controls_scale_together(self):
         model_manager = Mock()
         model_manager.model_path.return_value = Path("managed/model")
-        dialog = AssetManagerDialog(
+        dialog = self.create_dialog(
             AppSettings(voice_manifest="voices.json"),
             model_manager=model_manager,
             voice_manager=Mock(),
@@ -629,7 +682,7 @@ class AssetManagerDialogTest(unittest.TestCase):
         model_manager = Mock()
         model_manager.model_path.return_value = Path("managed/model")
         voice_manager = Mock()
-        dialog = AssetManagerDialog(
+        dialog = self.create_dialog(
             AppSettings(),
             model_manager=model_manager,
             voice_manager=voice_manager,
@@ -682,7 +735,7 @@ class AssetManagerDialogTest(unittest.TestCase):
             voice_manager.validate.side_effect = validate
             model_manager = Mock()
             model_manager.model_path.return_value = Path("managed/model")
-            dialog = AssetManagerDialog(
+            dialog = self.create_dialog(
                 AppSettings(),
                 model_manager=model_manager,
                 voice_manager=voice_manager,
@@ -735,7 +788,7 @@ class AssetManagerDialogTest(unittest.TestCase):
             voice_manager.validate.side_effect = validate
             model_manager = Mock()
             model_manager.model_path.return_value = Path("managed/model")
-            dialog = AssetManagerDialog(
+            dialog = self.create_dialog(
                 AppSettings(voice_manifest=str(manifest)),
                 model_manager=model_manager,
                 voice_manager=voice_manager,
@@ -798,7 +851,7 @@ class AssetManagerDialogTest(unittest.TestCase):
                 voice_manager = Mock()
                 voice_manager.validate.return_value = manifest
                 pool = ManualThreadPool()
-                dialog = AssetManagerDialog(
+                dialog = self.create_dialog(
                     AppSettings(voice_manifest=str(manifest)),
                     model_manager=model_manager,
                     voice_manager=voice_manager,
@@ -870,7 +923,7 @@ class AssetManagerDialogTest(unittest.TestCase):
                 model_manager.model_path.return_value = Path("managed/model")
                 voice_manager = Mock()
                 voice_manager.validate.return_value = manifest
-                dialog = AssetManagerDialog(
+                dialog = self.create_dialog(
                     AppSettings(voice_manifest=str(manifest)),
                     model_manager=model_manager,
                     voice_manager=voice_manager,

@@ -198,6 +198,9 @@ class AssetManagerDialog(QDialog):
         self.models_tab = self._create_models_tab()
         if self.model_management_available:
             self.tabs.addTab(self.models_tab, "Speech model")
+        else:
+            self.models_tab.setParent(self)
+            self.models_tab.hide()
         self.tabs.addTab(self._create_voices_tab(), "Character voices")
         self.tabs.tabBar().setVisible(self.model_management_available)
         self.buttons = QDialogButtonBox(
