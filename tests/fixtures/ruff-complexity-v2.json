@@ -559,7 +559,7 @@
       "path": "vntts/speech_backend.py",
       "scope": "MossTTSVoiceRouterBackend._render_chunks",
       "count": 1,
-      "maximum": 24
+      "maximum": 23
     },
     {
       "code": "C901",
@@ -930,7 +930,7 @@
       "path": "vntts/speech_backend.py",
       "scope": "MossTTSVoiceRouterBackend._render_chunks",
       "count": 1,
-      "maximum": 16
+      "maximum": 15
     },
     {
       "code": "PLR0912",

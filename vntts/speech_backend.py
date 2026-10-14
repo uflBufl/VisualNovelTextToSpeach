@@ -2145,13 +2145,20 @@ class MossTTSVoiceRouterBackend:
                 return finish(SynthesisCompletion.CANCELLED)
             raise TTSSynthesisError(str(error)) from error
         finally:
-            try:
-                if generation is not None:
-                    self._close_active_generation()
-            finally:
-                # The wrapper owns model_lock even when its frame survives close().
-                if source_chunks is not None:
-                    source_chunks.close()
+            self._close_render_generators(generation, source_chunks)
+
+    def _close_render_generators(
+        self,
+        generation: Iterator[_MossGeneratedChunk] | None,
+        source_chunks: Generator[AudioArray, None, None] | None,
+    ) -> None:
+        try:
+            if generation is not None:
+                self._close_active_generation()
+        finally:
+            # The wrapper owns model_lock even when its frame survives close().
+            if source_chunks is not None:
+                source_chunks.close()
 
     def prime(self, character: str) -> bool:
         voice_key, _source = self._resolve_voice_source(character)
