@@ -101,40 +101,40 @@ class WindowsProbeTest(unittest.TestCase):
         self.failure = None
         self.roles = []
 
-        def method(pointer, index, *_types):
-            def invoke(_self, *arguments):
-                identity = pointer.value
-                if index == 2:
-                    self.released.append(identity)
-                    return 0
-                if self.failure == (identity, index):
-                    return -2147467259
-                if identity == 10 and index == 4:
-                    self.roles.append(arguments[1])
-                    if not self.default_status:
-                        write_pointer(arguments[-1], 20 + arguments[1])
-                    return self.default_status
-                if identity == 10 and index == 3:
-                    write_pointer(arguments[-1], 30)
-                elif identity == 30 and index == 3:
-                    write_pointer(arguments[-1], 2)
-                elif identity == 30 and index == 4:
-                    write_pointer(arguments[-1], 20 + arguments[0])
-                elif index == 5:
-                    buffer = ctypes.create_unicode_buffer(self.endpoint_ids[identity])
-                    self.buffers.append(buffer)
-                    write_pointer(arguments[-1], ctypes.addressof(buffer))
-                elif index == 6:
-                    write_pointer(arguments[-1], 1)
-                else:
-                    raise AssertionError((identity, index))
-                return 0
-
-            return invoke
-
-        patcher = patch.object(devices, "_com_method", side_effect=method)
+        patcher = patch.object(devices, "_com_method", side_effect=self._com_method)
         patcher.start()
         self.addCleanup(patcher.stop)
+
+    def _com_method(self, pointer, index, *_types):
+        return lambda _self, *arguments: self._invoke_com(pointer, index, *arguments)
+
+    def _invoke_com(self, pointer, index, *arguments):
+        identity = pointer.value
+        if index == 2:
+            self.released.append(identity)
+            return 0
+        if self.failure == (identity, index):
+            return -2147467259
+        if identity == 10 and index == 4:
+            self.roles.append(arguments[1])
+            if not self.default_status:
+                write_pointer(arguments[-1], 20 + arguments[1])
+            return self.default_status
+        if identity == 10 and index == 3:
+            write_pointer(arguments[-1], 30)
+        elif identity == 30 and index == 3:
+            write_pointer(arguments[-1], 2)
+        elif identity == 30 and index == 4:
+            write_pointer(arguments[-1], 20 + arguments[0])
+        elif index == 5:
+            buffer = ctypes.create_unicode_buffer(self.endpoint_ids[identity])
+            self.buffers.append(buffer)
+            write_pointer(arguments[-1], ctypes.addressof(buffer))
+        elif index == 6:
+            write_pointer(arguments[-1], 1)
+        else:
+            raise AssertionError((identity, index))
+        return 0
 
     def test_unique_ids_both_default_roles_topology_and_pointer_prototypes(self):
         original = self.probe()
