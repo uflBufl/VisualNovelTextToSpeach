@@ -49,6 +49,8 @@ from vntts.ocr_corrections import OCRCorrectionStore  # noqa: E402
 from vntts.onboarding import DiagnosticResult  # noqa: E402
 from vntts.pregeneration_activation import OfflinePackActivationResult  # noqa: E402
 from vntts.pregeneration_pack import OfflinePackResult  # noqa: E402
+from vntts.pregeneration_setup import ContentDiscovery  # noqa: E402
+from vntts.pregeneration_ui import OfflineAudioPreparationDialog  # noqa: E402
 from vntts.pregeneration_voices import resolve_pregeneration_settings  # noqa: E402
 from vntts.profiles import GameProfileStore  # noqa: E402
 from vntts.settings import (  # noqa: E402
@@ -1076,6 +1078,120 @@ class TrayApplicationTest(unittest.TestCase):
         preparation.setEnabled.assert_called_with(True)
         tray.pregeneration_dialog = None
         tray.shutdown()
+
+    def test_cancel_generation_remains_clickable_during_reading_startup(self):
+        controller = Mock(is_ready=True, is_live_running=False)
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        preparation = OfflineAudioPreparationDialog(
+            AppSettings(), discovery=lambda: ContentDiscovery(())
+        )
+        tray.pregeneration_dialog = preparation
+        tray.dashboard.embed_preparation(preparation)
+        preparation.generating = True
+        preparation._set_import_controls(False)
+        try:
+            tray._begin_controller_lifecycle()
+            self.assertTrue(preparation.cancel_button.isEnabled())
+            tray._finish_controller_lifecycle()
+            controller.is_live_running = True
+            tray.set_live(True)
+            self.assertTrue(preparation.cancel_button.isEnabled())
+            tray._begin_controller_lifecycle()
+            preparation.cancel_button.click()
+            self.assertTrue(preparation.voice_cancel_event.is_set())
+            self.assertIn("Cancelling generation", preparation.resume_status.text())
+            tray.set_status("Reading is loading")
+            self.assertFalse(preparation.cancel_button.isEnabled())
+        finally:
+            preparation.generating = False
+            tray.pregeneration_dialog = None
+            tray.dashboard.remove_preparation(preparation)
+            delete_dialog(preparation)
+            tray.shutdown()
+
+    def test_voice_defaults_remain_editable_after_generation_inputs_are_fixed(self):
+        controller = Mock(is_ready=True, is_live_running=False)
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        preparation = OfflineAudioPreparationDialog(
+            AppSettings(), discovery=lambda: ContentDiscovery(())
+        )
+        tray.pregeneration_dialog = preparation
+        try:
+            for stage in (
+                "planning_voices",
+                "auditioning_voices",
+                "preparing_inputs",
+                "generating",
+                "recovering",
+                "publishing_pack",
+            ):
+                with self.subTest(stage=stage):
+                    setattr(preparation, stage, True)
+                    allowed = stage in {"generating", "recovering", "publishing_pack"}
+                    tray._apply_controller_action_state()
+                    for control in (
+                        tray.voice_preview_action,
+                        tray.speaker_mapping_action,
+                        tray.dashboard.narrator_voice_button,
+                    ):
+                        self.assertEqual(control.isEnabled(), allowed)
+                    with patch.object(tray, "_open_narrator_picker") as open_picker:
+                        tray.open_voice_previews()
+                        self.assertEqual(open_picker.called, allowed)
+                    setattr(preparation, stage, False)
+            preparation.generating = True
+            with patch.object(preparation, "apply_narrator_settings") as apply:
+                self.assertFalse(
+                    tray._apply_narrator_to_preparation(
+                        Mock(), tray.settings.updated(tts_speaker="marius"), preparation
+                    )
+                )
+                apply.assert_not_called()
+            controller.is_live_running = True
+
+            def toggle_live():
+                controller.is_live_running = not controller.is_live_running
+                return controller.is_live_running
+
+            controller.toggle_live.side_effect = toggle_live
+            picker = Mock(result_settings=tray.settings.updated(tts_speaker="marius"))
+            with (
+                patch("vntts.app.GameNarratorDialog", return_value=picker),
+                patch.object(tray.dashboard, "embed_narrator"),
+                patch.object(tray.dashboard, "remove_narrator"),
+                patch.object(tray, "_reload_game_narrator"),
+            ):
+                tray.open_voice_previews()
+                self.wait_until(lambda: tray.narrator_dialog is picker)
+                self.assertFalse(controller.is_live_running)
+                self.assertTrue(preparation.cancel_button.isEnabled())
+                tray._narrator_finished(QDialog.DialogCode.Accepted)
+                self.assertEqual(tray.settings.tts_speaker, "marius")
+                self.assertEqual(preparation.settings, AppSettings())
+                self.assertTrue(preparation.generating)
+                self.assertFalse(preparation.voice_cancel_event.is_set())
+                self.wait_until(lambda: controller.is_live_running)
+        finally:
+            for stage in (
+                "planning_voices",
+                "auditioning_voices",
+                "preparing_inputs",
+                "generating",
+                "recovering",
+                "publishing_pack",
+            ):
+                setattr(preparation, stage, False)
+            tray.pregeneration_dialog = None
+            delete_dialog(preparation)
+            tray.shutdown()
 
     def test_capture_controls_remain_available_during_preparation(self):
         tray = TrayApplication(

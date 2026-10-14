@@ -3565,7 +3565,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.dashboard.show_voices()
             return
         if self.pregeneration_dialog is not None:
-            if self.pregeneration_dialog.has_pending_work():
+            if self._preparation_blocks_voice_changes() or (
+                for_preparation and self.pregeneration_dialog.has_pending_work()
+            ):
                 self.set_status(
                     "Finish or cancel story preparation before changing voices."
                 )
@@ -3661,7 +3663,16 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.show_dashboard()
         self.dashboard.embed_narrator(dialog)
         self._apply_controller_action_state()
-        self.set_status("Choose a voice in Voices. Changes apply when you save.")
+        self.set_status(
+            "Choose a voice in Voices. Changes apply when you save."
+            + (
+                " Current story preparation keeps its confirmed voices; new "
+                "defaults apply to later preparation."
+                if self.pregeneration_dialog is not None
+                and self.pregeneration_dialog.has_pending_work()
+                else ""
+            )
+        )
 
     def _open_preparation_narrator(
         self,
@@ -3762,6 +3773,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         preparation: OfflineAudioPreparationDialog | None,
     ) -> bool:
         if preparation is not self.pregeneration_dialog or preparation is None:
+            return False
+        if preparation.has_pending_work():
             return False
         preparation.apply_narrator_settings(candidate, voice_changed=True)
         if dialog.select_affected_after_save is not True:
@@ -4329,7 +4342,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def _apply_runtime_control_state(self, state: RuntimeControlState) -> None:
         if self.pregeneration_dialog is not None:
             self.pregeneration_dialog.setEnabled(
-                not (self._controller_busy or self.narrator_dialog is not None)
+                self.pregeneration_dialog.has_pending_work()
+                or not (self._controller_busy or self.narrator_dialog is not None)
             )
         controls = (
             (self.read_action, state.can_read, "read"),
@@ -4351,6 +4365,18 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.dashboard.set_runtime_controls(state)
         self.compact_controller.set_runtime_controls(state)
 
+    def _preparation_blocks_voice_changes(self) -> bool:
+        preparation = self.pregeneration_dialog
+        return bool(
+            preparation is not None
+            and preparation.has_pending_work()
+            and not (
+                preparation.generating is True
+                or preparation.recovering is True
+                or preparation.publishing_pack is True
+            )
+        )
+
     def _apply_preparation_reading_state(
         self, preparing: bool, choosing_voice: bool
     ) -> None:
@@ -4368,10 +4394,16 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 if (
                     preparing
                     and not choosing_voice
-                    and button
-                    in (
-                        self.dashboard.calibrate_button,
-                        self.dashboard.settings_button,
+                    and (
+                        button
+                        in (
+                            self.dashboard.calibrate_button,
+                            self.dashboard.settings_button,
+                        )
+                        or (
+                            button is self.dashboard.narrator_voice_button
+                            and not self._preparation_blocks_voice_changes()
+                        )
                     )
                 ):
                     continue
@@ -4404,10 +4436,16 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         configuration_enabled = not (
             self._controller_busy or self._shutting_down or preparing or choosing_voice
         )
-        self.voice_preview_action.setEnabled(configuration_enabled)
-        self.speaker_mapping_action.setEnabled(configuration_enabled)
         for action in self._controller_configuration_actions():
             action.setEnabled(configuration_enabled)
+        voice_configuration_enabled = not (
+            self._controller_busy
+            or self._shutting_down
+            or choosing_voice
+            or self._preparation_blocks_voice_changes()
+        )
+        self.voice_preview_action.setEnabled(voice_configuration_enabled)
+        self.speaker_mapping_action.setEnabled(voice_configuration_enabled)
         capture_configuration_enabled = not (
             self._controller_busy
             or self._shutting_down
