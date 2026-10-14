@@ -710,6 +710,7 @@ class MainTest(unittest.TestCase):
             ocr_language="eng",
             correction_dictionary=None,
             region=None,
+            ocr_regions=None,
         )
 
     def test_cancelled_one_time_read_drops_late_ocr_speech(self):
@@ -1316,6 +1317,7 @@ class MainTest(unittest.TestCase):
             ocr_language="eng",
             correction_dictionary=controller.correction_dictionary,
             region_provider=controller._capture_region,
+            ocr_regions_provider=controller._capture_ocr_regions,
         )
 
     def test_controller_can_skip_startup_voice_warmup(self):

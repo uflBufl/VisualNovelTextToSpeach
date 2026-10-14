@@ -2,7 +2,7 @@ import json
 import math
 import os
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
@@ -152,6 +152,83 @@ default_dialog_region = DialogRegion(0.0, 0.68, 1.0, 0.32)
 
 
 @dataclass(frozen=True)
+class OCRRegions:
+    """Independent OCR rectangles normalized inside one captured image."""
+
+    speaker: DialogRegion
+    dialogue: DialogRegion
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.speaker, DialogRegion) or not isinstance(
+            self.dialogue, DialogRegion
+        ):
+            raise ValueError("OCR regions must contain speaker and dialogue rectangles")
+        if max(self.speaker.left, self.dialogue.left) < min(
+            self.speaker.left + self.speaker.width,
+            self.dialogue.left + self.dialogue.width,
+        ) and max(self.speaker.top, self.dialogue.top) < min(
+            self.speaker.top + self.speaker.height,
+            self.dialogue.top + self.dialogue.height,
+        ):
+            raise ValueError("Speaker and dialogue OCR regions must not overlap")
+
+    @classmethod
+    def from_mapping(cls, value: object) -> "OCRRegions":
+        if not isinstance(value, Mapping):
+            raise ValueError("ocr_regions must be an object")
+
+        def rectangle(name: str) -> DialogRegion:
+            values = value.get(name)
+            if not isinstance(values, Mapping):
+                raise ValueError(f"ocr_regions {name} must be an object")
+            coordinates = []
+            for key in ("left", "top", "width", "height"):
+                coordinate = values.get(key)
+                if not isinstance(coordinate, (int, float)) or isinstance(
+                    coordinate, bool
+                ):
+                    raise ValueError(f"ocr_regions {name} {key} must be a number")
+                coordinates.append(coordinate)
+            return DialogRegion(*coordinates)
+
+        return cls(rectangle("speaker"), rectangle("dialogue"))
+
+    def to_json(self) -> dict[str, dict[str, float]]:
+        return {"speaker": self.speaker.to_json(), "dialogue": self.dialogue.to_json()}
+
+
+def combine_ocr_regions(
+    speaker: DialogRegion,
+    dialogue: DialogRegion,
+    capture_region: DialogRegion | None = None,
+) -> tuple[DialogRegion, OCRRegions]:
+    """Combine screen selections into one capture and two relative crops."""
+    OCRRegions(speaker, dialogue)
+    regions = (
+        (speaker, dialogue)
+        if capture_region is None
+        else (speaker, dialogue, capture_region)
+    )
+    left = min(region.left for region in regions)
+    top = min(region.top for region in regions)
+    right = max(region.left + region.width for region in regions)
+    bottom = max(region.top + region.height for region in regions)
+    capture = DialogRegion(left, top, right - left, bottom - top)
+
+    def relative(region: DialogRegion) -> DialogRegion:
+        x = (region.left - left) / capture.width
+        y = (region.top - top) / capture.height
+        return DialogRegion(
+            x,
+            y,
+            min(1 - x, region.width / capture.width),
+            min(1 - y, region.height / capture.height),
+        )
+
+    return capture, OCRRegions(relative(speaker), relative(dialogue))
+
+
+@dataclass(frozen=True)
 class OCRLine:
     text: str
     left: int
@@ -175,6 +252,10 @@ class OCRResult:
     profile: str
     attempts: int
     corrections: tuple[str, ...] = ()
+    processed_image: Image.Image | None = field(default=None, repr=False, compare=False)
+    speaker_image: Image.Image | None = field(default=None, repr=False, compare=False)
+    speaker_confidence: float | None = None
+    dialogue_confidence: float | None = None
 
     def is_confident(self, minimum: float = default_minimum_ocr_confidence) -> bool:
         return bool(self.text.strip()) and self.confidence >= minimum
@@ -271,9 +352,22 @@ def load_dialog_region(path: str | Path) -> DialogRegion:
         raise ValueError(f"Unable to load dialog region {path}: {error}") from error
 
 
-def save_dialog_region(region: DialogRegion, path: str | Path) -> None:
+def save_dialog_region(
+    region: DialogRegion, path: str | Path, *, ocr_regions: OCRRegions | None = None
+) -> None:
     path = Path(path).expanduser()
-    atomic_write_json(path, region.to_json())
+    value: dict[str, object] = dict(region.to_json())
+    if ocr_regions is not None:
+        value["ocr_regions"] = ocr_regions.to_json()
+    atomic_write_json(path, value)
+
+
+def load_ocr_regions(path: str | Path) -> OCRRegions | None:
+    value = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError("Dialog region configuration must be an object")
+    regions = value.get("ocr_regions")
+    return None if regions is None else OCRRegions.from_mapping(regions)
 
 
 def get_dialog_region(profile_region: DialogRegion | None = None) -> DialogRegion:
@@ -341,6 +435,7 @@ def recognize_dialog_image_result(
     language: str = "eng",
     timeout: float | None = None,
     cancelled: Callable[[], bool] | None = None,
+    ocr_regions: OCRRegions | None = None,
 ) -> OCRResult:
     remaining_timeout = _ocr_budget(timeout, cancelled)
     combine_outputs = recognize_text is None and recognize_data is None
@@ -348,6 +443,44 @@ def recognize_dialog_image_result(
         recognize_text = pytesseract.image_to_string
     if recognize_data is None:
         recognize_data = pytesseract.image_to_data
+
+    if ocr_regions is not None:
+        speaker = _recognize_isolated_region(
+            ocr_regions.speaker.crop(image),
+            recognize_text,
+            recognize_data,
+            profiles,
+            language,
+            remaining_timeout,
+            minimum_confidence,
+            speaker=True,
+            combine_outputs=combine_outputs,
+        )
+        dialogue = _recognize_isolated_region(
+            ocr_regions.dialogue.crop(image),
+            recognize_text,
+            recognize_data,
+            profiles,
+            language,
+            remaining_timeout,
+            minimum_confidence,
+            speaker=False,
+            combine_outputs=combine_outputs,
+        )
+        character = normalize_recognized_speaker(speaker.text, voice_registry)
+        return OCRResult(
+            character,
+            dialogue.text,
+            min(speaker.confidence, dialogue.confidence)
+            if speaker.text.strip()
+            else dialogue.confidence,
+            dialogue.profile,
+            max(speaker.attempts, dialogue.attempts),
+            processed_image=dialogue.processed_image,
+            speaker_image=speaker.processed_image,
+            speaker_confidence=speaker.confidence,
+            dialogue_confidence=dialogue.confidence,
+        )
 
     best_result = None
     for attempt, profile in enumerate(profiles, start=1):
@@ -371,6 +504,85 @@ def recognize_dialog_image_result(
         ):
             return result
 
+    return best_result or OCRResult("Narrator", "", 0.0, "none", 0)
+
+
+def _recognize_isolated_region(
+    image: Image.Image,
+    recognize_text: OcrTextRecognizer,
+    recognize_data: OcrDataRecognizer,
+    profiles: Sequence[OCRPreprocessingProfile],
+    language: str,
+    remaining_timeout: Callable[[], float | None],
+    minimum_confidence: float,
+    *,
+    speaker: bool,
+    combine_outputs: bool,
+) -> OCRResult:
+    best_result: OCRResult | None = None
+    for attempt, profile in enumerate(profiles, start=1):
+        remaining_timeout()
+        processed = preprocess_dialog_image(image, profile)
+        if speaker:
+            histogram = processed.histogram()
+            processed = ImageOps.expand(
+                processed, border=10, fill=255 if histogram[255] > histogram[0] else 0
+            )
+            data = _call_ocr(
+                recognize_data,
+                processed,
+                remaining_timeout,
+                config="--psm 7",
+                output_type=pytesseract.Output.DICT,
+                lang=language,
+            )
+            text = " ".join(word for word, _confidence in _recognized_words(data))
+        else:
+            if combine_outputs:
+                text, data = _recognize_psm6_text_data(
+                    processed, language, remaining_timeout
+                )
+            else:
+                text = _call_ocr(
+                    recognize_text,
+                    processed,
+                    remaining_timeout,
+                    config="--psm 6",
+                    lang=language,
+                )
+                data = _call_ocr(
+                    recognize_data,
+                    processed,
+                    remaining_timeout,
+                    config="--psm 6",
+                    output_type=pytesseract.Output.DICT,
+                    lang=language,
+                )
+            # The explicit dialogue rectangle supplies layout authority. Keep
+            # one-letter words and punctuation instead of nameplate/UI heuristics.
+            text = " ".join(
+                _strip_trailing_ocr_glyphs(line.strip()) for line in text.splitlines()
+            ).strip()
+            words = _recognized_words(data)
+            cleaned = _trim_trailing_ocr_noise(words)
+            if len(cleaned) < len(words):
+                text = " ".join(word for word, _confidence in cleaned)
+        result = OCRResult(
+            "Narrator",
+            text,
+            calculate_ocr_confidence(data),
+            profile.name,
+            attempt,
+            processed_image=processed,
+        )
+        if best_result is None or (
+            bool(result.text),
+            result.confidence,
+            len(result.text),
+        ) > (bool(best_result.text), best_result.confidence, len(best_result.text)):
+            best_result = result
+        if result.is_confident(minimum_confidence):
+            return result
     return best_result or OCRResult("Narrator", "", 0.0, "none", 0)
 
 
@@ -458,6 +670,16 @@ def _recognize_preprocessed_dialog(
                 calculate_ocr_confidence(dialog_data),
                 profile_name,
                 attempt,
+                processed_image=dialog_image,
+                speaker_image=image.crop(
+                    (
+                        speaker_line.left,
+                        speaker_line.top,
+                        speaker_line.right,
+                        speaker_line.bottom,
+                    )
+                ),
+                dialogue_confidence=calculate_ocr_confidence(dialog_data),
             )
 
     if recognized_text is None:
@@ -475,6 +697,7 @@ def _recognize_preprocessed_dialog(
         calculate_ocr_confidence(data),
         profile_name,
         attempt,
+        processed_image=image,
     )
 
 
@@ -595,6 +818,15 @@ def _normalize_unknown_nameplate(text: str) -> str:
     ):
         return "???"
     return value
+
+
+def normalize_recognized_speaker(
+    text: str, voice_registry: VoiceRegistry | None = None
+) -> str:
+    character = _normalize_unknown_nameplate(" ".join(text.split())) or "Narrator"
+    if voice_registry is not None and character != "Narrator":
+        return voice_registry.resolve_closest_character(character) or character
+    return character
 
 
 def _has_dialog_below(speaker_line: OCRLine, lines: Sequence[OCRLine]) -> bool:

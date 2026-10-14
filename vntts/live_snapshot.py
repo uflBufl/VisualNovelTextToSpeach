@@ -6,6 +6,7 @@ from vntts.diagnostics import DiagnosticSnapshot
 from vntts.dialog_capture import PathInput, analyze_dialog_snapshot
 from vntts.ocr import (
     DialogRegion,
+    OCRRegions,
     OCRResult,
     UncertainFrameRecorder,
     VoiceRegistry,
@@ -26,6 +27,7 @@ def read_live_snapshot(
     ocr_language: str = "eng",
     correction_dictionary: OCRCorrectionDictionary | None = None,
     region: DialogRegion | None = None,
+    ocr_regions: OCRRegions | None = None,
 ) -> tuple[str | None, str]:
     image, _, result = analyze_dialog_snapshot(
         screenshot_directory,
@@ -37,6 +39,7 @@ def read_live_snapshot(
         ocr_language=ocr_language,
         correction_dictionary=correction_dictionary,
         region=region,
+        ocr_regions=ocr_regions,
     )
     if result.text and not result.is_confident(minimum_confidence):
         if uncertain_frame_recorder is not None:

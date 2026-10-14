@@ -34,6 +34,10 @@ class DiagnosticSnapshot:
     cache_source: str | None = None
     audio_source: str = "Not selected"
     captured_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    processed_image: Image.Image | None = field(default=None, repr=False, compare=False)
+    speaker_image: Image.Image | None = field(default=None, repr=False, compare=False)
+    speaker_confidence: float | None = None
+    dialogue_confidence: float | None = None
 
 
 def resolve_voice_label(

@@ -18,6 +18,7 @@ from vntts.diagnostics import (  # noqa: E402
     resolve_voice_label,
 )
 from vntts.diagnostics_ui import DiagnosticsDialog  # noqa: E402
+from vntts.dialog_capture import CapturedDialogFrame, recognize_live_frame  # noqa: E402
 from vntts.main import AppController, analyze_dialog_snapshot  # noqa: E402
 from vntts.ocr import OCRResult  # noqa: E402
 from vntts.voices import CharacterVoice  # noqa: E402
@@ -30,6 +31,7 @@ class DiagnosticsTest(unittest.TestCase):
 
     def test_snapshot_preserves_capture_ocr_and_voice_details(self):
         image = Image.new("RGB", (320, 100), "black")
+        processed_image = Image.new("L", (600, 120), "white")
         result = OCRResult(
             "Marcus",
             "Timekeeper.",
@@ -37,6 +39,7 @@ class DiagnosticsTest(unittest.TestCase):
             "dark-background",
             2,
             ("Mareus -> Marcus",),
+            processed_image=processed_image,
         )
         snapshots = []
         clock = iter((1.0, 1.025, 2.0, 2.075)).__next__
@@ -56,6 +59,7 @@ class DiagnosticsTest(unittest.TestCase):
 
         self.assertIs(actual, result)
         self.assertEqual(snapshots[0].image, image)
+        self.assertIs(snapshots[0].processed_image, processed_image)
         self.assertEqual(snapshots[0].character, "Marcus")
         self.assertEqual(snapshots[0].text, "Timekeeper.")
         self.assertEqual(snapshots[0].preprocessing_profile, "dark-background")
@@ -63,6 +67,29 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertAlmostEqual(snapshots[0].capture_ms, 25.0)
         self.assertAlmostEqual(snapshots[0].ocr_ms, 75.0)
         self.assertEqual(snapshots[0].corrections, ("Mareus -> Marcus",))
+
+    def test_live_snapshot_preserves_actual_ocr_input(self):
+        image = Image.new("RGB", (320, 100), "black")
+        processed_image = Image.new("L", (600, 120), "white")
+        result = OCRResult(
+            "Marcus",
+            "Hello?",
+            95.0,
+            "balanced",
+            1,
+            processed_image=processed_image,
+        )
+        snapshots = []
+        with patch(
+            "vntts.dialog_capture.recognize_screenshot_result", return_value=result
+        ):
+            recognized = recognize_live_frame(
+                CapturedDialogFrame(image, 12.0),
+                diagnostic_handler=snapshots.append,
+            )
+
+        self.assertEqual(recognized, ("Marcus", "Hello?"))
+        self.assertIs(snapshots[0].processed_image, processed_image)
 
     def test_dialog_renders_snapshot_and_latencies(self):
         dialog = DiagnosticsDialog()
@@ -82,6 +109,7 @@ class DiagnosticsTest(unittest.TestCase):
             capture_interval_ms=600.0,
             game_focused=False,
             corrections=("Mareus -> Marcus", "tiniekeeper -> timekeeper"),
+            processed_image=Image.new("L", (600, 120), "white"),
         )
 
         dialog.set_snapshot(snapshot)
@@ -99,6 +127,67 @@ class DiagnosticsTest(unittest.TestCase):
             "Mareus -> Marcus\ntiniekeeper -> timekeeper",
         )
         self.assertFalse(dialog.preview.pixmap().isNull())
+        self.assertFalse(dialog.processed_preview.pixmap().isNull())
+        self.assertTrue(dialog.enlarge_processed_button.isEnabled())
+        self.assertEqual(dialog.processed_pixmap.size().width(), 600)
+        self.assertEqual(
+            dialog.processed_pixmap.toImage().pixelColor(0, 0).name(), "#ffffff"
+        )
+        dialog.close()
+        dialog.deleteLater()
+
+    def test_dialog_renders_independent_speaker_and_dialogue_ocr(self):
+        dialog = DiagnosticsDialog()
+        speaker_image = Image.new("L", (500, 80), "#aaaaaa")
+        dialogue_image = Image.new("L", (600, 120), "#ffffff")
+        snapshot = DiagnosticSnapshot(
+            Image.new("RGB", (320, 100), "black"),
+            character="Marcus",
+            text="The captured line.",
+            confidence=91.2,
+            speaker_image=speaker_image,
+            speaker_confidence=84.5,
+            dialogue_confidence=96.7,
+            processed_image=dialogue_image,
+        )
+
+        dialog.set_snapshot(snapshot)
+
+        self.assertEqual(dialog.speaker.text(), "Marcus")
+        self.assertEqual(dialog.speaker_confidence.text(), "84.5%")
+        self.assertEqual(dialog.dialogue_confidence.text(), "96.7%")
+        self.assertFalse(dialog.speaker_processed_preview.pixmap().isNull())
+        self.assertTrue(dialog.enlarge_speaker_button.isEnabled())
+        speaker_zoom = dialog._capture_dialog(speaker=True)
+        self.assertIsNotNone(speaker_zoom)
+        self.assertIn("speaker OCR", speaker_zoom.windowTitle())
+        speaker_zoom.close()
+        dialog.close()
+        dialog.deleteLater()
+
+    def test_legacy_snapshot_and_unavailable_snapshot_clear_both_ocr_images(self):
+        dialog = DiagnosticsDialog()
+        dialog.set_snapshot(
+            DiagnosticSnapshot(
+                Image.new("RGB", (32, 10), "black"),
+                text="Old",
+                processed_image=Image.new("L", (64, 20), "white"),
+                speaker_image=Image.new("L", (48, 12), "gray"),
+            )
+        )
+        self.assertEqual(dialog.confidence.text(), "0.0%")
+        self.assertTrue(dialog.enlarge_speaker_button.isEnabled())
+
+        dialog.set_snapshot(DiagnosticSnapshot(None, text="Unavailable"))
+
+        self.assertIsNone(dialog.processed_pixmap)
+        self.assertIsNone(dialog.speaker_processed_pixmap)
+        self.assertFalse(dialog.enlarge_processed_button.isEnabled())
+        self.assertFalse(dialog.enlarge_speaker_button.isEnabled())
+        self.assertIn("No processed OCR image", dialog.processed_preview.text())
+        self.assertIn(
+            "No processed speaker OCR image", dialog.speaker_processed_preview.text()
+        )
         dialog.close()
         dialog.deleteLater()
 
@@ -165,7 +254,11 @@ class DiagnosticsTest(unittest.TestCase):
     def test_fresh_snapshot_clears_stale_image_and_warning(self):
         dialog = DiagnosticsDialog()
         dialog.set_snapshot(
-            DiagnosticSnapshot(Image.new("RGB", (32, 10), "black"), text="Old")
+            DiagnosticSnapshot(
+                Image.new("RGB", (32, 10), "black"),
+                text="Old",
+                processed_image=Image.new("L", (64, 20), "white"),
+            )
         )
         dialog.set_warning("Old warning")
 
@@ -174,6 +267,11 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertIsNone(dialog.source_pixmap)
         self.assertTrue(dialog.preview.pixmap().isNull())
         self.assertIn("No capture image", dialog.preview.text())
+        self.assertIsNone(dialog.processed_pixmap)
+        self.assertTrue(dialog.processed_preview.pixmap().isNull())
+        self.assertIn("No processed OCR image", dialog.processed_preview.text())
+        self.assertFalse(dialog.enlarge_processed_button.isEnabled())
+        self.assertIsNone(dialog._capture_dialog(processed=True))
         self.assertFalse(dialog.warning.isVisible())
         self.assertFalse(dialog.warning_action.isVisible())
         self.assertEqual(dialog.warning.text(), "")
@@ -185,6 +283,7 @@ class DiagnosticsTest(unittest.TestCase):
         dialog.set_snapshot(
             DiagnosticSnapshot(
                 Image.new("RGB", (1200, 900), "black"),
+                processed_image=Image.new("L", (1600, 1000), "white"),
                 text="Previously captured text",
                 captured_at=datetime(2026, 9, 22, 12, 34, tzinfo=timezone.utc),
             )
@@ -200,6 +299,14 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertGreater(scroll.horizontalScrollBar().maximum(), 0)
         self.assertGreater(scroll.verticalScrollBar().maximum(), 0)
         zoom.close()
+        processed_zoom = dialog._capture_dialog(processed=True)
+        processed_zoom.show()
+        self.application.processEvents()
+        processed_scroll = processed_zoom.findChild(QScrollArea)
+        self.assertGreater(processed_scroll.horizontalScrollBar().maximum(), 0)
+        self.assertGreater(processed_scroll.verticalScrollBar().maximum(), 0)
+        self.assertIn("Processed OCR", processed_zoom.windowTitle())
+        processed_zoom.close()
         dialog.close()
 
     def test_closing_dialog_cancels_pending_refresh_timeout(self):
