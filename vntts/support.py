@@ -593,52 +593,20 @@ def _sanitize_generation_stall(details: object) -> SupportDocument:
         safe["elapsed_seconds"] = round(elapsed, 3)
     if type(details.get("cancellation_requested")) is bool:
         safe["cancellation_requested"] = details["cancellation_requested"]
+    safe["threads"] = _generation_stall_threads(details.get("threads"))
+    return safe
+
+
+def _generation_stall_threads(raw_threads: object) -> list[SupportDocument]:
     threads: list[SupportDocument] = []
-    raw_threads = details.get("threads")
     for thread in raw_threads[:32] if isinstance(raw_threads, list) else ():
         if not isinstance(thread, dict):
             continue
         thread_id = thread.get("thread_id")
         if type(thread_id) is not int or not 0 <= thread_id < 2**64:
             continue
-        frames: list[SupportDocument] = []
         raw_frames = thread.get("frames")
-        for frame in raw_frames[:64] if isinstance(raw_frames, list) else ():
-            if not isinstance(frame, dict):
-                continue
-            module, filename, function = (
-                frame.get(key) for key in ("module", "file", "function")
-            )
-            line = frame.get("line")
-            if (
-                not isinstance(module, str)
-                or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]{0,159}", module)
-                or not isinstance(function, str)
-                or not re.fullmatch(
-                    r"(?:[A-Za-z_][A-Za-z0-9_]{0,159}|"
-                    r"<(?:module|lambda|listcomp|dictcomp|setcomp|genexpr)>)",
-                    function,
-                )
-                or type(line) is not int
-                or not 0 <= line < 2**31
-            ):
-                continue
-            safe_frame: SupportDocument = {
-                "module": module,
-                "function": function,
-                "line": line,
-            }
-            if (
-                isinstance(filename, str)
-                and len(filename) <= 240
-                and re.fullmatch(
-                    r"(?:(?:vntts|tests|scripts)/(?:[A-Za-z_][A-Za-z0-9_]*/)*|)"
-                    r"[A-Za-z_][A-Za-z0-9_]*\.py",
-                    filename,
-                )
-            ):
-                safe_frame["file"] = filename
-            frames.append(safe_frame)
+        frames = _generation_stall_frames(raw_frames)
         threads.append(
             {
                 "thread_id": thread_id,
@@ -649,8 +617,48 @@ def _sanitize_generation_stall(details: object) -> SupportDocument:
                 and len(raw_frames) > 64,
             }
         )
-    safe["threads"] = threads
-    return safe
+    return threads
+
+
+def _generation_stall_frames(raw_frames: object) -> list[SupportDocument]:
+    frames: list[SupportDocument] = []
+    for frame in raw_frames[:64] if isinstance(raw_frames, list) else ():
+        if not isinstance(frame, dict):
+            continue
+        module, filename, function = (
+            frame.get(key) for key in ("module", "file", "function")
+        )
+        line = frame.get("line")
+        if (
+            not isinstance(module, str)
+            or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]{0,159}", module)
+            or not isinstance(function, str)
+            or not re.fullmatch(
+                r"(?:[A-Za-z_][A-Za-z0-9_]{0,159}|"
+                r"<(?:module|lambda|listcomp|dictcomp|setcomp|genexpr)>)",
+                function,
+            )
+            or type(line) is not int
+            or not 0 <= line < 2**31
+        ):
+            continue
+        safe_frame: SupportDocument = {
+            "module": module,
+            "function": function,
+            "line": line,
+        }
+        if (
+            isinstance(filename, str)
+            and len(filename) <= 240
+            and re.fullmatch(
+                r"(?:(?:vntts|tests|scripts)/(?:[A-Za-z_][A-Za-z0-9_]*/)*|)"
+                r"[A-Za-z_][A-Za-z0-9_]*\.py",
+                filename,
+            )
+        ):
+            safe_frame["file"] = filename
+        frames.append(safe_frame)
+    return frames
 
 
 class GenerationStallLog(RuntimeSupportLog):
