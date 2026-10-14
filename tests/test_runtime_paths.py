@@ -585,7 +585,8 @@ class RuntimePathsTest(unittest.TestCase):
             report = json.loads(report_path.read_text(encoding="utf-8"))
         self.assertFalse(result.successful)
         errors = [check for check in report["checks"] if check["status"] == "error"]
-        self.assertEqual(len(errors), 15)
+        self.assertEqual(len(errors), 16)
+        self.assertIn("Import soxr", [check["name"] for check in errors])
         self.assertTrue(all(check["message"] == "probe failed" for check in errors))
         self.assertTrue(
             all(

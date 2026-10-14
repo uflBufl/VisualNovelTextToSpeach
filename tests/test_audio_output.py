@@ -1,4 +1,5 @@
 import unittest
+from types import ModuleType
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -162,6 +163,16 @@ class ConvenienceSoundDevice(FakeSoundDevice):
 
 
 class AudioOutputLifecycleTest(unittest.TestCase):
+    def test_default_and_explicit_sounddevice_use_the_shared_system_output(self):
+        shared = FakeSoundDevice()
+        with patch(
+            "vntts.system_audio.get_system_audio_output", return_value=shared
+        ) as resolve:
+            for module in (None, ModuleType("sounddevice")):
+                output = resolve_audio_output(module)
+                self.assertIs(output.output, shared)
+            self.assertEqual(resolve.call_count, 2)
+
     def test_incomplete_sounddevice_shape_is_not_promoted_to_audio_output(self):
         incomplete = IncompleteSoundDevice()
 

@@ -2,6 +2,7 @@
 
 from collections.abc import Callable, Mapping
 from threading import Event, Lock, current_thread
+from types import ModuleType
 from typing import Protocol, TypeAlias, TypeGuard, overload
 from uuid import uuid4
 
@@ -101,9 +102,13 @@ def resolve_audio_output(
 ) -> PlaybackAudioOutput:
     """Return an injected output module or lazily import sounddevice."""
     if audio_output is None:
-        import sounddevice
+        from vntts.system_audio import get_system_audio_output
 
-        audio_output = sounddevice
+        return _LoggedAudioOutput(get_system_audio_output())
+    if isinstance(audio_output, ModuleType) and audio_output.__name__ == "sounddevice":
+        from vntts.system_audio import get_system_audio_output
+
+        return _LoggedAudioOutput(get_system_audio_output())
     if isinstance(audio_output, _LoggedAudioOutput):
         return audio_output
     if getattr(

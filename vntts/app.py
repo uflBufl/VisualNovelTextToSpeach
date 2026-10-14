@@ -4692,6 +4692,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         application = QApplication([sys.argv[0], *qt_arguments])
     application.setApplicationName(application_name)
     application.setQuitOnLastWindowClosed(False)
+    from vntts.system_audio import initialize_audio_device_monitor
+
+    initialize_audio_device_monitor()
     tray_application = TrayApplication(application)
     tray_application.start()
     return application.exec()

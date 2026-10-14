@@ -3,6 +3,7 @@ import unittest
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import ModuleType
 from unittest.mock import Mock, PropertyMock, patch
 
 import numpy as np
@@ -15,6 +16,7 @@ from vntts.authoring.pcm_playback import (
     PcmPlaybackError,
     PersistentPcmPlayer,
 )
+from vntts.system_audio import AudioDeviceChangedError
 
 
 class PersistentPcmPlayerTest(unittest.TestCase):
@@ -196,6 +198,154 @@ class PersistentPcmPlayerTest(unittest.TestCase):
 
         self.assertTrue(audio.stream.aborted)
         self.assertTrue(audio.stream.closed)
+
+    def test_device_change_replays_onset_with_same_token_and_attempt_failure(self):
+        audio, player = self.create_player()
+        samples = np.arange(480 * 2, dtype=np.float32).reshape(480, 2) / 1000
+        clip = PcmClip(samples, player.sample_rate)
+        token = player.play(clip)
+        old_stream = audio.stream
+        old_stream.pump(48, underflow=True)
+        with patch.object(
+            FakeOutputStream,
+            "time",
+            create=True,
+            new_callable=PropertyMock,
+            side_effect=RuntimeError("clock failed"),
+        ):
+            player.snapshot()
+        old_stream.device_changed = True
+
+        snapshot = player.snapshot()
+
+        self.assertIsNot(audio.stream, old_stream)
+        self.assertTrue(old_stream.aborted and old_stream.closed)
+        self.assertEqual(snapshot.token, token)
+        self.assertEqual(snapshot.position_frames, 0)
+        self.assertFalse(snapshot.started or snapshot.finished)
+        self.assertTrue(snapshot.playing and snapshot.underflowed)
+        self.assertEqual(snapshot.error, "clock failed")
+        np.testing.assert_array_equal(audio.stream.pump(48), samples[:48])
+        player.play(clip)
+        self.assertFalse(player.snapshot().underflowed)
+        self.assertIsNone(player.snapshot().error)
+
+    def test_play_rejects_invalid_logical_pcm(self):
+        _audio, player = self.create_player()
+        for samples in (
+            np.empty((0, 2), np.float32),
+            np.ones((48,), np.float32),
+            np.ones((48, 3), np.float32),
+            np.full((48, 2), np.nan, np.float32),
+        ):
+            with self.subTest(shape=samples.shape):
+                with self.assertRaises(PcmPlaybackError):
+                    player.play(PcmClip(samples, 24_000))
+
+    def test_change_between_device_check_and_clock_read_replays_without_error(self):
+        audio, player = self.create_player()
+        clip = PcmClip(np.ones((480, 2), np.float32), player.sample_rate)
+        token = player.play(clip)
+        old_stream = audio.stream
+        old_stream.pump(48)
+
+        def changed_clock(stream):
+            if stream is old_stream:
+                old_stream.device_changed = True
+                raise AudioDeviceChangedError("Changed while reading time")
+            return stream._clock
+
+        with patch.object(
+            FakeOutputStream,
+            "time",
+            property(
+                changed_clock,
+                lambda stream, value: setattr(stream, "_clock", value),
+            ),
+            create=True,
+        ):
+            snapshot = player.snapshot()
+        self.assertEqual(snapshot.token, token)
+        self.assertEqual(snapshot.position_frames, 0)
+        self.assertIsNone(snapshot.error)
+
+    def test_injected_sounddevice_module_uses_shared_output(self):
+        audio = FakeAudioModule()
+        with patch(
+            "vntts.system_audio.get_system_audio_output", return_value=audio
+        ) as shared:
+            player = PersistentPcmPlayer(ModuleType("sounddevice"))
+        self.addCleanup(player.close)
+        shared.assert_called_once_with()
+        self.assertIs(player.audio_module, audio)
+
+    def test_device_change_converts_cached_clip_and_keeps_logical_frame_units(self):
+        audio, player = self.create_player()
+        clip = PcmClip(np.ones((480, 2), np.float32), player.sample_rate)
+        token = player.play(clip)
+        audio.stream.pump(48)
+        audio.stream.device_changed = True
+        audio.device = {"default_samplerate": 24_000, "max_output_channels": 1}
+
+        snapshot = player.snapshot()
+
+        self.assertEqual(player.sample_rate, 24_000)
+        self.assertEqual(audio.stream.channels, 1)
+        self.assertEqual(snapshot.total_frames, clip.frames)
+        self.assertEqual(snapshot.token, token)
+        audio.stream.pump(120)
+        audio.stream.time += audio.latency
+        self.assertEqual(player.snapshot().position_frames, 240)
+        player.pause()
+        player.seek(288)
+        player.resume()
+        audio.stream.pump(96)
+        audio.stream.time += audio.latency + 0.001
+        completed = player.snapshot()
+        self.assertTrue(completed.finished)
+        self.assertEqual(completed.position_frames, clip.frames)
+        player.play(clip, position_frames=240)
+        self.assertEqual(player.snapshot().position_frames, 240)
+        self.assertEqual(player.snapshot().total_frames, clip.frames)
+
+    def test_unavailable_device_reports_error_and_next_play_retries(self):
+        audio, player = self.create_player()
+        clip = PcmClip(np.ones((480, 2), np.float32), player.sample_rate)
+        player.play(clip)
+        audio.stream.device_changed = True
+        with patch.object(
+            audio, "query_devices", side_effect=RuntimeError("No output device")
+        ):
+            failed = player.snapshot()
+        self.assertIn("No output device", failed.error)
+        self.assertFalse(failed.playing or failed.finished)
+        self.assertIsNone(player.stream)
+
+        player.play(clip)
+
+        self.assertIsNone(player.snapshot().error)
+        np.testing.assert_array_equal(audio.stream.pump(48), clip.samples[:48])
+
+    def test_device_change_after_queued_end_replays_but_completed_clip_stays_stopped(
+        self,
+    ):
+        for completed in (False, True):
+            with self.subTest(completed=completed):
+                audio, player = self.create_player()
+                clip = PcmClip(np.ones((480, 2), np.float32), player.sample_rate)
+                token = player.play(clip)
+                audio.stream.pump(480)
+                if completed:
+                    audio.stream.time += audio.latency + 0.001
+                    self.assertTrue(player.snapshot().finished)
+                audio.stream.device_changed = True
+
+                snapshot = player.snapshot()
+
+                self.assertEqual(snapshot.token, token)
+                self.assertEqual(snapshot.finished, completed)
+                self.assertEqual(snapshot.playing, not completed)
+                self.assertEqual(snapshot.position_frames, 480 if completed else 0)
 
     def test_close_attempts_each_release_once_and_preserves_first_failure(self):
         for failed_phase in ("stop", "abort", "close"):

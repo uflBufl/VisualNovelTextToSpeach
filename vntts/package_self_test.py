@@ -46,6 +46,7 @@ required_modules = (
     "pynput",
     "pytesseract",
     "sounddevice",
+    "soxr",
     "torch",
     "torchaudio",
 )

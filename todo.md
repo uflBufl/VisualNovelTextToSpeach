@@ -1,5 +1,9 @@
 # TODO
 
+## Follow the system audio output during playback
+
+- [ ] Verify hotplug on real macOS and Windows headphones while Reading, sample playback and headless CLI playback are active, including disconnect/reconnect and recovery after no output is available.
+
 ## Track transitive authoring publication inputs
 
 - [ ] Expose the consulted-file inventory from `audio_event_workspace.validate_audio_event_composition_state_item`, reached through `generation_state._validate_success_audio_event_composition`, and carry it through failure-corpus publication, so a replaceable corpus cannot overwrite nested workspace/composition/review/base authorities. Current collision guards protect explicitly captured queue/state/manifest and successful state WAV paths; custom state-loader callbacks retain opaque additional I/O. Reuse the validator's admitted inventory instead of maintaining a duplicate path table in the corpus writer.

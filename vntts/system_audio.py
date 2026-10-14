@@ -1,0 +1,387 @@
+"""One owner for system-default sounddevice output and device-list refreshes."""
+
+from __future__ import annotations
+
+import atexit
+from collections.abc import Callable
+from threading import Event, Lock, RLock, Thread, current_thread, main_thread
+from typing import Any
+
+import numpy as np
+
+from vntts.audio_lifecycle import record_audio_lifecycle
+from vntts.cleanup import attempt_cleanup, cleanup_on_exit
+
+
+class AudioDeviceChangedError(RuntimeError):
+    pass
+
+
+class _DefaultOutputMonitor:
+    """Probe outside playback locks; native audio-service calls can be slow."""
+
+    def __init__(
+        self,
+        output: SystemAudioOutput,
+        probe_factory: Callable[[], Callable[[], object]],
+    ) -> None:
+        self.output = output
+        self.probe_factory = probe_factory
+        self.probe: Callable[[], object] | None = None
+        self.identity: object = object()
+        self.failed = False
+        self.ready = Event()
+        self.stopping = Event()
+        self.thread = Thread(
+            target=self._run, name="vntts-default-audio-device", daemon=True
+        )
+
+    def check(self) -> None:
+        if self.stopping.is_set():
+            return
+        try:
+            if self.probe is None:
+                self.probe = self.probe_factory()
+            identity = self.probe()
+        except Exception as error:
+            if self.stopping.is_set():
+                return
+            if not self.failed:
+                record_audio_lifecycle(
+                    "device-probe", outcome="failed", reason=type(error).__name__
+                )
+            self.failed = True
+            return
+        if self.stopping.is_set():
+            return
+        recovered = self.failed
+        if recovered:
+            record_audio_lifecycle(
+                "device-probe", outcome="complete", reason="probe-recovered"
+            )
+            self.failed = False
+        if recovered or identity != self.identity:
+            self.identity = identity
+            self.output.request_refresh()
+
+    def _run(self) -> None:
+        while not self.stopping.is_set():
+            try:
+                self.check()
+            finally:
+                self.ready.set()
+            self.stopping.wait(0.5)
+
+    def close(self) -> None:
+        self.stopping.set()
+        if self.thread.ident is not None and current_thread() is not self.thread:
+            self.thread.join(timeout=2)
+
+
+class SystemAudioOutput:
+    """Refresh PortAudio only after every owned native stream has been closed."""
+
+    def __init__(self, module: Any) -> None:
+        self.module = module
+        self.lock = RLock()
+        self.pending = Event()
+        self.streams: set[_SystemStream] = set()
+        self.initialized = True
+        self.device_monitor: _DefaultOutputMonitor | None = None
+
+    def request_refresh(self) -> None:
+        # The Qt/main thread must never wait for a blocking device write.
+        self.pending.set()
+
+    def _refresh(self) -> None:
+        # Establish the first baseline before opening streams, avoiding a late
+        # initial observation invalidating a newly constructed stream.
+        if self.device_monitor is not None and not self.device_monitor.ready.wait(3):
+            raise RuntimeError("Audio device detection timed out; retry playback")
+        if not self.pending.is_set():
+            return
+        self.pending.clear()
+        try:
+            self.module.stop()
+            for stream in tuple(self.streams):
+                stream._release()
+            if self.initialized:
+                self.module._terminate()
+                self.initialized = False
+            self.module._initialize()
+            self.initialized = True
+            record_audio_lifecycle(
+                "device-refresh", outcome="complete", reason="system-output-changed"
+            )
+        except BaseException:
+            self.pending.set()
+            record_audio_lifecycle(
+                "device-refresh", outcome="failed", reason="system-output-changed"
+            )
+            raise
+
+    def query_devices(self, *, kind: str) -> Any:
+        with self.lock:
+            self._refresh()
+            return self.module.query_devices(kind=kind)
+
+    def query_hostapis(self, index: int) -> Any:
+        with self.lock:
+            self._refresh()
+            return self.module.query_hostapis(index)
+
+    def OutputStream(self, **options: Any) -> _SystemStream:
+        with self.lock:
+            self._refresh()
+            stream = _SystemStream(self, options)
+            self.streams.add(stream)
+            return stream
+
+    def play(self, audio: object, sample_rate: int, *, latency: object) -> Any:
+        with self.lock:
+            self._refresh()
+            return self.module.play(audio, sample_rate, latency=latency)
+
+    def wait(self) -> Any:
+        return self.module.wait()
+
+    def stop(self) -> Any:
+        with self.lock:
+            return self.module.stop()
+
+
+class _SystemStream:
+    def __init__(self, output: SystemAudioOutput, options: dict[str, Any]) -> None:
+        self.output = output
+        self.options = options
+        self.write_lock = Lock()
+        self.native: Any = None
+        self.started = False
+        self.closed = False
+        self.resampler: Any = None
+        self._open()
+
+    def _open(self) -> None:
+        if self.closed:
+            raise RuntimeError("The output stream is closed")
+        options = self.options.copy()
+        # Callback owners prepare their buffers and reopen in the new format.
+        if "callback" not in options:
+            try:
+                self.output.module.check_output_settings(
+                    samplerate=options["samplerate"],
+                    channels=options["channels"],
+                    dtype=options["dtype"],
+                )
+            except self.output.module.PortAudioError as error:
+                # Preserve the host's continuous converter when the format works.
+                if len(error.args) < 2 or error.args[1] not in (-9997, -9998):
+                    raise
+                device = self.output.module.query_devices(kind="output")
+                options["samplerate"] = round(float(device["default_samplerate"]))
+                options["channels"] = min(
+                    options["channels"], int(device["max_output_channels"])
+                )
+        self.sample_rate = options["samplerate"]
+        self.channels = options["channels"]
+        self.resampler = None
+        if "callback" not in options and self.options["samplerate"] != self.sample_rate:
+            from soxr import ResampleStream
+
+            self.resampler = ResampleStream(
+                self.options["samplerate"], self.sample_rate, self.channels
+            )
+        self.native = self.output.module.OutputStream(**options)
+
+    @property
+    def device_changed(self) -> bool:
+        with self.output.lock:
+            self.output._refresh()
+            return self.native is None
+
+    @property
+    def time(self) -> float:
+        with self.output.lock:
+            self.output._refresh()
+            if self.native is None:
+                raise AudioDeviceChangedError("The system output device changed")
+            return float(self.native.time)
+
+    def start(self) -> None:
+        with self.output.lock:
+            self.output._refresh()
+            if self.native is None:
+                if "callback" in self.options:
+                    raise AudioDeviceChangedError("The system output device changed")
+                self._open()
+            self.native.start()
+            self.started = True
+
+    def __enter__(self) -> _SystemStream:
+        try:
+            self.start()
+        except BaseException as error:
+            attempt_cleanup(
+                self.close,
+                description="Output stream startup cleanup",
+                primary_error=error,
+            )
+            raise
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        with cleanup_on_exit(self.close, description="Output stream cleanup"):
+            self.stop()
+
+    def write(self, audio: object) -> Any:
+        for attempt in range(2):
+            try:
+                return self._write(audio)
+            except Exception:
+                with self.output.lock:
+                    if (
+                        attempt
+                        or self.native is not None
+                        or not self.started
+                        or self.closed
+                    ):
+                        raise
+        raise AssertionError("Unreachable playback retry")
+
+    def _write(self, audio: object) -> Any:
+        with self.output.lock:
+            self.output._refresh()
+            if self.native is None:
+                self._open()
+                assert self.native is not None
+                if self.started:
+                    try:
+                        native = self.native
+                        native.start()
+                    except BaseException as error:
+                        attempt_cleanup(
+                            self._release,
+                            description="Changed output startup cleanup",
+                            primary_error=error,
+                        )
+                        raise
+            samples = np.asarray(audio, dtype=np.float32)
+            if self.options["channels"] != self.channels:
+                samples = samples.mean(axis=1, keepdims=True, dtype=np.float32)
+            if self.resampler is not None:
+                samples = self.resampler.resample_chunk(samples)
+                np.clip(samples, -0.95, 0.95, out=samples)
+            if not len(samples):
+                return False
+            native = self.native
+            self.write_lock.acquire()
+        # Cancellation must be able to abort a native write on another thread.
+        try:
+            return native.write(samples)
+        finally:
+            self.write_lock.release()
+
+    def abort(self) -> None:
+        with self.output.lock:
+            if self.native is not None:
+                self.native.abort()
+            if self.resampler is not None:
+                self.resampler.clear()
+            self.started = False
+
+    def stop(self) -> None:
+        with self.output.lock:
+            if self.native is not None:
+                if self.started and self.resampler is not None:
+                    with self.write_lock:
+                        tail = self.resampler.resample_chunk(
+                            np.empty((0, self.channels), np.float32), last=True
+                        )
+                        self.resampler.clear()
+                        if len(tail):
+                            np.clip(tail, -0.95, 0.95, out=tail)
+                            if self.native.write(tail):
+                                raise RuntimeError(
+                                    "Audio output underflowed while draining converted PCM"
+                                )
+                self.native.stop()
+            self.started = False
+
+    def _release(self) -> None:
+        if self.native is None:
+            return
+        native = self.native
+
+        def close() -> None:
+            with self.write_lock:
+                native.close()
+                self.native = None
+
+        with cleanup_on_exit(close, description="Changed output stream cleanup"):
+            native.abort()
+
+    def close(self) -> None:
+        with self.output.lock:
+            if self.closed:
+                return
+            if self.native is not None:
+                if self.started:
+                    self._release()
+                else:
+                    with self.write_lock:
+                        self.native.close()
+                        self.native = None
+            self.closed = True
+            self.output.streams.discard(self)
+
+
+_system_output: SystemAudioOutput | None = None
+_media_devices: Any = None
+_system_lock = RLock()
+
+
+def get_system_audio_output() -> SystemAudioOutput:
+    global _system_output
+    with _system_lock:
+        if _system_output is None:
+            import sounddevice
+
+            output = SystemAudioOutput(sounddevice)
+            # Earlier read-only probes may have initialized a stale device list.
+            output.request_refresh()
+            from vntts.system_audio_devices import create_default_output_probe
+
+            monitor = _DefaultOutputMonitor(output, create_default_output_probe)
+            output.device_monitor = monitor
+            atexit.register(monitor.close)
+            monitor.thread.start()
+            _system_output = output
+    return _system_output
+
+
+def initialize_audio_device_monitor() -> None:
+    """Initialize Qt's native device notifications on the application's thread."""
+    global _media_devices
+    if _media_devices is not None or current_thread() is not main_thread():
+        return
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtMultimedia import QMediaDevices
+
+    application = QCoreApplication.instance()
+    if application is None:
+        return
+    _media_devices = QMediaDevices(application)
+    _media_devices.audioOutputsChanged.connect(_request_system_refresh)
+    QMediaDevices.defaultAudioOutput()
+
+
+def _request_system_refresh() -> None:
+    if _system_output is not None:
+        _system_output.request_refresh()
+
+
+__all__ = [
+    "AudioDeviceChangedError",
+    "get_system_audio_output",
+    "initialize_audio_device_monitor",
+]
