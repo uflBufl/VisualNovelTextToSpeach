@@ -1156,46 +1156,9 @@ class Reverse1999GameImporter:
                 f"Unable to start the Reverse: 1999 importer: {error}"
             ) from error
         cancelled = False
-        previous_progress: SourceAudioProgress | None = None
-
-        def report_progress() -> None:
-            nonlocal previous_progress
-            if progress_file is None or scan_progress is None:
-                return
-            current = read_source_audio_progress(progress_file)
-            if current is None or current == previous_progress:
-                return
-            if previous_progress is not None and (
-                current.stage == previous_progress.stage
-                and (
-                    current.total != previous_progress.total
-                    or current.processed < previous_progress.processed
-                    or previous_progress.state == "publishing"
-                    and current.state != "publishing"
-                )
-                or current.stage != previous_progress.stage
-                and (previous_progress.stage, current.stage)
-                != ("references", "portraits")
-            ):
-                return
-            if (
-                previous_progress is None
-                or current.stage != previous_progress.stage
-                or current.state == "publishing"
-                and previous_progress.state != "publishing"
-            ):
-                self._record(
-                    "source-audio-progress",
-                    command_kind=current.stage,
-                    elapsed_ms=round((time.monotonic() - started) * 1000),
-                    cache_state={
-                        "processed": current.processed,
-                        "total": current.total,
-                        "state": current.state,
-                    },
-                )
-            previous_progress = current
-            scan_progress(current)
+        report_progress = self._source_audio_progress_reporter(
+            progress_file, scan_progress, started
+        )
 
         try:
             with cleanup_on_exit(
@@ -1250,6 +1213,55 @@ class Reverse1999GameImporter:
                 + (f": {detail}" if detail else ".")
             )
         return stdout, stderr
+
+    def _source_audio_progress_reporter(
+        self,
+        progress_file: Path | None,
+        scan_progress: Callable[[SourceAudioProgress], None] | None,
+        started: float,
+    ) -> Callable[[], None]:
+        previous_progress: SourceAudioProgress | None = None
+
+        def report_progress() -> None:
+            nonlocal previous_progress
+            if progress_file is None or scan_progress is None:
+                return
+            current = read_source_audio_progress(progress_file)
+            if current is None or current == previous_progress:
+                return
+            if previous_progress is not None and (
+                current.stage == previous_progress.stage
+                and (
+                    current.total != previous_progress.total
+                    or current.processed < previous_progress.processed
+                    or previous_progress.state == "publishing"
+                    and current.state != "publishing"
+                )
+                or current.stage != previous_progress.stage
+                and (previous_progress.stage, current.stage)
+                != ("references", "portraits")
+            ):
+                return
+            if (
+                previous_progress is None
+                or current.stage != previous_progress.stage
+                or current.state == "publishing"
+                and previous_progress.state != "publishing"
+            ):
+                self._record(
+                    "source-audio-progress",
+                    command_kind=current.stage,
+                    elapsed_ms=round((time.monotonic() - started) * 1000),
+                    cache_state={
+                        "processed": current.processed,
+                        "total": current.total,
+                        "state": current.state,
+                    },
+                )
+            previous_progress = current
+            scan_progress(current)
+
+        return report_progress
 
 
 def _read_story_metadata(story_index: Path) -> dict[str, object]:
